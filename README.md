@@ -1,7 +1,12 @@
 # DeepDataMiningLearning
-Data mining, machine learning, and deep learning sample code
+Data mining, machine learning, and deep learning sample code (all google colab example need SJSU google account to view).
 
-* Data Mining introduction code: [Dataintro.ipynb](./Dataintro.ipynb) -- [colablink](https://colab.research.google.com/drive/12ADSKdSE7FsFU7ch3-p1x-BLbUVPnXWy?usp=sharing)
+* Python tutorial code: [Python_tutorial.ipynb](./Python_tutorial.ipynb)--[colablink](https://colab.research.google.com/drive/1KpLTxgvmFzSlmr486zZwfUBUt-U4-ukT?usp=sharing)
+* Python NumPy tutorial code: [Python NumPy tutorial](./Python-Numpy.ipynb)--[colablink](https://colab.research.google.com/drive/10CtxFoyTUk5RIPX4MnOOhYYe3DGAitYW?usp=sharing)
+* Data Mining introduction code: 
+   ** [Dataintro-Pandas.ipynb](./Dataintro-Pandas.ipynb)
+   ** [Dataintro-EDA.ipynb](./Dataintro-EDA.ipynb)
+   ** [Dataintro-Visualization.ipynb](./Dataintro-Visualization.ipynb)
 * Data Mining based on Google BigQuery: [BigQuery-intro.ipynb](./BigQuery-intro.ipynb) -- [colablink](https://colab.research.google.com/drive/1HREJs7dUZfrJaPP2wApPNtaINpe2Rtey?usp=sharing), [Bigquery-COVID.ipynb](./Bigquery-COVID.ipynb) -- [colablink](https://colab.research.google.com/drive/1By3mkeieOh5-YuIQncUoNlGHEu4liW9s?usp=sharing)
 * Machine Learning introduction: [MLIntro-regression.ipynb](./MLIntro-regression.ipynb), [MLIntro2-classification.ipynb](./MLIntro2-classification.ipynb)
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./CMPE-Tensorflow1.ipynb)
