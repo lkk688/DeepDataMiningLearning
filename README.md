@@ -17,3 +17,7 @@ Data mining, machine learning, and deep learning sample code (all google colab e
 * Pytorch introduction code: [CMPE-pytorch1.ipynb](./CMPE-pytorch1.ipynb) -- [colablink](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
 * Tensorflow image classification sample: [Tensorflow-Roadsignclassification.ipynb](./Tensorflow-Roadsignclassification.ipynb)
 * Pytorch image classification sample: [CMPE-pytorch2.ipynb](./CMPE-pytorch2.ipynb)
+* Text Mining
+   * Basic text mining via Python, SKLearn, NLTK, and gensim: [colablink](https://colab.research.google.com/drive/1nu32Hy50MBxgtOshOmPpk94DNwPNU40V?usp=sharing)
+   * Advanced text mining via Tensorflow Word2Vec: [colablink](https://colab.research.google.com/drive/1kcM8zAPWDQa1_82OCl74CZOCgZDofipR?usp=sharing)
+   * Text Classification via Tensorflow: [colablink](https://colab.research.google.com/drive/1NyIjdj4d4lueByK-_17BepKLRXz7oM9e?usp=sharing)
