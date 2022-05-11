@@ -21,3 +21,8 @@ Data mining, machine learning, and deep learning sample code (all google colab e
    * Basic text mining via Python, SKLearn, NLTK, and gensim: [colablink](https://colab.research.google.com/drive/1nu32Hy50MBxgtOshOmPpk94DNwPNU40V?usp=sharing)
    * Advanced text mining via Tensorflow Word2Vec: [colablink](https://colab.research.google.com/drive/1kcM8zAPWDQa1_82OCl74CZOCgZDofipR?usp=sharing)
    * Text Classification via Tensorflow: [colablink](https://colab.research.google.com/drive/1NyIjdj4d4lueByK-_17BepKLRXz7oM9e?usp=sharing)
+   * Twitter NLP all-in-all example: [colablink](https://colab.research.google.com/drive/16Lq8pFyxwIUhFi241FYDrG-VfBBSTsgE?usp=sharing)
+* Recommendation
+   * Recommendation via Python Surprise and Neural Collaborative Filtering (Tensorflow): [colablink](https://colab.research.google.com/drive/1PNi5Vl4YRCsNdLS-pcODSdgbhBlPUoBI?usp=sharing)
+   * Tensorflow Recommender: [colab](https://colab.research.google.com/drive/14tfyPInCyZzcr4sk6zRejHR1847WwVR9?usp=sharing)
+   * 
