@@ -16,7 +16,7 @@ Data mining, machine learning, and deep learning sample code (google colab examp
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
 * Pytorch introduction code: [CMPE-pytorch1.ipynb](./CMPE-pytorch1.ipynb) -- [colablink](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
 * Tensorflow image classification:
-   * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./Tensorflow-Roadsignclassification.ipynb)
+   * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
 * Pytorch image classification sample: [CMPE-pytorch2.ipynb](./CMPE-pytorch2.ipynb)
 * Text Mining
