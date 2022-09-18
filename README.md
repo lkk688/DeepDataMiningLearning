@@ -7,9 +7,11 @@ Data mining, machine learning, and deep learning sample code (google colab examp
    * [Dataintro-Pandas.ipynb](./Dataintro-Pandas.ipynb)
    * [Dataintro-EDA.ipynb](./Dataintro-EDA.ipynb)
    * [Dataintro-Visualization.ipynb](./Dataintro-Visualization.ipynb)
-* Data Mining based on Google BigQuery: 
+* Data Mining based on Google Cloud: 
+   * Google Cloud access via Colab: [colablink](https://colab.research.google.com/drive/1fmNMY23wzoQQTGoGns1cgTrjOIuj-Qtc?usp=sharing)
    * Google BigQuery with Colab/Jupyter introduction [BigQuery-intro.ipynb](./BigQuery-intro.ipynb) -- [colablink](https://colab.research.google.com/drive/1HREJs7dUZfrJaPP2wApPNtaINpe2Rtey?usp=sharing)
-   * COVID19 Data EDA and Visualization based on Google BigQuery [Bigquery-COVID.ipynb](./Bigquery-COVID.ipynb) -- [colablink](https://colab.research.google.com/drive/1By3mkeieOh5-YuIQncUoNlGHEu4liW9s?usp=sharing)
+   * COVID19 Data EDA and Visualization based on Google BigQuery (Fall 2022 updated): [colablink](https://colab.research.google.com/drive/1y4zQl_SxA1DEbjI5XjBuxmXQrx5xI1vE?usp=sharing)
+   * Additional Google BigQuery examples: [colablink](https://colab.research.google.com/drive/1eHj3g5qwzp4uhE0j0qagCLj5SBWIbuTL?usp=sharing)
 * Machine Learning introduction: 
    * [MLIntro-regression.ipynb](./MLIntro-regression.ipynb) --[colablink](https://colab.research.google.com/drive/1atrY6rpfPKs5K1VxddfEOWR5QRarxHiG?usp=sharing)
    * [MLIntro2-classification.ipynb](./MLIntro2-classification.ipynb) --[colablink](https://colab.research.google.com/drive/1znfskFZFo-m7VjnI5vgcxdaPWHvLLG9H?usp=sharing)
