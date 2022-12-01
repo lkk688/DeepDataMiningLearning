@@ -28,7 +28,9 @@ Data mining, machine learning, and deep learning sample code (google colab examp
 * Pytorch image classification sample: [CMPE-pytorch2.ipynb](./CMPE-pytorch2.ipynb)
 * Text Mining
    * Text Representations: [colablink](https://colab.research.google.com/drive/1L4gyfPqvqdvWSGy88DXVS-7nta1pGWB8?usp=sharing)
-      * One-Hot encoding, Bag-of-Words, TF-IDF, and Word2Vec; Word2Vec WiKi and Shakespeare examples; Gather data from Google and WordCLoud
+    * One-Hot encoding, Bag-of-Words, TF-IDF, and Word2Vec (based on gensim); Word2Vec WiKi and Shakespeare examples; Gather data from Google and WordCLoud
+   * Texrtact and NLTK: [colablink](https://colab.research.google.com/drive/1q6Khw3MGJg2S1q8eOcpgtnbLPS_LD7Uj?usp=share_link)
+    * Text Extraction via textract; NLTK text preprocessing
    * Basic text mining via Python, SKLearn, NLTK, and gensim: [colablink](https://colab.research.google.com/drive/1nu32Hy50MBxgtOshOmPpk94DNwPNU40V?usp=sharing)
    * Advanced text mining via Tensorflow Word2Vec: [colablink](https://colab.research.google.com/drive/1kcM8zAPWDQa1_82OCl74CZOCgZDofipR?usp=sharing)
    * Text Classification via Tensorflow: [colablink](https://colab.research.google.com/drive/1NyIjdj4d4lueByK-_17BepKLRXz7oM9e?usp=sharing)
