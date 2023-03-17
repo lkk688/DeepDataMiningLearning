@@ -1,6 +1,9 @@
 # DeepDataMiningLearning
 Data mining, machine learning, and deep learning sample code (google colab examples need SJSU google account to view).
 
+```bash
+jupyter lab --ip 0.0.0.0 --no-browser --allow-root
+```
 * Python tutorial code: [Python_tutorial.ipynb](./Python_tutorial.ipynb)--[colablink](https://colab.research.google.com/drive/1KpLTxgvmFzSlmr486zZwfUBUt-U4-ukT?usp=sharing)
 * Python NumPy tutorial code: [Python NumPy tutorial](./Python-Numpy.ipynb)--[colablink](https://colab.research.google.com/drive/10CtxFoyTUk5RIPX4MnOOhYYe3DGAitYW?usp=sharing)
 * Data Mining introduction code: 
