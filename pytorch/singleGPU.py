@@ -1,5 +1,6 @@
-#https://github.com/pytorch/examples/blob/main/distributed/ddp-tutorial-series/single_gpu.py
+#modified based on https://github.com/pytorch/examples/blob/main/distributed/ddp-tutorial-series/single_gpu.py
 
+from PIL import Image #can solve the error of Glibc
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
@@ -9,9 +10,6 @@ from torchvision.transforms import ToTensor
 from torch import nn
 import time
 import os
-
-from PIL import Image
-
 import torchvision
 
 MACHINENAME='HPC'
@@ -37,6 +35,7 @@ class Trainer:
         self,
         model: torch.nn.Module,
         train_data: DataLoader,
+        test_data: DataLoader,
         optimizer: torch.optim.Optimizer,
         gpu_id: int,
         save_every: int, 
@@ -44,6 +43,7 @@ class Trainer:
         self.gpu_id = gpu_id
         self.model = model.to(gpu_id)
         self.train_data = train_data
+        self.test_data = test_data
         self.optimizer = optimizer
         self.save_every = save_every
         self.loss_fun = nn.CrossEntropyLoss() 
@@ -55,26 +55,48 @@ class Trainer:
         loss = self.loss_fun(output, targets)
         loss.backward()
         self.optimizer.step()
+        loss = loss.item()
+        #print(f"loss: {loss:>7f}")
+        return loss
 
     def _run_epoch(self, epoch):
-        b_sz = len(next(iter(self.train_data))[0])
+        b_sz = len(next(iter(self.train_data))[0]) #32 batch sie
         print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.train_data)}")
         for source, targets in self.train_data:
             source = source.to(self.gpu_id)
             targets = targets.to(self.gpu_id)
-            self._run_batch(source, targets)
+            currentloss = self._run_batch(source, targets)
+        print(f"loss: {currentloss:>7f}")
+        return currentloss
 
     def _save_checkpoint(self, epoch):
         ckp = self.model.state_dict()
-        PATH = "checkpoint.pt"
+        PATH = "./data/checkpoint.pt"
         torch.save(ckp, PATH)
         print(f"Epoch {epoch} | Training checkpoint saved at {PATH}")
+
+    def test(self, dataloader, model, loss_fn):
+        size = len(dataloader.dataset)
+        num_batches = len(dataloader)
+        model.eval()
+        test_loss, correct = 0, 0
+        with torch.no_grad():
+            for X, y in dataloader:
+                X, y = X.to(device), y.to(device)
+                pred = model(X)
+                test_loss += loss_fn(pred, y).item()
+                correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+        test_loss /= num_batches
+        correct /= size
+        print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
 
     def train(self, max_epochs: int):
         for epoch in range(max_epochs):
             self._run_epoch(epoch)
             if epoch % self.save_every == 0:
                 self._save_checkpoint(epoch)
+                self.test(self.test_data, self.model, self.loss_fun)
+        self.test(self.test_data, self.model, self.loss_fun)
 
 # Define model
 class NeuralNetwork(nn.Module):
@@ -96,27 +118,27 @@ class NeuralNetwork(nn.Module):
     
 def load_train_objs():
     # Download training data from open datasets.
-    data_path="/data/cmpe249-fa22/torchvisiondata/MNIST"
-    train_set = datasets.MNIST(
-        root=data_path,
+    #data_path="/data/cmpe249-fa22/torchvisiondata"
+    train_set = datasets.FashionMNIST(
+        root=DATAPATH,
         train=True,
         download=False,
         transform=ToTensor(),
     )
 
     # Download test data from open datasets.
-    test_set = datasets.MNIST(
-        root=data_path,
+    test_set = datasets.FashionMNIST(
+        root=DATAPATH,
         train=False,
         download=False,
         transform=ToTensor(),
     )
 
     # train_set = MyTrainDataset(2048)  # load your dataset
-    model = torch.nn.Linear(20, 1)  # load your model
+    #model = torch.nn.Linear(20, 1)  # load your model
     model = NeuralNetwork()
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
-    return train_set, model, optimizer
+    return train_set, test_set, model, optimizer
 
 
 def prepare_dataloader(dataset: Dataset, batch_size: int):
@@ -129,9 +151,15 @@ def prepare_dataloader(dataset: Dataset, batch_size: int):
 
 
 def main(device, total_epochs, save_every, batch_size):
-    dataset, model, optimizer = load_train_objs()
-    train_data = prepare_dataloader(dataset, batch_size)
-    trainer = Trainer(model, train_data, optimizer, device, save_every)
+    train_dataset, test_dataset, model, optimizer = load_train_objs()
+    train_data = prepare_dataloader(train_dataset, batch_size)
+    test_data = prepare_dataloader(test_dataset, batch_size)
+    for X, y in train_data:
+        print(f"Shape of X [N, C, H, W]: {X.shape}")
+        print(f"Shape of y: {y.shape} {y.dtype}")
+        break
+
+    trainer = Trainer(model, train_data, test_data, optimizer, device, save_every)
     trainer.train(total_epochs)
 
 

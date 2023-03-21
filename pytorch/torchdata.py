@@ -29,10 +29,17 @@ test_data = datasets.FashionMNIST(
     transform=None,
 )
 
+# imagenet_data = datasets.ImageNet(mytorchvisiondata, split = 'train', download = True)
+# print(imagenet_data)
+
+#http://places2.csail.mit.edu/index.html
+places365=torchvision.datasets.Places365(mytorchvisiondata, split = 'train-standard', small = False, download = True)
+print(places365)
+
 #Download model
 os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/' #setting the environment variable
 resnet18 = torchvision.models.resnet18(pretrained=True)
 print(resnet18)
-resnet50 = torchvision.models.resnet50(pretrained=True)
+resnet50 = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)#torchvision.models.resnet50(pretrained=True)
 print(resnet50)
 #Downloading: "https://download.pytorch.org/models/resnet50-19c8e357.pth" to /data/cmpe249-fa22/torchhome/hub/checkpoints/resnet50-19c8e357.pth
