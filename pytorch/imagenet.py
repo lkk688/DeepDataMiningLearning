@@ -73,7 +73,7 @@ parser.add_argument('--seed', default=None, type=int,
                     help='seed for initializing training. ')
 parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', default=False, type=bool,
+parser.add_argument('--multiprocessing-distributed', default=True, type=bool,
                     help='Use multi-processing distributed training.')
 # parser.add_argument('--multiprocessing-distributed', action='store_true',
 #                     help='Use multi-processing distributed training to launch '
