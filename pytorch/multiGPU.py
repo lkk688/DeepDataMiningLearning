@@ -11,9 +11,10 @@ import time
 import os
 import torchvision
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0" #"0,1"
 
 MACHINENAME='HPC'
+USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
     DATAPATH='/data/cmpe249-fa22/torchvisiondata/'
@@ -90,6 +91,9 @@ class Trainer:
         self.save_every = save_every
         self.epochs_run = 0
         self.snapshot_path = snapshot_path
+        if USE_AMP:
+            self.scaler = torch.cuda.amp.GradScaler()
+
         if os.path.exists(snapshot_path):
             print("Loading snapshot")
             self._load_snapshot(snapshot_path)
@@ -128,9 +132,37 @@ class Trainer:
         for source, targets in self.train_data:
             source = source.to(self.gpu_id)
             targets = targets.to(self.gpu_id)
-            currentloss = self._run_batch(source, targets)
+            if USE_AMP:
+                currentloss = self._run_batch_amp(source, targets)
+            else:
+                currentloss = self._run_batch(source, targets)
         print(f"loss: {currentloss:>7f}")
         return currentloss
+
+    #“automatic mixed precision training” means training with torch.autocast and torch.cuda.amp.GradScaler together
+    def _run_batch_amp(self, source, targets):
+        self.optimizer.zero_grad()
+        # Runs the forward pass with autocasting.
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            output = self.model(source)
+            loss = self.loss_fun(output, targets)
+
+        # Scales loss.  Calls backward() on scaled loss to create scaled gradients.
+        # Backward passes under autocast are not recommended.
+        # Backward ops run in the same dtype autocast chose for corresponding forward ops.
+        self.scaler.scale(loss).backward()
+
+        # scaler.step() first unscales the gradients of the optimizer's assigned params.
+        # If these gradients do not contain infs or NaNs, optimizer.step() is then called,
+        # otherwise, optimizer.step() is skipped.
+        self.scaler.step(self.optimizer)
+
+        # Updates the scale for next iteration.
+        self.scaler.update()
+
+        loss = loss.item()
+        #print(f"loss: {loss:>7f}")
+        return loss
 
     def _save_checkpoint(self, epoch):
         #ckp = self.model.state_dict()
@@ -246,5 +278,5 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     args = parser.parse_args()
     
-    world_size = 2 #torch.cuda.device_count()
+    world_size = torch.cuda.device_count()
     mp.spawn(main, args=(world_size, args.save_every, args.total_epochs, args.batch_size), nprocs=world_size)

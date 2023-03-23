@@ -28,8 +28,8 @@ model_names = sorted(name for name in models.__dict__
     and callable(models.__dict__[name]))
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR', nargs='?', default='/data/cmpe249-fa22/torchvisiondata/hymenoptera_data',
-                    help='path to dataset (default: imagenet)')
+parser.add_argument('data', metavar='DIR', nargs='?', default='/data/cmpe249-fa22/ImageClassData/tiny-imagenet-200',
+                    help='path to dataset (default: imagenet)') #/data/cmpe249-fa22/torchvisiondata/hymenoptera_data
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
                     help='model architecture: ' +
@@ -41,7 +41,7 @@ parser.add_argument('--epochs', default=32, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('-b', '--batch-size', default=32, type=int,
+parser.add_argument('-b', '--batch-size', default=256, type=int,
                     metavar='N',
                     help='mini-batch size (default: 256), this is the total '
                          'batch size of all GPUs on the current node when '
@@ -410,10 +410,10 @@ def validate(val_loader, model, criterion, args):
     return top1.avg
 
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='./data/checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(filename, './data/model_best.pth.tar')
 
 class Summary(Enum):
     NONE = 0

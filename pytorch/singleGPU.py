@@ -13,6 +13,7 @@ import os
 import torchvision
 
 MACHINENAME='HPC'
+USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
     DATAPATH='/data/cmpe249-fa22/torchvisiondata/'
@@ -47,6 +48,8 @@ class Trainer:
         self.optimizer = optimizer
         self.save_every = save_every
         self.loss_fun = nn.CrossEntropyLoss() 
+        if USE_AMP:
+            self.scaler = torch.cuda.amp.GradScaler()
 
     def _run_batch(self, source, targets):
         self.optimizer.zero_grad()
@@ -59,13 +62,41 @@ class Trainer:
         #print(f"loss: {loss:>7f}")
         return loss
 
+    #“automatic mixed precision training” means training with torch.autocast and torch.cuda.amp.GradScaler together
+    def _run_batch_amp(self, source, targets):
+        self.optimizer.zero_grad()
+        # Runs the forward pass with autocasting.
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            output = self.model(source)
+            loss = self.loss_fun(output, targets)
+
+        # Scales loss.  Calls backward() on scaled loss to create scaled gradients.
+        # Backward passes under autocast are not recommended.
+        # Backward ops run in the same dtype autocast chose for corresponding forward ops.
+        self.scaler.scale(loss).backward()
+
+        # scaler.step() first unscales the gradients of the optimizer's assigned params.
+        # If these gradients do not contain infs or NaNs, optimizer.step() is then called,
+        # otherwise, optimizer.step() is skipped.
+        self.scaler.step(self.optimizer)
+
+        # Updates the scale for next iteration.
+        self.scaler.update()
+
+        loss = loss.item()
+        #print(f"loss: {loss:>7f}")
+        return loss
+
     def _run_epoch(self, epoch):
         b_sz = len(next(iter(self.train_data))[0]) #32 batch sie
         print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.train_data)}")
         for source, targets in self.train_data:
             source = source.to(self.gpu_id)
             targets = targets.to(self.gpu_id)
-            currentloss = self._run_batch(source, targets)
+            if USE_AMP:
+                currentloss = self._run_batch_amp(source, targets)
+            else:
+                currentloss = self._run_batch(source, targets)
         print(f"loss: {currentloss:>7f}")
         return currentloss
 
