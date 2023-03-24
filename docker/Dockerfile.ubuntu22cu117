@@ -210,7 +210,7 @@ ENV USER_GID=${USER_GID}
 ENV USER_UID=${USER_UID}
 
 # Install linux packages
-RUN apt update && apt install --no-install-recommends -y nano usbutils gdb zip htop screen libgl1-mesa-glx
+RUN apt update && apt install --no-install-recommends -y nano usbutils gdb zip htop screen libgl1-mesa-glx net-tools
 #RUN apt-get update && apt-get -y install nano usbutils gdb
 
 #install pytorch for cuda11.7
