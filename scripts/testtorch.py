@@ -1,4 +1,5 @@
 import torch
+print(torch.__version__)
 # setting device on GPU if available, else CPU
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print('Using device:', device)
