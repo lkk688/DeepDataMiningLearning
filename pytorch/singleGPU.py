@@ -12,13 +12,13 @@ import time
 import os
 import torchvision
 
-MACHINENAME='HPC'
+MACHINENAME='Container'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
     DATAPATH='/data/cmpe249-fa22/torchvisiondata/'
-elif MACHINENAME=='AlienwareX51':
-    DATAPATH='/DATA8T/Datasets/torchvisiondata'
+elif MACHINENAME=='Container':
+    DATAPATH='/Dataset/Dataset/torchvisiondata'
 
 class MyTrainDataset(Dataset):
     def __init__(self, size):
@@ -102,8 +102,10 @@ class Trainer:
 
     def _save_checkpoint(self, epoch):
         ckp = self.model.state_dict()
-        PATH = "./data/checkpoint.pt"
-        torch.save(ckp, PATH)
+        PATH = "./data"
+        if not os.path.exists(PATH):
+            os.makedirs(PATH)
+        torch.save(ckp, os.path.join(PATH, 'checkpoint.pt'))
         print(f"Epoch {epoch} | Training checkpoint saved at {PATH}")
 
     def test(self, dataloader, model, loss_fn):
@@ -153,7 +155,7 @@ def load_train_objs():
     train_set = datasets.FashionMNIST(
         root=DATAPATH,
         train=True,
-        download=False,
+        download=True,
         transform=ToTensor(),
     )
 
@@ -161,7 +163,7 @@ def load_train_objs():
     test_set = datasets.FashionMNIST(
         root=DATAPATH,
         train=False,
-        download=False,
+        download=True,
         transform=ToTensor(),
     )
 

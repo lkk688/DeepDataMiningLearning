@@ -13,13 +13,13 @@ import torchvision
 
 os.environ['CUDA_VISIBLE_DEVICES'] = "0" #"0,1"
 
-MACHINENAME='HPC'
+MACHINENAME='Container'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
     DATAPATH='/data/cmpe249-fa22/torchvisiondata/'
-elif MACHINENAME=='AlienwareX51':
-    DATAPATH='/DATA8T/Datasets/torchvisiondata'
+elif MACHINENAME=='Container':
+    DATAPATH='/Dataset/Dataset/torchvisiondata'
 
 #unused
 class MyTrainDataset(Dataset):
@@ -167,9 +167,10 @@ class Trainer:
     def _save_checkpoint(self, epoch):
         #ckp = self.model.state_dict()
         ckp = self.model.module.state_dict()
-
-        PATH = "./data/checkpoint.pt"
-        torch.save(ckp, PATH)
+        PATH = "./data"
+        if not os.path.exists(PATH):
+            os.makedirs(PATH)
+        torch.save(ckp, os.path.join(PATH, 'checkpoint.pt'))
         print(f"Epoch {epoch} | Training checkpoint saved at {PATH}")
 
     def _save_snapshot(self, epoch):
