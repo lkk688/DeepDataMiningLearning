@@ -21,6 +21,9 @@ from timm.data import create_dataset, create_loader, resolve_data_config#, Image
 from timm.models import create_model
 from timm.utils import AverageMeter, setup_default_logging, set_jit_fuser#, ParseKwargs
 
+os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/' #setting the environment variable
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2,3" #"0,1"
+
 try:
     from apex import amp
     has_apex = True
@@ -56,15 +59,13 @@ _logger = logging.getLogger('inference')
 
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Inference')
-parser.add_argument('data', nargs='?', metavar='DIR', const=None,
-                    help='path to dataset (*deprecated*, use --data-dir)')
 parser.add_argument('--data-dir', metavar='DIR', default='/data/cmpe249-fa22/ImageClassData/tiny-imagenet-200/val/images/',
                     help='path to dataset (root dir)')
 parser.add_argument('--dataset', metavar='NAME', default='ImageFolder',
                     help='dataset type + name ("<type>/<name>") (default: ImageFolder or ImageTar if empty)')
 parser.add_argument('--split', metavar='NAME', default='validation',
                     help='dataset split (default: validation)')
-parser.add_argument('--model', '-m', metavar='MODEL', default='resnet18',
+parser.add_argument('--model', '-m', metavar='MODEL', default='resnet50',
                     help='model architecture (default: resnet50)')
 parser.add_argument('-j', '--workers', default=2, type=int, metavar='N',
                     help='number of data loading workers (default: 2)')
@@ -94,7 +95,7 @@ parser.add_argument('--class-map', default='', type=str, metavar='FILENAME',
                     help='path to class to idx mapping file (default: "")')
 parser.add_argument('--log-freq', default=10, type=int,
                     metavar='N', help='batch logging frequency (default: 10)')
-parser.add_argument('--checkpoint', default='/home/010796032/MyRepo/DeepDataMiningLearning/data/checkpoint.pth.tar', type=str, metavar='PATH',
+parser.add_argument('--checkpoint', default='', type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('--pretrained', dest='pretrained', action='store_true',
                     help='use pre-trained model')
@@ -223,7 +224,7 @@ def main():
     if args.num_gpu > 1:
         model = torch.nn.DataParallel(model, device_ids=list(range(args.num_gpu)))
 
-    root_dir = args.data or args.data_dir
+    root_dir = args.data_dir
     dataset = create_dataset(
         root=root_dir,
         name=args.dataset,
@@ -272,10 +273,10 @@ def main():
                 output = model(input)
 
             if use_probs:
-                output = output.softmax(-1)
+                output = output.softmax(-1) #[256,1000]
 
             if top_k:
-                output, indices = output.topk(top_k)
+                output, indices = output.topk(top_k) #[256,1]
                 np_indices = indices.cpu().numpy()
                 if args.include_index:
                     all_indices.append(np_indices)
@@ -319,7 +320,7 @@ def main():
                 all_labels = all_labels.squeeze(-1)
             data_dict[args.label_col] = list(all_labels)
         if all_outputs.shape[-1] == 1:
-            all_outputs = all_outputs.squeeze(-1)
+            all_outputs = all_outputs.squeeze(-1) #(10000, 1)=>(10000,)
         data_dict[output_col] = list(all_outputs)
 
     df = pd.DataFrame(data=data_dict)
