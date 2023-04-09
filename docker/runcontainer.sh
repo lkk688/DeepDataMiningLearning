@@ -6,6 +6,8 @@ IMAGE_name=$1 #"mycuda11"
 PLATFORM="$(uname -m)"
 echo $PLATFORM
 
+Dataset_PATH="/home/lkk/Documents/Dataset"
+
 HOST_PORT=8888 #10000
 
 echo "Script executed from: ${PWD}"
@@ -28,6 +30,7 @@ docker run -it --rm \
     ${DOCKER_ARGS[@]} \
     -v /dev/*:/dev/* \
 	-v ${PWD}/../:/home/admin/work \
+    -v ${Dataset_PATH}:/Dataset \
     --runtime nvidia \
     --user="admin" \
     --workdir /home/admin/work \

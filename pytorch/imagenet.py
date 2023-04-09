@@ -23,6 +23,10 @@ import torchvision.transforms as transforms
 from torch.optim.lr_scheduler import StepLR
 from torch.utils.data import Subset
 
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2,3" #"0,1"
+CHECKPOINT_PATH="/home/010796032/MyRepo/DeepDataMiningLearning/data"
+CHECKPOINT_file=os.path.join(CHECKPOINT_PATH, 'checkpoint.pth.tar')
+
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
@@ -30,6 +34,7 @@ model_names = sorted(name for name in models.__dict__
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR', nargs='?', default='/data/cmpe249-fa22/ImageClassData/tiny-imagenet-200',
                     help='path to dataset (default: imagenet)') #/data/cmpe249-fa22/torchvisiondata/hymenoptera_data
+#  /data/cmpe249-fa22/ImageClassData/flower_photos
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     choices=model_names,
                     help='model architecture: ' +
@@ -37,7 +42,7 @@ parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                         ' (default: resnet18)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--epochs', default=32, type=int, metavar='N',
+parser.add_argument('--epochs', default=60, type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
@@ -55,7 +60,7 @@ parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
                     dest='weight_decay')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--resume', default='', type=str, metavar='PATH',
+parser.add_argument('--resume', default=CHECKPOINT_file, type=str, metavar='PATH',
                     help='path to latest checkpoint (default: none)')
 parser.add_argument('-e', '--evaluate', dest='evaluate', action='store_true',
                     help='evaluate model on validation set')
@@ -254,6 +259,9 @@ def main_worker(gpu, ngpus_per_node, args):
                 transforms.ToTensor(),
                 normalize,
             ]))
+        # print out some data stats
+        print('Num training images: ', len(train_dataset))
+        print('Num test images: ', len(val_dataset))
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -270,6 +278,13 @@ def main_worker(gpu, ngpus_per_node, args):
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True, sampler=val_sampler)
 
+    #Test data loader
+    for X, y in train_loader:
+        print(f"Shape of X [N, C, H, W]: {X.shape}") #[85, 3, 224, 224]
+        print(f"Shape of y: {y.shape} {y.dtype}") #85
+        break
+
+    args.evaluate = True
     if args.evaluate:
         validate(val_loader, model, criterion, args)
         return
@@ -363,8 +378,9 @@ def validate(val_loader, model, criterion, args):
                 if torch.cuda.is_available():
                     target = target.cuda(args.gpu, non_blocking=True)
 
-                # compute output
-                output = model(images)
+                # forward pass: compute predicted outputs by passing inputs to the model
+                output = model(images) #output[85, 1000]
+                # calculate the batch loss
                 loss = criterion(output, target)
 
                 # measure accuracy and record loss
@@ -409,11 +425,10 @@ def validate(val_loader, model, criterion, args):
 
     return top1.avg
 
-
-def save_checkpoint(state, is_best, filename='./data/checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename=CHECKPOINT_file):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, './data/model_best.pth.tar')
+        shutil.copyfile(filename, os.path.join(CHECKPOINT_PATH, 'model_best.pth.tar'))
 
 class Summary(Enum):
     NONE = 0
@@ -497,11 +512,11 @@ class ProgressMeter(object):
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
-        maxk = max(topk)
+        maxk = max(topk) #5
         batch_size = target.size(0)
 
-        _, pred = output.topk(maxk, 1, True, True)
-        pred = pred.t()
+        _, pred = output.topk(maxk, 1, True, True) #[85, 5]
+        pred = pred.t() #[5, 85]
         correct = pred.eq(target.view(1, -1).expand_as(pred))
 
         res = []

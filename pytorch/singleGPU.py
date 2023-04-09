@@ -11,14 +11,16 @@ from torch import nn
 import time
 import os
 import torchvision
+import matplotlib.pyplot as plt
+import numpy as np
 
-MACHINENAME='HPC'
+MACHINENAME='Container'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
     DATAPATH='/data/cmpe249-fa22/torchvisiondata/'
-elif MACHINENAME=='AlienwareX51':
-    DATAPATH='/DATA8T/Datasets/torchvisiondata'
+elif MACHINENAME=='Container':
+    DATAPATH='/Dataset/Dataset/torchvisiondata'
 
 class MyTrainDataset(Dataset):
     def __init__(self, size):
@@ -30,6 +32,28 @@ class MyTrainDataset(Dataset):
     
     def __getitem__(self, index):
         return self.data[index]
+
+def imshow(inp, title=None):
+    """Imshow for Tensor."""
+    inp = inp.numpy().transpose((1, 2, 0))
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    inp = std * inp + mean
+    inp = np.clip(inp, 0, 1)
+    plt.imshow(inp)
+    if title is not None:
+        plt.title(title)
+    plt.pause(0.001)  # pause a bit so that plots are updated
+
+def matplotlib_imshow(img, one_channel=False):
+    if one_channel:
+        img = img.mean(dim=0)
+    img = img / 2 + 0.5     # unnormalize
+    npimg = img.numpy()
+    if one_channel:
+        plt.imshow(npimg, cmap="Greys")
+    else:
+        plt.imshow(np.transpose(npimg, (1, 2, 0)))
 
 class Trainer:
     def __init__(
@@ -102,8 +126,10 @@ class Trainer:
 
     def _save_checkpoint(self, epoch):
         ckp = self.model.state_dict()
-        PATH = "./data/checkpoint.pt"
-        torch.save(ckp, PATH)
+        PATH = "./data"
+        if not os.path.exists(PATH):
+            os.makedirs(PATH)
+        torch.save(ckp, os.path.join(PATH, 'checkpoint.pt'))
         print(f"Epoch {epoch} | Training checkpoint saved at {PATH}")
 
     def test(self, dataloader, model, loss_fn):
@@ -153,7 +179,7 @@ def load_train_objs():
     train_set = datasets.FashionMNIST(
         root=DATAPATH,
         train=True,
-        download=False,
+        download=True,
         transform=ToTensor(),
     )
 
@@ -161,9 +187,11 @@ def load_train_objs():
     test_set = datasets.FashionMNIST(
         root=DATAPATH,
         train=False,
-        download=False,
+        download=True,
         transform=ToTensor(),
     )
+
+    class_names = train_set.classes
 
     # train_set = MyTrainDataset(2048)  # load your dataset
     #model = torch.nn.Linear(20, 1)  # load your model
@@ -189,6 +217,13 @@ def main(device, total_epochs, save_every, batch_size):
         print(f"Shape of X [N, C, H, W]: {X.shape}")
         print(f"Shape of y: {y.shape} {y.dtype}")
         break
+
+    # Get a batch of training data
+    inputs, classes = next(iter(train_data))
+    # Make a grid from batch
+    img_grid = torchvision.utils.make_grid(inputs)
+    matplotlib_imshow(img_grid, one_channel=True)
+    #imshow(out, title=[class_names[x] for x in classes])
 
     trainer = Trainer(model, train_data, test_data, optimizer, device, save_every)
     trainer.train(total_epochs)
