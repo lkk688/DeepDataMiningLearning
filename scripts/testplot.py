@@ -27,7 +27,7 @@ import cv2
  
 # To read image from disk, we use
 # cv2.imread function, in below method,
-img = cv2.imread("./sampledata/sjsuimag1.jpg", cv2.IMREAD_COLOR)
+img = cv2.imread("../sampledata/sjsuimag1.jpg", cv2.IMREAD_COLOR)
  
 # Creating GUI window to display an image on screen
 # first Parameter is windows title (should be in string format)
