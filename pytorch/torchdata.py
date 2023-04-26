@@ -33,8 +33,8 @@ test_data = datasets.FashionMNIST(
 # print(imagenet_data)
 
 #http://places2.csail.mit.edu/index.html
-places365=torchvision.datasets.Places365(mytorchvisiondata, split = 'train-standard', small = False, download = True)
-print(places365)
+# places365=torchvision.datasets.Places365(mytorchvisiondata, split = 'train-standard', small = False, download = True)
+# print(places365)
 
 #Download model
 os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/' #setting the environment variable
