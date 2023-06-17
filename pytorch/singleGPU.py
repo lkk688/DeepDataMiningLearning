@@ -14,7 +14,7 @@ import torchvision
 import matplotlib.pyplot as plt
 import numpy as np
 
-MACHINENAME='HPC'
+MACHINENAME='MAC'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
