@@ -21,6 +21,8 @@ if MACHINENAME=='HPC':
     DATAPATH='/data/cmpe249-fa22/torchvisiondata'
 elif MACHINENAME=='Container':
     DATAPATH='/Dataset/Dataset/torchvisiondata'
+else:
+    DATAPATH='./data'
 
 class MyTrainDataset(Dataset):
     def __init__(self, size):
@@ -241,4 +243,6 @@ if __name__ == "__main__":
     # Get cpu or gpu device for training.
     device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Using {device} device")
+    if device =='mps' or device =='cpu': 
+        USE_AMP=False
     main(device, args.total_epochs, args.save_every, args.batch_size)
