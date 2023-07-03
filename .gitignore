@@ -133,3 +133,5 @@ data/
 *.tar
 *.onnx
 *.trt
+output/
+test-trainer/
