@@ -151,6 +151,8 @@ def tokenize_function(example):
         return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
     elif task == "token_classifier":
         return tokenize_and_align_labels(example)
+    elif task =="sentiment":
+        return tokenizer(example["text"], truncation=True)
 
 def testdatacollator(data_collator, tokenized_datasets):
     batch = data_collator([tokenized_datasets["train"][i] for i in range(2)])
@@ -167,14 +169,14 @@ def testdatacollator(data_collator, tokenized_datasets):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
-    parser.add_argument('--data_name', type=str, default="conll2003",
-                    help='data name: conll2003, "glue", "mrpc" ')
+    parser.add_argument('--data_name', type=str, default="imdb",
+                    help='data name: imdb, conll2003, "glue", "mrpc" ')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa22/ImageClassData",
                     help='path to get data')
-    parser.add_argument('--model_checkpoint', type=str, default="bert-base-cased",
-                    help='Model checkpoint name from https://huggingface.co/models')
-    parser.add_argument('--task', type=str, default="token_classifier",
-                    help='NLP tasks: "sequence_classifier"')
+    parser.add_argument('--model_checkpoint', type=str, default="distilbert-base-uncased",
+                    help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased"')
+    parser.add_argument('--task', type=str, default="sentiment",
+                    help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
@@ -208,7 +210,8 @@ if __name__ == "__main__":
     elif task == "token_classifier":
         tokenized_datasets = tokenized_datasets.remove_columns(raw_datasets["train"].column_names)
         data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer) #labels should be padded the exact same way
-    
+    elif task == "sentiment":
+        data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
     print(tokenized_datasets["train"].column_names)
     testdatacollator(data_collator, tokenized_datasets)
 
@@ -225,7 +228,7 @@ if __name__ == "__main__":
     testbatch={k: v.shape for k, v in batch.items()}
     print(testbatch)
 
-    if task == "sequence_classifier":
+    if task == "sequence_classifier" or task == "sentiment":
         model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=2)
     elif task == "token_classifier":
         ner_feature = raw_datasets["train"].features["ner_tags"]
