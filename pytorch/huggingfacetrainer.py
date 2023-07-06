@@ -1,8 +1,10 @@
 #sequence classifier: https://huggingface.co/learn/nlp-course/chapter3/4?fw=pt
 #token_classifier: https://huggingface.co/learn/nlp-course/chapter7/2?fw=pt
 #The traditional framework used to evaluate token classification prediction is seqeval. pip install seqeval
+#ref: https://huggingface.co/transformers/v4.1.1/custom_datasets.html
 
 from datasets import load_dataset
+from datasets import load_metric
 from transformers import AutoTokenizer, DataCollatorWithPadding, DataCollatorForTokenClassification
 from torch.utils.data import DataLoader
 from transformers import AutoModelForSequenceClassification, AutoModelForTokenClassification
@@ -13,6 +15,8 @@ from tqdm.auto import tqdm
 import numpy as np
 import evaluate
 import os
+from pathlib import Path
+from sklearn.model_selection import train_test_split
 
 def tokenclassifier_evaluation(metric, raw_datasets):
     #metric = evaluate.load("seqeval") #"seqeval"
@@ -107,6 +111,11 @@ def checktokenizer(raw_datasets, tokenizer):
     print(align_labels_with_tokens(labels, word_ids))
     #our function added the -100 for the two special tokens at the beginning and the end, and a new 0 for our word that was split into two tokens.
 
+def imdbchecktokenizer(raw_datasets, tokenizer):
+    train_texts=raw_datasets["train"]['text'] #25000 array
+    train_encodings = tokenizer(train_texts, truncation=True, padding=True)
+    print(train_encodings)
+
 #by default -100 is an index that is ignored in the loss function
 def align_labels_with_tokens(labels, word_ids):
     new_labels = []
@@ -152,9 +161,10 @@ def tokenize_function(example):
     elif task == "token_classifier":
         return tokenize_and_align_labels(example)
     elif task =="sentiment":
-        return tokenizer(example["text"], truncation=True)
+        return tokenizer(example["text"], truncation=True, padding=True)
 
 def testdatacollator(data_collator, tokenized_datasets):
+    print(tokenized_datasets["train"][0])
     batch = data_collator([tokenized_datasets["train"][i] for i in range(2)])
     print(batch["labels"])
     #compare this to the labels for the first and second elements in our dataset
@@ -166,12 +176,41 @@ def testdatacollator(data_collator, tokenized_datasets):
 #mrpc: MRPC (Microsoft Research Paraphrase Corpus) dataset
 #The dataset consists of 5,801 pairs of sentences, with a label indicating if they are paraphrases or not (i.e., if both sentences mean the same thing).
 
+class CustomDataset(torch.utils.data.Dataset):
+    def __init__(self, encodings, labels):
+        self.encodings = encodings
+        self.labels = labels
+
+    def __getitem__(self, idx):
+        item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
+        item['labels'] = torch.tensor(self.labels[idx])
+        return item
+
+    def __len__(self):
+        return len(self.labels)
+
+def read_customdata_split(split_dir):
+    split_dir = Path(split_dir)
+    texts = []
+    labels = []
+    for label_dir in ["pos", "neg"]:
+        for text_file in (split_dir/label_dir).iterdir():
+            with open(text_file, mode="r", encoding="utf-8") as f:
+                text = f.read()
+                texts.append(text)
+                #texts.append(text_file.read_text())
+                labels.append(0 if label_dir == "neg" else 1)
+
+    return texts, labels
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
+    parser.add_argument('--data_type', type=str, default="custom",
+                    help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="imdb",
                     help='data name: imdb, conll2003, "glue", "mrpc" ')
-    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa22/ImageClassData",
+    parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\aclImdb",
                     help='path to get data')
     parser.add_argument('--model_checkpoint', type=str, default="distilbert-base-uncased",
                     help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased"')
@@ -179,6 +218,8 @@ if __name__ == "__main__":
                     help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
+    parser.add_argument('--training', type=bool, default=True,
+                    help='Perform training')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
@@ -188,39 +229,67 @@ if __name__ == "__main__":
     global task
     task = args.task
 
-    raw_datasets = load_dataset(args.data_name) #("glue", "mrpc") 
-    #Download to C:/Users/lkk68/.cache/huggingface/dataset
-
-    print("All keys in raw datasets:", raw_datasets.keys())
-    checkdataset(raw_datasets)
-    
     model_checkpoint = args.model_checkpoint
     global tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
 
-    checktokenizer(raw_datasets, tokenizer)
-    #To preprocess our whole dataset, we need to tokenize all the inputs and apply align_labels_with_tokens() on all the labels
-    
-    tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
-    tokenized_datasets.set_format("torch")
-    if task == "sequence_classifier":
-        tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
-        tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
-        data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
-    elif task == "token_classifier":
-        tokenized_datasets = tokenized_datasets.remove_columns(raw_datasets["train"].column_names)
-        data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer) #labels should be padded the exact same way
-    elif task == "sentiment":
-        data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
-    print(tokenized_datasets["train"].column_names)
-    testdatacollator(data_collator, tokenized_datasets)
+    if args.data_type == "huggingface":
+        raw_datasets = load_dataset(args.data_name) #("glue", "mrpc") 
+        #Download to C:/Users/lkk68/.cache/huggingface/dataset
 
-    
+        print("All keys in raw datasets:", raw_datasets.keys())
+        if "train" in raw_datasets.keys():
+            print("Train len:", len(raw_datasets["train"]))
+            oneitem = raw_datasets["train"][0]
+            print(oneitem['text'])
+            print(oneitem['label'])
+        if "validation" in raw_datasets.keys():
+            valkeyname="validation"
+        elif "test" in raw_datasets.keys():
+            valkeyname="test"
+        
+        #To preprocess our whole dataset, we need to tokenize all the inputs and apply align_labels_with_tokens() on all the labels
+        tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+        tokenized_datasets.set_format("torch")
+        if task == "sequence_classifier":
+            tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+            tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+            data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
+        elif task == "token_classifier":
+            checkdataset(raw_datasets)
+            checktokenizer(raw_datasets, tokenizer)
+            tokenized_datasets = tokenized_datasets.remove_columns(raw_datasets["train"].column_names)
+            data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer) #labels should be padded the exact same way
+        elif task == "sentiment":
+            #imdbchecktokenizer(raw_datasets, tokenizer)
+            tokenized_datasets = tokenized_datasets.remove_columns(['text']) #['input_ids', 'attention_mask']
+            tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+            data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
+        print(tokenized_datasets["train"].column_names) #['input_ids', 'attention_mask']
+        testdatacollator(data_collator, tokenized_datasets)
+
+    elif args.data_type == "custom":
+        print("Custom dataset")
+        train_texts, train_labels = read_customdata_split(os.path.join(args.data_path, 'train'))
+        test_texts, test_labels = read_customdata_split(os.path.join(args.data_path, 'test'))
+
+        train_texts, val_texts, train_labels, val_labels = train_test_split(train_texts, train_labels, test_size=.2)
+        train_encodings = tokenizer(train_texts, truncation=True, padding=True)
+        val_encodings = tokenizer(val_texts, truncation=True, padding=True)
+        test_encodings = tokenizer(test_texts, truncation=True, padding=True)
+
+        tokenized_datasets = {}
+        tokenized_datasets["train"] = CustomDataset(train_encodings, train_labels)
+        valkeyname="validation"
+        tokenized_datasets[valkeyname] = CustomDataset(val_encodings, val_labels)
+        tokenized_datasets["test"] = CustomDataset(test_encodings, test_labels)
+        data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
+
     train_dataloader = DataLoader(
         tokenized_datasets["train"], shuffle=True, batch_size=args.batch_size, collate_fn=data_collator
     )
     eval_dataloader = DataLoader(
-        tokenized_datasets["validation"], batch_size=args.batch_size, collate_fn=data_collator
+        tokenized_datasets[valkeyname], batch_size=args.batch_size, collate_fn=data_collator
     )
 
     for batch in train_dataloader:
@@ -230,6 +299,7 @@ if __name__ == "__main__":
 
     if task == "sequence_classifier" or task == "sentiment":
         model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=2)
+        #model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased')
     elif task == "token_classifier":
         ner_feature = raw_datasets["train"].features["ner_tags"]
         label_names = ner_feature.feature.names
@@ -263,27 +333,45 @@ if __name__ == "__main__":
     model.to(device)
     print(device)
 
-    progress_bar = tqdm(range(num_training_steps))
+    if args.training == True:
+        progress_bar = tqdm(range(num_training_steps))
+        model.train()
+        for epoch in range(num_epochs):
+            for batch in train_dataloader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                outputs = model(**batch)
+                #sequence classification: outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+                loss = outputs.loss
+                loss.backward()
 
-    model.train()
-    for epoch in range(num_epochs):
-        for batch in train_dataloader:
-            batch = {k: v.to(device) for k, v in batch.items()}
-            outputs = model(**batch)
-            loss = outputs.loss
-            loss.backward()
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad()
+                progress_bar.update(1)
+        
+        #Save models
+        outputpath=os.path.join(args.outputdir, task, args.data_name)
+        tokenizer.save_pretrained(outputpath)
+        torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
+        #model.load_state_dict(torch.load(PATH))
+    else:
+        #load saved model
+        outputpath=os.path.join(args.outputdir, task, args.data_name)
+        model.load_state_dict(torch.load(os.path.join(outputpath, 'savedmodel.pth')))
 
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-            progress_bar.update(1)
-    
+
     if task == "token_classifier":
         metric = evaluate.load("seqeval") #"seqeval"
-    elif task == "sequence_classifier":
+        tokenclassifier_evaluation(metric, raw_datasets)
+    elif task == "sequence_classifier" or task == "sentiment":
         metric = evaluate.load("glue", "mrpc")
-    tokenclassifier_evaluation(metric, raw_datasets)
+    elif task == "sentiment":
+        metric = load_metric("accuracy")
+        #metric_f1 = load_metric("f1")
+    
     model.eval()
+    num_val_steps = len(eval_dataloader)
+    valprogress_bar = tqdm(range(num_val_steps))
     for batch in eval_dataloader:
         batch = {k: v.to(device) for k, v in batch.items()}
         with torch.no_grad():
@@ -304,20 +392,24 @@ if __name__ == "__main__":
             ]
 
         metric.add_batch(predictions=predictions, references=labels)
+        valprogress_bar.update(1)
 
     results = metric.compute()
     print(
-        f"epoch {epoch}:",
+        f"task {task}:",
         {
-            key: results[f"overall_{key}"]
-            for key in ["precision", "recall", "f1", "accuracy"]
+            key: results[f"{key}"]
+            for key in results.keys()
         },
     )
+    # print(
+    #     f"epoch {epoch}:",
+    #     {
+    #         key: results[f"overall_{key}"]
+    #         for key in ["precision", "recall", "f1", "accuracy"]
+    #     },
+    # )
     # metricresult = evaluation(model, eval_dataloader, device)
     # print(metricresult)
 
-    #Save models
-    outputpath=os.path.join(args.outputdir, task, args.data_name)
-    tokenizer.save_pretrained(outputpath)
-    torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
-    #model.load_state_dict(torch.load(PATH))
+    
