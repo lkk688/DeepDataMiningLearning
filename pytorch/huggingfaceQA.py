@@ -9,6 +9,7 @@ from transformers import DistilBertTokenizerFast, AutoTokenizer
 from transformers import DistilBertForQuestionAnswering, AutoModelForQuestionAnswering
 from transformers import get_scheduler
 from transformers import pipeline
+from transformers import DefaultDataCollator
 from torch.utils.data import DataLoader
 from transformers import AdamW
 from tqdm.auto import tqdm
@@ -72,12 +73,81 @@ class SquadDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.encodings.input_ids)
 
+def QAinference(model, tokenizer, question, context, device, usepipeline=True):
+    if usepipeline ==True:
+        question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer, device=0) #device=0 means cuda
+        answers=question_answerer(question=question, context=context)
+        print(answers) #'answer', 'score', 'start', 'end'
+    else:
+        inputs = tokenizer(question, context, return_tensors="pt")
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.no_grad():
+            outputs = model(**inputs)
+        answer_start_index = outputs.start_logits.argmax()
+        answer_end_index = outputs.end_logits.argmax()
+        #predict_answer_tokens = inputs.input_ids[0, answer_start_index : answer_end_index + 1]
+        predict_answer_tokens = inputs['input_ids'][0, answer_start_index : answer_end_index + 1]
+        answers=tokenizer.decode(predict_answer_tokens)
+        print(answers)
+    return answers
+
+def preprocess_function(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=384,
+        truncation="only_second",
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    offset_mapping = inputs.pop("offset_mapping")
+    answers = examples["answers"]
+    start_positions = []
+    end_positions = []
+
+    for i, offset in enumerate(offset_mapping):
+        answer = answers[i]
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i)
+
+        # Find the start and end of the context
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1
+
+        # If the answer is not fully inside the context, label it (0, 0)
+        if offset[context_start][0] > end_char or offset[context_end][1] < start_char:
+            start_positions.append(0)
+            end_positions.append(0)
+        else:
+            # Otherwise it's the start and end token positions
+            idx = context_start
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1)
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)
+
+    inputs["start_positions"] = start_positions
+    inputs["end_positions"] = end_positions
+    return inputs
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
-    parser.add_argument('--data_type', type=str, default="custom",
+    parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="imdb",
+    parser.add_argument('--data_name', type=str, default="squad",
                     help='data name: imdb, conll2003, "glue", "mrpc" ')
     parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\squad",
                     help='path to get data')
@@ -87,7 +157,7 @@ if __name__ == "__main__":
                     help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--training', type=bool, default=True,
+    parser.add_argument('--training', type=bool, default=False,
                     help='Perform training')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
@@ -105,70 +175,104 @@ if __name__ == "__main__":
     model = DistilBertForQuestionAnswering.from_pretrained(model_checkpoint)
     #model = AutoModelForQuestionAnswering.from_pretrained("distilbert-base-uncased")
 
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    model.to(device)
+
     #Test QA
     question = "How many programming languages does BLOOM support?"
     context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
-    question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer)
-    print(question_answerer(question=question, context=context))
+    answers=QAinference(model, tokenizer, question, context, device, usepipeline=True)
 
-    train_contexts, train_questions, train_answers = read_squad(os.path.join(args.data_path, 'train-v2.0.json'))
-    val_contexts, val_questions, val_answers = read_squad(os.path.join(args.data_path, 'dev-v2.0.json'))
+    valkeyname="test"
+    if args.data_type == "huggingface":
+        raw_datasets = load_dataset("squad", split="train[:5000]") #'train', 'test'
+        raw_datasets = raw_datasets.train_test_split(test_size=0.2) #4000, 1000
+        print(raw_datasets["train"][0]) #'title','context', 'question', 'answers' (text, answer_start),  
 
-    add_end_idx(train_answers, train_contexts)
-    add_end_idx(val_answers, val_contexts)
+        tokenized_datasets = raw_datasets.map(preprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names)
+    else:
+        train_contexts, train_questions, train_answers = read_squad(os.path.join(args.data_path, 'train-v2.0.json'))
+        val_contexts, val_questions, val_answers = read_squad(os.path.join(args.data_path, 'dev-v2.0.json'))
 
-    train_encodings = tokenizer(train_contexts, train_questions, truncation=True, padding=True)
-    val_encodings = tokenizer(val_contexts, val_questions, truncation=True, padding=True)
+        add_end_idx(train_answers, train_contexts)
+        add_end_idx(val_answers, val_contexts)
 
-    add_token_positions(train_encodings, train_answers)
-    add_token_positions(val_encodings, val_answers)
+        train_encodings = tokenizer(train_contexts, train_questions, truncation=True, padding=True)
+        val_encodings = tokenizer(val_contexts, val_questions, truncation=True, padding=True)
 
-    train_dataset = SquadDataset(train_encodings)
-    val_dataset = SquadDataset(val_encodings)
+        add_token_positions(train_encodings, train_answers)
+        add_token_positions(val_encodings, val_answers)
 
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        tokenized_datasets = {}
+        tokenized_datasets['train'] = SquadDataset(train_encodings)
+        tokenized_datasets[valkeyname] = SquadDataset(val_encodings)
 
-    model.to(device)
-    model.train()
-
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-
-    optimizer = AdamW(model.parameters(), lr=args.learningrate)
-
-    num_epochs = args.total_epochs
-    num_training_steps = num_epochs * len(train_dataloader)
-
-    lr_scheduler = get_scheduler(
-        "linear",
-        optimizer=optimizer,
-        num_warmup_steps=0,
-        num_training_steps=num_training_steps,
+    data_collator = DefaultDataCollator()
+    train_dataloader = DataLoader(tokenized_datasets["train"], batch_size=args.batch_size, shuffle=True, collate_fn=data_collator)
+    eval_dataloader = DataLoader(
+        tokenized_datasets[valkeyname], batch_size=args.batch_size, collate_fn=data_collator
     )
 
-    progress_bar = tqdm(range(num_training_steps))
-    model.train()
-    for epoch in range(num_epochs):
-        for batch in train_dataloader:
-            optimizer.zero_grad()
-            #batch = {k: v.to(device) for k, v in batch.items()}
-            input_ids = batch['input_ids'].to(device)
-            attention_mask = batch['attention_mask'].to(device)
-            start_positions = batch['start_positions'].to(device)
-            end_positions = batch['end_positions'].to(device)
-            #outputs = model(**batch)
-            outputs = model(input_ids, attention_mask=attention_mask, start_positions=start_positions, end_positions=end_positions)
-            #sequence classification: outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-            #loss = outputs.loss
-            loss = outputs[0]
-            loss.backward()
+    if args.training == True:
+        optimizer = AdamW(model.parameters(), lr=args.learningrate)
 
-            optimizer.step()
-            lr_scheduler.step()
-            
-            progress_bar.update(1)
-    
-    outputpath=os.path.join(args.outputdir, task, args.data_name)
-    tokenizer.save_pretrained(outputpath)
-    torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
+        num_epochs = args.total_epochs
+        num_training_steps = num_epochs * len(train_dataloader)
+
+        lr_scheduler = get_scheduler(
+            "linear",
+            optimizer=optimizer,
+            num_warmup_steps=0,
+            num_training_steps=num_training_steps,
+        )
+
+        progress_bar = tqdm(range(num_training_steps))
+        model.train()
+        for epoch in range(num_epochs):
+            for batch in train_dataloader:
+                optimizer.zero_grad()
+                #batch = {k: v.to(device) for k, v in batch.items()}
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                start_positions = batch['start_positions'].to(device)
+                end_positions = batch['end_positions'].to(device)
+                #outputs = model(**batch)
+                outputs = model(input_ids, attention_mask=attention_mask, start_positions=start_positions, end_positions=end_positions)
+                #sequence classification: outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
+                #loss = outputs.loss
+                loss = outputs[0]
+                loss.backward()
+
+                optimizer.step()
+                lr_scheduler.step()
+                
+                progress_bar.update(1)
+        
+        outputpath=os.path.join(args.outputdir, task, args.data_name)
+        tokenizer.save_pretrained(outputpath)
+        torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
+    else:
+        #load saved model
+        outputpath=os.path.join(args.outputdir, task, args.data_name)
+        model.load_state_dict(torch.load(os.path.join(outputpath, 'savedmodel.pth')))
+        #model.to(device)
     
     model.eval()
+    #Test QA
+    question = "How many programming languages does BLOOM support?"
+    context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
+    answers=QAinference(model, tokenizer, question, context, device, usepipeline=False)
+
+    num_val_steps = len(eval_dataloader)
+    valprogress_bar = tqdm(range(num_val_steps))
+    for batch in eval_dataloader:
+        input_ids = batch['input_ids'].to(device)
+        attention_mask = batch['attention_mask'].to(device)
+        start_positions = batch['start_positions'].to(device)
+        end_positions = batch['end_positions'].to(device)
+        with torch.no_grad():
+            outputs = model(input_ids, attention_mask=attention_mask, start_positions=start_positions, end_positions=end_positions)
+        answer_start_index = outputs.start_logits.argmax()
+        answer_end_index = outputs.end_logits.argmax()
+        predict_answer_tokens = input_ids[0, answer_start_index : answer_end_index + 1]
+        answers=tokenizer.decode(predict_answer_tokens)
