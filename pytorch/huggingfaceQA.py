@@ -142,6 +142,39 @@ def preprocess_function(examples):
     inputs["end_positions"] = end_positions
     return inputs
 
+def testdataset(raw_datasets):
+    oneexample = raw_datasets["train"][0]
+    print("Context: ", oneexample["context"])
+    print("Question: ", oneexample["question"])
+    print("Answer: ", oneexample["answers"])#dict with 'text' and 'answer_start'
+    #During training, there is only one possible answer. We can double-check this by using the Dataset.filter() method:
+    print(raw_datasets["train"].filter(lambda x: len(x["answers"]["text"]) != 1))
+    #For evaluation, however, there are several possible answers for each sample, which may be the same or different:
+    print(raw_datasets["validation"][0]["answers"])
+    print(raw_datasets["validation"][2]["answers"])
+
+    #We can pass to our tokenizer the question and the context together, and it will properly insert the special tokens [CLS], [SEP]
+    inputs = tokenizer(oneexample["question"], oneexample["context"])
+    tokenizer.decode(inputs["input_ids"])
+    #The labels will then be the index of the tokens starting and ending the answer
+
+    #deal with very long contexts, use sliding window
+    inputs = tokenizer(
+        oneexample["question"],
+        oneexample["context"],
+        max_length=100,
+        truncation="only_second", #truncate the context (in the second position)
+        stride=50, #use a sliding window of 50 tokens
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+    )
+    print(inputs.keys())
+    for ids in inputs["input_ids"]:
+        print(tokenizer.decode(ids))
+        #split into four inputs, each of them containing the question and some part of the context.
+        #some training examples where the answer is not included in the context: labels will be start_position = end_position = 0 (so we predict the [CLS] token)
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
@@ -187,7 +220,7 @@ if __name__ == "__main__":
     if args.data_type == "huggingface":
         raw_datasets = load_dataset("squad", split="train[:5000]") #'train', 'test'
         raw_datasets = raw_datasets.train_test_split(test_size=0.2) #4000, 1000
-        print(raw_datasets["train"][0]) #'title','context', 'question', 'answers' (text, answer_start),  
+        print(raw_datasets["train"][0]) #'id', 'title','context', 'question', 'answers' (text, answer_start),  
 
         tokenized_datasets = raw_datasets.map(preprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names)
     else:
