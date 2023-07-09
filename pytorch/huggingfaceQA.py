@@ -13,6 +13,9 @@ from transformers import DefaultDataCollator
 from torch.utils.data import DataLoader
 from transformers import AdamW
 from tqdm.auto import tqdm
+import collections
+import numpy as np
+import evaluate
 
 def read_squad(path):
     path = Path(path)
@@ -91,6 +94,94 @@ def QAinference(model, tokenizer, question, context, device, usepipeline=True):
         print(answers)
     return answers
 
+max_length = 384
+stride = 128
+def preprocess_training_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    offset_mapping = inputs.pop("offset_mapping")
+    sample_map = inputs.pop("overflow_to_sample_mapping") #new add
+    answers = examples["answers"]
+    start_positions = []
+    end_positions = []
+
+    for i, offset in enumerate(offset_mapping):
+        sample_idx = sample_map[i] #new add
+        #answer = answers[i]
+        answer = answers[sample_idx] # sample_idx from sample_map
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i)
+
+        # Find the start and end of the context
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1
+
+        # If the answer is not fully inside the context, label it (0, 0)
+        # if offset[context_start][0] > end_char or offset[context_end][1] < start_char:
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+            start_positions.append(0)
+            end_positions.append(0)
+        else:
+            # Otherwise it's the start and end token positions
+            idx = context_start
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1)
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)
+
+    inputs["start_positions"] = start_positions
+    inputs["end_positions"] = end_positions
+    return inputs
+
+def preprocess_validation_examples(examples):
+    questions = [q.strip() for q in examples["question"]]
+    inputs = tokenizer(
+        questions,
+        examples["context"],
+        max_length=max_length,
+        truncation="only_second",
+        stride=stride,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+        padding="max_length",
+    )
+
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    example_ids = []
+
+    for i in range(len(inputs["input_ids"])):
+        sample_idx = sample_map[i]
+        example_ids.append(examples["id"][sample_idx])
+
+        sequence_ids = inputs.sequence_ids(i)
+        offset = inputs["offset_mapping"][i] #384 size array (0, 4)
+        inputs["offset_mapping"][i] = [
+            o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
+        ]
+
+    inputs["example_id"] = example_ids
+    return inputs
+
 def preprocess_function(examples):
     questions = [q.strip() for q in examples["question"]]
     inputs = tokenizer(
@@ -144,18 +235,20 @@ def preprocess_function(examples):
 
 def testdataset(raw_datasets):
     oneexample = raw_datasets["train"][0]
+    #'id', 'title','context', 'question', 'answers' (text, answer_start),  
     print("Context: ", oneexample["context"])
     print("Question: ", oneexample["question"])
     print("Answer: ", oneexample["answers"])#dict with 'text' and 'answer_start'
     #During training, there is only one possible answer. We can double-check this by using the Dataset.filter() method:
     print(raw_datasets["train"].filter(lambda x: len(x["answers"]["text"]) != 1))
     #For evaluation, however, there are several possible answers for each sample, which may be the same or different:
-    print(raw_datasets["validation"][0]["answers"])
-    print(raw_datasets["validation"][2]["answers"])
+    valkey="validation" #'test' #"validation"
+    print(raw_datasets[valkey][0]["answers"])
+    print(raw_datasets[valkey][2]["answers"])
 
     #We can pass to our tokenizer the question and the context together, and it will properly insert the special tokens [CLS], [SEP]
     inputs = tokenizer(oneexample["question"], oneexample["context"])
-    tokenizer.decode(inputs["input_ids"])
+    print(tokenizer.decode(inputs["input_ids"]))
     #The labels will then be the index of the tokens starting and ending the answer
 
     #deal with very long contexts, use sliding window
@@ -168,12 +261,134 @@ def testdataset(raw_datasets):
         return_overflowing_tokens=True,
         return_offsets_mapping=True,
     )
-    print(inputs.keys())
+    print(inputs.keys()) #['input_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping']
     for ids in inputs["input_ids"]:
         print(tokenizer.decode(ids))
         #split into four inputs, each of them containing the question and some part of the context.
         #some training examples where the answer is not included in the context: labels will be start_position = end_position = 0 (so we predict the [CLS] token)
 
+    multiexamples = raw_datasets["train"][2:6]
+    inputs = tokenizer(
+        multiexamples["question"],
+        multiexamples["context"],
+        max_length=100,
+        truncation="only_second",
+        stride=50,
+        return_overflowing_tokens=True,
+        return_offsets_mapping=True,
+    )
+    print(f"The 4 examples gave {len(inputs['input_ids'])} features.") #11 features
+    print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.") #[0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 3]
+    
+    answers = multiexamples["answers"]
+    start_positions = []
+    end_positions = []
+    print(inputs["offset_mapping"])
+    for i, offset in enumerate(inputs["offset_mapping"]): #19 array
+        sample_idx = inputs["overflow_to_sample_mapping"][i] #0
+        answer = answers[sample_idx]
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i) #None 0 1
+
+        # Find the start and end of the context
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx #14
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1 #98
+
+        # If the answer is not fully inside the context, label is (0, 0)
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+            start_positions.append(0)
+            end_positions.append(0)
+        else:
+            # Otherwise it's the start and end token positions
+            idx = context_start #11
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1)
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)
+
+    print(start_positions)
+    print(end_positions)
+
+    idx = 0 #use idx=0 as example
+    sample_idx = inputs["overflow_to_sample_mapping"][idx]
+    answer = answers[sample_idx]["text"][0] #answer text
+    start = start_positions[idx]
+    end = end_positions[idx]
+    labeled_answer = tokenizer.decode(inputs["input_ids"][idx][start : end + 1])
+    print(f"Theoretical answer: {answer}, labels give: {labeled_answer}")
+
+    idx = 4 #use idx=4 as example
+    sample_idx = inputs["overflow_to_sample_mapping"][idx]
+    answer = answers[sample_idx]["text"][0]
+    start = start_positions[idx]
+    end = end_positions[idx]
+    labeled_answer = tokenizer.decode(inputs["input_ids"][idx][start : end + 1])
+    print(f"Theoretical answer: {answer}, labels give: {labeled_answer}")
+    #means the answer is not in the context chunk of that feature
+
+def compute_metrics(start_logits, end_logits, features, examples):
+    n_best = 20
+    max_answer_length = 30
+
+    #features is after tokenization, examples are original dataset
+    example_to_features = collections.defaultdict(list)
+    for idx, feature in enumerate(features):
+        example_to_features[feature["example_id"]].append(idx)
+
+    predicted_answers = []
+    for example in tqdm(examples):
+        example_id = example["id"]
+        context = example["context"]
+        answers = []
+
+        # Loop through all features associated with that example
+        for feature_index in example_to_features[example_id]:
+            start_logit = start_logits[feature_index]
+            end_logit = end_logits[feature_index]
+            offsets = features[feature_index]["offset_mapping"]
+
+            start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    # Skip answers that are not fully in the context
+                    if offsets[start_index] is None or offsets[end_index] is None:
+                        continue
+                    # Skip answers with a length that is either < 0 or > max_answer_length
+                    if (
+                        end_index < start_index
+                        or end_index - start_index + 1 > max_answer_length
+                    ):
+                        continue
+
+                    answer = {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                    answers.append(answer)
+
+        # Select the answer with the best score
+        if len(answers) > 0:
+            best_answer = max(answers, key=lambda x: x["logit_score"])
+            predicted_answers.append(
+                {"id": example_id, "prediction_text": best_answer["text"]}
+            )
+        else:
+            predicted_answers.append({"id": example_id, "prediction_text": ""})
+
+    theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
+    return metric.compute(predictions=predicted_answers, references=theoretical_answers)
+    
 
 if __name__ == "__main__":
     import argparse
@@ -190,9 +405,9 @@ if __name__ == "__main__":
                     help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--training', type=bool, default=False,
+    parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
@@ -206,7 +421,7 @@ if __name__ == "__main__":
     #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
 
     model = DistilBertForQuestionAnswering.from_pretrained(model_checkpoint)
-    #model = AutoModelForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     model.to(device)
@@ -216,13 +431,25 @@ if __name__ == "__main__":
     context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
     answers=QAinference(model, tokenizer, question, context, device, usepipeline=True)
 
-    valkeyname="test"
+    valkeyname="validation" #"test"
     if args.data_type == "huggingface":
-        raw_datasets = load_dataset("squad", split="train[:5000]") #'train', 'test'
-        raw_datasets = raw_datasets.train_test_split(test_size=0.2) #4000, 1000
-        print(raw_datasets["train"][0]) #'id', 'title','context', 'question', 'answers' (text, answer_start),  
-
-        tokenized_datasets = raw_datasets.map(preprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names)
+        #raw_datasets = load_dataset("squad", split="train[:5000]") #'train', 'test'
+        raw_datasets = load_dataset("squad")
+        #raw_datasets = raw_datasets.train_test_split(test_size=0.2) #4000, 1000
+        #print(raw_datasets["train"][0]) 
+        testdataset(raw_datasets)
+        tokenized_datasets = {}
+        tokenized_datasets["train"] = raw_datasets["train"].map(preprocess_training_examples, batched=True, remove_columns=raw_datasets["train"].column_names)
+        small_eval_set = raw_datasets[valkeyname].select(range(100))
+        validation_dataset = small_eval_set.map(
+            preprocess_validation_examples, #preprocess_function, #preprocess_validation_examples,
+            batched=True,
+            remove_columns=raw_datasets[valkeyname].column_names,
+        )
+        print(len(raw_datasets[valkeyname])) #1000
+        print(len(validation_dataset)) #1011
+        eval_set_for_model = validation_dataset.remove_columns(["example_id", "offset_mapping"])
+        eval_set_for_model.set_format("torch")
     else:
         train_contexts, train_questions, train_answers = read_squad(os.path.join(args.data_path, 'train-v2.0.json'))
         val_contexts, val_questions, val_answers = read_squad(os.path.join(args.data_path, 'dev-v2.0.json'))
@@ -243,8 +470,15 @@ if __name__ == "__main__":
     data_collator = DefaultDataCollator()
     train_dataloader = DataLoader(tokenized_datasets["train"], batch_size=args.batch_size, shuffle=True, collate_fn=data_collator)
     eval_dataloader = DataLoader(
-        tokenized_datasets[valkeyname], batch_size=args.batch_size, collate_fn=data_collator
+        eval_set_for_model, batch_size=args.batch_size, collate_fn=data_collator
     )
+    for batch in eval_dataloader:
+        break
+    testbatch={k: v.shape for k, v in batch.items()}
+    print(testbatch)
+
+    global metric
+    metric = evaluate.load("squad")
 
     if args.training == True:
         optimizer = AdamW(model.parameters(), lr=args.learningrate)
@@ -260,8 +494,9 @@ if __name__ == "__main__":
         )
 
         progress_bar = tqdm(range(num_training_steps))
-        model.train()
         for epoch in range(num_epochs):
+            # Training
+            model.train()
             for batch in train_dataloader:
                 optimizer.zero_grad()
                 #batch = {k: v.to(device) for k, v in batch.items()}
@@ -272,8 +507,8 @@ if __name__ == "__main__":
                 #outputs = model(**batch)
                 outputs = model(input_ids, attention_mask=attention_mask, start_positions=start_positions, end_positions=end_positions)
                 #sequence classification: outputs = model(input_ids, attention_mask=attention_mask, labels=labels)
-                #loss = outputs.loss
-                loss = outputs[0]
+                loss = outputs.loss
+                loss = outputs[0] #same loss results
                 loss.backward()
 
                 optimizer.step()
@@ -281,6 +516,27 @@ if __name__ == "__main__":
                 
                 progress_bar.update(1)
         
+            # Evaluation
+            model.eval()
+            start_logits = []
+            end_logits = []
+            num_val_steps = len(eval_dataloader)
+            for batch in eval_dataloader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                with torch.no_grad():
+                    outputs = model(**batch)
+                start_logits.append(outputs.start_logits.cpu().numpy())
+                end_logits.append(outputs.end_logits.cpu().numpy())
+            start_logits = np.concatenate(start_logits) #8, 384 array to (102,384)
+            end_logits = np.concatenate(end_logits)
+            dataset_len=len(validation_dataset) #103
+            start_logits = start_logits[: dataset_len]
+            end_logits = end_logits[: dataset_len]
+            metrics = compute_metrics(
+                start_logits, end_logits, validation_dataset, raw_datasets[valkeyname]
+            )
+            print(f"epoch {epoch}:", metrics)
+
         outputpath=os.path.join(args.outputdir, task, args.data_name)
         tokenizer.save_pretrained(outputpath)
         torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
@@ -291,21 +547,43 @@ if __name__ == "__main__":
         #model.to(device)
     
     model.eval()
+    
     #Test QA
     question = "How many programming languages does BLOOM support?"
     context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
     answers=QAinference(model, tokenizer, question, context, device, usepipeline=False)
+    
+    context = """
+    🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+    between them. It's straightforward to train your models with one before loading them for inference with the other.
+    """
+    question = "Which deep learning libraries back 🤗 Transformers?"
+    answers=QAinference(model, tokenizer, question, context, device, usepipeline=False)
 
     num_val_steps = len(eval_dataloader)
     valprogress_bar = tqdm(range(num_val_steps))
+    start_logits = []
+    end_logits = []
     for batch in eval_dataloader:
+        #batch = {k: batch[k].to(device) for k in batch.column_names}
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
-        start_positions = batch['start_positions'].to(device)
-        end_positions = batch['end_positions'].to(device)
         with torch.no_grad():
-            outputs = model(input_ids, attention_mask=attention_mask, start_positions=start_positions, end_positions=end_positions)
-        answer_start_index = outputs.start_logits.argmax()
-        answer_end_index = outputs.end_logits.argmax()
-        predict_answer_tokens = input_ids[0, answer_start_index : answer_end_index + 1]
-        answers=tokenizer.decode(predict_answer_tokens)
+            outputs = model(input_ids, attention_mask=attention_mask)
+        start_logits.append(outputs.start_logits.cpu().numpy())
+        end_logits.append(outputs.end_logits.cpu().numpy())
+    start_logits = np.concatenate(start_logits) #8, 384 array to (102,384)
+    end_logits = np.concatenate(end_logits)
+    dataset_len=len(validation_dataset) #103
+    start_logits = start_logits[: dataset_len]
+    end_logits = end_logits[: dataset_len]
+    metrics = compute_metrics(
+        start_logits, end_logits, validation_dataset, raw_datasets[valkeyname]
+    )
+    print(metrics)
+    # answer_start_index = outputs.start_logits.argmax()
+    # answer_end_index = outputs.end_logits.argmax()
+    # predict_answer_tokens = input_ids[0, answer_start_index : answer_end_index + 1]
+    # answers=tokenizer.decode(predict_answer_tokens)
+    # start_logits = outputs.start_logits.cpu().numpy()
+    # end_logits = outputs.end_logits.cpu().numpy()
