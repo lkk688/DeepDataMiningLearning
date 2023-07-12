@@ -5,6 +5,8 @@ from pathlib import Path
 import pandas as pd
 from tqdm.notebook import tqdm
 from datasets import load_dataset
+from datasets import list_datasets
+import pandas as pd
 
 def fetch_issues(
     owner="huggingface",
@@ -42,6 +44,23 @@ def fetch_issues(
     )
 
 if __name__ == "__main__":
+
+    all_datasets = list_datasets()
+    print(f"There are {len(all_datasets)} datasets currently available on the Hub")
+    print(f"The first 10 are: {all_datasets[:10]}")
+
+    emotions = load_dataset("emotion")
+    print(emotions)
+    train_ds = emotions["train"]
+    print(len(train_ds))
+    print(train_ds[0])#single example
+    print(train_ds.column_names)#print column names
+    print(train_ds.features)
+    #Datasets is based on Apache Arrow, which defines a typed columnar format that is more memory efficient than native Python.
+
+    emotions.set_format(type="pandas")
+    df = emotions["train"][:]
+    print(df.head())
 
     url = "https://api.github.com/repos/huggingface/datasets/issues?page=1&per_page=1"
     response = requests.get(url)
