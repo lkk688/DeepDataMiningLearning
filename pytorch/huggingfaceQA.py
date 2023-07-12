@@ -78,7 +78,10 @@ class SquadDataset(torch.utils.data.Dataset):
 
 def QAinference(model, tokenizer, question, context, device, usepipeline=True):
     if usepipeline ==True:
-        question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer, device=0) #device=0 means cuda
+        if device.type == 'cuda':
+            question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer, device=0) #device=0 means cuda
+        else:
+            question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer) 
         answers=question_answerer(question=question, context=context)
         print(answers) #'answer', 'score', 'start', 'end'
     else:

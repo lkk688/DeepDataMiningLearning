@@ -8,7 +8,9 @@ import pandas as pd
 from transformers import pipeline
 from transformers import AutoTokenizer, DataCollatorWithPadding, DataCollatorForTokenClassification
 from transformers import AutoModelForSequenceClassification, AutoModelForTokenClassification
+from transformers import AutoModelForQuestionAnswering, DistilBertTokenizerFast, AutoTokenizer, pipeline
 from transformers import AdamW
+from transformers import DistilBertForQuestionAnswering, AutoModelForQuestionAnswering
 from torch.utils.data import DataLoader
 
 if __name__ == "__main__":
@@ -33,23 +35,7 @@ if __name__ == "__main__":
     global task
     task = args.task
 
-    model_checkpoint = args.model_checkpoint
-
-    global tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    model = AutoModelForTokenClassification.from_pretrained(model_checkpoint)
-
-    classifier = pipeline("token-classification", model=model, tokenizer=tokenizer, aggregation_strategy="simple") #"ner"
-    result1 = classifier("Alya told Jasmine that Andrew could pay with cash..")
-    print(result1)
-
-    # token_classifier = pipeline(
-    #     "token-classification", model=model_checkpoint, aggregation_strategy="simple"
-    # )
-    result2 = classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
-    print(result2)
-
-    sentiment_pipeline = pipeline("sentiment-analysis")
+    sentiment_pipeline = pipeline("sentiment-analysis") #defaulted to distilbert-base-uncased-finetuned-sst-2-english
     data = ["I love you", "I hate you"]
     print(sentiment_pipeline(data))
 
@@ -67,17 +53,61 @@ if __name__ == "__main__":
     outputs = classifier(text)
     print(pd.DataFrame(outputs))
 
-    ner_tagger = pipeline("ner", aggregation_strategy="simple")
-    outputs = ner_tagger(text)
+    #Named Entity Recognition (NER)
+    #ner_tagger = pipeline("ner", aggregation_strategy="simple") #defaulted to dbmdz/bert-large-cased-finetuned-conll03-english
+    token_classifier = pipeline(
+        "token-classification", model="dbmdz/bert-large-cased-finetuned-conll03-english", aggregation_strategy="simple"
+    )
+    outputs = token_classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+    #outputs = ner_tagger(text)
     print(pd.DataFrame(outputs))
 
-    reader = pipeline("question-answering")
-    question = "What does the customer want?"
-    outputs = reader(question=question, context=text)
-    print(pd.DataFrame([outputs]))
+    # reader = pipeline("question-answering")
+    # question = "What does the customer want?"
+    # outputs = reader(question=question, context=text)
+    # print(pd.DataFrame([outputs]))
 
-    summarizer = pipeline("summarization")
-    outputs = summarizer(text, max_length=45, clean_up_tokenization_spaces=True)
+    # context = """
+    # 🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+    # between them. It's straightforward to train your models with one before loading them for inference with the other.
+    # """
+    # question = "Which deep learning libraries back 🤗 Transformers?"
+    # global tokenizer
+    # tokenizer = AutoTokenizer.from_pretrained("distilbert-base-cased-distilled-squad")
+    # model = AutoModelForQuestionAnswering.from_pretrained("distilbert-base-cased-distilled-squad")
+    # question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer)
+    # outputs = question_answerer(question=question, context=context, tokenizer=tokenizer)
+    # print(pd.DataFrame([outputs]))
+    #'NoneType' object is not callable
+
+    model_name = "distilbert-base-uncased" #"deepset/roberta-base-squad2"
+    # a) Get predictions
+    model = DistilBertForQuestionAnswering.from_pretrained(model_name)
+    tokenizer = DistilBertTokenizerFast.from_pretrained(model_name)
+    question = "How many programming languages does BLOOM support?"
+    context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
+    question_answerer = pipeline("question-answering", model=model, tokenizer=tokenizer) 
+    answers=question_answerer(question=question, context=context)
+    print(answers) #'answer', 'score', 'start', 'end'
+
+
+    nlp = pipeline('question-answering', model=model_name, tokenizer=model_name)
+
+    context = """
+    🤗 Transformers is backed by the three most popular deep learning libraries — Jax, PyTorch and TensorFlow — with a seamless integration
+    between them. It's straightforward to train your models with one before loading them for inference with the other.
+    """
+    question = "Which deep learning libraries back 🤗 Transformers?"
+    QA_input = {
+        'question': question,
+        'context': context
+    }
+    res = nlp(QA_input)
+
+    print(res)
+
+    summarizer = pipeline("summarization") #defaulted to sshleifer/distilbart-cnn-12-6
+    outputs = summarizer(text, max_length=100, clean_up_tokenization_spaces=True)
     print(outputs[0]['summary_text'])
 
     translator = pipeline("translation_en_to_de", 
@@ -90,6 +120,24 @@ if __name__ == "__main__":
     prompt = text + "\n\nCustomer service response:\n" + response
     outputs = generator(prompt, max_length=200)
     print(outputs[0]['generated_text'])
+
+    model_checkpoint = args.model_checkpoint
+
+    
+    tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    model = AutoModelForTokenClassification.from_pretrained(model_checkpoint)
+
+    classifier = pipeline("token-classification", model=model, tokenizer=tokenizer, aggregation_strategy="simple") #"ner"
+    result1 = classifier("Alya told Jasmine that Andrew could pay with cash..")
+    print(result1)
+
+    # token_classifier = pipeline(
+    #     "token-classification", model=model_checkpoint, aggregation_strategy="simple"
+    # )
+    result2 = classifier("My name is Sylvain and I work at Hugging Face in Brooklyn.")
+    print(result2)
+
+    
 
     #pip install xformers
     #pip3 install emoji==0.6.0
