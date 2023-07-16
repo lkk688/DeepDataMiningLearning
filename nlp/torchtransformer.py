@@ -214,6 +214,7 @@ if __name__ == "__main__":
             print(f'| end of epoch {epoch:3d} | time: {elapsed:5.2f}s | '
                 f'valid loss {val_loss:5.2f} | valid ppl {val_ppl:8.2f}')
             print('-' * 89)
+            #end of epoch   3 | time: 236.77s | valid loss  1.22 | valid ppl     3.38
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -228,3 +229,4 @@ if __name__ == "__main__":
         print(f'| End of training | test loss {test_loss:5.2f} | '
             f'test ppl {test_ppl:8.2f}')
         print('=' * 89)
+        # End of training | test loss  1.20 | test ppl     3.32
