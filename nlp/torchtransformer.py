@@ -6,6 +6,9 @@
 #   % pip install torchdata
 #   % pip install torchtext
 
+#ref: https://github.com/pytorch/examples/blob/main/word_language_model/main.py
+#ref: https://pytorch.org/tutorials/beginner/transformer_tutorial.html
+
 import math
 import os
 from tempfile import TemporaryDirectory
