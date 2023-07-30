@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data import RandomSampler
 from torch.utils.data import SequentialSampler
 from transformers import AdamW
-
+from tqdm.auto import tqdm
 import torch.nn as nn
 from transformers import BertModel
 import os
@@ -91,11 +91,11 @@ if __name__ == "__main__":
                     help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--training', type=bool, default=True,
+    parser.add_argument('--training', type=bool, default=False,
                     help='Perform training')
-    parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     args = parser.parse_args()
 
@@ -197,42 +197,54 @@ if __name__ == "__main__":
     optimizer = AdamW(model.parameters(), lr=2e-5, eps=1e-8)
     criterion = nn.CrossEntropyLoss()
 
-    num_epochs = args.total_epochs
-    for epoch in range(num_epochs):
-        for batch in train_dataloader: #'list' object has no attribute 'keys'
-            model.train()
+    if args.training == True:
+        num_epochs = args.total_epochs
+        for epoch in range(num_epochs):
+            for batch in train_dataloader: #'list' object has no attribute 'keys'
+                model.train()
+                input_ids = batch['input_ids'].to(device)
+                attention_mask = batch['attention_mask'].to(device)
+                fake_labels = batch['labels1'].to(device)
+                hate_labels = batch['labels2'].to(device)
+                sentiment_labels = batch['labels3'].to(device)
+
+                optimizer.zero_grad()
+
+                fake_logits, hate_logits, sentiment_logits, fake_probs, \
+                    hate_probs,sentiment_probs = model(input_ids, attention_mask)
+
+                fake_loss = criterion(fake_logits, fake_labels)
+                hate_loss = criterion(hate_logits, hate_labels)
+                sentiment_loss = criterion(sentiment_logits, sentiment_labels)
+
+                loss = fake_loss + hate_loss + sentiment_loss
+
+                loss.backward()
+                optimizer.step()
+
+                print(f"Epoch: {epoch}, Loss: {loss.item()}")
+        
+        #outputpath=os.path.join(args.outputdir, task, args.data_name)
+        torch.save(model.state_dict(), os.path.join(args.outputdir, 'savedmodel.pth'))
+        torch.save({'tokenizer': tokenizer}, os.path.join(args.outputdir, 'savedmodel_info.pth'))
+    else:
+        #load saved model
+        model.load_state_dict(torch.load(os.path.join(args.outputdir, 'savedmodel.pth')))
+
+    model.eval()
+    predictions = []
+    num_val_steps = len(test_dataloader)
+    valprogress_bar = tqdm(range(num_val_steps))
+    with torch.no_grad():
+        for batch in test_dataloader:
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             fake_labels = batch['labels1'].to(device)
             hate_labels = batch['labels2'].to(device)
             sentiment_labels = batch['labels3'].to(device)
 
-            optimizer.zero_grad()
-
-            fake_logits, hate_logits, sentiment_logits, fake_probs, \
-                hate_probs,sentiment_probs = model(input_ids, attention_mask)
-
-            fake_loss = criterion(fake_logits, fake_labels)
-            hate_loss = criterion(hate_logits, hate_labels)
-            sentiment_loss = criterion(sentiment_logits, sentiment_labels)
-
-            loss = fake_loss + hate_loss + sentiment_loss
-
-            loss.backward()
-            optimizer.step()
-
-            print(f"Epoch: {epoch}, Loss: {loss.item()}")
-    
-    outputpath=os.path.join(args.outputdir, task, args.data_name)
-    torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
-    torch.save({'tokenizer': tokenizer}, os.path.join(outputpath, 'savedmodel_info.pth'))
-
-    model.eval()
-    predictions = []
-    with torch.no_grad():
-        for batch in test_dataloader:
-            batch = tuple(t.to(device) for t in batch)
-            input_ids, attention_mask, fake_labels, hate_labels, sentiment_labels = batch
+            #batch = tuple(t.to(device) for t in batch)
+            #input_ids, attention_mask, fake_labels, hate_labels, sentiment_labels = batch
             
             fake_logits, hate_logits, sentiment_logits, fake_probs1 , hate_probs1, sentiment_probs1= \
                 model(input_ids, attention_mask)
@@ -248,6 +260,7 @@ if __name__ == "__main__":
                     'hate': hate_probs[i].tolist(),
                     'sentiment': sentiment_probs[i].tolist()
                 })
+            valprogress_bar.update(1)
     
     for i in range(len(predictions)):
         print('Text: {}'.format(predictions[i]['text']))
