@@ -245,12 +245,14 @@ if __name__ == "__main__":
                     help='data name: imdb, conll2003, "glue", "mrpc" ')
     parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\aclImdb",
                     help='path to get data')
-    parser.add_argument('--model_checkpoint', type=str, default="cardiffnlp/twitter-roberta-base-emotion",
-                    help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased"')
-    parser.add_argument('--task', type=str, default="custom_classifier",
-                    help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
+    parser.add_argument('--model_checkpoint', type=str, default="bert-base-cased",
+                    help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased", "cardiffnlp/twitter-roberta-base-emotion"')
+    parser.add_argument('--task', type=str, default="sentiment",
+                    help='NLP tasks: sentiment, token_classifier, "sequence_classifier", custom_classifier')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
+    parser.add_argument('--traintag', type=str, default="0805",
+                    help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
@@ -390,13 +392,13 @@ if __name__ == "__main__":
                 progress_bar.update(1)
         
         #Save models
-        outputpath=os.path.join(args.outputdir, task, args.data_name)
+        outputpath=os.path.join(args.outputdir, task, args.data_name+'_'+args.traintag)
         tokenizer.save_pretrained(outputpath)
         torch.save(model.state_dict(), os.path.join(outputpath, 'savedmodel.pth'))
         #model.load_state_dict(torch.load(PATH))
     else:
         #load saved model
-        outputpath=os.path.join(args.outputdir, task, args.data_name)
+        outputpath=os.path.join(args.outputdir, task, args.data_name+'_'+args.traintag)
         model.load_state_dict(torch.load(os.path.join(outputpath, 'savedmodel.pth')))
 
 
