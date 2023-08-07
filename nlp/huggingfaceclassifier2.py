@@ -171,10 +171,12 @@ def tokenize_function(example):
 def testdatacollator(data_collator, tokenized_datasets):
     print(tokenized_datasets["train"][0])
     batch = data_collator([tokenized_datasets["train"][i] for i in range(2)])
-    print(batch["labels"])
+    #print(batch["labels"])
+    testbatch={k: v.shape for k, v in batch.items()}
+    print(testbatch)
     #compare this to the labels for the first and second elements in our dataset
-    for i in range(2):
-        print(tokenized_datasets["train"][i]["labels"])
+    # for i in range(2):
+    #     print(tokenized_datasets["train"][i]["labels"])
         #the second set of labels has been padded to the length of the first one using -100s.
 
 
@@ -241,17 +243,21 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="imdb",
+    parser.add_argument('--data_name', type=str, default="conll2003",
                     help='data name: imdb, conll2003, "glue", "mrpc" ')
+    parser.add_argument('--dataconfig', type=str, default=None,
+                    help='data config name in sequence classification, glue: "mrpc", None ')
+    parser.add_argument('--subset', type=float, default=0,
+                    help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\aclImdb",
                     help='path to get data')
     parser.add_argument('--model_checkpoint', type=str, default="bert-base-cased",
-                    help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased", "cardiffnlp/twitter-roberta-base-emotion"')
-    parser.add_argument('--task', type=str, default="sentiment",
+                    help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
+    parser.add_argument('--task', type=str, default="token_classifier",
                     help='NLP tasks: sentiment, token_classifier, "sequence_classifier", custom_classifier')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="0805",
+    parser.add_argument('--traintag', type=str, default="0807",
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
@@ -263,6 +269,7 @@ if __name__ == "__main__":
 
     global task
     task = args.task
+    print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
 
     model_checkpoint = args.model_checkpoint
     global tokenizer
@@ -270,19 +277,38 @@ if __name__ == "__main__":
     tokenizer.model_max_len=512
 
     if args.data_type == "huggingface":
-        raw_datasets = load_dataset(args.data_name) #("glue", "mrpc") 
-        #Download to C:/Users/lkk68/.cache/huggingface/dataset
+        if not args.dataconfig:
+            raw_datasets = load_dataset(args.data_name)
+        else:
+            raw_datasets = load_dataset(args.data_name, args.dataconfig) #("glue", "mrpc") 
+        #Download to home/.cache/huggingface/dataset
 
         print("All keys in raw datasets:", raw_datasets.keys())
         if "train" in raw_datasets.keys():
             print("Train len:", len(raw_datasets["train"]))
             oneitem = raw_datasets["train"][0]
-            print(oneitem['text'])
-            print(oneitem['label'])
+            print("oneitem all keys:", oneitem.keys())
+            features = raw_datasets["train"].features
+            print("all features:", features) 
+            if "label" in features.keys():
+                classlabel=features['label'] #datasets.ClassLabel
+                num_classes = classlabel.num_classes
+                print(classlabel.names)
+                print(classlabel.int2str(0)) #str2int
+            elif "ner_tags" in features.keys(): #token classifier
+                ner_feature = features["ner_tags"]
+                num_classes = ner_feature.feature.num_classes
+                print(ner_feature.feature.names) #['O', 'B-PER', 'I-PER', 'B-ORG', 'I-ORG', 'B-LOC', 'I-LOC', 'B-MISC', 'I-MISC']
         if "validation" in raw_datasets.keys():
             valkeyname="validation"
         elif "test" in raw_datasets.keys():
             valkeyname="test"
+        
+        if args.subset>0:
+            trainlen=int(len(raw_datasets["train"])*args.subset)
+            vallen=int(len(raw_datasets[valkeyname])*args.subset)
+            raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
+            raw_datasets[valkeyname] = raw_datasets[valkeyname].shuffle(seed=42).select([i for i in list(range(vallen))])
         
         #To preprocess our whole dataset, we need to tokenize all the inputs and apply align_labels_with_tokens() on all the labels
         tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
@@ -297,13 +323,16 @@ if __name__ == "__main__":
             checktokenizer(raw_datasets, tokenizer)
             tokenized_datasets = tokenized_datasets.remove_columns(raw_datasets["train"].column_names)
             data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer) #labels should be padded the exact same way
-        #elif task == "sentiment":
+        elif task == "custom_classifier":
+            tokenized_datasets = tokenized_datasets.remove_columns(['text', 'token_type_ids'])
+            tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
+            data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
         else:
             #imdbchecktokenizer(raw_datasets, tokenizer)
             tokenized_datasets = tokenized_datasets.remove_columns(['text']) #['input_ids', 'attention_mask']
             tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
             data_collator = DataCollatorWithPadding(tokenizer=tokenizer) #only pads the inputs
-        print(tokenized_datasets["train"].column_names) #['labels'] ['input_ids', 'attention_mask']
+        print(tokenized_datasets["train"].column_names) #['labels', 'input_ids', 'attention_mask']
         testdatacollator(data_collator, tokenized_datasets)
 
     elif args.data_type == "custom":
@@ -332,11 +361,12 @@ if __name__ == "__main__":
 
     for batch in train_dataloader:
         break
+    #print(batch['input_ids'])
     testbatch={k: v.shape for k, v in batch.items()}
     print(testbatch)
 
     if task == "sequence_classifier" or task == "sentiment":
-        model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=2)
+        model = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, num_labels=num_classes)
         #model = DistilBertForSequenceClassification.from_pretrained('distilbert-base-uncased')
         print(model.config.num_labels) #9
     elif task == "token_classifier":
@@ -351,7 +381,7 @@ if __name__ == "__main__":
         )
         print(model.config.num_labels) #9
     elif task == "custom_classifier":
-        model = CustomModel(model_checkpoint, num_labels=2)
+        model = CustomModel(model_checkpoint, num_labels=num_classes)
     
 
     #test forward
@@ -373,7 +403,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     model.to(device)
-    print(device)
+    print("Using device:", device)
 
     if args.training == True:
         progress_bar = tqdm(range(num_training_steps))
@@ -401,15 +431,18 @@ if __name__ == "__main__":
         outputpath=os.path.join(args.outputdir, task, args.data_name+'_'+args.traintag)
         model.load_state_dict(torch.load(os.path.join(outputpath, 'savedmodel.pth')))
 
-
+    #https://huggingface.co/docs/evaluate/index
     if task == "token_classifier":
         metric = evaluate.load("seqeval") #"seqeval"
         tokenclassifier_evaluation(metric, raw_datasets)
     elif task == "sequence_classifier" or task == "sentiment":
         metric = evaluate.load("glue", "mrpc")
-    elif task == "sentiment":
-        metric = load_metric("accuracy")
+    #elif task == "sentiment":
+    else:
+        #metric = load_metric("accuracy") #load_metric is deprecated
         #metric_f1 = load_metric("f1")
+        metric = evaluate.load("accuracy") #"precision"
+        print("metric test:", metric.compute(references=[0, 1], predictions=[0, 1]))
     
     model.eval()
     num_val_steps = len(eval_dataloader)
@@ -438,7 +471,7 @@ if __name__ == "__main__":
 
     results = metric.compute()
     print(
-        f"task {task}:",
+        f" task {task}:",
         {
             key: results[f"{key}"]
             for key in results.keys()
