@@ -49,6 +49,10 @@ if __name__ == "__main__":
     print(f"There are {len(all_datasets)} datasets currently available on the Hub")
     print(f"The first 10 are: {all_datasets[:10]}")
 
+    # dataset_id="amazon_reviews_multi"
+    # dataset_config="all_languages"
+    # dataset = load_dataset(dataset_id,dataset_config)
+
     emotions = load_dataset("emotion")
     print(emotions)
     train_ds = emotions["train"]
