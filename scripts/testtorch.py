@@ -12,10 +12,10 @@ if device.type == 'cuda':
     print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**3,1), 'GB') #pip install pynvml
     print('Cached:   ', round(torch.cuda.memory_reserved(0)/1024**3,1), 'GB')
 
-torch.cuda.device_count()
-torch.cuda.current_device()
-torch.cuda.device(0)
-torch.cuda.get_device_name(0)
+print(torch.cuda.device_count())
+print(torch.cuda.current_device())
+print(torch.cuda.device(0))
+print(torch.cuda.get_device_name(0))
 
 print(torch.rand(2,3).cuda())
 
