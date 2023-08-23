@@ -1,6 +1,33 @@
 # DeepDataMiningLearning
 Data mining, machine learning, and deep learning sample code (google colab examples need SJSU google account to view).
 
+## Python Packages
+Install this python package via
+
+```bash
+% python3 -m pip install flit
+% flit install --symlink
+```
+ref "docs/python.rst" for detailed python package description
+
+## Sphinx docs
+
+Activate python virtual environment, build the document under the docs folder via 'make' or 'sphinx-build -b html source build'
+
+```bash
+  sudo apt install make
+  (mycondapy310) PS > pip install -r requirements.txt
+    /docs$ make html
+```
+
+If in Mac environment, make does not work, you can use 'sphinx-build' command to build the document
+
+```bash
+  (mypy310) kaikailiu@kaikais-mbp docs % sphinx-build -b html source build
+```
+The generated html files are in the folder of "build"
+
+## Jupyter notebook
 ```bash
 jupyter lab --ip 0.0.0.0 --no-browser --allow-root
 ```
