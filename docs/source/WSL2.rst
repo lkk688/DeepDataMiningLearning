@@ -117,6 +117,7 @@ Download CUDA11.8 Linux WSL2 (the download path is the same to Ubuntu22.04 cuda1
 After CUDA installation, please make sure that
  -   PATH includes /usr/local/cuda-xx.x/bin
  -   LD_LIBRARY_PATH includes /usr/local/cuda-xx.x/lib64
+
 Add the following code to "~/.bashrc"
 
 .. code-block:: console

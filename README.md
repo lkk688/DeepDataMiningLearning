@@ -12,18 +12,13 @@ ref "docs/python.rst" for detailed python package description
 
 ## Sphinx docs
 
-Activate python virtual environment, build the document under the docs folder via 'make' or 'sphinx-build -b html source build'
+Activate python virtual environment, you can use 'sphinx-build' command to build the document
 
 ```bash
-  sudo apt install make
-  (mycondapy310) PS > pip install -r requirements.txt
-    /docs$ make html
-```
-
-If in Mac environment, make does not work, you can use 'sphinx-build' command to build the document
-
-```bash
-  (mypy310) kaikailiu@kaikais-mbp docs % sphinx-build -b html source build
+   % pip install -r requirements.txt
+   (mypy310) kaikailiu@kaikais-mbp DeepDataMiningLearning % sphinx-build docs ./docs/build
+   #check the integrity of all internal and external links:
+   (mypy310) kaikailiu@kaikais-mbp DeepDataMiningLearning % sphinx-build docs -W -b linkcheck -d docs/build/doctrees docs/build/html
 ```
 The generated html files are in the folder of "build"
 
