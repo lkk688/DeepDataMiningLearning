@@ -1,0 +1,23 @@
+[build-system]
+requires = ["flit_core >=3.2,<4","myst-parser"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "DeepDataMiningLearning"
+authors = [{name = "Kaikai Liu", email = "kaikai.liu@sjsu.edu"}]
+readme = "README.md"
+dynamic = ["version", "description"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+]
+requires-python = ">=3.5"
+
+dependencies = [
+    "requests >=2.6",
+]
+
+[project.optional-dependencies]
+doc = ["sphinx"]
+
+[project.urls]
+Home = "https://github.com/lkk688/DeepDataMiningLearning"

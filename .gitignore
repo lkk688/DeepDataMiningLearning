@@ -136,3 +136,11 @@ data/
 output/
 test-trainer/
 nlp/distilbert-base-uncased-finetuned-emotion
+
+
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IPython
+profile_default/
+ipython_config.py
