@@ -144,3 +144,4 @@ nlp/distilbert-base-uncased-finetuned-emotion
 # IPython
 profile_default/
 ipython_config.py
+.DS_Store

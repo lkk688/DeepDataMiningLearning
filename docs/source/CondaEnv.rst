@@ -14,11 +14,22 @@ Install Miniconda
    curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o Miniconda3-latest-Linux-x86_64.sh
    bash Miniconda3-latest-Linux-x86_64.sh
 
-
-Create a Conda virtual environment with python 3.10 (the default python version is 3.11):
+You can also install conda in silent mode, but you need to run additional commands to initialize PATH and perform init
 
 .. code-block:: console
+   $ python3 -V #system's python3 version
+   Python 3.10.12
+   $ bash Miniconda3-latest-Linux-x86_64.sh -b -u
+   $ source ~/miniconda3/bin/activate
+   $ conda init bash
 
+".bashrc" has been updated, and close and re-open your current shell to make changes effective.
+
+Create a Conda virtual environment with python 3.10:
+
+.. code-block:: console
+   (base) ~$ python3 -V
+   Python 3.11.4
    (base) lkk@lkk-intel13:~$ conda create --name mycondapy310 python=3.10
    (base) lkk@lkk-intel13:~$ conda activate mycondapy310 #To activate this environment
    (mycondapy310) lkk@lkk-intel13:~$ conda info --envs #check existing conda environment
@@ -39,7 +50,7 @@ Popular packages
    #https://anaconda.cloud/intel-optimized-packages
    git clone https://github.com/lkk688/DeepDataMiningLearning.git
    git clone https://github.com/lkk688/WaymoObjectDetection.git
-   https://github.com/lkk688/MultiModalDetector.git
+   git clone https://github.com/lkk688/MultiModalDetector.git
 
 Install CUDA
 ~~~~~~~~~~~~~~~~~~
@@ -69,9 +80,15 @@ Install cuda development kit, otherwise 'nvcc' is not available
 
 .. code-block:: console
 
-   #(mycondapy310) $ conda install -c conda-forge cudatoolkit-dev #this will install 11.7
+   
    (mycondapy310) $ conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit #https://anaconda.org/nvidia/cuda-toolkit
    $ nvcc -V #show Cuda compilation tools
+   nvcc: NVIDIA (R) Cuda compiler driver                                                                          
+   Copyright (c) 2005-2022 NVIDIA Corporation                                                                     
+   Built on Wed_Sep_21_10:33:58_PDT_2022                                                                          
+   Cuda compilation tools, release 11.8, V11.8.89                                                                 
+   Build cuda_11.8.r11.8/compiler.31833905_0
+   # (mycondapy310) $ conda install -c conda-forge cudatoolkit-dev #this will install 11.7
 
 Option2: You can also go to nvidia cuda toolkit website, select the version (Ubuntu22.04 Cuda11.8) and install cuda locally
 
@@ -225,10 +242,23 @@ After the tar file is downloaded, untar the file, setup the TensorRT path, and i
    
 Check the TensorRT sample code from [TensorRTSample](https://docs.nvidia.com/deeplearning/tensorrt/sample-support-guide/index.html#samples)
 
-huggingface Tutorial
---------------------
-https://github.com/huggingface/transformers
+Huggingface installation
+------------------------
 
-https://huggingface.co/docs/transformers/index
+https://huggingface.co/docs/accelerate/basic_tutorials/install
 
-https://huggingface.co/learn/nlp-course/chapter1/2?fw=pt
+.. code-block:: console
+
+  % conda install -c conda-forge accelerate
+  % accelerate config
+    Do you wish to use FP16 or BF16 (mixed precision)?                                                                                                          
+  bf16                                                                                                                                                        
+  accelerate configuration saved at /Users/kaikailiu/.cache/huggingface/accelerate/default_config.yaml 
+  % accelerate env
+  % conda install -c huggingface transformers
+  % pip install evaluate
+  % pip install cchardet
+  % conda install -c conda-forge umap-learn #pip install umap-learn
+  % pip install portalocker
+  % pip install torchdata
+  % pip install torchtext

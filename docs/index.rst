@@ -13,8 +13,8 @@ Contents
 .. toctree::
 
    source/python
+   source/linux
    source/CondaEnv
    source/HPC2
    source/WSL2
-   source/linux
    source/MacML
