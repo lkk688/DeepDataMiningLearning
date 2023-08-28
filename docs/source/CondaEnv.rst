@@ -17,6 +17,7 @@ Install Miniconda
 You can also install conda in silent mode, but you need to run additional commands to initialize PATH and perform init
 
 .. code-block:: console
+
    $ python3 -V #system's python3 version
    Python 3.10.12
    $ bash Miniconda3-latest-Linux-x86_64.sh -b -u
@@ -28,6 +29,7 @@ You can also install conda in silent mode, but you need to run additional comman
 Create a Conda virtual environment with python 3.10:
 
 .. code-block:: console
+   
    (base) ~$ python3 -V
    Python 3.11.4
    (base) lkk@lkk-intel13:~$ conda create --name mycondapy310 python=3.10
