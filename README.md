@@ -36,6 +36,8 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
    * [Dataintro-EDA.ipynb](./Dataintro-EDA.ipynb)
    * [Dataintro-Visualization.ipynb](./Dataintro-Visualization.ipynb)
 
+Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
+
 ## Cloud Data Analytics
 
 * Data Mining based on Google Cloud: 
@@ -77,7 +79,7 @@ Deep learning notebooks
   * Clustering: [colablink](https://colab.research.google.com/drive/1wOMrFR7AXnSc99mUkpJhMLfshpe5aeGd?usp=share_link) 
     * K-Means, Gaussian Mixture Models, Spectral Clustering, DBSCAN 
 
-## NLP and Large Language Models (LLMs)
+## NLP and Text Mining
 * Text Mining Jupyter notebooks
    * Text Representations: [colablink](https://colab.research.google.com/drive/1L4gyfPqvqdvWSGy88DXVS-7nta1pGWB8?usp=sharing)
       * One-Hot encoding, Bag-of-Words, TF-IDF, and Word2Vec (based on gensim); Word2Vec WiKi and Shakespeare examples; Gather data from Google and WordCLoud
@@ -94,3 +96,36 @@ Deep learning notebooks
 * Recommendation
    * Recommendation via Python Surprise and Neural Collaborative Filtering (Tensorflow): [colablink](https://colab.research.google.com/drive/1PNi5Vl4YRCsNdLS-pcODSdgbhBlPUoBI?usp=sharing)
    * Tensorflow Recommender: [colab](https://colab.research.google.com/drive/14tfyPInCyZzcr4sk6zRejHR1847WwVR9?usp=sharing)
+
+## Large Language Models (LLMs) and Apps
+NLP models based on Huggingface Transformer libraries
+* Starting
+   * [HuggingfaceTransformers](notebooks/Transformers.ipynb)
+   * [huggingfacetest](nlp/huggingfacetest.py)
+   * [hfdataset.py](nlp/hfdataset.py)
+   * [huggingfaceHPC.ipynb](nlp/huggingfaceHPC.ipynb)
+   * [huggingfaceHPCdata](nlp/huggingfaceHPCdata.py)
+* Classification application
+   * [BERTMTLfakehate](nlp/BERTMTLfakehate.py)
+   * [MLTclassifier](nlp/MLTclassifier.py)
+   * [huggingfaceClassifierNER.ipynb](nlp/huggingfaceClassifierNER.ipynb)
+* Multi-modal Classifier: [huggingfaceclassifier2](nlp/huggingfaceclassifier2.py), [huggingfaceclassifier](nlp/huggingfaceclassifier.py)
+* Sequence related application, e.g., translation, summary
+   * [huggingfaceSequence](nlp/huggingfaceSequence.ipynb)
+* Question and Answer (Q&A)
+   * [huggingfaceQA.py](nlp/huggingfaceQA.py)
+
+Pytorch Transformer
+* [torchtransformer](nlp/torchtransformer.py)
+
+Open Source LLMs
+* [BERTLM.ipynb](nlp/BERTLM.ipynb)
+* Masked Language Modeling: [huggingfaceLM.ipynb](nlp/huggingfaceLM.ipynb)
+* [llama2](nlp/llama2.ipynb)
+
+LLMs Apps based on OpenAI API
+* [openaiqa.ipynb](dataapps/openaiqa.ipynb), [webcrawl.ipynb](dataapps/webcrawl.ipynb)
+
+LLMs Apps based on LangChain
+* [langchaintest.ipynb](nlp/langchaintest.ipynb)
+
