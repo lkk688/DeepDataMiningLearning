@@ -1,5 +1,7 @@
 # DeepDataMiningLearning
-Data mining, machine learning, and deep learning sample code (google colab examples need SJSU google account to view).
+Data mining, machine learning, and deep learning sample codes for SJSU CMPE255 Data Mining and CMPE258 Deep Learning.
+* Some google colab examples need SJSU google account to view)
+* Large language Models (LLMs) part is newly added
 
 ## Setups
 Install this python package via
