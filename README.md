@@ -2,9 +2,10 @@
 Data mining, machine learning, and deep learning sample codes for SJSU CMPE255 Data Mining ([Fall2023 SJSU Official Syllabus](https://sjsu.campusconcourse.com/view_syllabus?course_id=22871&public_mode=1)) and CMPE258 Deep Learning ([Fall2023 SJSU Official Syllabus](https://sjsu.campusconcourse.com/view_syllabus?course_id=26399&public_mode=1)).
 * Some google colab examples need SJSU google account to view)
 * Large language Models (LLMs) part is newly added
+* You can also view the documents in: [readthedocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
 
 ## Setups
-Install this python package via
+Install this python package (optional) via
 
 ```bash
 % python3 -m pip install flit
