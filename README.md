@@ -1,13 +1,19 @@
 # DeepDataMiningLearning
 Data mining, machine learning, and deep learning sample code (google colab examples need SJSU google account to view).
 
-## Python Packages
+## Setups
 Install this python package via
 
 ```bash
 % python3 -m pip install flit
 % flit install --symlink
-```ref "docs/python.rst" for detailed python package description
+```
+ref "docs/python.rst" for detailed python package description
+
+Open the Jupyter notebook in local machine:
+```bash
+jupyter lab --ip 0.0.0.0 --no-browser --allow-root
+```
 
 ## Sphinx docs
 
@@ -21,16 +27,17 @@ Activate python virtual environment, you can use 'sphinx-build' command to build
 ```
 The generated html files are in the folder of "build". You can also view the documents in: [readthedocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
 
-## Jupyter notebook
-```bash
-jupyter lab --ip 0.0.0.0 --no-browser --allow-root
-```
+## Python Data Analytics
+Basic python tutorials, numpy, Pandas, data visualization and EDA
 * Python tutorial code: [Python_tutorial.ipynb](./Python_tutorial.ipynb)--[colablink](https://colab.research.google.com/drive/1KpLTxgvmFzSlmr486zZwfUBUt-U4-ukT?usp=sharing)
 * Python NumPy tutorial code: [Python NumPy tutorial](./Python-Numpy.ipynb)--[colablink](https://colab.research.google.com/drive/10CtxFoyTUk5RIPX4MnOOhYYe3DGAitYW?usp=sharing)
 * Data Mining introduction code: 
    * [Dataintro-Pandas.ipynb](./Dataintro-Pandas.ipynb)
    * [Dataintro-EDA.ipynb](./Dataintro-EDA.ipynb)
    * [Dataintro-Visualization.ipynb](./Dataintro-Visualization.ipynb)
+
+## Cloud Data Analytics
+
 * Data Mining based on Google Cloud: 
    * Google Cloud access via Colab: [colablink](https://colab.research.google.com/drive/1fmNMY23wzoQQTGoGns1cgTrjOIuj-Qtc?usp=sharing)
    * Google BigQuery with Colab/Jupyter introduction [BigQuery-intro.ipynb](./BigQuery-intro.ipynb) -- [colablink](https://colab.research.google.com/drive/1HREJs7dUZfrJaPP2wApPNtaINpe2Rtey?usp=sharing)
@@ -41,6 +48,8 @@ jupyter lab --ip 0.0.0.0 --no-browser --allow-root
       * Chicago Crime Dataset, Austin Waste Dataset, COVID Racial Dataset (race graph)
    * BigQuery ML examples: [colablink](https://colab.research.google.com/drive/1ZX5X9ryN9fq6R1Sb7kEscPaJjRGx0ft3?usp=sharing)
       * COVID, CREDIT_CARD_FRAUD, Predict penguin weight, Natality, US Census Dataset Classification, time-series forecasting from Google Analytics data
+
+## Machine Learning Algorithm
 * Machine Learning introduction: 
    * MLIntro-Regression -- [colablink](https://colab.research.google.com/drive/1atrY6rpfPKs5K1VxddfEOWR5QRarxHiG?usp=sharing)
    * MLIntro-RegressionSKLearn -- [colablink](https://colab.research.google.com/drive/1XUzW9vSqyNM02v9F5ueaLMtFb0VorOA3?usp=sharing)
@@ -48,6 +57,9 @@ jupyter lab --ip 0.0.0.0 --no-browser --allow-root
    * DecisionTree -- [colablink](https://colab.research.google.com/drive/15N_qxOY74batHHjTvkh6zoQ0_85bfdDQ?usp=sharing)
    * GradientBoosting -- [colablink](https://colab.research.google.com/drive/1eT68ZVw3F8Dw1ZjYmfPo3wJutS68S80Q?usp=sharing)
    * XGBoost -- [colablink](https://colab.research.google.com/drive/1ZKtpwoRnK8r2fy8ucXoz1K9E98X76dFC?usp=sharing)
+
+## Deep Learning
+Deep learning notebooks
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
 * Pytorch introduction code: [CMPE-pytorch1.ipynb](./CMPE-pytorch1.ipynb) -- [colablink](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
 * Tensorflow image classification:
@@ -55,14 +67,18 @@ jupyter lab --ip 0.0.0.0 --no-browser --allow-root
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
 * Pytorch image classification sample: [CMPE-pytorch2.ipynb](./CMPE-pytorch2.ipynb)
 * Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
-* Unsupervised Learning
+
+## Unsupervised Learning
+* Unsupervised Learning Jupyter notebooks
   * PCA: [colablink](https://colab.research.google.com/drive/1zho_nKQq8yQ-4IFXxw9GZEcdhVdtOabX?usp=share_link)
     * Numpy/SKlearn SVD, PCA for digits and noise filtering, eigenfaces, PCA vs LDA vs NCA
   * Manifold Learning: [colablink](https://colab.research.google.com/drive/1XkCpm7tsnngB7l7AUcrnIo3rKjyfOZev?usp=share_link)
     * Multidimensional Scaling (MDS), Locally Linear Embedding (LLE), Isomap Embedding, T-distributed Stochastic Neighbor Embedding for HELLO, S-Curve, and Swiss roll dataset; Isomap on Faces; Regression with Mainfold Learning
   * Clustering: [colablink](https://colab.research.google.com/drive/1wOMrFR7AXnSc99mUkpJhMLfshpe5aeGd?usp=share_link) 
     * K-Means, Gaussian Mixture Models, Spectral Clustering, DBSCAN 
-* Text Mining
+
+## NLP and Large Language Models (LLMs)
+* Text Mining Jupyter notebooks
    * Text Representations: [colablink](https://colab.research.google.com/drive/1L4gyfPqvqdvWSGy88DXVS-7nta1pGWB8?usp=sharing)
       * One-Hot encoding, Bag-of-Words, TF-IDF, and Word2Vec (based on gensim); Word2Vec WiKi and Shakespeare examples; Gather data from Google and WordCLoud
    * Texrtact and NLTK: [colablink](https://colab.research.google.com/drive/1q6Khw3MGJg2S1q8eOcpgtnbLPS_LD7Uj?usp=share_link)
@@ -73,6 +89,8 @@ jupyter lab --ip 0.0.0.0 --no-browser --allow-root
       * RNN, LSTM, Transformer, BERT
    * Twitter NLP all-in-one example: [colablink](https://colab.research.google.com/drive/16Lq8pFyxwIUhFi241FYDrG-VfBBSTsgE?usp=sharing)
       * NTLK, LSTM, Bi-LSTM, GRU, BERT
+
+## Recommendation
 * Recommendation
    * Recommendation via Python Surprise and Neural Collaborative Filtering (Tensorflow): [colablink](https://colab.research.google.com/drive/1PNi5Vl4YRCsNdLS-pcODSdgbhBlPUoBI?usp=sharing)
    * Tensorflow Recommender: [colab](https://colab.research.google.com/drive/14tfyPInCyZzcr4sk6zRejHR1847WwVR9?usp=sharing)
