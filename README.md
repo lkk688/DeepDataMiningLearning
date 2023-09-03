@@ -117,6 +117,8 @@ NLP models based on Huggingface Transformer libraries
    * [huggingfaceSequence](nlp/huggingfaceSequence.ipynb)
 * Question and Answer (Q&A)
    * [huggingfaceQA.py](nlp/huggingfaceQA.py)
+* Chatbot
+   * [huggingfacechatbot.ipynb](nlp/huggingfacechatbot.ipynb)
 
 Pytorch Transformer
 * [torchtransformer](nlp/torchtransformer.py)
