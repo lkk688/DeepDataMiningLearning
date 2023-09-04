@@ -93,6 +93,7 @@ Install in mypy310 (python3 in conda):
 
 Install huggingface
 --------------------
+https://huggingface.co/docs/transformers/installation
 https://huggingface.co/docs/accelerate/basic_tutorials/install
 
 .. code-block:: console
@@ -139,14 +140,6 @@ Install DeepDataMiningLearning on Mac
 .. code-block:: console
 
   kaikailiu@Kaikais-MacBook-Pro MyRepo % git clone https://github.com/lkk688/DeepDataMiningLearning.git
-
-huggingface Tutorial
---------------------
-https://github.com/huggingface/transformers
-
-https://huggingface.co/docs/transformers/index
-
-https://huggingface.co/learn/nlp-course/chapter1/2?fw=pt
 
 Streamlit
 ---------

@@ -177,6 +177,47 @@ To solve the CUDA mismatch problem, uncomment the CUDA12.1 installation in "~/.b
     Cuda compilation tools, release 11.8, V11.8.89
     Build cuda_11.8.r11.8/compiler.31833905_0
 
+
+Install huggingface
+--------------------
+https://huggingface.co/docs/transformers/installation
+https://huggingface.co/docs/accelerate/basic_tutorials/install
+
+.. code-block:: console
+
+    % conda install -c conda-forge accelerate
+    % accelerate config
+    In which compute environment are you running?
+    This machine
+    ------------------------------------------------------------------------------------------------------------------------Which type of machine are you using?
+    No distributed training
+    Do you want to run your training on CPU only (even if a GPU / Apple Silicon device is available)? [yes/NO]:NO
+    Do you wish to optimize your script with torch dynamo?[yes/NO]:NO
+    Do you want to use DeepSpeed? [yes/NO]: NO
+    What GPU(s) (by id) should be used for training on this machine as a comma-seperated list? [all]:all
+    ------------------------------------------------------------------------------------------------------------------------Do you wish to use FP16 or BF16 (mixed precision)?
+    bf16
+    accelerate configuration saved at /home/lkk/.cache/huggingface/accelerate/default_config.yaml
+    % accelerate env
+    % conda install -c huggingface transformers
+    % pip install evaluate
+    % pip install cchardet
+    % conda install -c conda-forge umap-learn #pip install umap-learn
+    % pip install portalocker
+    % pip install huggingface_hub
+    % pip install torchdata
+    % pip install torchtext
+
+.. code-block:: console
+
+    pip install tensorboard
+    pip install xformers #installed torch==2.0.1,  nvidia-cuda-cupti-cu11==11.7.101,  nvidia-nccl-cu11==2.14.3,  nvidia-cusparse-cu11==11.7.4.91, nvidia-cuda-runtime-cu11==11.7.99
+    pip install --upgrade click
+    pip install numpy==1.23.5
+    pip install --upgrade tqdm
+    pip install --upgrade requests
+    pip install --upgrade jinja2
+
 Install langchain
 
 .. code-block:: console
