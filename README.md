@@ -73,6 +73,22 @@ Deep learning notebooks
 * Pytorch image classification sample: [CMPE-pytorch2.ipynb](./CMPE-pytorch2.ipynb)
 * Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
 
+New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMiningLearning")
+* Pytorch Single GPU image classification: [singleGPU](DeepDataMiningLearning/singleGPU.py)
+* Pytorch DDP test: [testTorchDDP](DeepDataMiningLearning/testTorchDDP.py)
+* Pytorch Multi-GPU image classification: [multiGPU](DeepDataMiningLearning/multiGPU.py)
+* Pytorch ImageNet classification example: [imagenet](DeepDataMiningLearning/imagenet.py)
+* Pytorch inference example for top-k class: [inference.py](DeepDataMiningLearning/inference.py)
+* TIMM models: [testtimm.ipynb](DeepDataMiningLearning/testtimm.ipynb)
+* Huggingface Images via Transformers: [huggingfaceimage.ipynb](DeepDataMiningLearning/huggingfaceimage.ipynb)
+* Siamese network: [siamese_network](DeepDataMiningLearning/siamese_network.py)
+* TensorRT example: [tensorrt.ipynb](DeepDataMiningLearning/tensorrt.ipynb)
+* Object detection (other repo)
+   * [MultiModalDetector](https://github.com/lkk688/MultiModalDetector)
+   * [myyolov7](https://github.com/lkk688/myyolov7)
+   * [WaymoObjectDetection](https://github.com/lkk688/WaymoObjectDetection)
+   * [CustomDetectron2](https://github.com/lkk688/CustomDetectron2)
+
 ## Unsupervised Learning
 * Unsupervised Learning Jupyter notebooks
   * PCA: [colablink](https://colab.research.google.com/drive/1zho_nKQq8yQ-4IFXxw9GZEcdhVdtOabX?usp=share_link)
