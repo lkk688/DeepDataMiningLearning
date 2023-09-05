@@ -203,10 +203,16 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
     % pip install evaluate
     % pip install cchardet
     % conda install -c conda-forge umap-learn #pip install umap-learn
+    % conda install sentencepiece
     % pip install portalocker
     % pip install huggingface_hub
     % pip install torchdata
     % pip install torchtext
+    % pip install git+https://github.com/huggingface/transformers
+    Successfully uninstalled transformers-4.31.0
+    Successfully installed transformers-4.33.0.dev0
+    % pip uninstall tokenizers
+    % pip install tokenizers -U
 
 .. code-block:: console
 
