@@ -1,34 +1,140 @@
-HPC2
+HPC
 =====
 
-.. _hpc2:
+.. _hpc:
+
+Author:
+   * *Kaikai Liu*, Associate Professor@SJSU
+   * **Email**: kaikai.liu@sjsu.edu
+   * **Web**: http://www.sjsu.edu/cmpe/faculty/tenure-line/kaikai-liu.php
+
+
+Introduction of HPC
+--------------------
+You can access our coe HPC access information from the main website: http://coe-hpc-web.sjsu.edu.
+   * A total of 36 nodes, 15 include 1 NVIDIA Tesla P100 12 GB GPUs, and 1 has 2 NVIDIA Tesla P100 GPUs 20 nodes (compute nodes) have 128 GB of RAM, and 16 nodes (GPU and condo nodes) feature 256 GB.
+   * The HPC has 110 TB of home directory and data storage, which is available from all nodes via /home and /data. Additionally, the HPC has a high-throughput Lustre parallel file system with a usable space of 0.541 PB, available via /scratch. Each group will have a sub-directory in /data and /scratch that they can write to.
+
+If you have provided your SJSU ID to your instructor, you can access the HPC using your SJSU account by using the following command: "ssh SJSUID@coe-hpc1.sjsu.edu" (replace the SJSUID with your own SJSU ID number).
+   * The accessible group folders are "/data/cmpe249-fa23" and "/scratch/cmpe249-fa23," with "cmpe249-fa23" representing your class ID. Please create sub-directories within one of these group directories for your project, naming them after your name or your group. Your dataset should be placed in "/data/cmpe249-fa23."
+   * You will be provided access to your private home directory on the head node. However, please note that **the head node is not intended for heavy computation or extensive data storage**. Do not store datasets or trained models in your home directory. If you require substantial computation, you can request a GPU/CPU node.
+   * Your requested GPU/CPU node is internally connected to your head node, and it does not have internet access when you log in. Therefore, ensure that you download data or install any necessary software on the HPC host machine, not the GPU node.
+   * It's important to remember that the HPC system is provided as a courtesy, and there is no guarantee of computing resources.
+
+Ref our previous HPC tutorial: https://docs.google.com/document/d/1bNOUUqkeb9ItTsGHAXHLvFsLR6fA0MeZcBRVMCnvtms/edit?usp=sharing
+
+Remote access
+-------------
+
+SSH Access
+~~~~~~~~~~
+To SSH into the HPC host machine, you need to establish a VPN connection to the campus first. You can do so by visiting this link: https://www.sjsu.edu/it/services/network/vpn/index.php. Your SJSUID should have already been granted access to the HPC through your instructor or project advisor. If you encounter any issues with access, please request it through your advisor, replacing "SJSUID" with your own SJSU ID. Please refrain from reaching out to the campus IT department regarding HPC access.
+
+.. code-block:: console
+
+   $ ssh SJSUID@coe-hpc1.sjsu.edu #E.g., ssh 0107960xx@coe-hpc.sjsu.edu
+   # password is the same to your SJSU account
+
+File Transfer
+~~~~~~~~~~~~~~~~~
+
+You have several options for transferring files to and from HPC:
+   * You can employ the "scp" command for secure file copy.
+   * The built-in file browser within JupyterLab allows you to upload or download files.
+   * Consider using "sshfs" to mount the HPC data folder onto your local system for easy access. In your local linux system:
+
+.. code-block:: console
+
+   $ sudo apt-get install sshfs
+   $ sshfs xxx@coe-hpc1.sjsu.edu:/data/cmpeXXX  .
+
+VSCode Remote
+~~~~~~~~~~~~~
+
+You can also make use of Visual Studio Code Remote Debugging (https://code.visualstudio.com/docs/remote/ssh) with the following steps:
+   * Install the "Remote - SSH" extension in Visual Studio Code.
+   * Add a new SSH connection in the "Remote" extension, then select and open the "coe-hpc1" server.
+   * Open the desired folder as your working directory.
+   * You can also open Jupyter notebook files in VSCode and use Git to synchronize with GitHub. Please note that this setup is linked only to the head node and not the compute node (GPU node).
+   * Visual Studio Code for the GPU node has been tested and is functioning correctly, allowing for step-by-step debugging. To enable this, you'll need to enable dual-hop SSH. Keep in mind that the Git sync feature is disabled in the GPU node due to the lack of internet access. Add the following setups in your ".ssh/config" file to enable the SSH to the headnode (coe-hpc1) and dual-hop SSH to the GPU node
+
+.. code-block:: console
+
+   Host coe-hpc1
+      HostName coe-hpc1.sjsu.edu
+      ForwardAgent yes
+      User 0107xxxxxx #your SJSUID
+      ForwardX11 yes
+      ForwardX11Trusted yes
+      ServerAliveInterval 30
+
+   Host hpc1gpu
+      Hostname gxxx # change to your allocated GPU node
+      User 0107xxxxxx #your SJSUID
+      ForwardX11 yes
+      ForwardX11Trusted yes
+      ServerAliveInterval 30
+      ProxyCommand ssh coe-hpc2 -W %h:%p
+
+X11 Window forwarding
+~~~~~~~~~~~~~~~~~~~~~
+X11 Forwarding gives you the ability to run GUIs from HPC on your own local machine. X11 window forwarding is also tested and working fine for Matplotlib and OpenCV (both terminal and VSCode)
+   * For Macs, your best option is to download xQuartz from xQuartz.org. This is free software which will allow you to forward X11 on a Mac. Download the xQuartz DMG, open it, and follow the installation instructions.
+   * For Linux, depending on your distribution, there may be no pre-requisites.
+   * For Windows, you can use MobaXterm (https://mobaxterm.mobatek.net/download-home-edition.html) for all your Windows X11 Forwarding needs. Run MobaXterm and use the Start local terminal button to begin a session. 
+   * You can also use Putty with Xming (https://sourceforge.net/projects/xming/) in Windows. Launch Xming: A small program will appear in the taskbar; keep this running for the duration of the session. Launch PuTTy, In the left-hand menu, expand “SSH”, open the “X11” menu, and check “Enable X11 Forwarding.” Go back to the “Session” menu, and under “Host Name” type HPC server address "SJSUID@coe-hpc1.sjsu.edu", then press Open.
+   * After your local machine setup is finished, ssh to the HPC server via "-Y" option: "ssh -Y 010xx@coe-hpc1.sjsu.edu"
 
 Load software module and request GPU node
 ------------------------------------------
 
-Check available software and load the required modules in the headnode
+Check available software via "module avail" and load the required modules in the headnode
 
 .. code-block:: console
 
    $ module avail
    $ module load python39 slurm/slurm/21.08.6 gcc/11.2.0
+
+You can check and activate your conda environments (check Conda installation section if your conda is not installed)
+
+.. code-block:: console
+
    $ conda info --envs #check available conda environments
    $ conda activate mycondapy39
    
 Use Slurm to request one GPU node, and setup required paths
 
+To request CPU node and get the interactive bash, we can use Slurm (srun) on the host machine: 
+
 .. code-block:: console
 
-   $ srun --pty /bin/bash # request GPU node
-   [sjsuid@cs002 ~]$ nvidia-smi # got the GPU node 'cs002', check the gpu via "nvidia-smi"
-   [sjsuid@cs002 ~]$ module load python39 cuda12.0/toolkit/12.0.1 #load python and cuda module
-   [sjsuid@cs002 ~]$ nvcc -V # check cuda version
+   [0107xxx@coe-hpc1 ~]$ srun --pty /bin/bash
+   [0107xxx@c4 ~]$ 
+   [0107xxx@c4 ~]$ exit # exit the computing node if you are not used
+
+To request GPU node and get the interactive bash, we need to use srun to request one GPU node (g3 is your allocated node)
+
+.. code-block:: console
+
+   [0107xxx@coe-hpc1 ~]$ srun -p gpu --gres=gpu --pty /bin/bash
+   [0107xxx@g3 ~]$ nvidia-smi #check GPU info
+   [0107xxx@g3 ~]$ conda activate mycondapy39 #activate conda environment
+   [0107xxx@g3 ~]$ exit # exit the GPU node if you are not used
+
+.. note::
+
+   If you see srun: job 26773 queued and waiting for resources, that means there is no available GPUs for you to use in HPC, you need to wait until you see: srun: job 26773 has been allocated resources. You will be automatically log into the allocated GPU
+
+If you want to load the TensorRT library (optional):
+
+.. code-block:: console
+
    [sjsuid@cs002 ~]$ conda activate mycondapy39
    (mycondapy39) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=/data/cmpe249-fa22/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH #add tensorrt library if needed
-   (mycondapy39) [sjsuid@cs002 ~]$ CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)")) #get cudnn path
-   (mycondapy39) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib #add cudnn path (only needed for Tensorflow)
 
-The GPU node does not have internet access, if you need to access the Jupyter web in your local browser, you can establish one tunnel from your local computer to the HPC headnode, then create another tunnel from the HPC headnode to the GPU node
+
+
+The GPU node does not have internet access. If you wish to access the Jupyter web interface in your local browser, you can set up a tunnel from your local computer to the HPC headnode and then create another tunnel from the HPC headnode to the GPU node.
 
 .. code-block:: console
 
@@ -43,31 +149,77 @@ Conda Environment Setup Tutorial
 
 You can install miniconda via bash or module load the available 'anaconda/3.9'. 
 
+If you want to install the latest version of miniconda, you can download Miniconda3 latest version via curl and run the install script
+
+.. code-block:: console
+
+   $ curl https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -o Miniconda3-latest-Linux-x86_64.sh
+   $ bash Miniconda3-latest-Linux-x86_64.sh
+   installation finished.
+   Do you wish the installer to initialize Miniconda3
+   by running conda init? [yes|no]
+   modified      /home/010796032/.bashrc
+
+   ==> For changes to take effect, close and re-open your current shell. <==
+
+   If you'd prefer that conda's base environment not be activated on startup, 
+      set the auto_activate_base parameter to false: 
+   $ source ~/.bashrc #Take effect via source bashrc
+   $ conda -V # check version
+   $ conda info --envs #Check available conda environments
+
+You can create a new conda virtual environment
+
+.. code-block:: console
+
+   $ conda create --name mycondapy39 python=3.9
+   # To activate this environment, use
+   #
+   #     $ conda activate mycondapy39
+   #
+   # To deactivate an active environment, use
+   #
+   #     $ conda deactivate
+
+
 Install jupyter lab package in conda (make sure you are HPC headnode not the GPU node):
 
 .. code-block:: console
 
-   [sjsuid@coe-hpc2 ~]$ conda activate mycondapy39
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ conda install -c conda-forge jupyterlab
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ conda install ipykernel
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ ipython kernel install --user --name=mycondapy39 #add jupyter kernel
+   [sjsuid@coe-hpc ~]$ conda activate mycondapy39
+   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c conda-forge jupyterlab
+   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install ipykernel
+   (mycondapy39) [sjsuid@coe-hpc ~]$ ipython kernel install --user --name=mycondapy39 #add jupyter kernel
+
+Install CUDA 11.8 under Conda
+
+.. code-block:: console
+
+   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c conda-forge cudatoolkit=11.8.0
+
+Install cuda development kit, otherwise 'nvcc' is not available in GPU node (This step is optional if you do not need cuda compiler)
+
+.. code-block:: console
+
+   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit #https://anaconda.org/nvidia/cuda-toolkit
+   $ nvcc -V #show Cuda compilation tools in GPU node
 
 Install Pytorch2.0 cuda11.8 version (no problem if you loaded cuda12 in GPU node)
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia #if pytorch2.0 is not found, you can use the pip option
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 -U #another option of using pip install
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ python -m torch.utils.collect_env #check pytorch environment
+   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia #if pytorch2.0 is not found, you can use the pip option
+   (mycondapy39) [sjsuid@coe-hpc ~]$ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 -U #another option of using pip install
+   (mycondapy39) [sjsuid@coe-hpc ~]$ python -m torch.utils.collect_env #check pytorch environment
 
-Install cudnn (required by Tensorflow) and Tensorflow
+Install cudnn (required by Tensorflow) and Tensorflow via pip: https://www.tensorflow.org/install/pip
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ python3 -m pip install nvidia-cudnn-cu11==8.6.0.163
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ python3 -m pip install tensorflow==2.12.*
+   (mycondapy39) [sjsuid@coe-hpc ~]$ python3 -m pip install nvidia-cudnn-cu11==8.6.0.163
+   (mycondapy39) [sjsuid@coe-hpc ~]$ CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))
+   (mycondapy39) [sjsuid@coe-hpc ~]$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib
+   (mycondapy39) [sjsuid@coe-hpc ~]$ python3 -m pip install tensorflow==2.13.*
 
 Request one GPU node, and check tensorflow GPU access
 
@@ -143,41 +295,3 @@ You can share your environment with someone else and allow them to quickly repro
 .. code-block:: console
 
    (mycondapy39) [010796032@cs004 ~]$ conda env export > mycondapy39_hpc2_environment.yml
-
-Screen session 
----------------
-
-Create Persistent SSH connection via screen (install screen) if you do not want to have ssh timeout. You can create one persistent session via $screen -S main_session  (if you do not perform long lasting training, do not use the persistent session, it may cause problems)
-You can use $ screen -ls to view current screen session. If you want to reconnect to a previous screen session after ssh timeout, you can use
-
-.. code-block:: console
-
-   #'mydetector3d/tools/cfgs/nuscenes_models/bevfusion.yaml'
-   #ckpt '/data/cmpe249-fa22/Mymodels/nuscenes_models/bevfusion/0522/ckpt/latest_model.pth'
-   #batch size =4, gpu1, start from epoch
-   [010796032@cs001 3DDepth]$ screen -ls
-   There is a screen on:
-         45460.main_session      (Attached)
-   1 Socket in /var/run/screen/S-010796032.
-
-   (mycondapy39) [010796032@cs001 3DDepth]$ python ./mydetector3d/tools/mytrain.py
-
-   #'mydetector3d/tools/cfgs/nuscenes_models/cbgs_pp_multihead.yaml'
-   #'/data/cmpe249-fa22/Mymodels/nuscenes_models/cbgs_pp_multihead/0522/ckpt/latest_model.pth'
-   #batchsize=6, gpu2 restart from epoch 99
-   $ screen -S session2
-   (mycondapy39) [010796032@cs001 3DDepth]$ screen -ls
-   There are screens on:
-         51524.session2  (Attached)
-         45460.main_session      (Attached)
-   2 Sockets in /var/run/screen/S-010796032.
-   (mycondapy39) [010796032@cs001 3DDepth]$ python ./mydetector3d/tools/mytrain.py
-
-Reconnect to a previous session:
-
-.. code-block:: console
-
-   $ screen -r session_name #(the name you get from screen -ls)
-
-screen -S session_name -X quit to terminate a detached session (Ctrl+a d to detach a session)
-You can use Control+A, then ESC to enable the scroll up. Move up/down with the arrow keys ( ↑ and ↓ ). When you're done, hit q or Escape to get back to the end of the scroll buffer.
