@@ -101,8 +101,10 @@ You can check and activate your conda environments (check Conda installation sec
 
    $ conda info --envs #check available conda environments
    $ conda activate mycondapy39
-   
-Use Slurm to request one GPU node, and setup required paths
+
+
+Use Slurm to request one CPU/GPU node
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 To request CPU node and get the interactive bash, we can use Slurm (srun) on the host machine: 
 
@@ -122,7 +124,6 @@ To request GPU node and get the interactive bash, we need to use srun to request
    [0107xxx@g3 ~]$ exit # exit the GPU node if you are not used
 
 .. note::
-
    If you see srun: job 26773 queued and waiting for resources, that means there is no available GPUs for you to use in HPC, you need to wait until you see: srun: job 26773 has been allocated resources. You will be automatically log into the allocated GPU
 
 If you want to load the TensorRT library (optional):
@@ -133,6 +134,8 @@ If you want to load the TensorRT library (optional):
    (mycondapy39) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=/data/cmpe249-fa22/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH #add tensorrt library if needed
 
 
+Jupyterlab access
+~~~~~~~~~~~~~~~~~
 
 The GPU node does not have internet access. If you wish to access the Jupyter web interface in your local browser, you can set up a tunnel from your local computer to the HPC headnode and then create another tunnel from the HPC headnode to the GPU node.
 
@@ -287,11 +290,3 @@ Install Huggingface
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install xformers #it will change torch2.0.0+cu118 to (2.0.1+cu117), change nvidia-cublas-cu11 and nvidia-cudnn-cu11
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install umap-learn
 
-Share Conda Environment
--------------------------
-
-You can share your environment with someone else and allow them to quickly reproduce your environment via a copy of your environment.yml file. To export environment file, ref: https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html:
-
-.. code-block:: console
-
-   (mycondapy39) [010796032@cs004 ~]$ conda env export > mycondapy39_hpc2_environment.yml
