@@ -4,7 +4,7 @@ HPC
 .. _hpc:
 
 Author:
-   * *Kaikai Liu*, Associate Professor@SJSU
+   * *Kaikai Liu*, Associate Professor, SJSU
    * **Email**: kaikai.liu@sjsu.edu
    * **Web**: http://www.sjsu.edu/cmpe/faculty/tenure-line/kaikai-liu.php
 
