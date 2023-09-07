@@ -228,8 +228,8 @@ ADD https://ultralytics.com/assets/Arial.ttf https://ultralytics.com/assets/Aria
 RUN echo "export LD_LIBRARY_PATH=$HOME/opt/lib:$LD_LIBRARY_PATH" >> $HOME/.bashrc
 
 # Copy scripts
-RUN mkdir -p /usr/local/bin/scripts
-COPY ./*entrypoint.sh /usr/local/bin/scripts/
-RUN  chmod +x /usr/local/bin/scripts/*.sh
+#RUN mkdir -p /usr/local/bin/scripts
+#COPY ./*entrypoint.sh /usr/local/bin/scripts/
+#RUN  chmod +x /usr/local/bin/scripts/*.sh
 #ENTRYPOINT ["/usr/local/bin/scripts/ubuntu22_entrypoint.sh"]
 CMD ["bash"]

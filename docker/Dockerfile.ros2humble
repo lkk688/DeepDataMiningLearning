@@ -1,0 +1,188 @@
+ARG BASE_IMAGE=ubuntu22cuda117:latest
+#docker.io/library/ubuntu22cu117:latest 
+#
+FROM ${BASE_IMAGE}
+
+ARG UBUNTU_RELEASE_YEAR=20
+ARG ZED_SDK_MAJOR=3
+ARG ZED_SDK_MINOR=8
+ARG CUDA_MAJOR=11
+ARG CUDA_MINOR=7
+
+ARG ROS_DISTRO_ARG="humble"
+ENV LOGNAME root
+ENV ROS_DISTRO ${ROS_DISTRO_ARG}
+ENV LANG C.UTF-8
+ENV LC_ALL C.UTF-8
+
+# install packages
+# Install necessary software for the installation of ROS2
+RUN apt-get update && apt-get install -y \ 
+                      locales \
+                      curl \
+                      gnupg2 \
+                      lsb-release \
+                      software-properties-common \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*rm 
+
+# Setup of the locale
+RUN locale-gen en_US en_US.UTF-8 \
+    && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
+    && export LANG=en_US.UTF-8
+
+RUN add-apt-repository universe
+
+RUN apt update 
+# && sudo apt install curl
+
+# Add key
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+RUN sh -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null' \
+    && apt update
+
+# Specify the distribution of ROS2
+ENV ROS_DISTRO ${ROS_DISTRO_ARG}
+ENV DEBIAN_FRONTEND=noninteractive
+
+#ENV ROS_DISTRO=humble
+ENV ROS_ROOT=/opt/ros/${ROS_DISTRO}
+
+# Install ROS2
+RUN apt install -y ros-${ROS_DISTRO_ARG}-desktop \
+                python3-colcon-common-extensions \
+                python3-rosdep2 \
+                python3-argcomplete \
+    && rm -rf /var/lib/apt/lists/*rm 
+
+# Initialize rosdep
+#RUN rosdep init && rosdep update
+RUN rosdep update
+
+RUN apt-get update && apt-get install -y build-essential checkinstall zlib1g-dev libssl-dev \
+    && wget https://github.com/Kitware/CMake/releases/download/v3.23.2/cmake-3.23.2.tar.gz \
+    && tar -zxvf cmake-3.23.2.tar.gz \
+    && cd cmake-3.23.2 \
+    && ./bootstrap \
+    && make \
+    && make install \
+    && cmake --version
+
+# Upgrade cmake to 3.23.2
+# RUN wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null \
+#     && echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ focal main' | tee /etc/apt/sources.list.d/kitware.list >/dev/null \
+#     && apt-get update \
+#     && apt-get update \
+#     && apt-get remove -y cmake && apt-get purge -y cmake && apt-get remove -y cmake-data && apt-get purge -y cmake \
+#     && apt-get install -y cmake=3.23.2-0kitware1ubuntu20.04.1 cmake-data=3.23.2-0kitware1ubuntu20.04.1 \
+#     && cmake --version \
+# && rm -rf /var/lib/apt/lists/* \
+# && apt-get clean 
+
+# Install negotiated
+ARG NEWROS_ROOT=/home/admin/ws_ros
+RUN apt-get update && mkdir -p ${NEWROS_ROOT} && mkdir -p ${NEWROS_ROOT}/src && cd ${NEWROS_ROOT}/src \
+    && git clone https://github.com/osrf/negotiated && cd negotiated && git checkout master && cd .. \
+    && pwd \
+    && ls  \
+    && source ${ROS_ROOT}/setup.bash && cd ${NEWROS_ROOT} \
+    && rosdep install -y -r --ignore-src --from-paths src --rosdistro ${ROS_DISTRO} \
+    && colcon build --merge-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo --packages-up-to-regex negotiated* \
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
+    #/myROS2$ source ~/ws_ros/install/local_setup.bash 
+    #&& rm -Rf src logs build \
+
+# Install negotiated
+# RUN apt-get update && mkdir -p ${ROS_ROOT}/src && cd ${ROS_ROOT}/src \
+#     && git clone https://github.com/osrf/negotiated && cd negotiated && git checkout master && cd .. \            
+#     && source ${ROS_ROOT}/setup.bash && cd ${ROS_ROOT} \
+#     && rosdep install -y -r --ignore-src --from-paths src --rosdistro ${ROS_DISTRO} \
+#     && colcon build --merge-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo --packages-up-to-regex negotiated* \
+#     && rm -Rf src logs build \
+#     && rm -rf /var/lib/apt/lists/* \
+#     && apt-get clean
+
+# Setup the ZED SDK
+# RUN apt-get update -y || true
+# RUN apt-get install --no-install-recommends lsb-release wget less udev sudo build-essential cmake zstd -y && \
+#     wget -q -O ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run https://download.stereolabs.com/zedsdk/${ZED_SDK_MAJOR}.${ZED_SDK_MINOR}/cu${CUDA_MAJOR}${CUDA_MINOR%.*}/ubuntu${UBUNTU_RELEASE_YEAR} && \
+#     chmod +x ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run ; ./ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run silent && \
+#     ln -sf /lib/x86_64-linux-gnu/libusb-1.0.so.0 /usr/lib/x86_64-linux-gnu/libusb-1.0.so && \
+#     rm ZED_SDK_Linux_Ubuntu${UBUNTU_RELEASE_YEAR}.run && \
+#     rm -rf /var/lib/apt/lists/*
+
+# # ZED Python API
+# RUN apt-get update -y || true
+# RUN apt-get install --no-install-recommends python3 python3-pip libpng-dev libgomp1 -y && \ 
+#     wget download.stereolabs.com/zedsdk/pyzed -O /usr/local/zed/get_python_api.py && \
+#     python3 /usr/local/zed/get_python_api.py && \
+#     python3 -m pip install numpy opencv-python pyopengl *.whl && \
+#     rm *.whl ; rm -rf /var/lib/apt/lists/*
+
+#Install Pylon camera driver
+# COPY ./pylon_7.2.1.25747-deb0_amd64.deb /
+# RUN dpkg -i pylon_7.2.1.25747-deb0_amd64.deb \
+#     && export PYLON_ROOT=/opt/pylon \
+#     && echo "export PYLON_ROOT=/opt/pylon" >> ~/.bashrc
+
+#Install Realsense SDK 
+RUN apt-key adv --keyserver keyserver.ubuntu.com --recv-key F6E65AC044F831AC80A06380C8B3A55A6F3EFCDE \
+    || sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-key F6E65AC044F831AC80A06380C8B3A55A6F3EFCDE
+RUN add-apt-repository "deb https://librealsense.intel.com/Debian/apt-repo $(lsb_release -cs) main" -u
+RUN apt-get update && apt-get -y install librealsense2-dkms \
+    && apt-get -y install librealsense2-utils \
+    && apt-get -y install librealsense2-dev \
+    && apt-get -y install librealsense2-dbg
+#Install Realsense ROS
+RUN cd ${NEWROS_ROOT}/src \
+    && git clone https://github.com/IntelRealSense/realsense-ros.git -b ros2-development \
+    && source ${ROS_ROOT}/setup.bash && cd ${NEWROS_ROOT} \
+    && rosdep install -i --from-path src --rosdistro $ROS_DISTRO --skip-keys=librealsense2 -y \
+    && colcon build --merge-install
+    
+#Install libssl.so.1.1, Ubuntu22 switched to the version 3.0 of OpenSSL, but taoconverter still need libssl1.1
+ARG HOME=/home/admin
+RUN mkdir $HOME/opt && cd $HOME/opt \
+    && wget https://www.openssl.org/source/openssl-1.1.1o.tar.gz \
+    && tar -zxvf openssl-1.1.1o.tar.gz \
+    && cd openssl-1.1.1o \
+    && ./config && make  \
+    && mkdir $HOME/opt/lib \
+    && cp $HOME/opt/openssl-1.1.1o/libcrypto.so.1.1 $HOME/opt/lib/ \
+    && mv $HOME/opt/openssl-1.1.1o/libssl.so.1.1 $HOME/opt/lib/
+    #&& make test
+
+# Install linux packages
+RUN apt update && apt install --no-install-recommends -y nano usbutils gdb zip htop screen libgl1-mesa-glx
+#RUN apt-get update && apt-get -y install nano usbutils gdb
+
+#install pytorch for cuda11.7
+RUN python -m pip install --upgrade pip wheel
+RUN pip3 install torch torchvision torchaudio
+RUN pip3 install --no-cache jupyterlab ultralytics albumentations comet gsutil notebook 'opencv-python<4.6.0.66'
+# Downloads to user config dir
+ADD https://ultralytics.com/assets/Arial.ttf https://ultralytics.com/assets/Arial.Unicode.ttf /root/.config/Ultralytics/
+
+# Install pip packages
+#COPY requirements.txt .
+#RUN pip3 install -r requirements.txt
+
+#Fix the Mayavi problem
+RUN pip3 install --upgrade pyside2
+RUN pip3 uninstall opencv-python -y
+RUN pip3 install opencv-python-headless
+
+RUN echo "export LD_LIBRARY_PATH=$HOME/opt/lib:$LD_LIBRARY_PATH" >> $HOME/.bashrc
+
+# Setup scripts
+RUN echo "source /opt/ros/${ROS_DISTRO_ARG}/setup.bash" >> $HOME/.bashrc
+
+# Set the entry point
+#COPY ./ubuntu22ros2_entrypoint.sh /
+#RUN chmod +x /ubuntu22ros2_entrypoint.sh
+
+#ENTRYPOINT ["/ubuntu22ros2_entrypoint.sh"]
+CMD ["bash"]
+#ref: https://gist.github.com/GowriUmesh/ae5da412b78bbdf58c2d2090ceba32e9#file-build-ros-desktop-image-sh
