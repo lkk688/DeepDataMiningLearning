@@ -35,9 +35,9 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
 * Python tutorial code: [Python_tutorial.ipynb](./Python_tutorial.ipynb)--[colablink](https://colab.research.google.com/drive/1KpLTxgvmFzSlmr486zZwfUBUt-U4-ukT?usp=sharing)
 * Python NumPy tutorial code: [Python NumPy tutorial](./Python-Numpy.ipynb)--[colablink](https://colab.research.google.com/drive/10CtxFoyTUk5RIPX4MnOOhYYe3DGAitYW?usp=sharing)
 * Data Mining introduction code: 
-   * [Dataintro-Pandas.ipynb](./Dataintro-Pandas.ipynb)
-   * [Dataintro-EDA.ipynb](./Dataintro-EDA.ipynb)
-   * [Dataintro-Visualization.ipynb](./Dataintro-Visualization.ipynb)
+   * [Dataintro-Pandas.ipynb](./notebooks/Dataintro-Pandas.ipynb) --[colablink](https://colab.research.google.com/drive/14zantNUelF-uPLOXYH8PDzcaPFD-94tc)
+   * [Dataintro-EDA.ipynb](./notebooks/Dataintro-EDA.ipynb) --[colablink](https://colab.research.google.com/drive/191Ak-8YzdwJVuCjhFUOJ-WnV0OaDYe2f)
+   * [Dataintro-Visualization.ipynb](./notebooks/Dataintro-Visualization.ipynb) --[colablink](https://colab.research.google.com/drive/1zPfz3zma_EriCKvLMShM7jsg5aR_1Cpn)
 
 Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
 
