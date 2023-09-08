@@ -2,7 +2,7 @@
 
 from PIL import Image #can solve the error of Glibc
 import torch
-import torch.nn.functional as F
+#import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 #from datautils import MyTrainDataset
 from torchvision import datasets
@@ -14,13 +14,14 @@ import torchvision
 import matplotlib.pyplot as plt
 import numpy as np
 
-MACHINENAME='MAC'
+MACHINENAME='Container'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
 if MACHINENAME=='HPC':
-    os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/'
-    DATAPATH='/data/cmpe249-fa22/torchvisiondata'
+    os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
+    DATAPATH='/data/cmpe249-fa23/torchvisiondata'
 elif MACHINENAME=='Container':
-    DATAPATH='/Dataset/Dataset/torchvisiondata'
+    os.environ['TORCH_HOME'] = '/data/torchhome/'
+    DATAPATH='/data/torchvisiondata'
 else:
     DATAPATH='./data'
 

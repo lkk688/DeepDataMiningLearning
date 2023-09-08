@@ -290,3 +290,69 @@ Install Huggingface
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install xformers #it will change torch2.0.0+cu118 to (2.0.1+cu117), change nvidia-cublas-cu11 and nvidia-cudnn-cu11
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install umap-learn
 
+Container
+----------
+Load Singularity to use container: 
+
+.. code-block:: console
+
+   [010796032@coe-hpc1 cmpe249-fa23]$ module load singularity/3.10.3
+
+You can run the container in CPU or GPU node and mount the data folder (your home folder is mounted by default):
+
+.. code-block:: console
+
+   [010796032@g5 cmpe249-fa23]$ singularity run --bind /data/cmpe249-fa23:/data/ --nv --writable myros2humblecuda117/
+   Singularity> cat /etc/os-release
+   PRETTY_NAME="Ubuntu 22.04.2 LTS"
+   Singularity> ls /data/
+   COCOoriginal      Waymo200  kitti                myros2humblecuda117.tar  torchhome
+   Huggingfacecache  coco      myros2humblecuda117  nuScenes                 torchvisiondata
+   Singularity> python
+   Python 3.10.12 (main, Jun 11 2023, 05:26:28) [GCC 11.4.0] on linux
+   Type "help", "copyright", "credits" or "license" for more information.
+   >>> import torch
+   >>> torch.cuda.is_available()
+   True
+   >>> torch.cuda.device_count()
+   1
+   >>> torch.cuda.get_device_name(0)
+   'Tesla P100-PCIE-12GB'
+
+Run pytorch test script:
+
+.. code-block:: console
+
+   Singularity> pwd
+   /home/010796032/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning
+   Singularity> python singleGPU.py
+   Using cuda device
+   Shape of X [N, C, H, W]: torch.Size([32, 1, 28, 28])
+   Shape of y: torch.Size([32]) torch.int64
+   [GPUcuda] Epoch 0 | Batchsize: 32 | Steps: 1875
+
+
+Test ROS2:
+
+.. code-block:: console
+
+   Singularity> printenv | grep -i ROS
+   SINGULARITY_NAME=myros2humblecuda117
+   SINGULARITY_CONTAINER=/data/cmpe249-fa23/myros2humblecuda117
+   ROS_ROOT=/opt/ros/humble
+   ROS_DISTRO=humble
+   Singularity> echo ${ROS_DISTRO}
+   humble
+   Singularity> source /opt/ros/${ROS_DISTRO}/setup.bash
+   Singularity> rosdep update
+   Singularity> ros2 run demo_nodes_cpp talker
+   [INFO] [1694195932.574826844] [talker]: Publishing: 'Hello World: 1'
+   [INFO] [1694195933.574802426] [talker]: Publishing: 'Hello World: 2'
+   [INFO] [1694195934.574829172] [talker]: Publishing: 'Hello World: 3'
+   [INFO] [1694195935.574795028] [talker]: Publishing: 'Hello World: 4'
+
+Exit the container:
+
+.. code-block:: console
+   Singularity> pip install pypdf
+   Singularity> exit
