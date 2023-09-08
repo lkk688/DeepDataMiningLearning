@@ -92,6 +92,23 @@ You can import the distribution again in a new driver (e.g., in H: drive)
     H:\WSL>wsl --import Ubuntu20.04 ./Ubuntu20 ./Ubuntu2004_export.tar
     Import in progress, this may take a few minutes.
     The operation completed successfully.
+    H:\WSL> wsl --setdefault Ubuntu20.04
+
+Export docker data
+
+.. code-block:: console
+
+    (base) PS D:\WSL> wsl --list --verbose
+      NAME                   STATE           VERSION
+    * Ubuntu22.04            Running         2
+      docker-desktop         Running         2
+      docker-desktop-data    Running         2
+    (base) PS D:\WSL> wsl --export docker-desktop-data ./docker-desktop-data.tar
+    The operation completed successfully.
+    (base) PS D:\WSL> wsl --unregister docker-desktop-data
+    The operation completed successfully.
+    (base) PS D:\WSL> wsl --import docker-desktop-data ./docker ./docker-desktop-data.tar
+
 
 Install CUDA inside WSL Linux
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
