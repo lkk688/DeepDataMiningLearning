@@ -168,7 +168,8 @@ def evaluate(model: nn.Module, eval_data: Tensor) -> float:
     return total_loss / (len(eval_data) - 1)
 
 if __name__ == "__main__":
-    train_iter = WikiText2(split='train')
+    dataroot = "/data/cmpe249-fa23/torchhome/"
+    train_iter = WikiText2(root=dataroot, split='train')
     tokenizer = get_tokenizer('basic_english')
     vocab = build_vocab_from_iterator(map(tokenizer, train_iter), specials=['<unk>'])
     vocab.set_default_index(vocab['<unk>']) #Wikitext-2 represents rare tokens as <unk>.

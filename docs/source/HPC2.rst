@@ -290,6 +290,20 @@ Install Huggingface
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install xformers #it will change torch2.0.0+cu118 to (2.0.1+cu117), change nvidia-cublas-cu11 and nvidia-cudnn-cu11
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install umap-learn
 
+New conda environment: mycondapy310
+
+.. code-block:: console
+
+   (mycondapy310) [010796032@coe-hpc1 DeepDataMiningLearning]$ python -V
+   Python 3.10.11
+   $ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+   $ conda install matplotlib
+   $ pip install torchtext
+   $ pip install portalocker #required by torchtext
+
+
+https://spacy.io/usage
+
 Container
 ----------
 Load Singularity to use container: 
