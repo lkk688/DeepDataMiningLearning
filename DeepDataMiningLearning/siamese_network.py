@@ -12,7 +12,17 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 from torchvision import transforms as T
 from torch.optim.lr_scheduler import StepLR
-
+import os
+MACHINENAME='Container'
+USE_AMP=True #AUTOMATIC MIXED PRECISION
+if MACHINENAME=='HPC':
+    os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
+    DATAPATH='/data/cmpe249-fa23/torchvisiondata'
+elif MACHINENAME=='Container':
+    os.environ['TORCH_HOME'] = '/data/torchhome/'
+    DATAPATH='/data/torchvisiondata'
+else:
+    DATAPATH='./data'
 
 class SiameseNetwork(nn.Module):
     """
@@ -283,8 +293,8 @@ def main():
         train_kwargs.update(cuda_kwargs)
         test_kwargs.update(cuda_kwargs)
 
-    train_dataset = APP_MATCHER(r'E:\\Dataset\\MNIST', train=True, download=True)
-    test_dataset = APP_MATCHER(r'E:\\Dataset\\MNIST', train=False)
+    train_dataset = APP_MATCHER(DATAPATH, train=True, download=True)
+    test_dataset = APP_MATCHER(DATAPATH, train=False)
     train_loader = torch.utils.data.DataLoader(train_dataset,**train_kwargs)
     test_loader = torch.utils.data.DataLoader(test_dataset, **test_kwargs)
 
@@ -298,7 +308,7 @@ def main():
         scheduler.step()
 
     if args.save_model:
-        torch.save(model.state_dict(), "siamese_network.pt")
+        torch.save(model.state_dict(), "./data/siamese_network.pt")
 
 
 if __name__ == '__main__':

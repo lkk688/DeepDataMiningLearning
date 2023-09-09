@@ -290,19 +290,40 @@ Install Huggingface
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install xformers #it will change torch2.0.0+cu118 to (2.0.1+cu117), change nvidia-cublas-cu11 and nvidia-cudnn-cu11
    (mycondapy39) [010796032@coe-hpc2 DeepDataMiningLearning]$ pip install umap-learn
 
-New conda environment: mycondapy310
+New conda environment based on Python3.10: mycondapy310
 
 .. code-block:: console
 
+   $ conda create --name mycondapy310 python=3.10
+   conda activate mycondapy310
    (mycondapy310) [010796032@coe-hpc1 DeepDataMiningLearning]$ python -V
    Python 3.10.11
+   $ conda install -c conda-forge cudatoolkit=11.8.0
+   $ conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
    $ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
    $ conda install matplotlib
    $ pip install torchtext
    $ pip install portalocker #required by torchtext
+   $ conda install -c conda-forge spacy #https://spacy.io/usage
+   $ conda install -c conda-forge cupy #https://docs.cupy.dev/en/stable/install.html
+   $ python -m spacy download en_core_web_sm
+   >>> import spacy
+   >>> spacy.prefer_gpu()
+   True
+   >>> nlp = spacy.load("en_core_web_sm")
 
+Test code:
 
-https://spacy.io/usage
+.. code-block:: console
+
+   (mycondapy310) [010796032@g5 nlp]$ python torchtransformer.py
+   | epoch   3 |  2800/ 2928 batches | lr 4.51 | ms/batch 11.77 | loss  2.30 | ppl     9.94
+   -----------------------------------------------------------------------------------------
+   | end of epoch   3 | time: 36.15s | valid loss  1.03 | valid ppl     2.79
+   -----------------------------------------------------------------------------------------
+   =========================================================================================
+   | End of training | test loss  0.98 | test ppl     2.68
+   =========================================================================================
 
 Container
 ----------
@@ -344,6 +365,9 @@ Run pytorch test script:
    Shape of X [N, C, H, W]: torch.Size([32, 1, 28, 28])
    Shape of y: torch.Size([32]) torch.int64
    [GPUcuda] Epoch 0 | Batchsize: 32 | Steps: 1875
+   Singularity> python siamese_network.py
+   Train Epoch: 14 [59520/60000 (99%)]     Loss: 0.000155
+   Test set: Average loss: 0.0000, Accuracy: 9959/10000 (100%)
 
 
 Test ROS2:
