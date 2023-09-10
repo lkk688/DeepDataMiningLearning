@@ -62,6 +62,12 @@ You can check the version of WSL and perform conversion from WSL2 to WSL1 if nee
 
 Use WSL for Development
 ~~~~~~~~~~~~~~~~~~~~~~~~
+Start the WSL Linux via command:
+
+.. code-block:: console
+
+    wsl -d distroname -u username
+
 Access files inside the WSL from Windows side: access "\\wsl$" in the address bar of Windows File Explorer.
 
 Open WSL in VScode for development: in "Remote Explorer" tab, select "WSL" as the remote the target, connect the target.
@@ -93,6 +99,7 @@ You can import the distribution again in a new driver (e.g., in H: drive)
     Import in progress, this may take a few minutes.
     The operation completed successfully.
     H:\WSL> wsl --setdefault Ubuntu20.04
+    H:\WSL>wsl -u lkk #use user "lkk" to login, wsl -d distroname -u username
 
 Export docker data
 
