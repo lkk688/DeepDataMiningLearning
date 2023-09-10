@@ -74,7 +74,7 @@ You can also make use of Visual Studio Code Remote Debugging (https://code.visua
       ForwardX11 yes
       ForwardX11Trusted yes
       ServerAliveInterval 30
-      ProxyCommand ssh coe-hpc2 -W %h:%p
+      ProxyCommand ssh coe-hpc1 -W %h:%p
 
 X11 Window forwarding
 ~~~~~~~~~~~~~~~~~~~~~
