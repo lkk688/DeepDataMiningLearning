@@ -311,6 +311,7 @@ New conda environment based on Python3.10: mycondapy310
    >>> spacy.prefer_gpu()
    True
    >>> nlp = spacy.load("en_core_web_sm")
+   $ pip install configargparse
 
 Test code:
 
