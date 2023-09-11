@@ -141,8 +141,9 @@ The GPU node does not have internet access. If you wish to access the Jupyter we
 
 .. code-block:: console
 
-   $ ssh -L 10001:localhost:10001 010796032@coe-hpc2.sjsu.edu #from your local computer to HPC headnode, you can use any port number (10001)
-   $ ssh -L 10001:localhost:10001 010796032@cs002 #in HPC head node to gpu node
+   $ ssh -L 10001:localhost:10001 0107xxx@coe-hpc1.sjsu.edu #from your local computer to HPC headnode, you can use any port number (10001)
+   $ ssh -L 10001:localhost:10001 0107xxx@g7 #in HPC head node to gpu node
+   #activate python virtual environment, e.g., conda activate xxx
    $ jupyter lab --no-browser --port=10001 #start the jupyter lab on port 10001 (the port should be the same port used for tunnel)
 
 After jupyter lab is started, you can copy paste the URL shown in the terminal into your local browser to access the Jupyter lab.
@@ -192,6 +193,7 @@ Install jupyter lab package in conda (make sure you are HPC headnode not the GPU
    [sjsuid@coe-hpc ~]$ conda activate mycondapy39
    (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c conda-forge jupyterlab
    (mycondapy39) [sjsuid@coe-hpc ~]$ conda install ipykernel
+   $ jupyter kernelspec list #view current jupyter kernels
    (mycondapy39) [sjsuid@coe-hpc ~]$ ipython kernel install --user --name=mycondapy39 #add jupyter kernel
 
 Install CUDA 11.8 under Conda
@@ -319,6 +321,8 @@ New conda environment based on Python3.10: mycondapy310
    $ conda install -c conda-forge tensorboard
    (mycondapy310) [010796032@g4 MultiModalClassifier]$ python setup.py develop
    pip install -q torchinfo
+   $ conda install -c conda-forge jupyterlab
+   ipython kernel install --user --name=mycondapy39
 
 Test code:
 
