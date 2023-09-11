@@ -318,6 +318,7 @@ New conda environment based on Python3.10: mycondapy310
    $ conda install -c conda-forge gcc=12.1.0 #solve the `GLIBCXX_3.4.30' problem
    $ conda install -c conda-forge tensorboard
    (mycondapy310) [010796032@g4 MultiModalClassifier]$ python setup.py develop
+   pip install -q torchinfo
 
 Test code:
 
