@@ -313,6 +313,11 @@ New conda environment based on Python3.10: mycondapy310
    >>> nlp = spacy.load("en_core_web_sm")
    $ pip install configargparse
    $ pip install datasets
+   $ conda install -c conda-forge scikit-learn
+   $ pip install albumentations #call scipy, cause  version `GLIBCXX_3.4.30' not found
+   $ conda install -c conda-forge gcc=12.1.0 #solve the `GLIBCXX_3.4.30' problem
+   $ conda install -c conda-forge tensorboard
+   (mycondapy310) [010796032@g4 MultiModalClassifier]$ python setup.py develop
 
 Test code:
 
