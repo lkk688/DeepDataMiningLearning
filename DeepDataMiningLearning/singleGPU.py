@@ -79,11 +79,16 @@ class Trainer:
             self.scaler = torch.cuda.amp.GradScaler()
 
     def _run_batch(self, source, targets):
+        # Optimizer zero grad
         self.optimizer.zero_grad()
+        # 1. Forward pass
         output = self.model(source)
         #loss = F.cross_entropy(output, targets)
+        # 2. Calculate loss (per batch)
         loss = self.loss_fun(output, targets)
+        # 3. Loss backward
         loss.backward()
+        # 5. Optimizer step
         self.optimizer.step()
         loss = loss.item()
         #print(f"loss: {loss:>7f}")
@@ -164,11 +169,11 @@ class NeuralNetwork(nn.Module):
         super().__init__()
         self.flatten = nn.Flatten()
         self.linear_relu_stack = nn.Sequential(
-            nn.Linear(28*28, 512),
+            nn.Linear(28*28, 512), #28*28=784
             nn.ReLU(),
             nn.Linear(512, 512),
             nn.ReLU(),
-            nn.Linear(512, 10)
+            nn.Linear(512, 10) #output_shape=len(class_names)
         )
 
     def forward(self, x):
@@ -185,6 +190,9 @@ def load_train_objs():
         download=True,
         transform=ToTensor(),
     )
+    # See first training sample
+    #image, label = train_set[0]
+    #len(train_set.data), len(train_set.targets)
 
     # Download test data from open datasets.
     test_set = datasets.FashionMNIST(
@@ -194,7 +202,17 @@ def load_train_objs():
         transform=ToTensor(),
     )
 
-    class_names = train_set.classes
+    class_names = train_set.classes #10
+    # ['T-shirt/top',
+    # 'Trouser',
+    # 'Pullover',
+    # 'Dress',
+    # 'Coat',
+    # 'Sandal',
+    # 'Shirt',
+    # 'Sneaker',
+    # 'Bag',
+    # 'Ankle boot']
 
     # train_set = MyTrainDataset(2048)  # load your dataset
     #model = torch.nn.Linear(20, 1)  # load your model
