@@ -78,14 +78,18 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
 * Pytorch Multi-GPU image classification: [multiGPU](DeepDataMiningLearning/multiGPU.py)
 * Pytorch Torchvision image classification (Efficientnet) notebook on HPC: [torchvisionHPC.ipynb](DeepDataMiningLearning/torchvisionHPC.ipynb)
 * Pytorch Torchvision vision transformer (ViT) notebook on HPC: [torchvisionvitHPC.ipynb](DeepDataMiningLearning/torchvisionvitHPC.ipynb)
-* Pytorch ViT implement from scratch: [ViTHPC.ipynb](DeepDataMiningLearning/ViTHPC.ipynb)
+* Pytorch ViT implement from scratch on HPC: [ViTHPC.ipynb](DeepDataMiningLearning/ViTHPC.ipynb)
 * Pytorch ImageNet classification example: [imagenet](DeepDataMiningLearning/imagenet.py)
 * Pytorch inference example for top-k class: [inference.py](DeepDataMiningLearning/inference.py)
 * TIMM models: [testtimm.ipynb](DeepDataMiningLearning/testtimm.ipynb)
 * Huggingface Images via Transformers: [huggingfaceimage.ipynb](DeepDataMiningLearning/huggingfaceimage.ipynb)
 * Siamese network: [siamese_network](DeepDataMiningLearning/siamese_network.py)
 * TensorRT example: [tensorrt.ipynb](DeepDataMiningLearning/tensorrt.ipynb)
-* Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
+* Advanced Image Classification: [githubrepo](https://github.com/lkk688/MultiModalClassifier)
+   * General purpose framework for all-in-one image classification for Tensorflow and Pytorch
+   * Support for multiple datasets: imagenet_blurred, tiny-imagenet-200, hymenoptera_data, CIFAR10, MNIST, flower_photos
+   * Support for multiple custom models ('mlpmodel1', 'lenet', 'alexnet', 'resnetmodel1', 'customresnet', 'vggmodel1', 'vggcustom', 'cnnmodel1'), all models from Torchvision and TorchHub
+   * Support HPC training and evaluation
 * Object detection (other repo)
    * [MultiModalDetector](https://github.com/lkk688/MultiModalDetector)
    * [myyolov7](https://github.com/lkk688/myyolov7): Add YOLOv5 models with YOLOv7, performed training on COCO and WaymoCOCO dataset.
