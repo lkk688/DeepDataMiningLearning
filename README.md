@@ -64,14 +64,13 @@ Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
    * XGBoost -- [colablink](https://colab.research.google.com/drive/1ZKtpwoRnK8r2fy8ucXoz1K9E98X76dFC?usp=sharing)
 
 ## Deep Learning
-Deep learning notebooks
+Deep learning notebooks (colab link is better)
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./notebooks/CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
 * Pytorch introduction code: [CMPE-pytorch1.ipynb](./notebooks/CMPE-pytorch1.ipynb) -- [colablink](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
 * Tensorflow image classification:
    * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
-* Pytorch image classification sample: [CMPE-pytorch2.ipynb](./notebooks/CMPE-pytorch2.ipynb)
-* Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
+* Pytorch image classification sample: [CMPE-pytorch2.ipynb](./notebooks/CMPE-pytorch2.ipynb), [colablink](https://colab.research.google.com/drive/1PduHOC54R3CpdAl2p_MM1WYzQWof5ovL)
 
 New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMiningLearning")
 * Pytorch Single GPU image classification with/without automatic mixed precision (AMP) training: [singleGPU](DeepDataMiningLearning/singleGPU.py)
@@ -86,6 +85,7 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
 * Huggingface Images via Transformers: [huggingfaceimage.ipynb](DeepDataMiningLearning/huggingfaceimage.ipynb)
 * Siamese network: [siamese_network](DeepDataMiningLearning/siamese_network.py)
 * TensorRT example: [tensorrt.ipynb](DeepDataMiningLearning/tensorrt.ipynb)
+* Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
 * Object detection (other repo)
    * [MultiModalDetector](https://github.com/lkk688/MultiModalDetector)
    * [myyolov7](https://github.com/lkk688/myyolov7)
