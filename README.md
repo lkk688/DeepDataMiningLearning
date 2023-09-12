@@ -88,8 +88,13 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
 * Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
 * Object detection (other repo)
    * [MultiModalDetector](https://github.com/lkk688/MultiModalDetector)
-   * [myyolov7](https://github.com/lkk688/myyolov7)
+   * [myyolov7](https://github.com/lkk688/myyolov7): Add YOLOv5 models with YOLOv7, performed training on COCO and WaymoCOCO dataset.
+   * [myyolov5](https://github.com/lkk688/yolov5): My fork of the YOLOv5, convert COCO to YOLO format, changed the code to be the base code for YOLOv4, YOLOv5, and ScaledYOLOv4; performed training on COCO and WaymoCOCO dataset.
    * [WaymoObjectDetection](https://github.com/lkk688/WaymoObjectDetection)
+      * Waymo Dataset Conversion to COCO format: WaymoCOCO
+      * [torchvision_waymococo_train.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/MyDetector/torchvision_waymococo_train.py): performs Pytorch FasterRCNN training based on converted Waymo COCO format data. This version can be applied for any dataset with COCO format annotation
+      * [WaymoCOCODetectron2train.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/WaymoCOCODetectron2train.py): WaymoCOCO training based on Detectron2
+      * [mymmdetection2dtrain.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/mymmdetection2dtrain.py): Object Detection training and evaluation based on MMdetection2D
    * [CustomDetectron2](https://github.com/lkk688/CustomDetectron2)
 
 ## Unsupervised Learning
