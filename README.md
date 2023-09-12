@@ -45,8 +45,9 @@ Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
 
 * Data Mining based on Google Cloud: 
    * Google Cloud access via Colab: [colablink](https://colab.research.google.com/drive/1fmNMY23wzoQQTGoGns1cgTrjOIuj-Qtc?usp=sharing)
+      * Configure Gcloud, Google Cloud Storage, Compute Engine, Colab Terminal
    * Google BigQuery with Colab/Jupyter introduction [BigQuery-intro.ipynb](./BigQuery-intro.ipynb) -- [colablink](https://colab.research.google.com/drive/1HREJs7dUZfrJaPP2wApPNtaINpe2Rtey?usp=sharing)
-      * Natality dataset, Weather data
+      * Natality dataset and Weather data from Google BigQuery
    * COVID19 Data EDA and Visualization based on Google BigQuery (Fall 2022 updated): [colablink](https://colab.research.google.com/drive/1y4zQl_SxA1DEbjI5XjBuxmXQrx5xI1vE?usp=sharing)
       * COVID NYT data, COVID-19 JHU data
    * Additional Google BigQuery examples: [colablink](https://colab.research.google.com/drive/1eHj3g5qwzp4uhE0j0qagCLj5SBWIbuTL?usp=sharing)
