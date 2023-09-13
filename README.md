@@ -45,8 +45,9 @@ Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
 
 * Data Mining based on Google Cloud: 
    * Google Cloud access via Colab: [colablink](https://colab.research.google.com/drive/1fmNMY23wzoQQTGoGns1cgTrjOIuj-Qtc?usp=sharing)
+      * Configure Gcloud, Google Cloud Storage, Compute Engine, Colab Terminal
    * Google BigQuery with Colab/Jupyter introduction [BigQuery-intro.ipynb](./BigQuery-intro.ipynb) -- [colablink](https://colab.research.google.com/drive/1HREJs7dUZfrJaPP2wApPNtaINpe2Rtey?usp=sharing)
-      * Natality dataset, Weather data
+      * Natality dataset and Weather data from Google BigQuery
    * COVID19 Data EDA and Visualization based on Google BigQuery (Fall 2022 updated): [colablink](https://colab.research.google.com/drive/1y4zQl_SxA1DEbjI5XjBuxmXQrx5xI1vE?usp=sharing)
       * COVID NYT data, COVID-19 JHU data
    * Additional Google BigQuery examples: [colablink](https://colab.research.google.com/drive/1eHj3g5qwzp4uhE0j0qagCLj5SBWIbuTL?usp=sharing)
@@ -64,14 +65,13 @@ Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
    * XGBoost -- [colablink](https://colab.research.google.com/drive/1ZKtpwoRnK8r2fy8ucXoz1K9E98X76dFC?usp=sharing)
 
 ## Deep Learning
-Deep learning notebooks
+Deep learning notebooks (colab link is better)
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./notebooks/CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
 * Pytorch introduction code: [CMPE-pytorch1.ipynb](./notebooks/CMPE-pytorch1.ipynb) -- [colablink](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
 * Tensorflow image classification:
    * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
-* Pytorch image classification sample: [CMPE-pytorch2.ipynb](./notebooks/CMPE-pytorch2.ipynb)
-* Advanced Image Classification (Tensorflow and Pytorch): [githubrepo](https://github.com/lkk688/MultiModalClassifier)
+* Pytorch image classification sample: [CMPE-pytorch2.ipynb](./notebooks/CMPE-pytorch2.ipynb), [colablink](https://colab.research.google.com/drive/1PduHOC54R3CpdAl2p_MM1WYzQWof5ovL)
 
 New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMiningLearning")
 * Pytorch Single GPU image classification with/without automatic mixed precision (AMP) training: [singleGPU](DeepDataMiningLearning/singleGPU.py)
@@ -79,17 +79,27 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
 * Pytorch Multi-GPU image classification: [multiGPU](DeepDataMiningLearning/multiGPU.py)
 * Pytorch Torchvision image classification (Efficientnet) notebook on HPC: [torchvisionHPC.ipynb](DeepDataMiningLearning/torchvisionHPC.ipynb)
 * Pytorch Torchvision vision transformer (ViT) notebook on HPC: [torchvisionvitHPC.ipynb](DeepDataMiningLearning/torchvisionvitHPC.ipynb)
-* Pytorch ViT implement from scratch: [ViTHPC.ipynb](DeepDataMiningLearning/ViTHPC.ipynb)
+* Pytorch ViT implement from scratch on HPC: [ViTHPC.ipynb](DeepDataMiningLearning/ViTHPC.ipynb)
 * Pytorch ImageNet classification example: [imagenet](DeepDataMiningLearning/imagenet.py)
 * Pytorch inference example for top-k class: [inference.py](DeepDataMiningLearning/inference.py)
 * TIMM models: [testtimm.ipynb](DeepDataMiningLearning/testtimm.ipynb)
 * Huggingface Images via Transformers: [huggingfaceimage.ipynb](DeepDataMiningLearning/huggingfaceimage.ipynb)
 * Siamese network: [siamese_network](DeepDataMiningLearning/siamese_network.py)
 * TensorRT example: [tensorrt.ipynb](DeepDataMiningLearning/tensorrt.ipynb)
+* Advanced Image Classification: [githubrepo](https://github.com/lkk688/MultiModalClassifier)
+   * General purpose framework for all-in-one image classification for Tensorflow and Pytorch
+   * Support for multiple datasets: imagenet_blurred, tiny-imagenet-200, hymenoptera_data, CIFAR10, MNIST, flower_photos
+   * Support for multiple custom models ('mlpmodel1', 'lenet', 'alexnet', 'resnetmodel1', 'customresnet', 'vggmodel1', 'vggcustom', 'cnnmodel1'), all models from Torchvision and TorchHub
+   * Support HPC training and evaluation
 * Object detection (other repo)
    * [MultiModalDetector](https://github.com/lkk688/MultiModalDetector)
-   * [myyolov7](https://github.com/lkk688/myyolov7)
+   * [myyolov7](https://github.com/lkk688/myyolov7): Add YOLOv5 models with YOLOv7, performed training on COCO and WaymoCOCO dataset.
+   * [myyolov5](https://github.com/lkk688/yolov5): My fork of the YOLOv5, convert COCO to YOLO format, changed the code to be the base code for YOLOv4, YOLOv5, and ScaledYOLOv4; performed training on COCO and WaymoCOCO dataset.
    * [WaymoObjectDetection](https://github.com/lkk688/WaymoObjectDetection)
+      * Waymo Dataset Conversion to COCO format: WaymoCOCO
+      * [torchvision_waymococo_train.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/MyDetector/torchvision_waymococo_train.py): performs Pytorch FasterRCNN training based on converted Waymo COCO format data. This version can be applied for any dataset with COCO format annotation
+      * [WaymoCOCODetectron2train.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/WaymoCOCODetectron2train.py): WaymoCOCO training based on Detectron2
+      * [mymmdetection2dtrain.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/mymmdetection2dtrain.py): Object Detection training and evaluation based on MMdetection2D
    * [CustomDetectron2](https://github.com/lkk688/CustomDetectron2)
 
 ## Unsupervised Learning
