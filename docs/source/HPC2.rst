@@ -137,16 +137,19 @@ If you want to load the TensorRT library (optional):
 Jupyterlab access
 ~~~~~~~~~~~~~~~~~
 
-The GPU node does not have internet access. If you wish to access the Jupyter web interface in your local browser, you can set up a tunnel from your local computer to the HPC headnode and then create another tunnel from the HPC headnode to the GPU node.
+The GPU node does not have internet access. If you wish to access the Jupyter web interface in your local browser, you can set up a tunnel from your local computer to the HPC headnode and then create another tunnel from the HPC headnode to the GPU node (change the port number 10001 to other numbers).
 
 .. code-block:: console
 
-   $ ssh -L 10001:localhost:10001 0107xxx@coe-hpc1.sjsu.edu #from your local computer to HPC headnode, you can use any port number (10001)
+   $ ssh -L 10001:localhost:10001 0107xxx@coe-hpc1.sjsu.edu #from your local computer to HPC headnode, forwards any connection to port 10001 on the local machine to port 10001 on localhost
    $ ssh -L 10001:localhost:10001 0107xxx@g7 #in HPC head node to gpu node
    #activate python virtual environment, e.g., conda activate xxx
    $ jupyter lab --no-browser --port=10001 #start the jupyter lab on port 10001 (the port should be the same port used for tunnel)
 
 After jupyter lab is started, you can copy paste the URL shown in the terminal into your local browser to access the Jupyter lab.
+
+.. note::
+   Change the port number 10001 to other numbers. If you found the jupyter creates a different port number, it may means your previous port is occupied and you cannot access your notebook via the previous port number.
 
 Conda Environment Setup Tutorial
 ---------------------------------

@@ -1,7 +1,12 @@
 Welcome to DeepDataMiningLearning documentation!
 =================================================
 
-Check out the :ref:`CondaEnv` section for Conda environment setup
+Author:
+   * *Kaikai Liu*, Associate Professor, SJSU
+   * **Email**: kaikai.liu@sjsu.edu
+   * **Web**: http://www.sjsu.edu/cmpe/faculty/tenure-line/kaikai-liu.php
+
+Check out the :ref:`CondaEnv` section for Conda environment setup; Check out the :ref:`hpc` section for SJSU CoE HPC environment setup
 
 .. note::
 
