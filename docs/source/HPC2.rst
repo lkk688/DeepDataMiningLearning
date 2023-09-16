@@ -56,7 +56,7 @@ You can also make use of Visual Studio Code Remote Debugging (https://code.visua
    * Add a new SSH connection in the "Remote" extension, then select and open the "coe-hpc1" server.
    * Open the desired folder as your working directory.
    * You can also open Jupyter notebook files in VSCode and use Git to synchronize with GitHub. Please note that this setup is linked only to the head node and not the compute node (GPU node).
-   * Visual Studio Code for the GPU node has been tested and is functioning correctly, allowing for step-by-step debugging. To enable this, you'll need to enable dual-hop SSH. Keep in mind that the Git sync feature is disabled in the GPU node due to the lack of internet access. Add the following setups in your ".ssh/config" file to enable the SSH to the headnode (coe-hpc1) and dual-hop SSH to the GPU node
+   * Visual Studio Code for the GPU node has been tested and is functioning correctly in HPC2 (HPC1 still not working), allowing for step-by-step debugging. To enable this, you'll need to enable dual-hop SSH. Keep in mind that the Git sync feature is disabled in the GPU node due to the lack of internet access. Add the following setups in your ".ssh/config" file to enable the SSH to the headnode (coe-hpc1) and dual-hop SSH to the GPU node
 
 .. code-block:: console
 
