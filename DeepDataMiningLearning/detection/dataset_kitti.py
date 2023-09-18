@@ -100,7 +100,8 @@ class KittiDataset(torch.utils.data.Dataset):
         labels = torch.as_tensor(labels, dtype=torch.int64)
         image_id = int(image_id)
         #image_id = torch.tensor([image_id])
-        image_id = torch.tensor(image_id)
+        #Important!!! do not make image_id a tensor, otherwise the coco evaluation will send error.
+        #image_id = torch.tensor(image_id)
         area = (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0])
         # suppose all instances are not crowd
         iscrowd = torch.zeros((num_objs,), dtype=torch.int64)

@@ -14,6 +14,7 @@ import pycocotools.mask as mask_util
 import copy
 import io
 from contextlib import redirect_stdout
+from tqdm.auto import tqdm
 
 class CocoEvaluator:
     def __init__(self, coco_gt, iou_types):
@@ -209,6 +210,8 @@ def convert_to_coco_api(ds):#mykittidetectiondataset
     dataset = {"images": [], "categories": [], "annotations": []}
     categories = set()
     ds_len=len(ds)
+    print("convert to coco api:")
+    progress_bar = tqdm(range(ds_len))
     for img_idx in range(ds_len):
         # find better way to get target
         # targets = ds.get_annotations(img_idx)
@@ -249,8 +252,9 @@ def convert_to_coco_api(ds):#mykittidetectiondataset
                 ann["num_keypoints"] = sum(k != 0 for k in keypoints[i][2::3])
             dataset["annotations"].append(ann)
             ann_id += 1
+        progress_bar.update(1)
     dataset["categories"] = [{"id": i} for i in sorted(categories)]
-    print("convert_to_coco_api",dataset["categories"])
+    #print("convert_to_coco_api",dataset["categories"])
     coco_ds.dataset = dataset
     coco_ds.createIndex()
     return coco_ds
@@ -264,6 +268,8 @@ def simplemodelevaluate(model, data_loader, device):
     #coco = convert_to_coco_api(data_loader.dataset)
     iou_types = ["bbox"] #_get_iou_types(model)
     coco_evaluator = CocoEvaluator(coco, iou_types)
+
+    evalprogress_bar = tqdm(range(len(data_loader)))
 
     for images, targets in data_loader:
         images = list(img.to(device) for img in images) #list of torch.Size([3, 426, 640]), len=1
@@ -279,6 +285,7 @@ def simplemodelevaluate(model, data_loader, device):
         evaluator_time = time.time()
         coco_evaluator.update(res)
         evaluator_time = time.time() - evaluator_time
+        evalprogress_bar.update(1)
 
     # gather the stats from all processes
     #coco_evaluator.synchronize_between_processes()
