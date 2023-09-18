@@ -9,6 +9,27 @@ Author:
    * **Web**: http://www.sjsu.edu/cmpe/faculty/tenure-line/kaikai-liu.php
 
 
+COCO Object Detection
+---------------------
+
+.. code-block:: console
+
+   (mycondapy310) [010796032@cs004 detection]$ python mytrain.py --data-path="/data/cmpe249-fa23/COCOoriginal/" --dataset="coco" --model="fasterrcnn_resnet50_fpn_v2" --resume="" --test-only=True   
+
+   IoU metric: bbox
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.301
+   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.489
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.350
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = -1.000
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.187
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.480
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.000
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.377
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.438
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = -1.000
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.186
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.733
+
 Kitti Object Detection
 ----------------------
 
@@ -16,7 +37,7 @@ Perform Kitti object detection training, model saved in "/data/cmpe249-fa23/trai
 
 .. code-block:: console
 
-   (mycondapy310) [010796032@cs004 detection]$ python mytrain.py --dataset='kitti', --model='fasterrcnn_resnet50_fpn_v2', --data_path="/data/cmpe249-fa23/torchvisiondata/Kitti/", --output-dir="/data/cmpe249-fa23/trainoutput"
+   (mycondapy310) [010796032@cs004 detection]$ python mytrain.py --data-path="/data/cmpe249-fa23/torchvisiondata/Kitti/" --dataset="kitti" --model="fasterrcnn_resnet50_fpn_v2" --resume="/data/cmpe249-fa23/trainoutput/kitti/model_36.pth" --output-dir="/data/cmpe249-fa23/trainoutput"
    Epoch1-36 (freeze the FasterRCNN except the header)
    IoU metric: bbox
    Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.186
@@ -46,3 +67,22 @@ Perform Kitti object detection training, model saved in "/data/cmpe249-fa23/trai
    Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.722
    Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.733
    Training time 1:29:30
+
+Perform Kitti evaluation:
+
+.. code-block:: console
+
+   $ python mytrain.py --data-path="/data/cmpe249-fa23/torchvisiondata/Kitti/" --dataset="kitti" --model="fasterrcnn_resnet50_fpn_v2" --resume="/data/cmpe249-fa23/trainoutput/kitti/model_60.pth" --output-dir="/data/cmpe249-fa23/trainoutput" --test-only=True
+   IoU metric: bbox
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.758
+   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.947
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.947
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.800
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.633
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.746
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.556
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.749
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.772
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.800
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.667
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.767

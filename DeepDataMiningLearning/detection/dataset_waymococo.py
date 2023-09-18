@@ -16,7 +16,7 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
         self.root = root
         self.transforms = transforms
         self.coco = COCO(annotation)
-        self.ids = list(sorted(self.coco.imgs.keys()))#
+        self.ids = list(sorted(self.coco.imgs.keys()))#id string list
 
         #
         dataset=self.coco.dataset
@@ -140,3 +140,27 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.ids)
+
+import DeepDataMiningLearning.detection.transforms as T
+def get_transformsimple(train):
+    transforms = []
+    transforms.append(T.PILToTensor())
+    transforms.append(T.ToDtype(torch.float, scale=True))
+    # if train:
+    #     transforms.append(RandomHorizontalFlip(0.5))
+    return T.Compose(transforms)
+
+from pathlib import Path
+if __name__ == "__main__":
+    # path to your own data and coco file
+    data_root = '/data/cmpe249-fa23/WaymoCOCO/'
+
+    #data_root = '/DATA5T/Dataset/WaymoCOCO/'
+    ann_file = os.path.join(data_root, 'annotations_train684step8allobject.json')#'annotations_train20new.json'
+    # create own Dataset
+    mywaymodataset = WaymoCOCODataset(root=data_root,  
+                          annotation=ann_file,
+                          transforms=get_transformsimple(False)
+                          )
+    length = len(mywaymodataset)
+    print("Dataset",len(mywaymodataset))#85008
