@@ -13,6 +13,8 @@ from torch.utils.data.sampler import BatchSampler, Sampler
 from torch.utils.model_zoo import tqdm
 
 
+
+# Group by aspect ratio
 def _repeat_to_at_least(iterable, n):
     repeat_times = math.ceil(n / len(iterable))
     repeated = chain.from_iterable(repeat(iterable, repeat_times))

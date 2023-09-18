@@ -4,6 +4,9 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 
+    # model = torchvision.models.get_model(args.model)
+    #     args.model, weights=args.weights, weights_backbone=args.weights_backbone, num_classes=num_classes, **kwargs
+    # )
 def get_torchvision_detection_models(modelname, box_score_thresh=0.9):
     weights_enum = get_model_weights(modelname) #<enum 'FasterRCNN_MobileNet_V3_Large_320_FPN_Weights'>
     weights = weights_enum.DEFAULT #get the default weights
@@ -13,9 +16,10 @@ def get_torchvision_detection_models(modelname, box_score_thresh=0.9):
     
     return pretrained_model, preprocess, weights, classes
 
-def modify_fasterrcnnheader(model, num_classes):
-    for p in model.parameters():
-        p.requires_grad = False
+def modify_fasterrcnnheader(model, num_classes, freeze=True):
+    if freeze == True:
+        for p in model.parameters():
+            p.requires_grad = False
     # replace the classifier with a new one, that has
     # num_classes which is user-defined
     #num_classes = 2  # 1 class (person) + background
@@ -58,7 +62,7 @@ def modify_backbone(model, num_classes):
                     num_classes=2,
                     rpn_anchor_generator=anchor_generator,
                     box_roi_pool=roi_pooler)
-
+    return model
     # model = torchvision.models.get_model(
     #     args.model, weights=args.weights, weights_backbone=args.weights_backbone, num_classes=num_classes, **kwargs
     # )

@@ -5,7 +5,7 @@ import os
 import time
 import numpy as np
 from DeepDataMiningLearning.detection import utils
-from DeepDataMiningLearning.detection.coco_eval import CocoEvaluator
+#from DeepDataMiningLearning.detection.coco_eval import CocoEvaluator
 #from DeepDataMiningLearning.detection.coco_utils import get_coco_api_from_dataset
 from pycocotools.coco import COCO #https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocotools/coco.py
 from pycocotools.cocoeval import COCOeval
