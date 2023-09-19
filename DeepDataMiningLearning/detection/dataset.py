@@ -8,6 +8,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from PIL import Image
 import csv
 from DeepDataMiningLearning.detection.dataset_kitti import KittiDataset
+from DeepDataMiningLearning.detection.dataset_waymococo import WaymoCOCODataset
 from collections import defaultdict
 
 import torch
@@ -148,6 +149,8 @@ def get_dataset(datasetname, is_train, is_val, args):
         ds, num_classes = get_cocodataset(is_train, is_val, args)
     elif datasetname.lower() == 'kitti':
         ds, num_classes = get_kittidataset(is_train, is_val, args)
+    elif datasetname.lower() == 'waymococo':
+        ds, num_classes = get_waymococodataset(is_train, is_val, args)
     return ds, num_classes
 
 def get_transform(is_train, args):
@@ -186,6 +189,22 @@ def get_kittidataset(is_train, is_val, args):
     else:
         transformfunc=get_transform(True, args) #add augumentation
         dataset = KittiDataset(rootPath, train=is_train, split='train', transform=transformfunc)
+    
+    num_classes = dataset.numclass
+    return dataset, num_classes
+    #mykitti = datasets.Kitti(root=rootPath, train= True, transform = get_transform(is_train, args), target_transform = None, download = False)
+
+def get_waymococodataset(is_train, is_val, args):
+    rootPath=args.data_path
+    annotation=args.annotationfile
+    if is_val == True:
+        annotation = os.path.join(rootPath, 'annotations_val50new.json')
+        transformfunc=get_transform(False, args)
+        dataset = WaymoCOCODataset(rootPath, annotation, train=True, transform=transformfunc)
+    else: #Training
+        annotation = os.path.join(rootPath, 'annotations_train200new.json') 
+        transformfunc=get_transform(True, args) #add augumentation
+        dataset = WaymoCOCODataset(rootPath, annotation, train=is_train, transform=transformfunc)
     
     num_classes = dataset.numclass
     return dataset, num_classes

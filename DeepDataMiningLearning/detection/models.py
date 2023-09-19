@@ -1,4 +1,5 @@
 import torchvision
+import torch
 from torchvision.models import get_model, get_model_weights, get_weight, list_models
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN
@@ -27,6 +28,24 @@ def modify_fasterrcnnheader(model, num_classes, freeze=True):
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     # replace the pre-trained head with a new one
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    return model
+
+def load_previous_object_detection_model_new(num_classes, modelpath, new_num_classes):
+    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(pretrained=True)
+    # get the number of input features for the classifier
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    # replace the pre-trained head with a new one
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    
+    pretrained= True
+    if pretrained:
+        model.load_state_dict(torch.load(modelpath))#'./saved_models2/model_9.pth'))
+
+    # get the number of input features for the classifier
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    # replace the pre-trained head with a new one
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, new_num_classes)
+
     return model
 
 def modify_backbone(model, num_classes):

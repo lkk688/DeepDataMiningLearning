@@ -12,17 +12,26 @@ import torch.utils.data as data
 from pycocotools.coco import COCO
 
 class WaymoCOCODataset(torch.utils.data.Dataset):
-    def __init__(self, root, annotation, transforms=None):
+    def __init__(self, root, annotation, train=True, transform=None):
         self.root = root
-        self.transforms = transforms
+        self.transform = transform
         self.coco = COCO(annotation)
+        self.is_train = train
         self.ids = list(sorted(self.coco.imgs.keys()))#id string list
 
         #
-        dataset=self.coco.dataset
-        imgToAnns=self.coco.imgToAnns
-        catToImgs =self.coco.catToImgs
+        dataset=self.coco.dataset #'images': image filename (images/xxx.jpg) with image_id (0000001)
+        imgToAnns=self.coco.imgToAnns #image_id to list of annotations
+        catToImgs =self.coco.catToImgs #three classes, 1,2,4
         cats=self.coco.cats
+        self.numclass = 5 #len(catToImgs) + 1 #three classes + background
+        #num_classes=5 # ['unknown', 'vehicle', 'pedestrian', 'sign', 'cyclist']
+        #previous_num_classes = 4 #Unknown:0, Vehicles: 1, Pedestrians: 2, Cyclists: 3, Signs (removed)
+        #Real data only has 
+        self.INSTANCE_CATEGORY_NAMES = ['Vehicles', 'Pedestrians', 'Cyclists']
+        self.INSTANCE2id = {'Vehicles': 1, 'Pedestrians': 2, 'Cyclists': 4} #background is 0
+        self.id2INSTANCE = {v: k for k, v in self.INSTANCE2id.items()}
+        #In annotation, class is 1,2,4
 
     
     def _get_target(self, id):
@@ -121,7 +130,8 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
             target['boxes'] = torch.as_tensor(target_bbox, dtype=torch.float32)
             # Labels int value for class
             target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)
-            target['image_id'] = torch.tensor([int(img_id)])
+            #target['image_id'] = torch.tensor([int(img_id)])
+            target['image_id'] = torch.tensor(int(img_id))
             #torch.tensor([int(frameitem.context.name.split("_")[-2] + str(index))])
             target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)
             target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#torch.zeros((len(target['boxes'])), dtype=torch.int64)
@@ -129,12 +139,15 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
             #negative example, ref: https://github.com/pytorch/vision/issues/2144
             target['boxes'] = torch.zeros((0, 4), dtype=torch.float32)#not empty
             target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)#empty
-            target['image_id'] = torch.tensor([int(img_id)])
+            #target['image_id'] = torch.tensor([int(img_id)])
+            target['image_id'] = torch.tensor(int(img_id))
             target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)#empty
             target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
 
-        if self.transforms is not None:
-            img = self.transforms(img)
+        # if self.transforms is not None:
+        #     img = self.transforms(img)
+        if self.transform:
+            img, target = self.transform(img, target)
         #print("target:", target)
         return img, target
 
@@ -155,8 +168,11 @@ if __name__ == "__main__":
     # path to your own data and coco file
     data_root = '/data/cmpe249-fa23/WaymoCOCO/'
 
-    #data_root = '/DATA5T/Dataset/WaymoCOCO/'
-    ann_file = os.path.join(data_root, 'annotations_train684step8allobject.json')#'annotations_train20new.json'
+    #jsonfile = 'annotations_train684step8allobject.json' #4 classes, 0,1,2,4 85008
+    jsonfile = 'annotations_valallnew.json' #4 classes, 0,1,2,4 199935
+    #jsonfile = 'annotations_trainallnew.json' #4 classes, 0,1,2,4 677530
+    #jsonfile = '3classsub_annotations_trainall.json' #4 classes, 0,1,2,4 20820
+    ann_file = os.path.join(data_root, jsonfile)#'annotations_train20new.json'
     # create own Dataset
     mywaymodataset = WaymoCOCODataset(root=data_root,  
                           annotation=ann_file,
@@ -164,3 +180,5 @@ if __name__ == "__main__":
                           )
     length = len(mywaymodataset)
     print("Dataset",len(mywaymodataset))#85008
+    img, target = mywaymodataset[0]
+    print(target.keys())

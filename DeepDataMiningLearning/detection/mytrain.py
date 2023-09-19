@@ -43,10 +43,11 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/data/cmpe249-fa23/torchvisiondata/Kitti/", type=str, help="dataset path")
+    parser.add_argument("--data-path", default="/data/cmpe249-fa23/WaymoCOCO/", type=str, help="dataset path")
+    parser.add_argument("--annotationfile", default=" annotations_train200new.json", type=str, help="dataset annotion file path, e.g., coco json file")
     parser.add_argument(
         "--dataset",
-        default="kitti", 
+        default="waymococo", 
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
@@ -101,7 +102,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--print-freq", default=5, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="/data/cmpe249-fa23/trainoutput", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="/data/cmpe249-fa23/trainoutput/kitti/model_36.pth", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
+    parser.add_argument("--resume", default="", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
     parser.add_argument("--start_epoch", default=0, type=int, help="start epoch")
     parser.add_argument("--aspect-ratio-group-factor", default=-1, type=int) #3
     parser.add_argument("--rpn-score-thresh", default=None, type=float, help="rpn score threshold for faster-rcnn")
@@ -212,7 +213,7 @@ def main(args):
     
     model, preprocess, weights, classes = get_torchvision_detection_models(args.model)
     if len(classes) != num_classes:
-        model = modify_fasterrcnnheader(model, num_classes, freeze=False)
+        model = modify_fasterrcnnheader(model, num_classes, freeze=True)
     model.to(device)
     summary(model=model, 
         input_size=(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
