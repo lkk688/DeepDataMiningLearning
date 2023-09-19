@@ -138,6 +138,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
+    parser.add_argument("--expname", default="0918", help="experiment name, create a sub-folder")
 
     return parser
 
@@ -153,7 +154,10 @@ def main(args):
 
     if args.output_dir:
         utils.mkdir(args.output_dir)
-        args.output_dir = os.path.join(args.output_dir, args.dataset)
+        if args.expname:
+            args.output_dir = os.path.join(args.output_dir, args.dataset, args.expname)
+        else:
+            args.output_dir = os.path.join(args.output_dir, args.dataset)
         utils.mkdir(args.output_dir)
 
     #utils.init_distributed_mode(args)
