@@ -9,14 +9,8 @@ from torchvision.models import get_model, get_model_weights, get_weight, list_mo
 from torchvision.io.image import read_image
 from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
+from DeepDataMiningLearning.detection.models import get_torchvision_detection_models, load_trained_model
 
-def get_torchvision_detection_models(modelname, box_score_thresh=0.9):
-    weights_enum = get_model_weights(modelname) #<enum 'FasterRCNN_MobileNet_V3_Large_320_FPN_Weights'>
-    weights = weights_enum.DEFAULT #get the default weights
-    preprocess = weights.transforms()
-    classes = weights.meta["categories"]
-    pretrained_model=get_model(modelname, box_score_thresh=0.9, weights="DEFAULT")
-    return pretrained_model, preprocess, weights, classes
 
 def test_inference(modelname, imgpath):
     img = read_image(imgpath)
@@ -33,16 +27,27 @@ def test_inference(modelname, imgpath):
     im = to_pil_image(box.detach())
     return im
 
-# Construct the argument parser.
-parser = argparse.ArgumentParser()
-parser.add_argument('-i', '--input', default='input/video_1.mp4', 
-                    help='path to input video')
-parser.add_argument('-t', '--threshold', default=0.5, type=float,
-                    help='detection threshold')
-args = vars(parser.parse_args())
+def inference_trainedmodel(modelname, num_classes, classes, checkpointpath, imgpath):
+    img = read_image(imgpath)
+    model, preprocess = load_trained_model(modelname, num_classes, checkpointpath)
+    #Apply inference preprocessing transforms
+    batch = [preprocess(img)]
+    prediction = model(batch)[0]
+    print(prediction["labels"])
+    print(prediction["boxes"])
+    if classes and len(classes)==num_classes:
+        labels = [classes[i] for i in prediction["labels"]]
+    else:
+        labels = [i for i in prediction["labels"]]
+    box = draw_bounding_boxes(img, boxes=prediction["boxes"],
+                            labels=labels,
+                            colors="red",
+                            width=4, font_size=40)
+    im = to_pil_image(box.detach())
+    return im
 
 
-def main(args):
+def detect_video(args):
     # Define the computation device.
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = get_model(device)
@@ -71,13 +76,13 @@ def main(args):
             start_time = time.time()
             with torch.no_grad():
                 # Get predictions for the current frame.
-                boxes, classes, labels = detect_utils.predict(
+                boxes, classes, labels = predict(
                     frame, model, 
                     device, args['threshold']
                 )
             
             # Draw boxes and show current frame on screen.
-            image = detect_utils.draw_boxes(boxes, classes, labels, frame)
+            image = draw_boxes(boxes, classes, labels, frame)
             # Get the end time.
             end_time = time.time()
             # Get the fps.
@@ -106,7 +111,7 @@ def main(args):
     print(f"Average FPS: {avg_fps:.3f}")
 
 
-def predict(image, model, device, detection_threshold):
+def predict(image, model, device, transform, class_names, detection_threshold):
     """
     Predict the output of an image after forward pass through
     the model and return the bounding boxes, class names, and 
@@ -127,7 +132,7 @@ def predict(image, model, device, detection_threshold):
     boxes = pred_bboxes[pred_scores >= detection_threshold].astype(np.int32)
     labels = outputs[0]['labels'][:len(boxes)]
     # Get all the predicited class names.
-    pred_classes = [coco_names[i] for i in labels.cpu().numpy()]
+    pred_classes = [class_names[i] for i in labels.cpu().numpy()]
     return boxes, pred_classes, labels
 
 def draw_boxes(boxes, classes, labels, image):
@@ -135,7 +140,7 @@ def draw_boxes(boxes, classes, labels, image):
     Draws the bounding box around a detected object.
     """
     for i, box in enumerate(boxes):
-        color = COLORS[labels[i]]
+        color = 'r' #COLORS[labels[i]]
         cv2.rectangle(
             image,
             (int(box[0]), int(box[1])),
@@ -146,6 +151,20 @@ def draw_boxes(boxes, classes, labels, image):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, color[::-1], 2, 
                     lineType=cv2.LINE_AA)
     return image
+
+# Construct the argument parser.
+parser = argparse.ArgumentParser()
+parser.add_argument('-i', '--input', default='input/video_1.mp4', 
+                    help='path to input video')
+parser.add_argument('-t', '--threshold', default=0.5, type=float,
+                    help='detection threshold')
+args = vars(parser.parse_args())
+
+def main(args):
+    modelname = 'fasterrcnn_resnet50_fpn_v2'
+    imgpath = "../sampledata/sjsupeople.jpg"
+    im=test_inference(modelname, imgpath)
+    im.save("../../data/testinference.png", "PNG")
 
 if __name__ == "__main__":
     main(args)

@@ -23,3 +23,4 @@ Contents
    source/HPC2
    source/WSL2
    source/MacML
+   source/detection
