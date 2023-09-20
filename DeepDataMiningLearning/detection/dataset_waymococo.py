@@ -131,7 +131,8 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
             # Labels int value for class
             target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)
             #target['image_id'] = torch.tensor([int(img_id)])
-            target['image_id'] = torch.tensor(int(img_id))
+            #target['image_id'] = torch.tensor(int(img_id))
+            target['image_id'] = int(img_id)
             #torch.tensor([int(frameitem.context.name.split("_")[-2] + str(index))])
             target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)
             target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#torch.zeros((len(target['boxes'])), dtype=torch.int64)
@@ -140,7 +141,8 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
             target['boxes'] = torch.zeros((0, 4), dtype=torch.float32)#not empty
             target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)#empty
             #target['image_id'] = torch.tensor([int(img_id)])
-            target['image_id'] = torch.tensor(int(img_id))
+            #target['image_id'] = torch.tensor(int(img_id))
+            target['image_id'] = int(img_id)
             target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)#empty
             target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
 

@@ -198,7 +198,7 @@ def get_waymococodataset(is_train, is_val, args):
     rootPath=args.data_path
     annotation=args.annotationfile
     if is_val == True:
-        annotation = os.path.join(rootPath, 'annotations_val50new.json')
+        annotation = os.path.join(rootPath, 'annotations_val20new.json') #'annotations_val50new.json'
         transformfunc=get_transform(False, args)
         dataset = WaymoCOCODataset(rootPath, annotation, train=True, transform=transformfunc)
     else: #Training

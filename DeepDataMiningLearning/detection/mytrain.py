@@ -21,7 +21,7 @@ except:
 
 
 #Select the visible GPU
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3" #"0,1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2,3" #"0,1"
 
 MACHINENAME='HPC'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
@@ -44,7 +44,7 @@ def get_args_parser(add_help=True):
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
     parser.add_argument("--data-path", default="/data/cmpe249-fa23/WaymoCOCO/", type=str, help="dataset path")
-    parser.add_argument("--annotationfile", default=" annotations_train200new.json", type=str, help="dataset annotion file path, e.g., coco json file")
+    parser.add_argument("--annotationfile", default="annotations_train200new.json", type=str, help="dataset annotion file path, e.g., coco json file")
     parser.add_argument(
         "--dataset",
         default="waymococo", 
@@ -102,7 +102,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--print-freq", default=5, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="/data/cmpe249-fa23/trainoutput", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
+    parser.add_argument("--resume", default="/data/cmpe249-fa23/trainoutput/waymococo/model_0.pth", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
     parser.add_argument("--start_epoch", default=0, type=int, help="start epoch")
     parser.add_argument("--aspect-ratio-group-factor", default=-1, type=int) #3
     parser.add_argument("--rpn-score-thresh", default=None, type=float, help="rpn score threshold for faster-rcnn")
@@ -120,7 +120,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--test-only",
-        default=False,
+        default=True,
         type=bool, 
         help="Only test the model",
     )
@@ -138,7 +138,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
-    parser.add_argument("--expname", default="0918", help="experiment name, create a sub-folder")
+    parser.add_argument("--expname", default="0919", help="experiment name, create a sub-folder")
 
     return parser
 
