@@ -120,7 +120,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--test-only",
-        default=True,
+        default=False,
         type=bool, 
         help="Only test the model",
     )

@@ -18,6 +18,10 @@ def _get_iou_types(model):
         iou_types.append("keypoints")
     return iou_types
 
+def bboxformat_conversion(pred_bbox_np, fromformat='xywh', toformat='xyxy'):
+    pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(pred_bbox_np), 'xywh', 'xyxy')
+    return pred_bbox_tensor.numpy()
+
 def convert_to_xywh(boxes):
     xmin, ymin, xmax, ymax = boxes.unbind(1)
     return torch.stack((xmin, ymin, xmax - xmin, ymax - ymin), dim=1)

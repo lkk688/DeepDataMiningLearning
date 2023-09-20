@@ -6,6 +6,8 @@ from matplotlib.patches import Rectangle
 #%matplotlib inline
 from PIL import Image 
 import matplotlib.pyplot as plt
+import torch
+import numpy as np
 
 INSTANCE_Color = {
     'Unknown':'black', 'Vehicles':'red', 'Pedestrians':'green', 'Cyclists':'purple'
@@ -32,6 +34,80 @@ def convertIDtolabel(pred_ids, INSTANCE_CATEGORY_NAMES):
             pred_labels.append(INSTANCE_CATEGORY_NAMES[pred_i])
     return pred_labels
 
+def matplotlibshow_image_bbxyxy(image, pred_bbox, pred_ids, title, INSTANCE_CATEGORY_NAMES, savefigname=None):
+    """Show a camera image (HWC format) and the given camera labels."""
+        
+    fig, ax = plt.subplots(1, 1, figsize=(20, 15))
+    boxnum=len(pred_bbox)
+    #print(boxnum)
+    if len(pred_ids)<1:
+        print("No object detected")
+        return image
+    else:
+        #pred_labels = [INSTANCE_CATEGORY_NAMES[i] for i in list(pred_ids) ]
+        pred_labels = convertIDtolabel(pred_ids, INSTANCE_CATEGORY_NAMES)
+        #print(pred_labels)
+        for i in range(boxnum):#patch in pred_bbox:
+            patch=pred_bbox[i]
+            #print(patch)
+            colorlabel=compute_color_for_labels(pred_ids[i]) #INSTANCE_Color[label]
+            #print(colorlabel)#RGB value 0-255
+            colorlabelnormalized = [float(i)/255 for i in colorlabel] #0-1
+            label=pred_labels[i]
+            #print(label)
+            ax.add_patch(Rectangle(
+            xy=(patch[0], patch[1]), #xmin ymin
+            width=patch[2] - patch[0],
+            height=patch[3] - patch[1],
+            linewidth=4,
+            edgecolor=colorlabelnormalized,#"red",
+            facecolor='none'))
+            ax.text(patch[0], patch[1], label, color=colorlabelnormalized, fontsize=15)
+            #ax.text(patch[0][0], patch[0][1], label, bbox=dict(facecolor='red', alpha=0.5))#fontsize=8)
+        
+    ax.imshow(image)
+    
+    ax.title.set_text(title)
+    ax.grid(False)
+    ax.axis('off')
+    
+    if savefigname is not None:
+        fig.savefig(savefigname)
+    
+    #fig.savefig(f"output/test_frame_{i}.png", dpi=fig.dpi)
+#     plt.show()
+
+from torchvision.io.image import read_image
+from torchvision.utils import draw_bounding_boxes
+from torchvision.transforms.functional import to_pil_image
+
+def pil_tonp(img_pil, outputformat='CHW'):
+    #convert PIL image to numpy
+    a = np.asarray(img_pil)
+    print("input image shape", a.shape) #HWC format (height, width, color channels)
+    if outputformat=='CHW':
+        imgdata = a.transpose((2, 0, 1)) #CHW (color channels, height, width)
+    elif outputformat=='HWC':
+        imgdata = a
+    return imgdata
+
+import cv2
+def npimage_RGBchange(imgdata, fromformat='BGR', toformat='RGB'): 
+    #imgdata is HWC format
+    im = cv2.cvtColor(imgdata, cv2.COLOR_BGR2RGB)
+    return im
+
+##torch read_image get format CHW (color channels, height, width)
+#pred_bbox_tensor in (xmin, ymin, xmax, ymax) format
+def drawbbox_topil(imgdata_np, pred_bbox_np, labels_str, colors='red'):
+    #imgdata_np CHW format
+    pred_bbox_tensor = torch.from_numpy(pred_bbox_np)
+    box = draw_bounding_boxes(torch.from_numpy(imgdata_np), boxes=pred_bbox_tensor,
+                            labels=labels_str,
+                            colors="red",
+                            width=4, font_size=40)
+    im = to_pil_image(box.detach())
+    return im
 
 def draw_boxes(image, pred_bbox, pred_ids, pred_score, INSTANCE_CATEGORY_NAMES):
     boxnum=len(pred_bbox)
@@ -94,48 +170,7 @@ def draw_trackingboxes(image, pred_bbox, identities=None, track_class=None, INST
             cv2.putText(image,label,(x1,y1+t_size[1]+4), cv2.FONT_HERSHEY_PLAIN, labelscale, [255,255,255], 2)
     return image
 
-def show_image_bbxyxy(image, pred_bbox, pred_ids, title, INSTANCE_CATEGORY_NAMES, savefigname=None):
-    """Show a camera image and the given camera labels."""
-        
-    fig, ax = plt.subplots(1, 1, figsize=(20, 15))
-    boxnum=len(pred_bbox)
-    #print(boxnum)
-    if len(pred_ids)<1:
-        print("No object detected")
-        return image
-    else:
-        #pred_labels = [INSTANCE_CATEGORY_NAMES[i] for i in list(pred_ids) ]
-        pred_labels = convertIDtolabel(pred_ids, INSTANCE_CATEGORY_NAMES)
-        #print(pred_labels)
-        for i in range(boxnum):#patch in pred_bbox:
-            patch=pred_bbox[i]
-            #print(patch)
-            colorlabel=compute_color_for_labels(pred_ids[i]) #INSTANCE_Color[label]
-            #print(colorlabel)#RGB value 0-255
-            colorlabelnormalized = [float(i)/255 for i in colorlabel] #0-1
-            label=pred_labels[i]
-            #print(label)
-            ax.add_patch(Rectangle(
-            xy=patch[0],#(patch[0], patch[1]), #xmin ymin
-            width=patch[1][0]-patch[0][0],#patch[2] - patch[0],
-            height=patch[1][1]-patch[0][1],#patch[3] - patch[1],
-            linewidth=4,
-            edgecolor=colorlabelnormalized,#"red",
-            facecolor='none'))
-            ax.text(patch[0][0], patch[0][1], label, color=colorlabelnormalized, fontsize=12)
-            #ax.text(patch[0][0], patch[0][1], label, bbox=dict(facecolor='red', alpha=0.5))#fontsize=8)
-        
-    ax.imshow(image)
-    
-    ax.title.set_text(title)
-    ax.grid(False)
-    ax.axis('off')
-    
-    if savefigname is not None:
-        fig.savefig(savefigname)
-    
-    #fig.savefig(f"output/test_frame_{i}.png", dpi=fig.dpi)
-#     plt.show()
+
 
 def show_imagewithscore_bbxyxy(image, pred_bbox, pred_ids, pred_score, title, INSTANCE_CATEGORY_NAMES, savefigname=None):
     """Show a camera image and the given camera labels."""

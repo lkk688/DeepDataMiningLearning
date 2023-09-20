@@ -41,8 +41,6 @@ parser.add_argument('-t', '--threshold', default=0.5, type=float,
                     help='detection threshold')
 args = vars(parser.parse_args())
 
-if __name__ == "__main__":
-    main(args)
 
 def main(args):
     # Define the computation device.
@@ -148,3 +146,6 @@ def draw_boxes(boxes, classes, labels, image):
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, color[::-1], 2, 
                     lineType=cv2.LINE_AA)
     return image
+
+if __name__ == "__main__":
+    main(args)

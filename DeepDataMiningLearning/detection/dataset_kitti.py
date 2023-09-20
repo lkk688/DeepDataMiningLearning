@@ -44,8 +44,8 @@ class KittiDataset(torch.utils.data.Dataset):
         #     if self.train:
         #         self.targets.append(os.path.join(labels_dir, f"{img_file.split('.')[0]}.txt"))
         #self.imgs = list(sorted(os.listdir(os.path.join(self.root, "PNGImages"))))
-        self.INSTANCE_CATEGORY_NAMES = ['Car', 'Van', 'Truck', 'Pedestrian', 'Person_sitting', 'Cyclist', 'Tram', 'Misc', 'DontCare']
-        self.INSTANCE2id = {'Car': 1, 'Van': 2, 'Truck': 3, 'Pedestrian':4, 'Person_sitting':5, 'Cyclist':6, 'Tram':7, 'Misc':8, 'DontCare':9} #background is 0
+        self.INSTANCE_CATEGORY_NAMES = ['__background__', 'Car', 'Van', 'Truck', 'Pedestrian', 'Person_sitting', 'Cyclist', 'Tram', 'Misc', 'DontCare']
+        self.INSTANCE2id = {'__background__':0,'Car': 1, 'Van': 2, 'Truck': 3, 'Pedestrian':4, 'Person_sitting':5, 'Cyclist':6, 'Tram':7, 'Misc':8, 'DontCare':9} #background is 0
         self.id2INSTANCE = {v: k for k, v in self.INSTANCE2id.items()}
         self.numclass = 9 #including background, excluding the 'DontCare'
 

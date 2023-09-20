@@ -28,9 +28,9 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
         #num_classes=5 # ['unknown', 'vehicle', 'pedestrian', 'sign', 'cyclist']
         #previous_num_classes = 4 #Unknown:0, Vehicles: 1, Pedestrians: 2, Cyclists: 3, Signs (removed)
         #Real data only has 
-        self.INSTANCE_CATEGORY_NAMES = ['Vehicles', 'Pedestrians', 'Cyclists']
-        self.INSTANCE2id = {'Vehicles': 1, 'Pedestrians': 2, 'Cyclists': 4} #background is 0
-        self.id2INSTANCE = {v: k for k, v in self.INSTANCE2id.items()}
+        self.INSTANCE_CATEGORY_NAMES = ['__background__','Vehicles', 'Pedestrians', 'Cyclists', 'Signs']
+        #self.INSTANCE2id = {'__background__':0, 'Vehicles': 1, 'Pedestrians': 2, 'Cyclists': 4} #background is 0
+        #self.id2INSTANCE = {v: k for k, v in self.INSTANCE2id.items()}
         #In annotation, class is 1,2,4
 
     
