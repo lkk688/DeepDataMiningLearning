@@ -21,7 +21,7 @@ except:
 
 
 #Select the visible GPU
-os.environ['CUDA_VISIBLE_DEVICES'] = "1,2,3" #"0,1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3" #"0,1"
 
 MACHINENAME='HPC'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
@@ -52,6 +52,7 @@ def get_args_parser(add_help=True):
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
     parser.add_argument("--model", default="fasterrcnn_resnet50_fpn_v2", type=str, help="model name")
+    parser.add_argument("--freezemodel", default=False, type=bool, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-b", "--batch-size", default=16, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
@@ -102,7 +103,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--print-freq", default=5, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="/data/cmpe249-fa23/trainoutput", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="/data/cmpe249-fa23/trainoutput/waymococo/model_0.pth", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
+    parser.add_argument("--resume", default="/data/cmpe249-fa23/trainoutput/waymococo/0919/model_12.pth", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
     parser.add_argument("--start_epoch", default=0, type=int, help="start epoch")
     parser.add_argument("--aspect-ratio-group-factor", default=-1, type=int) #3
     parser.add_argument("--rpn-score-thresh", default=None, type=float, help="rpn score threshold for faster-rcnn")
@@ -129,7 +130,7 @@ def get_args_parser(add_help=True):
     )
 
     # distributed training parameters
-    parser.add_argument("--world-size", default=1, type=int, help="number of distributed processes")
+    parser.add_argument("--world-size", default=4, type=int, help="number of distributed processes")
     parser.add_argument("--dist-url", default="env://", type=str, help="url used to set up distributed training")
     parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
     parser.add_argument("--weights-backbone", default=None, type=str, help="the backbone weights enum name to load")
@@ -160,8 +161,8 @@ def main(args):
             args.output_dir = os.path.join(args.output_dir, args.dataset)
         utils.mkdir(args.output_dir)
 
-    #utils.init_distributed_mode(args)
-    args.distributed = False
+    utils.init_distributed_mode(args)
+    #args.distributed = False
     print(args)
 
     device = torch.device(args.device)
@@ -217,7 +218,7 @@ def main(args):
     
     model, preprocess, weights, classes = get_torchvision_detection_models(args.model)
     if len(classes) != num_classes:
-        model = modify_fasterrcnnheader(model, num_classes, freeze=True)
+        model = modify_fasterrcnnheader(model, num_classes, freeze=args.freezemodel)
     model.to(device)
     summary(model=model, 
         input_size=(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
