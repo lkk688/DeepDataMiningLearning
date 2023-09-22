@@ -162,7 +162,7 @@ args = vars(parser.parse_args())
 
 def main(args):
     modelname = 'fasterrcnn_resnet50_fpn_v2'
-    imgpath = "../sampledata/sjsupeople.jpg"
+    imgpath = "../../sampledata/sjsupeople.jpg"
     im=test_inference(modelname, imgpath)
     im.save("../../data/testinference.png", "PNG")
 

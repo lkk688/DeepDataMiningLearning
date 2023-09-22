@@ -389,7 +389,7 @@ if __name__ == "__main__":
     
     rootPath = '/data/cmpe249-fa23/torchvisiondata/Kitti'
     is_train = True
-    kittidataset = MyKittiDetection(rootPath, train=True, transform=get_transform(is_train, args))
+    kittidataset = MyKittiDetection(rootPath, train=True, transform=get_transformsimple(is_train))
     print(kittidataset.INSTANCE_CATEGORY_NAMES)
     print("Dataset len:", len(kittidataset))
     img, target = kittidataset[0]
