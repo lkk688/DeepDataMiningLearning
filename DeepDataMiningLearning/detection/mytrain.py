@@ -12,8 +12,9 @@ from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.trainutils import create_aspect_ratio_groups, GroupedBatchSampler
 
 from DeepDataMiningLearning.detection.dataset import get_dataset #get_cocodataset, get_kittidataset, get_transform
-from DeepDataMiningLearning.detection.models import get_torchvision_detection_models, modify_fasterrcnnheader
+from DeepDataMiningLearning.detection.models import create_detectionmodel #get_torchvision_detection_models, modify_fasterrcnnheader
 from DeepDataMiningLearning.detection.myevaluator import simplemodelevaluate, modelevaluate
+
 try:
     from torchinfo import summary
 except:
@@ -37,7 +38,7 @@ else:
 #dataset: #coco, /data/cmpe249-fa23/COCOoriginal/
 #kitti /data/cmpe249-fa23/torchvisiondata/Kitti/
 
-
+#$ torchrun --nproc_per_node=4 train.py
 def get_args_parser(add_help=True):
     import argparse
 
@@ -51,8 +52,8 @@ def get_args_parser(add_help=True):
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
-    parser.add_argument("--model", default="fasterrcnn_resnet50_fpn_v2", type=str, help="model name")
-    parser.add_argument("--freezemodel", default=False, type=bool, help="model name")
+    parser.add_argument("--model", default="customrcnn_resnet152", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
+    parser.add_argument("--trainable", default=0, type=int, help="how many sequence layers is trainable")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-b", "--batch-size", default=16, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
@@ -103,7 +104,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--print-freq", default=5, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="/data/cmpe249-fa23/trainoutput", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="/data/cmpe249-fa23/trainoutput/waymococo/0919/model_12.pth", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
+    parser.add_argument("--resume", default="", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/kitti/model_4.pth
     parser.add_argument("--start_epoch", default=0, type=int, help="start epoch")
     parser.add_argument("--aspect-ratio-group-factor", default=-1, type=int) #3
     parser.add_argument("--rpn-score-thresh", default=None, type=float, help="rpn score threshold for faster-rcnn")
@@ -139,7 +140,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
-    parser.add_argument("--expname", default="0919", help="experiment name, create a sub-folder")
+    parser.add_argument("--expname", default="0923", help="experiment name, create a sub-folder")
 
     return parser
 
@@ -216,17 +217,8 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model, preprocess, weights, classes = get_torchvision_detection_models(args.model)
-    if len(classes) != num_classes:
-        model = modify_fasterrcnnheader(model, num_classes, freeze=args.freezemodel)
+    model = create_detectionmodel(args.model, num_classes, args.trainable)
     model.to(device)
-    summary(model=model, 
-        input_size=(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
-        # col_names=["input_size"], # uncomment for smaller output
-        col_names=["input_size", "output_size", "num_params", "trainable"],
-        col_width=20,
-        row_settings=["var_names"]
-    ) 
     
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)

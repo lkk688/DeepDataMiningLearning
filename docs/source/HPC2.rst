@@ -325,7 +325,9 @@ New conda environment based on Python3.10: mycondapy310
    (mycondapy310) [010796032@g4 MultiModalClassifier]$ python setup.py develop
    pip install -q torchinfo
    $ conda install -c conda-forge jupyterlab
-   ipython kernel install --user --name=mycondapy39
+   ipython kernel install --user --name=mycondapy310
+   pip install pyyaml scikit-image onnx onnx-simplifier
+   pip install onnxruntime
 
 Test code:
 
