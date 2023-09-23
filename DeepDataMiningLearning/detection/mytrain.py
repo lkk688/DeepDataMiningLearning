@@ -38,7 +38,7 @@ else:
 #dataset: #coco, /data/cmpe249-fa23/COCOoriginal/
 #kitti /data/cmpe249-fa23/torchvisiondata/Kitti/
 
-#$ torchrun --nproc_per_node=4 train.py
+#(mycondapy310) [010796032@cs003 detection]$ torchrun --nproc_per_node=4 mytrain.py --batch-size=32
 def get_args_parser(add_help=True):
     import argparse
 

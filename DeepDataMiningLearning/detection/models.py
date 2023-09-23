@@ -282,7 +282,16 @@ class CustomRCNN(nn.Module):
         losses.update(detector_losses)
         losses.update(proposal_losses)
 
-        return losses, detections
+        #return losses, detections
+        return self.eager_outputs(losses, detections)
+    
+    @torch.jit.unused
+    def eager_outputs(self, losses, detections):
+        # type: (Dict[str, Tensor], List[Dict[str, Tensor]]) -> Union[Dict[str, Tensor], List[Dict[str, Tensor]]]
+        if self.training:
+            return losses
+
+        return detections
 
 def create_testdata():
     images, boxes = torch.rand(4, 3, 600, 1200), torch.rand(4, 11, 4)
