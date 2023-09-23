@@ -182,3 +182,43 @@ CustomRCNN with Resnet152 backbone training with multi-GPU
    Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.097
    Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.400
    Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.657
+
+GPU Utilization:
+
+.. code-block:: console
+
+   Sat Sep 23 09:45:39 2023       
+   +---------------------------------------------------------------------------------------+
+   | NVIDIA-SMI 530.30.02              Driver Version: 530.30.02    CUDA Version: 12.1     |
+   |-----------------------------------------+----------------------+----------------------+
+   | GPU  Name                  Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |
+   | Fan  Temp  Perf            Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |
+   |                                         |                      |               MIG M. |
+   |=========================================+======================+======================|
+   |   0  NVIDIA A100-PCIE-40GB           On | 00000000:17:00.0 Off |                    0 |
+   | N/A   62C    P0               76W / 250W|  33053MiB / 40960MiB |     65%      Default |
+   |                                         |                      |             Disabled |
+   +-----------------------------------------+----------------------+----------------------+
+   |   1  NVIDIA A100-PCIE-40GB           On | 00000000:65:00.0 Off |                    0 |
+   | N/A   62C    P0               70W / 250W|  37191MiB / 40960MiB |      5%      Default |
+   |                                         |                      |             Disabled |
+   +-----------------------------------------+----------------------+----------------------+
+   |   2  NVIDIA A100-PCIE-40GB           On | 00000000:CA:00.0 Off |                    0 |
+   | N/A   59C    P0               78W / 250W|  37151MiB / 40960MiB |      4%      Default |
+   |                                         |                      |             Disabled |
+   +-----------------------------------------+----------------------+----------------------+
+   |   3  NVIDIA A100-PCIE-40GB           On | 00000000:E3:00.0 Off |                    0 |
+   | N/A   61C    P0               81W / 250W|  37131MiB / 40960MiB |      4%      Default |
+   |                                         |                      |             Disabled |
+   +-----------------------------------------+----------------------+----------------------+
+                                                                                          
+   +---------------------------------------------------------------------------------------+
+   | Processes:                                                                            |
+   |  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+   |        ID   ID                                                             Usage      |
+   |=======================================================================================|
+   |    0   N/A  N/A     18464      C   ...conda3/envs/mycondapy310/bin/python    33050MiB |
+   |    1   N/A  N/A     18465      C   ...conda3/envs/mycondapy310/bin/python    37188MiB |
+   |    2   N/A  N/A     18466      C   ...conda3/envs/mycondapy310/bin/python    37148MiB |
+   |    3   N/A  N/A     18467      C   ...conda3/envs/mycondapy310/bin/python    37128MiB |
+   +---------------------------------------------------------------------------------------+
