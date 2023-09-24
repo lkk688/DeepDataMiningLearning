@@ -5,8 +5,26 @@ import torchvision
 from torchvision.ops import misc as misc_nn_ops
 from torchvision.ops.feature_pyramid_network import ExtraFPNBlock, FeaturePyramidNetwork, LastLevelMaxPool
 
-from torchvision.models import resnet, resnet50, ResNet50_Weights
+from torchvision.models import resnet #, resnet50, ResNet50_Weights
 from torchvision.models import get_model, get_model_weights, get_weight, list_models
+
+def get_backbone(model_name: str,
+                 norm_layer: Optional[Callable[..., nn.Module]] = None,
+                 ):
+    weights_enum = get_model_weights(model_name)
+    weights = weights_enum.DEFAULT #IMAGENET1K_V1
+    #weights = ResNet50_Weights.DEFAULT
+    if model_name.startswith('resnet'):
+        backbone = resnet.__dict__[model_name](weights=weights, norm_layer=norm_layer)
+    elif model_name.startswith('swin'):
+        backbone = get_model(model_name)
+    else:
+        backbone = get_model(model_name)
+
+    return backbone
+    # weights_backbone = ResNet50_Weights.verify(weights)
+    # backbone = resnet50(weights=weights_backbone, progress=True)
+
 
 class MyBackboneWithFPN(nn.Module):
     def __init__(
@@ -68,6 +86,7 @@ class MyBackboneWithFPN(nn.Module):
         x = self.fpn(x)
         return x
     
+    #not used
     def create_fpnbackbone(self, backbone, trainable_layers):
         #backbone = get_model(backbone_modulename, weights="DEFAULT")
         trainable_layers =2
@@ -110,15 +129,25 @@ try:
 except:
     print("[INFO] Couldn't find torchinfo... installing it.") #pip install -q torchinfo
 
+def remove_classificationheader(model, num_removeblock):
+    modulelist=model.children() #resnet50(pretrained=True).children()
+    num_removeblock = 0-num_removeblock #-2
+    newbackbone = nn.Sequential(*list(modulelist)[:num_removeblock])
+    return newbackbone
+
+
 if __name__ == "__main__":
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
     DATAPATH='/data/cmpe249-fa23/torchvisiondata/'
 
     #model_name = 'resnet50' #["layer4", "layer3", "layer2", "layer1", "conv1"]
-    model_name = 'resnet152' #["layer4", "layer3", "layer2", "layer1", "conv1"]
+    #model_name = 'resnet152' #["layer4", "layer3", "layer2", "layer1", "conv1"]
+    #https://github.com/pytorch/vision/blob/main/torchvision/models/swin_transformer.py
+    model_name = 'swin_s' # 'avgpool','flatten','head'
     backbone = get_model(model_name, weights="DEFAULT")
+    backbone=remove_classificationheader(backbone, 3)
     summary(model=backbone, 
-        input_size=(1, 3, 300, 400), #(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
+        input_size=(1, 3, 64, 64), #(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
         # col_names=["input_size"], # uncomment for smaller output
         col_names=["input_size", "output_size", "num_params", "trainable"],
         col_width=20,
