@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 #from .checks import check_version
-from .metrics import bbox_iou
+from DeepDataMiningLearning.detection.modules.metrics import bbox_iou
 
 #TORCH_1_10 = check_version(torch.__version__, '1.10.0')
 

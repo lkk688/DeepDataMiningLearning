@@ -17,7 +17,7 @@ from torchvision.ops import DeformConv2d
 from PIL import Image
 from torch.cuda import amp
 from torch.nn.init import constant_, xavier_uniform_
-from .utils import multi_scale_deformable_attn_pytorch, _get_clones, inverse_sigmoid
+from DeepDataMiningLearning.detection.modules.utils import multi_scale_deformable_attn_pytorch, _get_clones, inverse_sigmoid
 
 #from utils.datasets import letterbox #only used in autoShape
 #NMS uses non_max_suppression
