@@ -75,9 +75,9 @@ Open WSL in VScode for development: in "Remote Explorer" tab, select "WSL" as th
 How to SSH into WSL2 on Windows from an external machine: https://www.hanselman.com/blog/how-to-ssh-into-wsl2-on-windows-10-from-an-external-machine
 
 
-Export WSL
-~~~~~~~~~~~~
-You can export the WSL distribution to a local file
+Export and Import WSL to a different folder
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+If you want to move the WSL to a different folder or drive to save the space in drive C, you can export the WSL distribution to a local file first
 
 .. code-block:: console
 
@@ -101,7 +101,7 @@ You can import the distribution again in a new driver (e.g., in H: drive)
     H:\WSL> wsl --setdefault Ubuntu20.04
     H:\WSL>wsl -u lkk #use user "lkk" to login, wsl -d distroname -u username
 
-Export docker data
+You can also export the docker data if needed
 
 .. code-block:: console
 
@@ -116,6 +116,14 @@ Export docker data
     The operation completed successfully.
     (base) PS D:\WSL> wsl --import docker-desktop-data ./docker ./docker-desktop-data.tar
 
+After the export and import a WSL2 distro manually, running that distro on the new drive will end up logging you in as root. You can manually setup the login user via "wsl -u USERNAME" to select a specific user. You can also setup the wsl.conf file to setup a default login user. Run your distro, and then edit /etc/wsl.conf and add a [user] section like this:
+
+.. code-block:: console
+
+    [user]
+    default=lkk
+
+This is the ideal way to set your WSL distro's default user for imported tars because it's stored inside the Linux file system and the setting will stick around when you export/import later on.
 
 Install CUDA inside WSL Linux
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
