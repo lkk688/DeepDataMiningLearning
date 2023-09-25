@@ -13,7 +13,7 @@ import requests
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.ops import DeformConv2d
+#from torchvision.ops import DeformConv2d
 from PIL import Image
 from torch.cuda import amp
 from torch.nn.init import constant_, xavier_uniform_

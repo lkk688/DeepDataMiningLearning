@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, SimpleClass, TryExcept, plt_settings
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, SimpleClass #, TryExcept, plt_settings
 
 OKS_SIGMA = np.array([.26, .25, .25, .35, .35, .79, .79, .72, .72, .62, .62, 1.07, 1.07, .87, .87, .89, .89]) / 10.0
 
@@ -261,8 +261,8 @@ class ConfusionMatrix:
         # fn = self.matrix.sum(0) - tp  # false negatives (missed detections)
         return (tp[:-1], fp[:-1]) if self.task == 'detect' else (tp, fp)  # remove background class if task=detect
 
-    @TryExcept('WARNING ⚠️ ConfusionMatrix plot failure')
-    @plt_settings()
+    #@TryExcept('WARNING ⚠️ ConfusionMatrix plot failure')
+    #@plt_settings()
     def plot(self, normalize=True, save_dir='', names=(), on_plot=None):
         """
         Plot the confusion matrix using seaborn and save it to a file.
@@ -322,7 +322,7 @@ def smooth(y, f=0.05):
     return np.convolve(yp, np.ones(nf) / nf, mode='valid')  # y-smoothed
 
 
-@plt_settings()
+#@plt_settings()
 def plot_pr_curve(px, py, ap, save_dir=Path('pr_curve.png'), names=(), on_plot=None):
     """Plots a precision-recall curve."""
     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
@@ -347,7 +347,7 @@ def plot_pr_curve(px, py, ap, save_dir=Path('pr_curve.png'), names=(), on_plot=N
         on_plot(save_dir)
 
 
-@plt_settings()
+#@plt_settings()
 def plot_mc_curve(px, py, save_dir=Path('mc_curve.png'), names=(), xlabel='Confidence', ylabel='Metric', on_plot=None):
     """Plots a metric-confidence curve."""
     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)

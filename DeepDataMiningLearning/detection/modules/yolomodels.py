@@ -11,14 +11,13 @@ import re
 
 from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                     Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
-                    Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv)
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, colorstr
-from DeepDataMiningLearning.detection.modules.tal import make_divisible
-from DeepDataMiningLearning.detection.modules.head import Detect, Classify, Pose, RTDETRDecoder, Segment
+                    Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC )
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, colorstr, make_divisible
+from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
 from DeepDataMiningLearning.detection.modules.loss import v8DetectionLoss
   
-def yaml_load(file='data.yaml', append_filename=False):
+def yaml_load(file='data.yaml', append_filename=True):
     """
     Load YAML data from a file.
 
@@ -42,56 +41,23 @@ def yaml_load(file='data.yaml', append_filename=False):
         if append_filename:
             data['yaml_file'] = str(file)
         return data
-    
-def yaml_model_load(path):
-    """Load a YOLOv8 model from a YAML file."""
-    import re
-
-    path = Path(path)
-    if path.stem in (f'yolov{d}{x}6' for x in 'nsmlx' for d in (5, 8)):
-        new_stem = re.sub(r'(\d+)([nslmx])6(.+)?$', r'\1\2-p6\3', path.stem)
-        LOGGER.warning(f'WARNING ⚠️ Ultralytics YOLO P6 models now use -p6 suffix. Renaming {path.stem} to {new_stem}.')
-        path = path.with_name(new_stem + path.suffix)
-
-    unified_path = re.sub(r'(\d+)([nslmx])(.+)?$', r'\1\3', str(path))  # i.e. yolov8x.yaml -> yolov8.yaml
-    #yaml_file = check_yaml(unified_path, hard=False) or check_yaml(path)
-    yaml_file = path 
-    d = yaml_load(yaml_file)  # model dict
-    d['scale'] = guess_model_scale(path)
-    d['yaml_file'] = str(path)
-    return d
-
-def guess_model_scale(model_path):
-    """
-    Takes a path to a YOLO model's YAML file as input and extracts the size character of the model's scale.
-    The function uses regular expression matching to find the pattern of the model scale in the YAML file name,
-    which is denoted by n, s, m, l, or x. The function returns the size character of the model scale as a string.
-
-    Args:
-        model_path (str | Path): The path to the YOLO model's YAML file.
-
-    Returns:
-        (str): The size character of the model's scale, which can be n, s, m, l, or x.
-    """
-    with contextlib.suppress(AttributeError):
-        import re
-        return re.search(r'yolov\d+([nslmx])', Path(model_path).stem).group(1)  # n, s, m, l, or x
-    return ''
 
 #ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
-class YoloV8DetectionModel(nn.Module):
-    def __init__(self, cfg='yolov8n.yaml', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
+class YoloDetectionModel(nn.Module):
+    #scale from nsmlx
+    def __init__(self, cfg='yolov8n.yaml', scale='s', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
         super().__init__()
-        self.yaml = cfg if isinstance(cfg, dict) else yaml_model_load(cfg)  # cfg dict
+        self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)  # cfg dict, nc=80, 'scales', 'backbone', 'head'
+        self.yaml['scale'] = scale
 
         # Define model
-        ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
+        ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels, ch=3
         if nc and nc != self.yaml['nc']:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml['nc'] = nc  # override YAML value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
-        self.names = {i: f'{i}' for i in range(self.yaml['nc'])}  # default names dict
-        self.inplace = self.yaml.get('inplace', True)
+        self.names = {i: f'{i}' for i in range(self.yaml['nc'])}  # default names dict, 0~79
+        self.inplace = self.yaml.get('inplace', True) #True
 
         # Build strides
         m = self.model[-1]  # Detect()
@@ -231,6 +197,21 @@ def initialize_weights(model):
             m.momentum = 0.03
         elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
             m.inplace = True
+#yolov7 list
+# twoargs_blocks=[nn.Conv2d, Conv, RobustConv, RobustConv2, DWConv, GhostConv, RepConv, RepConv_OREPA, DownC, 
+#                  SPP, SPPF, SPPCSPC, GhostSPPCSPC, MixConv2d, Focus, Stem, GhostStem, CrossConv, 
+#                  Bottleneck, BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
+#                  RepBottleneck, RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC,  
+#                  Res, ResCSPA, ResCSPB, ResCSPC, 
+#                  RepRes, RepResCSPA, RepResCSPB, RepResCSPC, 
+#                  ResX, ResXCSPA, ResXCSPB, ResXCSPC, 
+#                  RepResX, RepResXCSPA, RepResXCSPB, RepResXCSPC, 
+#                  Ghost, GhostCSPA, GhostCSPB, GhostCSPC,
+#                  SwinTransformerBlock, STCSPA, STCSPB, STCSPC,
+#                  SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC,BottleneckCSP2, C3, C3TR, C3SPP, C3Ghost]
+
+twoargs_blocks=[nn.Conv2d, Classify, Conv, ConvTranspose, GhostConv, RepConv, Bottleneck, GhostBottleneck, SPP, SPPF, SPPCSPC, DWConv, Focus,
+                 BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3]
 
 def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
     """Parse a YOLO model.yaml dictionary into a PyTorch model."""
@@ -246,7 +227,18 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             scale = tuple(scales.keys())[0]
             LOGGER.warning(f"WARNING ⚠️ no model scale passed. Assuming scale='{scale}'.")
         depth, width, max_channels = scales[scale]
+    elif all(key in d for key in ('depth_multiple', 'width_multiple')): #for yolov7:https://github.com/lkk688/myyolov7/blob/main/models/yolo.py
+        depth = d['depth_multiple']
+        width = d['width_multiple']
+    
+    if "anchors" in d.keys():
+        anchors = d['anchors']
+        na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
+        no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+    else: #anchor-free
+        no = nc
 
+   
     if act:
         Conv.default_act = eval(act)  # redefine default activation, i.e. Conv.default_act = nn.SiLU()
         if verbose:
@@ -264,10 +256,10 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                     args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
 
         n = n_ = max(round(n * depth), 1) if n > 1 else n  # depth gain
-        if m in (Classify, Conv, ConvTranspose, GhostConv, Bottleneck, GhostBottleneck, SPP, SPPF, DWConv, Focus,
-                 BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3):
+        if m in twoargs_blocks:
             c1, c2 = ch[f], args[0]
-            if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
+            #if c2 != nc:  # if c2 not equal to number of classes (i.e. for Classify() output)
+            if c2 != no:
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
 
             args = [c1, c2, *args[1:]]
@@ -287,7 +279,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             args = [ch[f]]
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
-        elif m in (Detect, Segment, Pose):
+        elif m in (IDetect, Detect, Segment, Pose):
             args.append([ch[x] for x in f])
             if m is Segment:
                 args[2] = make_divisible(min(args[2], max_channels) * width, 8)
@@ -310,5 +302,8 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
     return nn.Sequential(*layers), sorted(save)
 
 if __name__ == "__main__":
-    myyolov8=YoloV8DetectionModel(cfg='./yolov8.yaml', ch=3, nc =80)
-    print(myyolov8)
+    #myyolov8=YoloDetectionModel(cfg='/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml', ch=3) #nc =80
+    #print(myyolov8)
+
+    myyolov7=YoloDetectionModel(cfg='/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov7.yaml', ch=3) #nc =80
+    print(myyolov7)
