@@ -9,14 +9,14 @@ import torch.nn as nn
 import yaml
 import re
 
-from .block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
+from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                     Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv)
-from .utils import LOGGER, colorstr
-from .tal import make_divisible
-from .head import Detect, Classify, Pose, RTDETRDecoder, Segment
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, colorstr
+from DeepDataMiningLearning.detection.modules.tal import make_divisible
+from DeepDataMiningLearning.detection.modules.head import Detect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
-from .loss import v8DetectionLoss
+from DeepDataMiningLearning.detection.modules.loss import v8DetectionLoss
   
 def yaml_load(file='data.yaml', append_filename=False):
     """

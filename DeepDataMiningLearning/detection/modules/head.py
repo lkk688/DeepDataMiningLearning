@@ -10,9 +10,9 @@ from pathlib import Path
 import numpy as np
 from copy import copy
 import pandas as pd
-from .block import Conv, DFL, Proto, DeformableTransformerDecoderLayer, DeformableTransformerDecoder, MLP
-from .tal import make_anchors, dist2bbox
-from .utils import bias_init_with_prob, linear_init_
+from DeepDataMiningLearning.detection.modules.block import Conv, DFL, Proto, DeformableTransformerDecoderLayer, DeformableTransformerDecoder, MLP
+from DeepDataMiningLearning.detection.modules.tal import make_anchors, dist2bbox
+from DeepDataMiningLearning.detection.modules.utils import bias_init_with_prob, linear_init_
 
 class Detections:
     # detections class for YOLOv5 inference results

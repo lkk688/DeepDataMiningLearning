@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .tal import TaskAlignedAssigner, dist2bbox, make_anchors, bbox2dist
-from .metrics import bbox_iou
-from .utils import xywh2xyxy
+from DeepDataMiningLearning.detection.modules.tal import TaskAlignedAssigner, dist2bbox, make_anchors, bbox2dist
+from DeepDataMiningLearning.detection.modules.metrics import bbox_iou
+from DeepDataMiningLearning.detection.modules.utils import xywh2xyxy
 
 class FocalLoss(nn.Module):
     """Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)."""
