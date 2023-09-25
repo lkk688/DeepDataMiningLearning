@@ -210,7 +210,8 @@ def main(args):
     )
 
     print("Creating model")
-    kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers}
+    #kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers}
+    kwargs = {"trainable": args.trainable}
     if args.data_augmentation in ["multiscale", "lsj"]:
         kwargs["_skip_resize"] = True
     if "rcnn" in args.model:

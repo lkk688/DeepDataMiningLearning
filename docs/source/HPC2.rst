@@ -328,6 +328,7 @@ New conda environment based on Python3.10: mycondapy310
    ipython kernel install --user --name=mycondapy310
    pip install pyyaml scikit-image onnx onnx-simplifier
    pip install onnxruntime
+   pip install seaborn
 
 Test code:
 
