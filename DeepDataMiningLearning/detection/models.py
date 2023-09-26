@@ -5,6 +5,7 @@ from torchvision.models import get_model, get_model_weights, get_weight, list_mo
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
+from DeepDataMiningLearning.detection.modules.yolomodels import create_yolomodel
 try:
     from torchinfo import summary
 except:
@@ -377,6 +378,8 @@ def create_detectionmodel(modelname, num_classes, trainable_layers):
         if x[0]== 'customrcnn':
             backbonename = x[1]
             model=CustomRCNN(backbone_modulename=backbonename,trainable_layers=trainable_layers,num_classes=num_classes,out_channels=256,min_size=800,max_size=1333)
+    elif modelname.startswith('yolo'):
+        model=create_yolomodel(modelname,num_classes)
     else:
         print('Not supported')
 

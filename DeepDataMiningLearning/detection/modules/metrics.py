@@ -6,7 +6,7 @@ import math
 import warnings
 from pathlib import Path
 
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
@@ -263,48 +263,48 @@ class ConfusionMatrix:
 
     #@TryExcept('WARNING ⚠️ ConfusionMatrix plot failure')
     #@plt_settings()
-    def plot(self, normalize=True, save_dir='', names=(), on_plot=None):
-        """
-        Plot the confusion matrix using seaborn and save it to a file.
+    # def plot(self, normalize=True, save_dir='', names=(), on_plot=None):
+    #     """
+    #     Plot the confusion matrix using seaborn and save it to a file.
 
-        Args:
-            normalize (bool): Whether to normalize the confusion matrix.
-            save_dir (str): Directory where the plot will be saved.
-            names (tuple): Names of classes, used as labels on the plot.
-            on_plot (func): An optional callback to pass plots path and data when they are rendered.
-        """
-        import seaborn as sn
+    #     Args:
+    #         normalize (bool): Whether to normalize the confusion matrix.
+    #         save_dir (str): Directory where the plot will be saved.
+    #         names (tuple): Names of classes, used as labels on the plot.
+    #         on_plot (func): An optional callback to pass plots path and data when they are rendered.
+    #     """
+    #     import seaborn as sn
 
-        array = self.matrix / ((self.matrix.sum(0).reshape(1, -1) + 1E-9) if normalize else 1)  # normalize columns
-        array[array < 0.005] = np.nan  # don't annotate (would appear as 0.00)
+    #     array = self.matrix / ((self.matrix.sum(0).reshape(1, -1) + 1E-9) if normalize else 1)  # normalize columns
+    #     array[array < 0.005] = np.nan  # don't annotate (would appear as 0.00)
 
-        fig, ax = plt.subplots(1, 1, figsize=(12, 9), tight_layout=True)
-        nc, nn = self.nc, len(names)  # number of classes, names
-        sn.set(font_scale=1.0 if nc < 50 else 0.8)  # for label size
-        labels = (0 < nn < 99) and (nn == nc)  # apply names to ticklabels
-        ticklabels = (list(names) + ['background']) if labels else 'auto'
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')  # suppress empty matrix RuntimeWarning: All-NaN slice encountered
-            sn.heatmap(array,
-                       ax=ax,
-                       annot=nc < 30,
-                       annot_kws={
-                           'size': 8},
-                       cmap='Blues',
-                       fmt='.2f' if normalize else '.0f',
-                       square=True,
-                       vmin=0.0,
-                       xticklabels=ticklabels,
-                       yticklabels=ticklabels).set_facecolor((1, 1, 1))
-        title = 'Confusion Matrix' + ' Normalized' * normalize
-        ax.set_xlabel('True')
-        ax.set_ylabel('Predicted')
-        ax.set_title(title)
-        plot_fname = Path(save_dir) / f'{title.lower().replace(" ", "_")}.png'
-        fig.savefig(plot_fname, dpi=250)
-        plt.close(fig)
-        if on_plot:
-            on_plot(plot_fname)
+    #     fig, ax = plt.subplots(1, 1, figsize=(12, 9), tight_layout=True)
+    #     nc, nn = self.nc, len(names)  # number of classes, names
+    #     sn.set(font_scale=1.0 if nc < 50 else 0.8)  # for label size
+    #     labels = (0 < nn < 99) and (nn == nc)  # apply names to ticklabels
+    #     ticklabels = (list(names) + ['background']) if labels else 'auto'
+    #     with warnings.catch_warnings():
+    #         warnings.simplefilter('ignore')  # suppress empty matrix RuntimeWarning: All-NaN slice encountered
+    #         sn.heatmap(array,
+    #                    ax=ax,
+    #                    annot=nc < 30,
+    #                    annot_kws={
+    #                        'size': 8},
+    #                    cmap='Blues',
+    #                    fmt='.2f' if normalize else '.0f',
+    #                    square=True,
+    #                    vmin=0.0,
+    #                    xticklabels=ticklabels,
+    #                    yticklabels=ticklabels).set_facecolor((1, 1, 1))
+    #     title = 'Confusion Matrix' + ' Normalized' * normalize
+    #     ax.set_xlabel('True')
+    #     ax.set_ylabel('Predicted')
+    #     ax.set_title(title)
+    #     plot_fname = Path(save_dir) / f'{title.lower().replace(" ", "_")}.png'
+    #     fig.savefig(plot_fname, dpi=250)
+    #     plt.close(fig)
+    #     if on_plot:
+    #         on_plot(plot_fname)
 
     def print(self):
         """
@@ -323,53 +323,53 @@ def smooth(y, f=0.05):
 
 
 #@plt_settings()
-def plot_pr_curve(px, py, ap, save_dir=Path('pr_curve.png'), names=(), on_plot=None):
-    """Plots a precision-recall curve."""
-    fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
-    py = np.stack(py, axis=1)
+# def plot_pr_curve(px, py, ap, save_dir=Path('pr_curve.png'), names=(), on_plot=None):
+#     """Plots a precision-recall curve."""
+#     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+#     py = np.stack(py, axis=1)
 
-    if 0 < len(names) < 21:  # display per-class legend if < 21 classes
-        for i, y in enumerate(py.T):
-            ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f}')  # plot(recall, precision)
-    else:
-        ax.plot(px, py, linewidth=1, color='grey')  # plot(recall, precision)
+#     if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+#         for i, y in enumerate(py.T):
+#             ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f}')  # plot(recall, precision)
+#     else:
+#         ax.plot(px, py, linewidth=1, color='grey')  # plot(recall, precision)
 
-    ax.plot(px, py.mean(1), linewidth=3, color='blue', label='all classes %.3f mAP@0.5' % ap[:, 0].mean())
-    ax.set_xlabel('Recall')
-    ax.set_ylabel('Precision')
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.legend(bbox_to_anchor=(1.04, 1), loc='upper left')
-    ax.set_title('Precision-Recall Curve')
-    fig.savefig(save_dir, dpi=250)
-    plt.close(fig)
-    if on_plot:
-        on_plot(save_dir)
+#     ax.plot(px, py.mean(1), linewidth=3, color='blue', label='all classes %.3f mAP@0.5' % ap[:, 0].mean())
+#     ax.set_xlabel('Recall')
+#     ax.set_ylabel('Precision')
+#     ax.set_xlim(0, 1)
+#     ax.set_ylim(0, 1)
+#     ax.legend(bbox_to_anchor=(1.04, 1), loc='upper left')
+#     ax.set_title('Precision-Recall Curve')
+#     fig.savefig(save_dir, dpi=250)
+#     plt.close(fig)
+#     if on_plot:
+#         on_plot(save_dir)
 
 
 #@plt_settings()
-def plot_mc_curve(px, py, save_dir=Path('mc_curve.png'), names=(), xlabel='Confidence', ylabel='Metric', on_plot=None):
-    """Plots a metric-confidence curve."""
-    fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
+# def plot_mc_curve(px, py, save_dir=Path('mc_curve.png'), names=(), xlabel='Confidence', ylabel='Metric', on_plot=None):
+#     """Plots a metric-confidence curve."""
+#     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
 
-    if 0 < len(names) < 21:  # display per-class legend if < 21 classes
-        for i, y in enumerate(py):
-            ax.plot(px, y, linewidth=1, label=f'{names[i]}')  # plot(confidence, metric)
-    else:
-        ax.plot(px, py.T, linewidth=1, color='grey')  # plot(confidence, metric)
+#     if 0 < len(names) < 21:  # display per-class legend if < 21 classes
+#         for i, y in enumerate(py):
+#             ax.plot(px, y, linewidth=1, label=f'{names[i]}')  # plot(confidence, metric)
+#     else:
+#         ax.plot(px, py.T, linewidth=1, color='grey')  # plot(confidence, metric)
 
-    y = smooth(py.mean(0), 0.05)
-    ax.plot(px, y, linewidth=3, color='blue', label=f'all classes {y.max():.2f} at {px[y.argmax()]:.3f}')
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.legend(bbox_to_anchor=(1.04, 1), loc='upper left')
-    ax.set_title(f'{ylabel}-Confidence Curve')
-    fig.savefig(save_dir, dpi=250)
-    plt.close(fig)
-    if on_plot:
-        on_plot(save_dir)
+#     y = smooth(py.mean(0), 0.05)
+#     ax.plot(px, y, linewidth=3, color='blue', label=f'all classes {y.max():.2f} at {px[y.argmax()]:.3f}')
+#     ax.set_xlabel(xlabel)
+#     ax.set_ylabel(ylabel)
+#     ax.set_xlim(0, 1)
+#     ax.set_ylim(0, 1)
+#     ax.legend(bbox_to_anchor=(1.04, 1), loc='upper left')
+#     ax.set_title(f'{ylabel}-Confidence Curve')
+#     fig.savefig(save_dir, dpi=250)
+#     plt.close(fig)
+#     if on_plot:
+#         on_plot(save_dir)
 
 
 def compute_ap(recall, precision):
@@ -482,11 +482,11 @@ def ap_per_class(tp,
     f1 = 2 * p * r / (p + r + eps)
     names = [v for k, v in names.items() if k in unique_classes]  # list: only classes that have data
     names = dict(enumerate(names))  # to dict
-    if plot:
-        plot_pr_curve(px, py, ap, save_dir / f'{prefix}PR_curve.png', names, on_plot=on_plot)
-        plot_mc_curve(px, f1, save_dir / f'{prefix}F1_curve.png', names, ylabel='F1', on_plot=on_plot)
-        plot_mc_curve(px, p, save_dir / f'{prefix}P_curve.png', names, ylabel='Precision', on_plot=on_plot)
-        plot_mc_curve(px, r, save_dir / f'{prefix}R_curve.png', names, ylabel='Recall', on_plot=on_plot)
+    # if plot:
+    #     plot_pr_curve(px, py, ap, save_dir / f'{prefix}PR_curve.png', names, on_plot=on_plot)
+    #     plot_mc_curve(px, f1, save_dir / f'{prefix}F1_curve.png', names, ylabel='F1', on_plot=on_plot)
+    #     plot_mc_curve(px, p, save_dir / f'{prefix}P_curve.png', names, ylabel='Precision', on_plot=on_plot)
+    #     plot_mc_curve(px, r, save_dir / f'{prefix}R_curve.png', names, ylabel='Recall', on_plot=on_plot)
 
     i = smooth(f1.mean(0), 0.1).argmax()  # max F1 index
     p, r, f1 = p[:, i], r[:, i], f1[:, i]

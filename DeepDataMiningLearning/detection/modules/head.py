@@ -3,18 +3,17 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn.init import constant_, xavier_uniform_
-from .utils import xyxy2xywh, increment_path #, color_list
-from DeepDataMiningLearning.detection.plotutils import color_list, plot_one_box
-from PIL import Image
-from pathlib import Path
-import numpy as np
+#from DeepDataMiningLearning.detection.plotutils import color_list, plot_one_box
+#from PIL import Image
+#from pathlib import Path
+#import numpy as np
 from copy import copy
 import pandas as pd
 from DeepDataMiningLearning.detection.modules.block import Conv, DFL, Proto, \
                                         DeformableTransformerDecoderLayer, DeformableTransformerDecoder, \
                                         MLP, ImplicitA, ImplicitM
 from DeepDataMiningLearning.detection.modules.tal import make_anchors, dist2bbox
-from DeepDataMiningLearning.detection.modules.utils import bias_init_with_prob, linear_init_
+from DeepDataMiningLearning.detection.modules.utils import bias_init_with_prob, linear_init_, xyxy2xywh, increment_path #, color_list
 
 class Detections:
     # detections class for YOLOv5 inference results
@@ -34,45 +33,45 @@ class Detections:
         self.t = tuple((times[i + 1] - times[i]) * 1000 / self.n for i in range(3))  # timestamps (ms)
         self.s = shape  # inference BCHW shape
 
-    def display(self, pprint=False, show=False, save=False, render=False, save_dir=''):
-        colors = color_list()
-        for i, (img, pred) in enumerate(zip(self.imgs, self.pred)):
-            str = f'image {i + 1}/{len(self.pred)}: {img.shape[0]}x{img.shape[1]} '
-            if pred is not None:
-                for c in pred[:, -1].unique():
-                    n = (pred[:, -1] == c).sum()  # detections per class
-                    str += f"{n} {self.names[int(c)]}{'s' * (n > 1)}, "  # add to string
-                if show or save or render:
-                    for *box, conf, cls in pred:  # xyxy, confidence, class
-                        label = f'{self.names[int(cls)]} {conf:.2f}'
-                        plot_one_box(box, img, label=label, color=colors[int(cls) % 10])
-            img = Image.fromarray(img.astype(np.uint8)) if isinstance(img, np.ndarray) else img  # from np
-            if pprint:
-                print(str.rstrip(', '))
-            if show:
-                img.show(self.files[i])  # show
-            if save:
-                f = self.files[i]
-                img.save(Path(save_dir) / f)  # save
-                print(f"{'Saved' * (i == 0)} {f}", end=',' if i < self.n - 1 else f' to {save_dir}\n')
-            if render:
-                self.imgs[i] = np.asarray(img)
+    # def display(self, pprint=False, show=False, save=False, render=False, save_dir=''):
+    #     colors = color_list()
+    #     for i, (img, pred) in enumerate(zip(self.imgs, self.pred)):
+    #         str = f'image {i + 1}/{len(self.pred)}: {img.shape[0]}x{img.shape[1]} '
+    #         if pred is not None:
+    #             for c in pred[:, -1].unique():
+    #                 n = (pred[:, -1] == c).sum()  # detections per class
+    #                 str += f"{n} {self.names[int(c)]}{'s' * (n > 1)}, "  # add to string
+    #             if show or save or render:
+    #                 for *box, conf, cls in pred:  # xyxy, confidence, class
+    #                     label = f'{self.names[int(cls)]} {conf:.2f}'
+    #                     plot_one_box(box, img, label=label, color=colors[int(cls) % 10])
+    #         img = Image.fromarray(img.astype(np.uint8)) if isinstance(img, np.ndarray) else img  # from np
+    #         if pprint:
+    #             print(str.rstrip(', '))
+    #         if show:
+    #             img.show(self.files[i])  # show
+    #         if save:
+    #             f = self.files[i]
+    #             img.save(Path(save_dir) / f)  # save
+    #             print(f"{'Saved' * (i == 0)} {f}", end=',' if i < self.n - 1 else f' to {save_dir}\n')
+    #         if render:
+    #             self.imgs[i] = np.asarray(img)
 
-    def print(self):
-        self.display(pprint=True)  # print results
-        print(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {tuple(self.s)}' % self.t)
+    # def print(self):
+    #     self.display(pprint=True)  # print results
+    #     print(f'Speed: %.1fms pre-process, %.1fms inference, %.1fms NMS per image at shape {tuple(self.s)}' % self.t)
 
-    def show(self):
-        self.display(show=True)  # show results
+    # def show(self):
+    #     self.display(show=True)  # show results
 
-    def save(self, save_dir='runs/hub/exp'):
-        save_dir = increment_path(save_dir, exist_ok=save_dir != 'runs/hub/exp')  # increment save_dir
-        Path(save_dir).mkdir(parents=True, exist_ok=True)
-        self.display(save=True, save_dir=save_dir)  # save results
+    # def save(self, save_dir='runs/hub/exp'):
+    #     save_dir = increment_path(save_dir, exist_ok=save_dir != 'runs/hub/exp')  # increment save_dir
+    #     Path(save_dir).mkdir(parents=True, exist_ok=True)
+    #     self.display(save=True, save_dir=save_dir)  # save results
 
-    def render(self):
-        self.display(render=True)  # render results
-        return self.imgs
+    # def render(self):
+    #     self.display(render=True)  # render results
+    #     return self.imgs
 
     def pandas(self):
         # return detections as pandas DataFrames, i.e. print(results.pandas().xyxy[0])
@@ -203,6 +202,21 @@ class IDetect(nn.Module):
                                            device=z.device)
         box @= convert_matrix                          
         return (box, score)
+    
+    def bias_init(self, cf=None):
+        """Initialize Detect() biases, WARNING: requires stride availability."""
+        m = self  # self.model[-1]  # Detect() module
+        # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1
+        # ncf = math.log(0.6 / (m.nc - 0.999999)) if cf is None else torch.log(cf / cf.sum())  # nominal class frequency
+        # for a, b, s in zip(m.cv2, m.cv3, m.stride):  # from
+        #     a[-1].bias.data[:] = 1.0  # box
+        #     b[-1].bias.data[:m.nc] = math.log(5 / m.nc / (640 / s) ** 2)  # cls (.01 objects, 80 classes, 640 img)
+        #get from _initialize_biases in https://github.com/lkk688/myyolov7/blob/main/models/yolo.py 
+        for mi, s in zip(m.m, m.stride):  # from
+            b = mi.bias.view(m.na, -1)  # conv.bias(255) to (3,85)
+            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b.data[:, 5:] += math.log(0.6 / (m.nc - 0.99)) if cf is None else torch.log(cf / cf.sum())  # cls
+            mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
 # class Classify(nn.Module):
 #     # Classification head, i.e. x(b,c1,20,20) to x(b,c2)

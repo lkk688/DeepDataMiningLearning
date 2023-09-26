@@ -12,11 +12,12 @@ import re
 from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                     Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC )
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, colorstr, make_divisible
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible #colorstr, 
 from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
 from DeepDataMiningLearning.detection.modules.loss import v8DetectionLoss
-  
+from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
+
 def yaml_load(file='data.yaml', append_filename=True):
     """
     Load YAML data from a file.
@@ -61,56 +62,46 @@ class YoloDetectionModel(nn.Module):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Segment, Pose)):
+        if isinstance(m, (Detect, Segment, Pose)): #added yolov7's IDetect
             s = 256  # 2x min stride
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose)) else self.forward(x)
             m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
             self.stride = m.stride
             m.bias_init()  # only run once
+        elif isinstance(m, IDetect):
+            s = 256  # 2x min stride
+            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            m.anchors /= m.stride.view(-1, 1, 1)
+            check_anchor_order(m)
+            self.stride = m.stride
+            #self._initialize_biases()  # only run once
+            m.bias_init()
         else:
             self.stride = torch.Tensor([32])  # default stride for i.e. RTDETR
 
         # Init weights, biases
         initialize_weights(self)
-        if verbose:
-            #self.info()
-            LOGGER.info('')
     
     #from base
-    def forward(self, x, *args, **kwargs):
-        """
-        Forward pass of the model on a single scale.
-        Wrapper for `_forward_once` method.
+    # def forward(self, x, *args, **kwargs):
+    #     """
+    #     Forward pass of the model on a single scale.
+    #     Wrapper for `_forward_once` method.
 
-        Args:
-            x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
+    #     Args:
+    #         x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
 
-        Returns:
-            (torch.Tensor): The output of the network.
-        """
-        if isinstance(x, dict):  # for cases of training and validating while training.
-            return self.loss(x, *args, **kwargs)
-        return self.predict(x, *args, **kwargs)
+    #     Returns:
+    #         (torch.Tensor): The output of the network.
+    #     """
+    #     # if isinstance(x, dict):  # for cases of training and validating while training.
+    #     #     return self.loss(x, *args, **kwargs)
+    #     # return self.predict(x, *args, **kwargs)
+
     
-    def predict(self, x, profile=False, visualize=False, augment=False):
-        """
-        Perform a forward pass through the network.
-
-        Args:
-            x (torch.Tensor): The input tensor to the model.
-            profile (bool):  Print the computation time of each layer if True, defaults to False.
-            visualize (bool): Save the feature maps of the model if True, defaults to False.
-            augment (bool): Augment image during prediction, defaults to False.
-
-        Returns:
-            (torch.Tensor): The last output of the model.
-        """
-        # if augment:
-        #     return self._predict_augment(x)
-        return self._predict_once(x, profile, visualize)
-    
-    def _predict_once(self, x, profile=False, visualize=False):
+    #def _predict_once(self, x, profile=False, visualize=False):
+    def forward(self, x):
         """
         Perform a forward pass through the network.
 
@@ -122,17 +113,21 @@ class YoloDetectionModel(nn.Module):
         Returns:
             (torch.Tensor): The last output of the model.
         """
-        y, dt = [], []  # outputs
+        #y, dt = [], []  # outputs, dt used in profile
+        y = []
         for m in self.model:
             if m.f != -1:  # if not from previous layer
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
-            if profile:
-                self._profile_one_layer(m, x, dt)
+            # if profile:
+            #     self._profile_one_layer(m, x, dt)
+            
             x = m(x)  # run
+
             y.append(x if m.i in self.save else None)  # save output
             # if visualize:
             #     feature_visualization(x, m.type, m.i, save_dir=visualize)
         return x
+    
     # def _predict_augment(self, x):
     #     """Perform augmentations on input image x and return augmented inference and train outputs."""
     #     img_size = x.shape[-2:]  # height, width
@@ -147,27 +142,27 @@ class YoloDetectionModel(nn.Module):
     #     y = self._clip_augmented(y)  # clip augmented tails
     #     return torch.cat(y, -1), None  # augmented inference, train
 
-    @staticmethod
-    def _descale_pred(p, flips, scale, img_size, dim=1):
-        """De-scale predictions following augmented inference (inverse operation)."""
-        p[:, :4] /= scale  # de-scale
-        x, y, wh, cls = p.split((1, 1, 2, p.shape[dim] - 4), dim)
-        if flips == 2:
-            y = img_size[0] - y  # de-flip ud
-        elif flips == 3:
-            x = img_size[1] - x  # de-flip lr
-        return torch.cat((x, y, wh, cls), dim)
+    # @staticmethod
+    # def _descale_pred(p, flips, scale, img_size, dim=1):
+    #     """De-scale predictions following augmented inference (inverse operation)."""
+    #     p[:, :4] /= scale  # de-scale
+    #     x, y, wh, cls = p.split((1, 1, 2, p.shape[dim] - 4), dim)
+    #     if flips == 2:
+    #         y = img_size[0] - y  # de-flip ud
+    #     elif flips == 3:
+    #         x = img_size[1] - x  # de-flip lr
+    #     return torch.cat((x, y, wh, cls), dim)
 
-    def _clip_augmented(self, y):
-        """Clip YOLOv5 augmented inference tails."""
-        nl = self.model[-1].nl  # number of detection layers (P3-P5)
-        g = sum(4 ** x for x in range(nl))  # grid points
-        e = 1  # exclude layer count
-        i = (y[0].shape[-1] // g) * sum(4 ** x for x in range(e))  # indices
-        y[0] = y[0][..., :-i]  # large
-        i = (y[-1].shape[-1] // g) * sum(4 ** (nl - 1 - x) for x in range(e))  # indices
-        y[-1] = y[-1][..., i:]  # small
-        return y
+    # def _clip_augmented(self, y):
+    #     """Clip YOLOv5 augmented inference tails."""
+    #     nl = self.model[-1].nl  # number of detection layers (P3-P5)
+    #     g = sum(4 ** x for x in range(nl))  # grid points
+    #     e = 1  # exclude layer count
+    #     i = (y[0].shape[-1] // g) * sum(4 ** x for x in range(e))  # indices
+    #     y[0] = y[0][..., :-i]  # large
+    #     i = (y[-1].shape[-1] // g) * sum(4 ** (nl - 1 - x) for x in range(e))  # indices
+    #     y[-1] = y[-1][..., i:]  # small
+    #     return y
 
     def init_criterion(self):
         return v8DetectionLoss(self)
@@ -242,7 +237,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
     if act:
         Conv.default_act = eval(act)  # redefine default activation, i.e. Conv.default_act = nn.SiLU()
         if verbose:
-            LOGGER.info(f"{colorstr('activation:')} {act}")  # print
+            LOGGER.info(f"activation: {act}")  # print
 
     if verbose:
         LOGGER.info(f"\n{'':>3}{'from':>20}{'n':>3}{'params':>10}  {'module':<45}{'arguments':<30}")
@@ -301,9 +296,53 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
 
-if __name__ == "__main__":
-    #myyolov8=YoloDetectionModel(cfg='/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml', ch=3) #nc =80
-    #print(myyolov8)
+def intersect_dicts(da, db, exclude=()):
+    """Returns a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values."""
+    return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
 
-    myyolov7=YoloDetectionModel(cfg='/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov7.yaml', ch=3) #nc =80
+def test_yolov7weights():
+    myyolov7=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov7.yaml', ch=3) #nc =80
     print(myyolov7)
+    img = torch.rand(1, 3, 640, 640)
+    myyolov7.eval()
+    y,x = myyolov7(img)#tuple output, first item is tensor [1, 25200, 85], second item is list of three, [1, 3, 80, 80, 85], [1, 3, 40, 40, 85], [1, 3, 20, 20, 85]
+    print(y.shape) #[1, 25200, 85]
+    print(len(x)) #3
+    print(x[0].shape) #[1, 3, 80, 80, 85]
+
+    ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov7_state_dict.pt'
+    #ModuleNotFoundError: No module named 'models'
+    ckpt=torch.load(ckpt_file, map_location='cpu')
+    print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
+    newckpt = {}
+    for key in ckpt.keys():
+        newkey='model.'+key
+        newckpt[newkey] = ckpt[key]#change key name
+    currentmodel_statedict = myyolov7.state_dict()
+    csd = intersect_dicts(newckpt, currentmodel_statedict)  # intersect
+    myyolov7.load_state_dict(newckpt, strict=False)
+    print(f'Transferred {len(csd)}/{len(myyolov7.state_dict())} items from pretrained weights')
+    #524/566 items
+    myyolov7.eval()
+
+def create_yolomodel(modelname,num_classes):
+    cfgpath='./DeepDataMiningLearning/detection/modules/'
+    cfgfile=os.path.join(cfgpath, modelname+'.yaml')
+    yolomodel=YoloDetectionModel(cfg=cfgfile, ch = 3, nc=num_classes)
+    return yolomodel
+
+import os
+from collections import OrderedDict
+if __name__ == "__main__":
+    print(os.getcwd())
+    myyolov8=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov8.yaml', ch=3) #nc =80
+    print(myyolov8)
+    img = torch.rand(1, 3, 640, 640)
+    myyolov8.eval()
+    y,x = myyolov8(img)#tuple output, second item is list of three, [1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
+    print(y.shape) #[1, 84, 8400]
+    print(len(x)) #3
+    print(x[0].shape) #[1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
+
+
+
