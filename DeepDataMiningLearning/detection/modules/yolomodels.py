@@ -3,20 +3,23 @@
 import contextlib
 from copy import deepcopy
 from pathlib import Path
-
+import numpy as np
 import torch
 import torch.nn as nn
 import yaml
 import re
+from typing import Dict, List, Optional, Tuple, Union
 
 from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                     Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC )
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible #colorstr, 
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, non_max_suppression, scale_boxes #colorstr, 
 from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
 from DeepDataMiningLearning.detection.modules.loss import v8DetectionLoss
 from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
+
+
 
 def yaml_load(file='data.yaml', append_filename=True):
     """
@@ -46,7 +49,7 @@ def yaml_load(file='data.yaml', append_filename=True):
 #ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
 class YoloDetectionModel(nn.Module):
     #scale from nsmlx
-    def __init__(self, cfg='yolov8n.yaml', scale='s', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov8n.yaml', scale='s', ch=3, nc=None, detcttransform=None, cfgs=None, verbose=True):  # model, input channels, number of classes
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)  # cfg dict, nc=80, 'scales', 'backbone', 'head'
         self.yaml['scale'] = scale
@@ -59,6 +62,16 @@ class YoloDetectionModel(nn.Module):
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.names = {i: f'{i}' for i in range(self.yaml['nc'])}  # default names dict, 0~79
         self.inplace = self.yaml.get('inplace', True) #True
+
+        #set parameters
+        self.imgsz = 640
+        self.fp16 = True
+        self.detcttransform = detcttransform
+        self.nms_conf = cfgs['conf']
+        self.nms_iou = cfgs['iou']
+        self.nms_agnostic = cfgs['agnostic_nms']
+        self.nms_max_det = cfgs['max_det']
+        self.classes = cfgs['classes']
 
         # Build strides
         m = self.model[-1]  # Detect()
@@ -83,25 +96,78 @@ class YoloDetectionModel(nn.Module):
         # Init weights, biases
         initialize_weights(self)
     
+    def pre_processing(self, im):
+        """Prepares input image before inference.
+        Args:
+            im (torch.Tensor | List(np.ndarray)): BCHW for tensor, [(HWC) x B] for list.
+        """
+        #ref: https://github.com/lkk688/myyolov8/blob/main/ultralytics/engine/predictor.py
+        not_tensor = not isinstance(im, torch.Tensor)
+        if not_tensor:#im is image list
+            im = np.stack(im) #image list
+            #im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
+            im = np.ascontiguousarray(im)  # contiguous
+            im = torch.from_numpy(im)
+
+        #im = im.to(self.device)
+        im = im.half() if self.fp16 else im.float()  # uint8 to fp16/32
+        if not_tensor:
+            im /= 255  # 0 - 255 to 0.0 - 1.0
+        return im
+    
     #from base
-    # def forward(self, x, *args, **kwargs):
-    #     """
-    #     Forward pass of the model on a single scale.
-    #     Wrapper for `_forward_once` method.
+    def forward(self, images, targets=None):
+        """
+        Forward pass of the model on a single scale.
+        Wrapper for `_forward_once` method.
 
-    #     Args:
-    #         x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
+        Args:
+            x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
 
-    #     Returns:
-    #         (torch.Tensor): The output of the network.
-    #     """
-    #     # if isinstance(x, dict):  # for cases of training and validating while training.
-    #     #     return self.loss(x, *args, **kwargs)
-    #     # return self.predict(x, *args, **kwargs)
+        Returns:
+            (torch.Tensor): The output of the network.
+        """
+        if self.training and targets:
+            for target in targets:
+                boxes = target["boxes"] #boxes only used for format validation
+                if isinstance(boxes, torch.Tensor):
+                    torch._assert(
+                        len(boxes.shape) == 2 and boxes.shape[-1] == 4,
+                        f"Expected target boxes to be a tensor of shape [N, 4], got {boxes.shape}.",
+                    )
+                else:
+                    torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
+        
+        original_image_sizes: List[Tuple[int, int]] = []
+        for img in images:
+            val = img.shape[-2:]
+            torch._assert(
+                len(val) == 2,
+                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
+            )
+            original_image_sizes.append((val[0], val[1]))
+        # if isinstance(x, dict):  # for cases of training and validating while training.
+        #     return self.loss(x, *args, **kwargs)
+        # return self.predict(x, *args, **kwargs)
+        if self.detcttransform:
+            imageslist, targets = self.detcttransform(images, targets)#images is ImageList
+            images = imageslist.tensors
+        #im = self.pre_processing(im)
+        preds = self._predict_once(images)
+        detections = self.postprocess(preds, images, original_image_sizes)
+
+        if self.training:
+            if not hasattr(self, 'criterion'):
+                self.criterion = self.init_criterion()
+            batch={}
+            batch['batch_idx']
+            batch['cls']
+            batch['bboxes']
+            loss=self.criterion(preds, batch)
+        return detections
 
     
-    #def _predict_once(self, x, profile=False, visualize=False):
-    def forward(self, x):
+    def _predict_once(self, x, profile=False, visualize=False):
         """
         Perform a forward pass through the network.
 
@@ -128,6 +194,31 @@ class YoloDetectionModel(nn.Module):
             #     feature_visualization(x, m.type, m.i, save_dir=visualize)
         return x
     
+    #ref: https://github.com/lkk688/myyolov8/blob/main/ultralytics/models/yolo/detect/predict.py
+    def postprocess(self, preds, images, original_image_sizes):
+        """Post-processes predictions and returns a list of Results objects."""
+        preds = non_max_suppression(preds,
+                                        self.nms_conf,
+                                        self.nms_iou,
+                                        agnostic=self.nms_agnostic,
+                                        classes=self.classes) #max_det=self.nms_max_det, max_det = 300
+
+        if self.detcttransform:
+            #map image backto original_image_sizes
+            detections = self.detcttransform.postprocess(preds, images.image_sizes, original_image_sizes) 
+        else:
+            detections = []
+            #result: List[Dict[str, Tensor]] in fasterrcnn
+            for i, pred in enumerate(preds):
+                #orig_img = images[i]
+                # pred[:, :4] = scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+                #img_path = self.batch[0][i]
+                # results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred))
+                result={}
+                result["boxes"] = pred
+                detections.append(result)
+        return detections
+        
     # def _predict_augment(self, x):
     #     """Perform augmentations on input image x and return augmented inference and train outputs."""
     #     img_size = x.shape[-2:]  # height, width
@@ -331,15 +422,31 @@ def create_yolomodel(modelname,num_classes):
     yolomodel=YoloDetectionModel(cfg=cfgfile, ch = 3, nc=num_classes)
     return yolomodel
 
+def load_defaultcfgs(cfgPath):
+    DEFAULT_CFG_PATH = cfgPath #ROOT / 'cfg/default.yaml'
+    DEFAULT_CFG_DICT = yaml_load(DEFAULT_CFG_PATH)
+    for k, v in DEFAULT_CFG_DICT.items():
+        if isinstance(v, str) and v.lower() == 'none':
+            DEFAULT_CFG_DICT[k] = None
+    DEFAULT_CFG_KEYS = DEFAULT_CFG_DICT.keys()
+    #DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
+    return DEFAULT_CFG_DICT
+
 import os
 from collections import OrderedDict
 if __name__ == "__main__":
+    cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
+    DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
+    images=[]
+    images.append(torch.rand(3, 640, 480))
+
     print(os.getcwd())
-    myyolov8=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov8.yaml', ch=3) #nc =80
+    myyolov8=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov8.yaml', ch=3, detcttransform=None, cfgs=DEFAULT_CFG_DICT) #nc =80
     print(myyolov8)
-    img = torch.rand(1, 3, 640, 640)
+    #img = torch.rand(1, 3, 640, 640)
     myyolov8.eval()
-    y,x = myyolov8(img)#tuple output, second item is list of three, [1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
+    y,x = myyolov8(images)
+    #tuple output, second item is list of three, [1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
     print(y.shape) #[1, 84, 8400]
     print(len(x)) #3
     print(x[0].shape) #[1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]

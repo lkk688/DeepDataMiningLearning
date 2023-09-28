@@ -323,3 +323,102 @@ GPU Utilization:
    |    2   N/A  N/A     18466      C   ...conda3/envs/mycondapy310/bin/python    37148MiB |
    |    3   N/A  N/A     18467      C   ...conda3/envs/mycondapy310/bin/python    37128MiB |
    +---------------------------------------------------------------------------------------+
+
+YOLOv8
+-------
+https://docs.ultralytics.com/quickstart/
+
+.. code-block:: console
+
+   ~/Developer$ git clone https://github.com/lkk688/myyolov8.git
+   :~/Developer/myyolov8$ pip install -e .
+
+.. code-block:: console
+
+   model = YOLO('yolov8n.yaml')
+   model = YOLO('yolov8n.pt')
+      class Model from ultralytics\engine\model.py
+      model='yolov8n.yaml'
+      def _new(model)
+         cfg_dict = yaml_model_load(cfg) #from ultralytics\nn\tasks.py
+         self.model = (model or self._smart_load('model'))
+            self.task_map[self.task][key] in self.task_map[self.task][key]
+
+            class DetectionModel(BaseModel) #from ultralytics\nn\tasks.py
+               self.model, self.save = parse_model(deepcopy(self.yaml) #yaml is dict
+               self.names = {i: f'{i}' for i in range(self.yaml['nc'])} #dict 0~79
+         
+         self.model.args = {**DEFAULT_CFG_DICT, **self.overrides}
+      def _load #load weights when call model = YOLO('yolov8n.pt')
+         def attempt_load_one_weight
+            def torch_safe_load(weight)
+               torch.load(file, map_location='cpu')
+            model = ckpt['model']
+            model = model.eval()
+      .model = DetectionModel
+
+   from ultralytics.utils import DEFAULT_CFG
+
+   Inference
+      ultralytics\engine\model.py
+      self.predict(source, stream, **kwargs)
+         self.task_map[self.task][key] in self._smart_load('predictor')
+            class BasePredictor from ultralytics\engine\predictor.py
+         self.predictor.setup_model(model=self.model, verbose=is_cli)
+            self.model = AutoBackend(model in ultralytics\engine\predictor.py
+               ultralytics\nn\autobackend.py
+               nn_module=True
+               model = model.fuse(verbose=verbose) #fuse=True
+         def stream_inference
+            im = self.preprocess(im0s) #im0s list of array(1080, 810, 3)->[1, 3, 640, 480]
+               def pre_transform
+                  LetterBox
+               (1, 640, 480, 3)->(1, 3, 640, 480) BHWC to BCHW
+               totensor torch.Size([1, 3, 640, 480])
+               im /= 255
+            preds = self.inference(im, *args, **kwargs)
+               self.model(im -> def forward in ultralytics\nn\autobackend.py
+                  y = self.model(im tensor[1, 3, 640, 480]
+                     self.predict->_predict_once in class BaseModel(nn.Module) (ultralytics\nn\tasks.py)
+                        Conv(x)->[1, 16, 320, 240]
+                        Conv(x)->[1, 32, 160, 120]
+                        C2f->[1, 32, 160, 120]
+                        Conv(x)->[1, 64, 80, 60]
+                        C2f->[1, 64, 80, 60]
+                        Conv(x)->[1, 128, 40, 30]
+                        C2f->[1, 128, 40, 30]
+                        Conv(x)->[1, 256, 20, 15]
+                        C2f->[1, 256, 20, 15]
+                        SPPF->[1, 256, 20, 15]
+                        Upsample->[1, 256, 40, 30]
+                        Concat->[1, 384, 40, 30]
+                        C2f->[1, 128, 40, 30]
+                        Upsample->[1, 128, 80, 60]
+                        Concat(two tensors in [1, 128, 80, 60] [1, 64, 80, 60])->[1, 192, 80, 60]
+                        C2f->[1, 64, 80, 60]
+                        Conv->[1, 64, 40, 30]
+                        Concat->[1, 192, 40, 30]
+                        C2f->[1, 128, 40, 30]
+                        Conv->[1, 128, 20, 15]
+                        Concat(-1,9)->[1, 384, 20, 15]
+                        C2f->[1, 256, 20, 15]
+                        Detect[15, 18, 21] three inputs: [1, 64, 80, 60], [1, 128, 40, 30], [1, 256, 20, 15]
+                           def forward in ultralytics\nn\modules\head.py
+                           nl=3
+                           x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+                           [1, 144, 80, 60], [1, 144, 40, 30], [1, 144, 20, 15]
+                           anchors [2, 6300], strides [1, 6300], shape: [1, 64, 80, 60]
+                           x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2) ->[1, 144, 6300]
+                           box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
+                           box: [1, 64, 6300], cls: [1, 80, 6300]
+                           dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
+                           dbox: [1, 4, 6300]
+                           y = torch.cat((dbox, cls.sigmoid()), 1)
+                           output: y: [1, 84, 6300] and x ([1, 144, 80, 60], [1, 144, 40, 30], [1, 144, 20, 15])
+            [self.from_numpy(x) for x in y] in autobackend
+            preds = self.inference(im, *args, **kwargs) return
+            preds tensor [1, 84, 6300] and x ([1, 144, 80, 60], [1, 144, 40, 30], [1, 144, 20, 15])
+            self.results = self.postprocess(preds, im, im0s)
+               preds = ops.non_max_suppression(preds #classes=None
+               preds: list of one tensor[6, 6]
+               pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
