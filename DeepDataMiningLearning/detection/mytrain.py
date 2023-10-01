@@ -218,7 +218,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model = create_detectionmodel(args.model, num_classes, args.trainable)
+    model, preprocess, classes = create_detectionmodel(args.model, num_classes, args.trainable)
     model.to(device)
     
     if args.distributed and args.sync_bn:
@@ -322,11 +322,11 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, sc
         )
 
     for images, targets in metric_logger.log_every(data_loader, print_freq, header):
-        images = list(image.to(device) for image in images)
-        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
+        images = list(image.to(device) for image in images) #list of [3, 1280, 1920]
+        targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets] #tuple to list
         with torch.cuda.amp.autocast(enabled=scaler is not None):
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
+            loss_dict = model(images, targets) #dict with 4 keys
+            losses = sum(loss for loss in loss_dict.values()) #single value
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = utils.reduce_dict(loss_dict)

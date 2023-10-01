@@ -269,7 +269,7 @@ class CustomRCNN(nn.Module):
         images, targets = self.detcttransform(images, targets)#images is ImageList
         # cnnfeatures = self.body(images.tensors, targets)
         # features = self.fpn(cnnfeatures)
-        features = self.backbone(images.tensors)
+        features = self.backbone(images.tensors) #[16, 3, 800, 1344]
         if isinstance(features, torch.Tensor):
             features = OrderedDict([("0", features)])
         proposals, proposal_losses = self.rpn(images, features, targets)
@@ -280,8 +280,8 @@ class CustomRCNN(nn.Module):
                                 images.image_sizes, original_image_sizes)  # type: ignore[operator]
 
         losses = {}
-        losses.update(detector_losses)
-        losses.update(proposal_losses)
+        losses.update(detector_losses) #'loss_classifier' 'loss_box_reg'
+        losses.update(proposal_losses) #'loss_objectiveness' 'loss_rpn_box_reg'
 
         #return losses, detections
         return self.eager_outputs(losses, detections)
@@ -365,32 +365,60 @@ def test_defaultmodels():
         row_settings=["var_names"]
     ) 
 
-def create_detectionmodel(modelname, num_classes, trainable_layers):
+def intersect_dicts(da, db, exclude=()):
+    """Returns a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values."""
+    return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
+
+def load_checkpoint(model, ckpt_file, fp16=False):
+    ckpt=torch.load(ckpt_file, map_location='cpu')
+    #print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
+    currentmodel_statedict = model.state_dict()
+    csd = intersect_dicts(ckpt, currentmodel_statedict)  # intersect
+    model.load_state_dict(ckpt, strict=False)
+    print(f'Transferred {len(csd)}/{len(model.state_dict())} items from pretrained weights')
+    #524/566 items
+    #names = ckpt.module.names if hasattr(ckpt, 'module') else ckpt.names  # get class names
+    model.half() if fp16 else model.float()
+    return model
+
+def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file = None, fp16=False, device= 'cuda:0'):
     model = None
+    preprocess = None
+    classes = None
     if trainable_layers==0:
         freezemodel = True
     if modelname == 'fasterrcnn_resnet50_fpn_v2':
         model, preprocess, weights, classes = get_torchvision_detection_models(model)
         if len(classes) != num_classes:
             model = modify_fasterrcnnheader(model, num_classes, freeze=freezemodel)
+        if ckpt_file:
+            model = load_checkpoint(model, ckpt_file, fp16)
     elif modelname.startswith('customrcnn'):
         x = modelname.split("_")
-        if x[0]== 'customrcnn':
+        if x[0]== 'customrcnn' and x[1].startswith('resnet'):
             backbonename = x[1]
             model=CustomRCNN(backbone_modulename=backbonename,trainable_layers=trainable_layers,num_classes=num_classes,out_channels=256,min_size=800,max_size=1333)
+            if ckpt_file:
+                model = load_checkpoint(model, ckpt_file, fp16)
+        else:
+            print("Model name not supported")
     elif modelname.startswith('yolo'):
-        model=create_yolomodel(modelname,num_classes)
+        model, preprocess, classes=create_yolomodel(modelname, num_classes, ckpt_file, fp16, device)
     else:
-        print('Not supported')
+        print('Model name not supported')
 
-    summary(model=model, 
-        input_size=(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
-        # col_names=["input_size"], # uncomment for smaller output
-        col_names=["input_size", "output_size", "num_params", "trainable"],
-        col_width=20,
-        row_settings=["var_names"]
-    ) 
-    return model
+    if model:
+        summary(model=model, 
+            input_size=(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
+            # col_names=["input_size"], # uncomment for smaller output
+            col_names=["input_size", "output_size", "num_params", "trainable"],
+            col_width=20,
+            row_settings=["var_names"]
+        ) 
+        if device:
+            currentdevice=next(model.parameters()).device #simply getting the device name for the first parameter of the nn module
+            model=model.to(device)
+    return model, preprocess, classes
     
 
 if __name__ == "__main__":

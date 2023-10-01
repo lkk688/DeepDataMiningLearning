@@ -221,6 +221,27 @@ class MetricLogger:
 def collate_fn(batch):
     return tuple(zip(*batch))
 
+#from ultralytics\data\dataset.py
+@staticmethod
+def mycollate_fn(batch): #16 imagefile list, each item is a dict
+    """Collates data samples into batches."""
+    new_batch = {}
+    keys = batch[0].keys()
+    values = list(zip(*[list(b.values()) for b in batch]))
+    for i, k in enumerate(keys):
+        value = values[i]
+        if k == 'img':
+            value = torch.stack(value, 0)
+        if k in ['masks', 'keypoints', 'bboxes', 'cls']: #'labels' "boxes" in torchvision
+            value = torch.cat(value, 0)
+        new_batch[k] = value
+    #new add, create key='batch_idx'
+    nl = len(instances)
+    new_batch['batch_idx'] = list(new_batch['batch_idx'])
+    for i in range(len(new_batch['batch_idx'])):
+        new_batch['batch_idx'][i] += i  # add target image index for build_targets()
+    new_batch['batch_idx'] = torch.cat(new_batch['batch_idx'], 0)
+    return new_batch
 
 def mkdir(path):
     try:

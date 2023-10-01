@@ -407,6 +407,7 @@ https://docs.ultralytics.com/quickstart/
                            nl=3
                            x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
                            [1, 144, 80, 60], [1, 144, 40, 30], [1, 144, 20, 15]
+                           6300=80*60+40*30+20*15
                            anchors [2, 6300], strides [1, 6300], shape: [1, 64, 80, 60]
                            x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2) ->[1, 144, 6300]
                            box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
@@ -415,10 +416,53 @@ https://docs.ultralytics.com/quickstart/
                            dbox: [1, 4, 6300]
                            y = torch.cat((dbox, cls.sigmoid()), 1)
                            output: y: [1, 84, 6300] and x ([1, 144, 80, 60], [1, 144, 40, 30], [1, 144, 20, 15])
-            [self.from_numpy(x) for x in y] in autobackend
-            preds = self.inference(im, *args, **kwargs) return
+                  if isinstance(y, (list, tuple)):
+                     return [self.from_numpy(x) for x in y] in autobackend
+            preds = self.inference(im, *args, **kwargs) return (inference_out, loss_out)
             preds tensor [1, 84, 6300] and x ([1, 144, 80, 60], [1, 144, 40, 30], [1, 144, 20, 15])
+            84=4 bbox + 80 classes
             self.results = self.postprocess(preds, im, im0s)
                preds = ops.non_max_suppression(preds #classes=None
+                  prediction = prediction[0]  # select only inference output [1, 84, 6300]
                preds: list of one tensor[6, 6]
                pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
+
+Load images
+.. code-block:: console
+
+   class LoadImages: in ultralytics\data\loaders.py
+      def __next__(self):
+         im0 = cv2.imread(path) #(1080, 810, 3)
+         batch = return [path], [im0]
+
+   ultralytics\engine\predictor.py
+
+.. code-block:: console
+
+   def collate_fn(batch):  in ultralytics\data\dataset.py
+   input batch 16 imagefile list, each item is a dict with:
+    'im_file', 'ori_shape', 'resized_shape', 'img' [3, 640, 640], 'cls' [27,1], 'bboxes' [27,4], 'batch_idx' [27]
+   new_batch['batch_idx'][i] += i
+   output new_batch: 'img' [16, 3, 640, 640], 'cls' [391, 1], 'bboxes' [391, 4], 'batch_idx' [391] (0~16 identify objects for each image)
+
+   class v8DetectionLoss: in ultralytics\utils\loss.py
+      def __call__(self, preds, batch):
+   
+   self.loss, self.loss_items = self.model(batch) in ultralytics\engine\trainer.py
+   self.tloss = loss_items=[0.8499, 1.8445, 1.1006]
+   self.scaler.scale(self.loss).backward() 
+
+   def get_labels(self): in ultralytics\data\base.py
+        """Users can custom their own format here.
+        Make sure your output is a list with each element like below:
+            dict(
+                im_file=im_file,
+                shape=shape,  # format: (height, width)
+                cls=cls,
+                bboxes=bboxes, # xywh
+                segments=segments,  # xy
+                keypoints=keypoints, # xy
+                normalized=True, # or False
+                bbox_format="xyxy",  # or xywh, ltwh
+            )
+        """

@@ -9,8 +9,67 @@ from torchvision.models import get_model, get_model_weights, get_weight, list_mo
 from torchvision.io.image import read_image
 from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
-from DeepDataMiningLearning.detection.models import get_torchvision_detection_models, load_trained_model
+from DeepDataMiningLearning.detection.models import create_detectionmodel, get_torchvision_detection_models, load_trained_model
+import numpy as np
 
+def myread_image(preprocess, imgpath, usecv2=True, uspil=False):
+    if usecv2==True:
+        im0 = cv2.imread(imgpath) #(1080, 810, 3) HWC, BGR format
+        imaglist = [im0]
+        imgtensors = preprocess(imaglist) #return #[1, 3, 640, 480]
+        return imgtensors, imaglist #for yolo
+    else:
+        img = read_image(imgpath)
+        batch = [preprocess(img)]
+        return batch, [img] #for faster rcnn
+
+def savepred_toimage(im0, onedetection, classes=None, usecv2=True, boxformat='xyxy', resultfile="results.jpg"):
+    #labels = [names[i] for i in detections["labels"]] #classes[i]
+    #img=im0.copy() #HWC (1080, 810, 3)
+    if usecv2:
+        im0=im0[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW
+    imgtensor = torch.from_numpy(im0.copy()) #[3, 1080, 810]
+    if boxformat =='xyxy':
+        pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
+    else:
+        pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+    
+    #print(pred_bbox_tensor)
+    pred_labels = onedetection["labels"].astype(int).tolist()
+    if classes:
+        labels = [classes[i] for i in pred_labels]
+    else:
+        labels = [str(i) for i in pred_labels]
+    #img: Tensor of shape (C x H x W) and dtype uint8.
+    #box: Tensor of size (N, 4) containing bounding boxes in (xmin, ymin, xmax, ymax) format.
+    #labels: Optional[List[str]]
+    box = draw_bounding_boxes(imgtensor, boxes=pred_bbox_tensor,
+                            labels=labels,
+                            colors="red",
+                            width=4, font_size=50)
+    im = to_pil_image(box.detach())
+    # save a image using extension
+    im = im.save(resultfile)
+    return im
+
+def multimodel_inference(modelname, imgpath, ckpt_file, device='cuda:0'):
+
+    model, imgtransform, classes = create_detectionmodel(modelname=modelname, num_classes=80, trainable_layers=0, ckpt_file = ckpt_file, fp16=False, device= device)
+
+    if modelname.startswith("yolo"):
+        imgtensors, imaglist = myread_image(imgtransform, imgpath, usecv2=True)
+    else:
+        imgtensors, imaglist= myread_image(imgtransform, imgpath, usecv2=False)
+    #inference
+    preds, xtensors = model(imgtensors)
+    
+    newimgsize = imgtensors.shape[2:] #640, 480
+    detections = imgtransform.postprocess(preds, newimgsize, imaglist)
+
+    idx=0
+    onedetection = detections[idx]
+    im0=imaglist[idx]
+    savepred_toimage(im0, onedetection, classes=classes, usecv2=True, boxformat='xyxy', resultfile="results.jpg")
 
 def test_inference(modelname, imgpath):
     img = read_image(imgpath)
@@ -161,10 +220,16 @@ parser.add_argument('-t', '--threshold', default=0.5, type=float,
 args = vars(parser.parse_args())
 
 def main(args):
-    modelname = 'fasterrcnn_resnet50_fpn_v2'
+    #modelname = 'fasterrcnn_resnet50_fpn_v2'
     imgpath = "../../sampledata/sjsupeople.jpg"
-    im=test_inference(modelname, imgpath)
-    im.save("../../data/testinference.png", "PNG")
+    #im=test_inference(modelname, imgpath)
+    #im.save("../../data/testinference.png", "PNG")
+
+    modelname = 'yolov8'
+    imgpath = './sampledata/bus.jpg'
+    ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt'
+    device = 'cuda:0'
+    multimodel_inference(modelname, imgpath, ckpt_file, device)
 
 if __name__ == "__main__":
     main(args)

@@ -82,7 +82,7 @@ class MyBackboneWithFPN(nn.Module):
         self.out_channels = out_channels
 
     def forward(self, x: Tensor) -> Dict[str, Tensor]:
-        x = self.body(x)
+        x = self.body(x) #[16, 3, 800, 1344]
         x = self.fpn(x)
         return x
     

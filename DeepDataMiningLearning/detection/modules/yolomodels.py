@@ -49,7 +49,7 @@ def yaml_load(file='data.yaml', append_filename=True):
 #ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
 class YoloDetectionModel(nn.Module):
     #scale from nsmlx
-    def __init__(self, cfg='yolov8n.yaml', scale='s', ch=3, nc=None, detcttransform=None, cfgs=None, verbose=True):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov8n.yaml', scale='s', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)  # cfg dict, nc=80, 'scales', 'backbone', 'head'
         self.yaml['scale'] = scale
@@ -63,15 +63,7 @@ class YoloDetectionModel(nn.Module):
         self.names = {i: f'{i}' for i in range(self.yaml['nc'])}  # default names dict, 0~79
         self.inplace = self.yaml.get('inplace', True) #True
 
-        #set parameters
-        self.imgsz = 640
-        self.fp16 = True
-        self.detcttransform = detcttransform
-        self.nms_conf = cfgs['conf']
-        self.nms_iou = cfgs['iou']
-        self.nms_agnostic = cfgs['agnostic_nms']
-        self.nms_max_det = cfgs['max_det']
-        self.classes = cfgs['classes']
+        #self.model.eval()
 
         # Build strides
         m = self.model[-1]  # Detect()
@@ -80,7 +72,7 @@ class YoloDetectionModel(nn.Module):
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose)) else self.forward(x)
             m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
-            self.stride = m.stride
+            self.stride = m.stride #[ 8., 16., 32.]
             m.bias_init()  # only run once
         elif isinstance(m, IDetect):
             s = 256  # 2x min stride
@@ -95,25 +87,6 @@ class YoloDetectionModel(nn.Module):
 
         # Init weights, biases
         initialize_weights(self)
-    
-    def pre_processing(self, im):
-        """Prepares input image before inference.
-        Args:
-            im (torch.Tensor | List(np.ndarray)): BCHW for tensor, [(HWC) x B] for list.
-        """
-        #ref: https://github.com/lkk688/myyolov8/blob/main/ultralytics/engine/predictor.py
-        not_tensor = not isinstance(im, torch.Tensor)
-        if not_tensor:#im is image list
-            im = np.stack(im) #image list
-            #im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
-            im = np.ascontiguousarray(im)  # contiguous
-            im = torch.from_numpy(im)
-
-        #im = im.to(self.device)
-        im = im.half() if self.fp16 else im.float()  # uint8 to fp16/32
-        if not_tensor:
-            im /= 255  # 0 - 255 to 0.0 - 1.0
-        return im
     
     #from base
     def forward(self, images, targets=None):
@@ -137,34 +110,68 @@ class YoloDetectionModel(nn.Module):
                     )
                 else:
                     torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
-        
-        original_image_sizes: List[Tuple[int, int]] = []
-        for img in images:
-            val = img.shape[-2:]
-            torch._assert(
-                len(val) == 2,
-                f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
-            )
-            original_image_sizes.append((val[0], val[1]))
-        # if isinstance(x, dict):  # for cases of training and validating while training.
-        #     return self.loss(x, *args, **kwargs)
-        # return self.predict(x, *args, **kwargs)
-        if self.detcttransform:
-            imageslist, targets = self.detcttransform(images, targets)#images is ImageList
-            images = imageslist.tensors
-        #im = self.pre_processing(im)
-        preds = self._predict_once(images)
-        detections = self.postprocess(preds, images, original_image_sizes)
-
-        if self.training:
+            preds = self._predict_once(images) #tensor input
+            #in training mode, direct output x (three items)
             if not hasattr(self, 'criterion'):
                 self.criterion = self.init_criterion()
             batch={}
-            batch['batch_idx']
-            batch['cls']
-            batch['bboxes']
-            loss=self.criterion(preds, batch)
-        return detections
+            batch['batch_idx'] = target['image_id'] #int
+            batch['cls'] =target['labels'] #tensor int
+            batch['bboxes'] = target["boxes"]
+            losssum, losses=self.criterion(preds, batch) #losses is three item loss box, cls, dfl
+            return losssum
+        elif self.training:
+            preds = self._predict_once(images) #tensor input
+            return preds #training mode, direct output x (three items)
+        else: #inference mode
+            preds, xtensors = self._predict_once(images) #tensor input #[1, 3, 256, 256]
+            #y,x output in inference mode, training mode, direct output x (three items),
+            return preds
+
+        # if isinstance(x, dict):  # for cases of training and validating while training.
+        #     return self.loss(x, *args, **kwargs)
+        # return self.predict(x, *args, **kwargs)
+        
+        # if isinstance(images, dict):
+        #     need_loss = True
+        #     if not hasattr(self, 'criterion'):
+        #         self.criterion = self.init_criterion()
+        #     batch={}
+        #     batch['batch_idx']
+        #     batch['cls']
+        #     batch['bboxes']
+        #     losssum, losses=self.criterion(preds, batch) #losses is three item loss box, cls, dfl
+        #     return losssum
+        # elif torch.is_tensor(images): #[1, 3, 256, 256]
+        #     preds = self._predict_once(images) #tensor input
+        #     #y,x output, training mode, direct output x (three items)
+        #     return preds
+        # else:
+        #     print("input format not supported")
+        #     return None
+        # elif isinstance(images, list): #inference mode
+        #     imagelist = True
+        #     original_image_sizes: List[Tuple[int, int]] = []
+        #     for img in images:
+        #         val = img.shape[-2:]
+        #         torch._assert(
+        #             len(val) == 2,
+        #             f"expecting the last two dimensions of the Tensor to be H and W instead got {img.shape[-2:]}",
+        #         )
+        #         original_image_sizes.append((val[0], val[1]))
+        #     images=[self.letterbox(image=x) for x in images] #list of (640, 480, 3)
+        #     if self.detcttransform:
+        #         #imageslist, targets = self.detcttransform(images, targets)
+        #         #images = imageslist.tensors
+        #         images=[self.detcttransform(image=x) for x in images] #letterbox
+        #     images = self.pre_processing(images)
+        #     preds = self._predict_once(images) #tensor input
+        #     #y,x output, training mode, direct output loss x (three items)
+        #     if isinstance(preds, tuple):
+        #         #preds = [self.from_numpy(x) for x in y]
+        #         preds, losstensor = preds
+        #         detections = self.postprocess(preds, images, original_image_sizes)
+        #     return detections, losstensor
 
     
     def _predict_once(self, x, profile=False, visualize=False):
@@ -193,31 +200,6 @@ class YoloDetectionModel(nn.Module):
             # if visualize:
             #     feature_visualization(x, m.type, m.i, save_dir=visualize)
         return x
-    
-    #ref: https://github.com/lkk688/myyolov8/blob/main/ultralytics/models/yolo/detect/predict.py
-    def postprocess(self, preds, images, original_image_sizes):
-        """Post-processes predictions and returns a list of Results objects."""
-        preds = non_max_suppression(preds,
-                                        self.nms_conf,
-                                        self.nms_iou,
-                                        agnostic=self.nms_agnostic,
-                                        classes=self.classes) #max_det=self.nms_max_det, max_det = 300
-
-        if self.detcttransform:
-            #map image backto original_image_sizes
-            detections = self.detcttransform.postprocess(preds, images.image_sizes, original_image_sizes) 
-        else:
-            detections = []
-            #result: List[Dict[str, Tensor]] in fasterrcnn
-            for i, pred in enumerate(preds):
-                #orig_img = images[i]
-                # pred[:, :4] = scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
-                #img_path = self.batch[0][i]
-                # results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred))
-                result={}
-                result["boxes"] = pred
-                detections.append(result)
-        return detections
         
     # def _predict_augment(self, x):
     #     """Perform augmentations on input image x and return augmented inference and train outputs."""
@@ -386,7 +368,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             ch = []
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
-
+    
 def intersect_dicts(da, db, exclude=()):
     """Returns a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values."""
     return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
@@ -416,11 +398,11 @@ def test_yolov7weights():
     #524/566 items
     myyolov7.eval()
 
-def create_yolomodel(modelname,num_classes):
-    cfgpath='./DeepDataMiningLearning/detection/modules/'
-    cfgfile=os.path.join(cfgpath, modelname+'.yaml')
-    yolomodel=YoloDetectionModel(cfg=cfgfile, ch = 3, nc=num_classes)
-    return yolomodel
+# def create_yolomodel(modelname,num_classes):
+#     cfgpath='./DeepDataMiningLearning/detection/modules/'
+#     cfgfile=os.path.join(cfgpath, modelname+'.yaml')
+#     yolomodel=YoloDetectionModel(cfg=cfgfile, ch = 3, nc=num_classes)
+#     return yolomodel
 
 def load_defaultcfgs(cfgPath):
     DEFAULT_CFG_PATH = cfgPath #ROOT / 'cfg/default.yaml'
@@ -432,8 +414,89 @@ def load_defaultcfgs(cfgPath):
     #DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
     return DEFAULT_CFG_DICT
 
+def load_checkpoint(model, ckpt_file, fp16=False):
+    
+    #ModuleNotFoundError: No module named 'models'
+    ckpt=torch.load(ckpt_file, map_location='cpu')
+    nn_module = isinstance(ckpt, torch.nn.Module)
+    print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
+    currentmodel_statedict = model.state_dict()
+    csd = intersect_dicts(ckpt, currentmodel_statedict)  # intersect
+    model.load_state_dict(ckpt, strict=False)
+    print(f'Transferred {len(csd)}/{len(model.state_dict())} items from pretrained weights')
+    #524/566 items
+    #names = ckpt.module.names if hasattr(ckpt, 'module') else ckpt.names  # get class names
+    model.half() if fp16 else model.float()
+    return model
+
+import DeepDataMiningLearning.detection.transforms as T
+from DeepDataMiningLearning.detection.modules.yolotransform import LetterBox
+from PIL import Image
+def get_transformsimple(train):
+    transforms = []
+    transforms.append(T.PILToTensor())
+    transforms.append(T.ToDtype(torch.float, scale=True))
+    # if train:
+    #     transforms.append(RandomHorizontalFlip(0.5))
+    return T.Compose(transforms)
+
+def preprocess_img(imagepath, opencvread=True, fp16=False):
+    if opencvread:
+        im0 = cv2.imread(imagepath) #(1080, 810, 3)
+    else:
+        im0 = Image.open(imagepath).convert('RGB')
+        transfunc=get_transformsimple(False)
+        im0=transfunc(im0)
+    im0s = [im0] #image list
+    #preprocess(im0s)
+    letterbox = LetterBox((640, 640), auto=True, stride=32) #only support cv2
+    processedimgs=[letterbox(image=x) for x in im0s] #list of (640, 480, 3)
+    im = np.stack(processedimgs) #(1, 640, 480, 3)
+    if opencvread:
+        im = im[..., ::-1].transpose((0, 3, 1, 2))  # BGR to RGB, BHWC to BCHW, (n, 3, h, w)
+    im = np.ascontiguousarray(im)  # contiguous
+    im = torch.from_numpy(im)
+    #im = im.to(device)
+    im = im.half() if fp16 else im.float()  # uint8 to fp16/32
+    im /= 255
+    return im #(1, 640, 480, 3) tensor
+
 import os
 from collections import OrderedDict
+import cv2
+from DeepDataMiningLearning.detection.modules.yolotransform import YoloTransform
+from torchvision.utils import draw_bounding_boxes
+from torchvision.transforms.functional import to_pil_image
+import torchvision
+
+def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = 'cuda:0'):
+    modelcfg_file=os.path.join('./DeepDataMiningLearning/detection/modules', modelname+'.yaml')
+    cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
+    myyolov8 = None
+    preprocess =None
+    classesList = None
+    if os.path.exists(modelcfg_file) and os.path.exists(cfgPath):
+        DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
+        classes=DEFAULT_CFG_DICT['names']
+        nc=len(classes)
+        classesList = list(classes.values())
+        myyolov8=YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3) #nc =80
+        if os.path.exists(ckpt_file):
+            myyolov8=load_checkpoint(myyolov8, ckpt_file)
+        myyolov8=myyolov8.to(device).eval()
+        stride = max(int(myyolov8.stride.max()), 32)  # model stride
+        names = myyolov8.module.names if hasattr(myyolov8, 'module') else myyolov8.names  # get class names
+        #model = model.fuse(verbose=verbose) if fuse else model
+        myyolov8 = myyolov8.half() if fp16 else myyolov8.float()
+
+        preprocess = YoloTransform(min_size=640, max_size=640, device=device, fp16=fp16, cfgs=DEFAULT_CFG_DICT)
+        return myyolov8, preprocess, classesList
+    else:
+        print("Config file not found")
+        return myyolov8, preprocess, classesList
+
+
+
 if __name__ == "__main__":
     cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
     DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
@@ -441,15 +504,60 @@ if __name__ == "__main__":
     images.append(torch.rand(3, 640, 480))
 
     print(os.getcwd())
-    myyolov8=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov8.yaml', ch=3, detcttransform=None, cfgs=DEFAULT_CFG_DICT) #nc =80
+    modelcfg_file='./DeepDataMiningLearning/detection/modules/yolov8.yaml'
+    imagepath='./sampledata/bus.jpg'
+    #im=preprocess_img(imagepath, opencvread=True) #[1, 3, 640, 480]
+    myyolov8=YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3) #nc =80
     print(myyolov8)
+
+    ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt'
+    device = 'cuda:0'
+    fp16 = False
+    myyolov8=load_checkpoint(myyolov8, ckpt_file)
+    myyolov8=myyolov8.to(device).eval()
+    stride = max(int(myyolov8.stride.max()), 32)  # model stride
+    names = myyolov8.module.names if hasattr(myyolov8, 'module') else myyolov8.names  # get class names
+    #model = model.fuse(verbose=verbose) if fuse else model
+    myyolov8 = myyolov8.half() if fp16 else myyolov8.float()
+
+    #inference
+    im0 = cv2.imread(imagepath) #(1080, 810, 3)
+    imgs = [im0]
+    yoyotrans = YoloTransform(min_size=640, max_size=640, device=device, fp16=fp16, cfgs=DEFAULT_CFG_DICT)
+    imgtensors = yoyotrans(imgs) #[1, 3, 640, 480]
+    preds, xtensors = myyolov8(imgtensors) #inference od [1, 84, 6300], 84=4(boxes)+80(classes)
+    imgsize = imgtensors.shape[2:] #640, 480
+    detections = yoyotrans.postprocess(preds, imgsize, imgs)
+    print(detections) 
+
+    onedetection=detections[0]
+    #labels = [names[i] for i in detections["labels"]] #classes[i]
+    #img=im0.copy() #HWC (1080, 810, 3)
+    img_trans=im0[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW
+    imgtensor = torch.from_numpy(img_trans.copy()) #[3, 1080, 810]
+    #pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+    pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
+    print(pred_bbox_tensor)
+    pred_labels = onedetection["labels"].astype(str).tolist()
+    #img: Tensor of shape (C x H x W) and dtype uint8.
+    #box: Tensor of size (N, 4) containing bounding boxes in (xmin, ymin, xmax, ymax) format.
+    #labels: Optional[List[str]]
+    box = draw_bounding_boxes(imgtensor, boxes=pred_bbox_tensor,
+                            labels=pred_labels,
+                            colors="red",
+                            width=4, font_size=40)
+    im = to_pil_image(box.detach())
+    # save a image using extension
+    im = im.save("results.jpg")
+    
+
     #img = torch.rand(1, 3, 640, 640)
-    myyolov8.eval()
-    y,x = myyolov8(images)
-    #tuple output, second item is list of three, [1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
-    print(y.shape) #[1, 84, 8400]
-    print(len(x)) #3
-    print(x[0].shape) #[1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
+    # myyolov8.eval()
+    # y,x = myyolov8(images)
+    # #tuple output, second item is list of three, [1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
+    # print(y.shape) #[1, 84, 8400]
+    # print(len(x)) #3
+    # print(x[0].shape) #[1, 144, 80, 80], [1, 144, 40, 40], [1, 144, 20, 20]
 
 
 
