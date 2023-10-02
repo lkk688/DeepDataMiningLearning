@@ -131,6 +131,7 @@ def get_args_parser(add_help=True):
     )
 
     # distributed training parameters
+    parser.add_argument("--multigpu", default=False, type=bool, help="disable torch ddp")
     parser.add_argument("--world-size", default=4, type=int, help="number of distributed processes")
     parser.add_argument("--dist-url", default="env://", type=str, help="url used to set up distributed training")
     parser.add_argument("--weights", default=None, type=str, help="the weights enum name to load")
@@ -162,8 +163,11 @@ def main(args):
             args.output_dir = os.path.join(args.output_dir, args.dataset)
         utils.mkdir(args.output_dir)
 
-    utils.init_distributed_mode(args)
-    #args.distributed = False
+    if args.multigpu:
+        utils.init_distributed_mode(args)
+        args.distributed = True
+    else:
+        args.distributed = False
     print(args)
 
     device = torch.device(args.device)
