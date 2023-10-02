@@ -228,9 +228,10 @@ class YOLODataset(torch.utils.data.Dataset):
         self.use_keypoints = use_keypoints
         self.data = data
         self.classes=data['names']
-        print(data['names'])
+        #print(data['names'])
         classlist = list(data['names'].values())
-        print(classlist)
+        #print(classlist)
+        self.numclass = len(classlist)
         self.transform = transform
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
         #super().__init__(*args, **kwargs)
@@ -451,7 +452,11 @@ class YOLODataset(torch.utils.data.Dataset):
         target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32) if nl else torch.zeros(nl)
         target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64) if nl else torch.zeros(nl)
         target['batch_idx'] = torch.zeros(nl) #new added in yolo
-        return img, target
+        if self.format=='yolo':
+            target['img']=img
+            return target #dict
+        else:
+            return img, target
     
     #ultralytics\data\base.py
     def get_image_and_label(self, index):
@@ -509,6 +514,9 @@ class YOLODataset(torch.utils.data.Dataset):
             return im, (h0, w0), im.shape[:2]
 
         return self.ims[i], self.im_hw0[i], self.im_hw[i]
+    
+    def __len__(self):
+        return len(self.labels)
 
 import yaml
 if __name__ == "__main__":

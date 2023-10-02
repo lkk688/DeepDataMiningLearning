@@ -225,6 +225,7 @@ def collate_fn(batch):
 @staticmethod
 def mycollate_fn(batch): #16 imagefile list, each item is a dict
     """Collates data samples into batches."""
+    #test=tuple(zip(*batch))
     new_batch = {}
     keys = batch[0].keys()
     values = list(zip(*[list(b.values()) for b in batch]))
@@ -232,11 +233,10 @@ def mycollate_fn(batch): #16 imagefile list, each item is a dict
         value = values[i]
         if k == 'img':
             value = torch.stack(value, 0)
-        if k in ['masks', 'keypoints', 'bboxes', 'cls']: #'labels' "boxes" in torchvision
+        if k in ['masks', 'keypoints', 'bboxes', 'cls', 'labels', 'boxes']: #'labels' "boxes" in torchvision
             value = torch.cat(value, 0)
         new_batch[k] = value
     #new add, create key='batch_idx'
-    nl = len(instances)
     new_batch['batch_idx'] = list(new_batch['batch_idx'])
     for i in range(len(new_batch['batch_idx'])):
         new_batch['batch_idx'][i] += i  # add target image index for build_targets()
