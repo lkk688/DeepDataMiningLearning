@@ -253,7 +253,7 @@ if __name__ == "__main__":
         dataset, batch_size=1, sampler=test_sampler, num_workers=1, collate_fn=train_collate_fn
     )
     for batch in data_loader_test:
-        print(batch.keys()) #dict_keys(['boxes', 'labels', 'image_id', 'area', 'iscrowd', 'batch_idx', 'img'])
+        print(batch.keys()) #['img', 'bboxes', 'cls', 'batch_idx']
         break
     #batch=next(iter(data_loader_test))
     print(batch.keys())

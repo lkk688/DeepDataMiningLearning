@@ -338,3 +338,120 @@ def modelevaluate(model, data_loader, device):
     coco_evaluator.summarize()
     torch.set_num_threads(n_threads)
     return coco_evaluator
+
+
+def yoloevaluate(model, data_loader, preprocess, device):
+
+    cpu_device = torch.device("cpu")
+    model.eval()
+
+    #coco = get_coco_api_from_dataset(data_loader.dataset) #go through the whole dataset, convert_to_coco_api
+    #coco = convert_to_coco_api(data_loader.dataset)
+    iou_types = ["bbox"] #_get_iou_types(model)
+    #coco_evaluator = CocoEvaluator(coco, iou_types)
+
+    evalprogress_bar = tqdm(range(len(data_loader)))
+
+    for batch in data_loader:
+        targets={}
+        #convert from yolo data format to COCO
+        box=batch['bboxes'].numpy() #normalized xmin, ymin, width, height
+        box=box*640
+        targets['boxes'] = box
+        targets['labels']=batch['cls'].numpy()
+        targets["image_id"]=batch['image_id'][0]
+        (H, W, C)=batch['orig_shape'][0] #tuple
+        originalshape = [[H, W, C]]
+
+        oneimg=torch.squeeze(batch['img'], 0) #[3, 640, 640]
+        vis_example(targets, oneimg)
+
+        batch['img']=preprocess(batch['img']) #batch['img'] = batch['img'].to(device)
+        #img is already a tensor, preprocess function only do device
+
+        #images = list(img.to(device) for img in images) #list of torch.Size([3, 426, 640]), len=1
+        #targets: len=1 dict (image_id=139), boxes[20,4], labels[20]
+        model_time = time.time()
+        #outputs = model(images) #len1 dict boxes (10x4), labels[10], scores
+        imgtensors = batch['img']
+        preds = model(imgtensors)
+        imgsize = imgtensors.shape[2:] #640, 480
+        outputs = preprocess.postprocess(preds, imgsize, originalshape)
+        #outputs["boxes"] (xmin, ymin, xmax, ymax) format ["scores"] ["labels"]
+
+        vis_example(outputs[0], oneimg)
+
+        #outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+        model_time = time.time() - model_time
+
+        targets = [targets] #make it a list
+        res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
+        #print("res:", res)
+        evaluator_time = time.time()
+        #coco_evaluator.update(res)
+        evaluator_time = time.time() - evaluator_time
+        evalprogress_bar.update(1)
+
+    # gather the stats from all processes
+    #coco_evaluator.synchronize_between_processes()
+
+    # accumulate predictions from all images
+    #coco_evaluator.accumulate()
+    #coco_evaluator.summarize()
+    #torch.set_num_threads(n_threads)
+    #return coco_evaluator
+
+from torchvision.utils import draw_bounding_boxes
+from torchvision.transforms.functional import to_pil_image
+def vis_example(onedetection, imgtensor):
+    #labels = [names[i] for i in detections["labels"]] #classes[i]
+    #img=im0.copy() #HWC (1080, 810, 3)
+    #img_trans=im0[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW
+    #imgtensor = torch.from_numpy(img_trans.copy()) #[3, 1080, 810]
+    pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+    #pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
+    print(pred_bbox_tensor)
+    pred_labels = onedetection["labels"].astype(str).tolist()
+    #img: Tensor of shape (C x H x W) and dtype uint8.
+    #box: Tensor of size (N, 4) containing bounding boxes in (xmin, ymin, xmax, ymax) format.
+    #labels: Optional[List[str]]
+    box = draw_bounding_boxes(imgtensor, boxes=pred_bbox_tensor,
+                            labels=pred_labels,
+                            colors="red",
+                            width=4, font_size=40)
+    im = to_pil_image(box.detach())
+    # save a image using extension
+    im = im.save("result1.jpg")
+
+from DeepDataMiningLearning.detection import utils
+from DeepDataMiningLearning.detection.dataset import get_dataset
+from DeepDataMiningLearning.detection.models import create_detectionmodel
+class args:
+    data_path = '/data/cmpe249-fa23/coco/' #'/data/cmpe249-fa23/WaymoCOCO/' #'/data/cmpe249-fa23/coco/'
+    annotationfile = '/data/cmpe249-fa23/coco/train2017.txt'
+    weights = None
+    test_only = True
+    backend = 'PIL' #tensor
+    use_v2 = False
+if __name__ == "__main__":
+    is_train =False
+    is_val =True
+    datasetname='yolo' #'waymococo' #'yolo'
+    dataset, num_classes=get_dataset(datasetname, is_train, is_val, args)
+    print("train set len:", len(dataset))
+    test_sampler = torch.utils.data.SequentialSampler(dataset)
+    new_collate_fn = utils.mycollate_fn
+    data_loader_test = torch.utils.data.DataLoader(
+        dataset, batch_size=1, sampler=test_sampler, num_workers=1, collate_fn=new_collate_fn
+    )
+    for batch in data_loader_test:
+        print(batch.keys()) #['img', 'bboxes', 'cls', 'batch_idx']
+        break
+    #batch=next(iter(data_loader_test))
+    print(batch.keys())
+
+    device='cuda:0'
+    model, preprocess, classes = create_detectionmodel('yolov8', num_classes=80, trainable_layers=0, ckpt_file='/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt', fp16=False, device= device)
+    model.to(device)
+
+    yoloevaluate(model, data_loader_test, preprocess, device)

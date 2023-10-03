@@ -466,3 +466,25 @@ Load images
                 bbox_format="xyxy",  # or xywh, ltwh
             )
         """
+
+Training Process
+
+.. code-block:: console
+
+   results = model.train(data='coco128.yaml', epochs=3) call def train in ultralytics\engine\model.py
+   ultralytics\models\yolo\detect\train.py
+
+   class DetectionTrainer(BaseTrainer) in ultralytics\models\yolo\detect\train.py
+      preprocess_batch(self, batch):
+         batch['img'] = batch['img'].to(self.device, non_blocking=True).float() / 255
+      build_yolo_dataset return YOLODataset in ultralytics\data\build.py
+      build_dataloader(dataset, batch_size, workers, shuffle, rank) return InfiniteDataLoader in ultralytics\data\build.py
+
+   class BaseTrainer in ultralytics\engine\trainer.py
+      def _setup_train
+      def _do_train
+         batch = self.preprocess_batch(batch)
+         self.loss, self.loss_items = self.model(batch)
+v8_transforms
+
+build_transforms in YOLODataset

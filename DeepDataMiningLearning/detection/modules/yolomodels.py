@@ -16,7 +16,7 @@ from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3
 from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, non_max_suppression, scale_boxes #colorstr, 
 from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
-from DeepDataMiningLearning.detection.modules.loss import v8DetectionLoss
+from DeepDataMiningLearning.detection.modules.loss import myv8DetectionLoss
 from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
 
 
@@ -49,7 +49,7 @@ def yaml_load(file='data.yaml', append_filename=True):
 #ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
 class YoloDetectionModel(nn.Module):
     #scale from nsmlx
-    def __init__(self, cfg='yolov8n.yaml', scale='s', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov8n.yaml', scale='n', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)  # cfg dict, nc=80, 'scales', 'backbone', 'head'
         self.yaml['scale'] = scale
@@ -88,8 +88,8 @@ class YoloDetectionModel(nn.Module):
         # Init weights, biases
         initialize_weights(self)
     
-    #from base
-    def forward(self, images, targets=None):
+    #ref BaseModel forward in ultralytics\nn\tasks.py
+    def forward(self, x, *args, **kwargs):
         """
         Forward pass of the model on a single scale.
         Wrapper for `_forward_once` method.
@@ -100,33 +100,54 @@ class YoloDetectionModel(nn.Module):
         Returns:
             (torch.Tensor): The output of the network.
         """
-        if self.training and targets:
-            for target in targets:
-                boxes = target["boxes"] #boxes only used for format validation
-                if isinstance(boxes, torch.Tensor):
-                    torch._assert(
-                        len(boxes.shape) == 2 and boxes.shape[-1] == 4,
-                        f"Expected target boxes to be a tensor of shape [N, 4], got {boxes.shape}.",
-                    )
-                else:
-                    torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
-            preds = self._predict_once(images) #tensor input
-            #in training mode, direct output x (three items)
-            if not hasattr(self, 'criterion'):
-                self.criterion = self.init_criterion()
-            batch={}
-            batch['batch_idx'] = target['image_id'] #int
-            batch['cls'] =target['labels'] #tensor int
-            batch['bboxes'] = target["boxes"]
-            losssum, losses=self.criterion(preds, batch) #losses is three item loss box, cls, dfl
-            return losssum
+        if isinstance(x, dict):# for cases of training and validating while training.
+            return self.loss(x, *args, **kwargs)
         elif self.training:
-            preds = self._predict_once(images) #tensor input
+            preds = self._predict_once(x) #tensor input
             return preds #training mode, direct output x (three items)
         else: #inference mode
-            preds, xtensors = self._predict_once(images) #tensor input #[1, 3, 256, 256]
+            preds, xtensors = self._predict_once(x) #tensor input #[1, 3, 256, 256]
             #y,x output in inference mode, training mode, direct output x (three items),
             return preds
+    #from base
+    # def forward(self, images, targets=None):
+    #     """
+    #     Forward pass of the model on a single scale.
+    #     Wrapper for `_forward_once` method.
+
+    #     Args:
+    #         x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
+
+    #     Returns:
+    #         (torch.Tensor): The output of the network.
+    #     """
+    #     if self.training and targets:
+    #         for target in targets:
+    #             boxes = target["boxes"] #boxes only used for format validation
+    #             if isinstance(boxes, torch.Tensor):
+    #                 torch._assert(
+    #                     len(boxes.shape) == 2 and boxes.shape[-1] == 4,
+    #                     f"Expected target boxes to be a tensor of shape [N, 4], got {boxes.shape}.",
+    #                 )
+    #             else:
+    #                 torch._assert(False, f"Expected target boxes to be of type Tensor, got {type(boxes)}.")
+    #         preds = self._predict_once(images) #tensor input
+    #         #in training mode, direct output x (three items)
+    #         if not hasattr(self, 'criterion'):
+    #             self.criterion = self.init_criterion()
+    #         batch={}
+    #         batch['batch_idx'] = target['image_id'] #int
+    #         batch['cls'] =target['labels'] #tensor int
+    #         batch['bboxes'] = target["boxes"]
+    #         losssum, losses=self.criterion(preds, batch) #losses is three item loss box, cls, dfl
+    #         return losssum
+    #     elif self.training:
+    #         preds = self._predict_once(images) #tensor input
+    #         return preds #training mode, direct output x (three items)
+    #     else: #inference mode
+    #         preds, xtensors = self._predict_once(images) #tensor input #[1, 3, 256, 256]
+    #         #y,x output in inference mode, training mode, direct output x (three items),
+    #         return preds
 
         # if isinstance(x, dict):  # for cases of training and validating while training.
         #     return self.loss(x, *args, **kwargs)
@@ -238,7 +259,7 @@ class YoloDetectionModel(nn.Module):
     #     return y
 
     def init_criterion(self):
-        return v8DetectionLoss(self)
+        return myv8DetectionLoss(self) #v8DetectionLoss(self)
     
     def loss(self, batch, preds=None):
         """
@@ -252,7 +273,7 @@ class YoloDetectionModel(nn.Module):
             self.criterion = self.init_criterion()
 
         preds = self.forward(batch['img']) if preds is None else preds
-        return self.criterion(preds, batch)
+        return self.criterion(preds, batch) #return losssum, lossitems
 
 def initialize_weights(model):
     """Initialize model weights to random values."""
@@ -495,7 +516,22 @@ def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = '
         print("Config file not found")
         return myyolov8, preprocess, classesList
 
-
+def freeze_yolomodel(model, freeze=[]):
+    # Freeze layers
+    freeze_list = freeze if isinstance(
+        freeze, list) else range(freeze) if isinstance(freeze, int) else []
+    always_freeze_names = ['.dfl']  # always freeze these layers
+    freeze_layer_names = [f'model.{x}.' for x in freeze_list] + always_freeze_names
+    for k, v in model.named_parameters():
+        # v.register_hook(lambda x: torch.nan_to_num(x))  # NaN to 0 (commented for erratic training results)
+        if any(x in k for x in freeze_layer_names):
+            LOGGER.info(f"Freezing layer '{k}'")
+            v.requires_grad = False
+        elif not v.requires_grad:
+            LOGGER.info(f"WARNING ⚠️ setting 'requires_grad=True' for frozen layer '{k}'. "
+                        'See ultralytics.engine.trainer for customization of frozen layers.')
+            v.requires_grad = True
+    return model
 
 if __name__ == "__main__":
     cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
@@ -523,12 +559,13 @@ if __name__ == "__main__":
     #inference
     im0 = cv2.imread(imagepath) #(1080, 810, 3)
     imgs = [im0]
+    origimageshapes=[img.shape for img in imgs] #(height, width, c)
     yoyotrans = YoloTransform(min_size=640, max_size=640, device=device, fp16=fp16, cfgs=DEFAULT_CFG_DICT)
     imgtensors = yoyotrans(imgs) #[1, 3, 640, 480]
-    preds, xtensors = myyolov8(imgtensors) #inference od [1, 84, 6300], 84=4(boxes)+80(classes)
-    imgsize = imgtensors.shape[2:] #640, 480
-    detections = yoyotrans.postprocess(preds, imgsize, imgs)
-    print(detections) 
+    preds = myyolov8(imgtensors) #inference od [1, 84, 6300], 84=4(boxes)+80(classes)
+    imgsize = imgtensors.shape[2:] #640, 480 HW
+    detections = yoyotrans.postprocess(preds, imgsize, origimageshapes)
+    print(detections)  #bounding boxes in (xmin, ymin, xmax, ymax) format
 
     onedetection=detections[0]
     #labels = [names[i] for i in detections["labels"]] #classes[i]

@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torchvision
 from torch import nn, Tensor
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, yolov8_non_max_suppression, non_max_suppression, scale_boxes
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, yolov8_non_max_suppression, non_max_suppression, scale_boxes, xyxy2xywh
 
 # same_shapes = all(x.shape == im[0].shape for x in im)
 # [self.letterbox(image=x) for x in im]
@@ -20,13 +20,14 @@ class LetterBox:
         self.scaleup = scaleup
         self.stride = stride
         self.center = center  # Put the image in the middle or top-left
+        #if auto is True, minimum rectangle without fill
 
     def __call__(self, labels=None, image=None):
         """Return updated labels and image with added border."""
         if labels is None:
             labels = {}
         img = labels.get('img') if image is None else image
-        shape = img.shape[:2]  # current shape [height, width]
+        shape = img.shape[:2]  # current shape [height, width] 426, 640
         new_shape = labels.pop('rect_shape', self.new_shape)
         if isinstance(new_shape, int):
             new_shape = (new_shape, new_shape)
@@ -38,8 +39,8 @@ class LetterBox:
 
         # Compute padding
         ratio = r, r  # width, height ratios
-        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
-        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r)) #(640, 426)
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding dh=214
         if self.auto:  # minimum rectangle
             dw, dh = np.mod(dw, self.stride), np.mod(dh, self.stride)  # wh padding
         elif self.scaleFill:  # stretch
@@ -48,33 +49,53 @@ class LetterBox:
             ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
 
         if self.center:
-            dw /= 2  # divide padding into 2 sides
-            dh /= 2
+            dw /= 2  # divide padding into 2 sides, 0
+            dh /= 2 #107
 
         if shape[::-1] != new_unpad:  # resize
             img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
-        top, bottom = int(round(dh - 0.1)) if self.center else 0, int(round(dh + 0.1))
-        left, right = int(round(dw - 0.1)) if self.center else 0, int(round(dw + 0.1))
+        top, bottom = int(round(dh - 0.1)) if self.center else 0, int(round(dh + 0.1)) #107, 107
+        left, right = int(round(dw - 0.1)) if self.center else 0, int(round(dw + 0.1)) #0, 0
         img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT,
                                  value=(114, 114, 114))  # add border
         if labels.get('ratio_pad'):
-            labels['ratio_pad'] = (labels['ratio_pad'], (left, top))  # for evaluation
+            labels['ratio_pad'] = (labels['ratio_pad'], (left, top))  # for evaluation (0,107)
 
         if len(labels):
-            labels = self._update_labels(labels, ratio, dw, dh)
+            #yolo uses normalized xywh format
+            #labels = self._update_labels(labels, ratio, dw, dh)
+            #labels['bboxes']=xyxy2xywh(labels['bboxes']) #convert xyxy to xywh
+            #denormalize bboxes
+            origh=shape[0]
+            origw=shape[1]
+            labels['bboxes']=self.scale_box(labels['bboxes'], (origw, origh, origw, origh))
+            labels['normalized']=False
+            rw, rh = ratio  # width, height ratios
+            labels['bboxes']=self.scale_box(labels['bboxes'], (rw, rh, rw, rh))
+            labels['bboxes'][:, 0] += dw #xmin+xoffset(dw)
+            labels['bboxes'][:, 1] += dh #ymin+yoffset, box w, h no chnage
             labels['img'] = img
             labels['resized_shape'] = new_shape
             return labels
         else:
             return img
+    
+    def scale_box(self, bboxes, scale):#box is normalized xmin, ymin, w, h
+        assert len(scale) == 4
+        bboxes[:, 0] *= scale[0] #w
+        bboxes[:, 1] *= scale[1] #h
+        bboxes[:, 2] *= scale[2] #h
+        bboxes[:, 3] *= scale[3] #w
+        return bboxes
 
-    def _update_labels(self, labels, ratio, padw, padh):
-        """Update labels."""
-        labels['instances'].convert_bbox(format='xyxy')
-        labels['instances'].denormalize(*labels['img'].shape[:2][::-1])
-        labels['instances'].scale(*ratio)
-        labels['instances'].add_padding(padw, padh)
-        return labels
+    #new added from ultralytics\utils\instance.py    
+    # def _update_labels(self, labels, ratio, padw, padh):
+    #     """Update labels."""
+    #     labels['instances'].convert_bbox(format='xyxy')
+    #     labels['instances'].denormalize(*labels['img'].shape[:2][::-1])
+    #     labels['instances'].scale(*ratio)
+    #     labels['instances'].add_padding(padw, padh)
+    #     return labels
 
 class YoloTransform(nn.Module):
     """
@@ -107,6 +128,8 @@ class YoloTransform(nn.Module):
         self.image_std = image_std
         self.size_divisible = size_divisible
         self.letterbox = LetterBox((640, 640), auto=True, stride=size_divisible) #only support cv2
+        #if auto is True, the size of the image is not square, if auto=False, the size of the image is square.
+
         self.device = device
         self.fp16 = fp16
         #self.original_image_sizes: List[Tuple[int, int]] = []
@@ -138,6 +161,9 @@ class YoloTransform(nn.Module):
             #self.newimage_size = images[0].shape[0:2] #(640, 480, 3)
             images = self.pre_processing(images)
             return images #tensor output
+        elif isinstance(images, torch.Tensor):
+            images = self.pre_processing(images)
+            return images
         else: #single image input
             val = images.shape[-2:] #CHW format
             #self.original_image_sizes.append((val[0], val[1]))
@@ -165,7 +191,7 @@ class YoloTransform(nn.Module):
         return im
     
     #ref: https://github.com/lkk688/myyolov8/blob/main/ultralytics/models/yolo/detect/predict.py
-    def postprocess(self, preds, newimagesize, origimages):
+    def postprocess(self, preds, newimagesize, origimageshapes):
         """Post-processes predictions and returns a list of Results objects."""
         #y,x output, training mode, direct output x (three items), inference mode: y,x output
         #non_max_suppression only use the detection results (y)
@@ -186,8 +212,8 @@ class YoloTransform(nn.Module):
         detections = []
         #result: List[Dict[str, Tensor]] in fasterrcnn
         for i, pred in enumerate(preds):
-            orig_img = origimages[i]
-            origimageshape = orig_img.shape
+            #orig_img = origimages[i]
+            origimageshape = origimageshapes[i]#orig_img.shape
             pred[:, :4] = scale_boxes(newimagesize, pred[:, :4], origimageshape)
             #img_path = self.batch[0][i]
             # results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred))

@@ -163,19 +163,22 @@ class v8DetectionLoss:
 class myv8DetectionLoss:
     """Criterion class for computing training losses."""
 
-    def __init__(self, model, hyp):  # model must be de-paralleled
+    def __init__(self, model):  # model must be de-paralleled
 
-        #device = next(model.parameters()).device  # get model device
+        device = next(model.parameters()).device  # get model device
         #h = model.args  # hyperparameters
 
-        m = model[-1] #model.model[-1]  # Detect() module
+        m = model.model[-1] #model.model[-1]  # Detect() module
         self.bce = nn.BCEWithLogitsLoss(reduction='none')
-        self.hyp = hyp #h
+        #self.hyp = hyp #h
+        self.hypbox = 7.5  # (float) box loss gain
+        self.hypcls = 0.5  # (float) cls loss gain (scale with pixels)
+        self.hypdfl = 1.5  # (float) dfl loss gain
         self.stride = m.stride  # model strides
         self.nc = m.nc  # number of classes
         self.no = m.no
         self.reg_max = m.reg_max
-        #self.device = device
+        self.device = device
 
         self.use_dfl = m.reg_max > 1
 
@@ -183,21 +186,21 @@ class myv8DetectionLoss:
         self.bbox_loss = BboxLoss(m.reg_max - 1, use_dfl=self.use_dfl).to(device)
         self.proj = torch.arange(m.reg_max, dtype=torch.float, device=device)
 
-    def preprocess(self, targets, batch_size, scale_tensor):
+    def preprocess(self, targets, batch_size, scale_tensor): #targets is [batch_idx, cls, bbox]
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
         if targets.shape[0] == 0:
             out = torch.zeros(batch_size, 0, 5, device=self.device)
         else:
-            i = targets[:, 0]  # image index
-            _, counts = i.unique(return_counts=True)
+            i = targets[:, 0]  # image index, i.e, batch_idx
+            _, counts = i.unique(return_counts=True) #total count of images
             counts = counts.to(dtype=torch.int32)
-            out = torch.zeros(batch_size, counts.max(), 5, device=self.device)
+            out = torch.zeros(batch_size, counts.max(), 5, device=self.device) #out(b, object counts, 5)
             for j in range(batch_size):
                 matches = i == j
-                n = matches.sum()
+                n = matches.sum() #n number of objects in j-th image
                 if n:
-                    out[j, :n] = targets[matches, 1:]
-            out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor))
+                    out[j, :n] = targets[matches, 1:] #copy the targets (cls, bbox) to out[j-th image, 0:n objects, 5(cls+box)]
+            out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor)) #box*scale to xyxy
         return out
 
     def bbox_decode(self, anchor_points, pred_dist):
@@ -227,6 +230,7 @@ class myv8DetectionLoss:
         # targets
         targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+        #targets[j-th image, 0:n objects, 5(cls+box)]
         gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
 
@@ -249,8 +253,8 @@ class myv8DetectionLoss:
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
-        loss[0] *= self.hyp.box  # box gain
-        loss[1] *= self.hyp.cls  # cls gain
-        loss[2] *= self.hyp.dfl  # dfl gain
+        loss[0] *= self.hypbox #self.hyp.box  # box gain
+        loss[1] *= self.hypcls #self.hyp.cls  # cls gain
+        loss[2] *= self.hypdfl #self.hyp.dfl  # dfl gain
 
         return loss.sum() * batch_size, loss.detach()  # loss(box, cls, dfl)

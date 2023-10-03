@@ -5,7 +5,7 @@ from torchvision.models import get_model, get_model_weights, get_weight, list_mo
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
-from DeepDataMiningLearning.detection.modules.yolomodels import create_yolomodel
+from DeepDataMiningLearning.detection.modules.yolomodels import create_yolomodel, freeze_yolomodel
 try:
     from torchinfo import summary
 except:
@@ -404,6 +404,8 @@ def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file 
             print("Model name not supported")
     elif modelname.startswith('yolo'):
         model, preprocess, classes=create_yolomodel(modelname, num_classes, ckpt_file, fp16, device)
+        model= freeze_yolomodel(model, freeze=[])
+        #ckpt file is already loaded in create_yolomodel
     else:
         print('Model name not supported')
 

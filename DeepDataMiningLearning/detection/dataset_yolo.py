@@ -20,7 +20,7 @@ import psutil
 from itertools import repeat
 import contextlib
 from tqdm import tqdm
-
+from DeepDataMiningLearning.detection.modules.yolotransform import LetterBox
 # PyTorch Multi-GPU DDP Constants
 RANK = int(os.getenv('RANK', -1))
 LOCAL_RANK = int(os.getenv('LOCAL_RANK', -1))  # https://pytorch.org/docs/stable/elastic/run.html
@@ -232,7 +232,8 @@ class YOLODataset(torch.utils.data.Dataset):
         classlist = list(data['names'].values())
         #print(classlist)
         self.numclass = len(classlist)
-        self.transform = transform
+        self.transform = transform #not used
+        self.letterbox = LetterBox((640, 640), auto=False, stride=32) #only support cv2
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
         #super().__init__(*args, **kwargs)
         self.fraction = 1 # a fraction of all image files
@@ -409,17 +410,24 @@ class YOLODataset(torch.utils.data.Dataset):
         """Returns transformed label information for given index."""
         imageandlabel = self.get_image_and_label(index) #image in label['img']
         img=imageandlabel.pop('img') #(480, 640, 3)
-        imgh, imgw = img.shape[:2]
+        #imgh, imgw = img.shape[:2]
+        originalimgshape = img.shape
+
+        imageandlabel = self.letterbox(labels=imageandlabel, image=img) #do letterbox here
+        #change box from normalized xywh, to unnormalized xywh
+        img=imageandlabel.pop('img')
+        imgh_letterbox, imgw_leterbox = img.shape[:2]
+
         img = np.ascontiguousarray(img.transpose(2, 0, 1)[::-1]) #BGR to RGB, HWC to CHW, (3, h, w)
         img = torch.from_numpy(img) #torch.Size([3, 480, 640])
         # if self.transform:
         #     transferred=self.transforms(imageandlabel)
         cls = imageandlabel.pop('cls') #(8, 1) array
         bbox = imageandlabel.pop('bboxes') #(8,4) array
-        bbox_format = imageandlabel.pop('bbox_format') #xywh
-        normalized = imageandlabel.pop('normalized') #True
+        #bbox_format = imageandlabel.pop('bbox_format') #xywh
+        #normalized = imageandlabel.pop('normalized') 
         nl = len(cls)
-        target = {}
+        
         # target['labels']=torch.from_numpy(cls) if nl else torch.zeros(nl)
         # target['boxes']=torch.from_numpy(bbox) if nl else torch.zeros((nl, 4))
         target_bbox = []
@@ -435,27 +443,34 @@ class YOLODataset(torch.utils.data.Dataset):
             height = h
             ymax = y + h
             if xmin<=xmax and ymin<=ymax and xmin>=0 and ymin>=0:
-                if self.format=='yolo':
-                    target_bbox.append([xmin, ymin, width, height])
+                if self.format=='yolo': #normalized xmin, ymin, width, height
+                    target_bbox.append([xmin/imgw_leterbox, ymin/imgh_letterbox, width/imgw_leterbox, height/imgh_letterbox])
                     target_labels.append(cls[i])
                 else:
-                    target_bbox.append([xmin*imgw, ymin*imgh, xmax*imgw, ymax*imgh]) #torchvison format is xmin, ymin, xmax, ymax
+                    target_bbox.append([xmin, ymin, xmax, ymax]) #torchvison format is xmin, ymin, xmax, ymax
                     target_labels.append(cls[i]+1) #0 means background
                 target_crowds.append(0)
-                area=w*imgw*h*imgh
+                area=w*h #w*imgw*h*imgh
                 target_areas.append(area)
         nl=len(target_bbox)
-        target['boxes'] = torch.as_tensor(target_bbox, dtype=torch.float32) if nl else torch.zeros((nl, 4))
-        # Labels int value for class
-        target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64) if nl else torch.zeros(nl)
-        target['image_id'] = int(index)
-        target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32) if nl else torch.zeros(nl)
-        target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64) if nl else torch.zeros(nl)
-        target['batch_idx'] = torch.zeros(nl) #new added in yolo
+        target = {}
         if self.format=='yolo':
-            target['img']=img
+            target['img']=img #CHW
+            target['bboxes'] = torch.as_tensor(target_bbox, dtype=torch.float32) if nl else torch.zeros((nl, 4))
+            target['cls'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64) if nl else torch.zeros(nl)
+            target['batch_idx'] = torch.zeros(nl) #new added in yolo
+            target['orig_shape'] = originalimgshape #torch.as_tensor(originalimgshape, dtype=torch.int64)
+            target['image_id'] = int(index)
             return target #dict
         else:
+            target['boxes'] = torch.as_tensor(target_bbox, dtype=torch.float32) if nl else torch.zeros((nl, 4))
+            # Labels int value for class
+            target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64) if nl else torch.zeros(nl)
+            target['image_id'] = int(index)
+            target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32) if nl else torch.zeros(nl)
+            target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64) if nl else torch.zeros(nl)
+            target['batch_idx'] = torch.zeros(nl) #new added in yolo
+            target['orig_shape'] = originalimgshape # torch.as_tensor(originalimgshape, dtype=torch.int64)
             return img, target
     
     #ultralytics\data\base.py
@@ -529,7 +544,7 @@ if __name__ == "__main__":
         data['yaml_file'] = str(dataset_cfgfile)
         data['kpt_shape'] = [17, 3] #for keypoint
     yolodataset = YOLODataset(root=root, annotation=annotation, train=True, transform=None, data=data,classes=None,use_segments=False,use_keypoints=False)
-    img, target=yolodataset[0]
-    print(img.shape) #torch.Size([3, 480, 640])
+    target=yolodataset[0]
+    print(target['img'].shape) #torch.Size([3, 480, 640])
     print(target.keys()) #dict_keys(['boxes', 'labels', 'image_id', 'area', 'iscrowd', 'batch_idx'])
     #image, targets = iter(next(yolodataset))
