@@ -200,6 +200,7 @@ class myv8DetectionLoss:
                 n = matches.sum() #n number of objects in j-th image
                 if n:
                     out[j, :n] = targets[matches, 1:] #copy the targets (cls, bbox) to out[j-th image, 0:n objects, 5(cls+box)]
+            #xcenter, ycenter, w, h to (x1, y1, x2, y2)
             out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor)) #box*scale to xyxy
         return out
 

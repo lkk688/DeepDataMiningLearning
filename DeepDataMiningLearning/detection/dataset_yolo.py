@@ -247,6 +247,7 @@ class YOLODataset(torch.utils.data.Dataset):
         self.rect = False
         self.augment = False
         self.stride =32
+        self.fp16 = False
         #did not use image cache, these code can be reduced
         self.ims, self.im_hw0, self.im_hw = [None] * self.ni, [None] * self.ni, [None] * self.ni
         self.npy_files = [Path(f).with_suffix('.npy') for f in self.im_files]
@@ -409,17 +410,20 @@ class YOLODataset(torch.utils.data.Dataset):
     def __getitem__(self, index):
         """Returns transformed label information for given index."""
         imageandlabel = self.get_image_and_label(index) #image in label['img']
-        img=imageandlabel.pop('img') #(480, 640, 3)
+        img=imageandlabel['img'] #(480, 640, 3)
         #imgh, imgw = img.shape[:2]
         originalimgshape = img.shape
 
         imageandlabel = self.letterbox(labels=imageandlabel, image=img) #do letterbox here
-        #change box from normalized xywh, to unnormalized xywh
+        #change box from normalized xcycwh, to unnormalized xmin, ymin, xmax, ymax
         img=imageandlabel.pop('img')
         imgh_letterbox, imgw_leterbox = img.shape[:2]
 
         img = np.ascontiguousarray(img.transpose(2, 0, 1)[::-1]) #BGR to RGB, HWC to CHW, (3, h, w)
         img = torch.from_numpy(img) #torch.Size([3, 480, 640])
+        img = img.half() if self.fp16 else img.float()  # uint8 to fp16/32
+        img /= 255  # 0 - 255 to 0.0 - 1.0
+        
         # if self.transform:
         #     transferred=self.transforms(imageandlabel)
         cls = imageandlabel.pop('cls') #(8, 1) array
@@ -435,16 +439,16 @@ class YOLODataset(torch.utils.data.Dataset):
         target_areas = []
         target_crowds = []
         for i in range(nl):
-            x,y,w,h = bbox[i] #0-1 normalized value
-            xmin = x
-            ymin = y
-            width= w
-            xmax = x + w
-            height = h
-            ymax = y + h
+            ##change box from normalized xcycwh, to unnormalized xmin, ymin, xmax, ymax
+            xmin,ymin,xmax,ymax = bbox[i] #0-1 normalized value
+            w = xmax - xmin
+            h = ymax - ymin
+            xc=xmin+w/2
+            yc=ymin+h/2
             if xmin<=xmax and ymin<=ymax and xmin>=0 and ymin>=0:
-                if self.format=='yolo': #normalized xmin, ymin, width, height
-                    target_bbox.append([xmin/imgw_leterbox, ymin/imgh_letterbox, width/imgw_leterbox, height/imgh_letterbox])
+                if self.format=='yolo': #normalized xcenter, ycenter, width, height
+                    target_bbox.append([xc/imgw_leterbox, yc/imgh_letterbox, w/imgw_leterbox, h/imgh_letterbox])
+                    #target_bbox.append([xc, yc, w, h])
                     target_labels.append(cls[i])
                 else:
                     target_bbox.append([xmin, ymin, xmax, ymax]) #torchvison format is xmin, ymin, xmax, ymax

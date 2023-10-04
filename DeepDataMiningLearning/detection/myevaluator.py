@@ -339,7 +339,6 @@ def modelevaluate(model, data_loader, device):
     torch.set_num_threads(n_threads)
     return coco_evaluator
 
-
 def yoloevaluate(model, data_loader, preprocess, device):
 
     cpu_device = torch.device("cpu")
@@ -352,19 +351,26 @@ def yoloevaluate(model, data_loader, preprocess, device):
 
     evalprogress_bar = tqdm(range(len(data_loader)))
 
+    all_res=[]
     for batch in data_loader:
         targets={}
         #convert from yolo data format to COCO
-        box=batch['bboxes'].numpy() #normalized xmin, ymin, width, height
-        box=box*640
-        targets['boxes'] = box
+        box=batch['bboxes'] #normalized xc, yc, width, height
+        box=torchvision.ops.box_convert(box, 'cxcywh', 'xyxy')#xcenter, ycenter,wh, to xyxy
+        box=box.numpy()
+        
         targets['labels']=batch['cls'].numpy()
         targets["image_id"]=batch['image_id'][0]
-        (H, W, C)=batch['orig_shape'][0] #tuple
+        (H, W, C)=(640,640,3) #batch['orig_shape'][0] #tuple
         originalshape = [[H, W, C]]
+        box[:,0]=box[:,0]*W
+        box[:,1]=box[:,1]*H
+        box[:,2]=box[:,2]*W
+        box[:,3]=box[:,3]*H
+        targets['boxes'] = box
 
         oneimg=torch.squeeze(batch['img'], 0) #[3, 640, 640]
-        vis_example(targets, oneimg)
+        vis_example(targets, oneimg, filename='result1.jpg')
 
         batch['img']=preprocess(batch['img']) #batch['img'] = batch['img'].to(device)
         #img is already a tensor, preprocess function only do device
@@ -375,22 +381,24 @@ def yoloevaluate(model, data_loader, preprocess, device):
         #outputs = model(images) #len1 dict boxes (10x4), labels[10], scores
         imgtensors = batch['img']
         preds = model(imgtensors)
-        imgsize = imgtensors.shape[2:] #640, 480
+        imgsize = imgtensors.shape[2:] #640, 640
         outputs = preprocess.postprocess(preds, imgsize, originalshape)
         #outputs["boxes"] (xmin, ymin, xmax, ymax) format ["scores"] ["labels"]
 
-        vis_example(outputs[0], oneimg)
+        vis_example(outputs[0], oneimg, filename='result2.jpg')
 
         #outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
         model_time = time.time() - model_time
 
         targets = [targets] #make it a list
         res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
-        #print("res:", res)
+        print("res:", res) #image_id: output['boxes'] ['scores'] ['labels']
         evaluator_time = time.time()
+        all_res.append(res)
         #coco_evaluator.update(res)
         evaluator_time = time.time() - evaluator_time
         evalprogress_bar.update(1)
+
 
     # gather the stats from all processes
     #coco_evaluator.synchronize_between_processes()
@@ -403,25 +411,27 @@ def yoloevaluate(model, data_loader, preprocess, device):
 
 from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
-def vis_example(onedetection, imgtensor):
+def vis_example(onedetection, imgtensor, filename='result.jpg'):
     #labels = [names[i] for i in detections["labels"]] #classes[i]
     #img=im0.copy() #HWC (1080, 810, 3)
     #img_trans=im0[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW
     #imgtensor = torch.from_numpy(img_trans.copy()) #[3, 1080, 810]
-    pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+    #pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+    pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
     #pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
     print(pred_bbox_tensor)
     pred_labels = onedetection["labels"].astype(str).tolist()
     #img: Tensor of shape (C x H x W) and dtype uint8.
     #box: Tensor of size (N, 4) containing bounding boxes in (xmin, ymin, xmax, ymax) format.
     #labels: Optional[List[str]]
-    box = draw_bounding_boxes(imgtensor, boxes=pred_bbox_tensor,
+    imgtensor_uint=torchvision.transforms.functional.convert_image_dtype(imgtensor, torch.uint8)
+    box = draw_bounding_boxes(imgtensor_uint, boxes=pred_bbox_tensor,
                             labels=pred_labels,
                             colors="red",
                             width=4, font_size=40)
     im = to_pil_image(box.detach())
     # save a image using extension
-    im = im.save("result1.jpg")
+    im = im.save(filename)
 
 from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.dataset import get_dataset
@@ -439,7 +449,7 @@ if __name__ == "__main__":
     datasetname='yolo' #'waymococo' #'yolo'
     dataset, num_classes=get_dataset(datasetname, is_train, is_val, args)
     print("train set len:", len(dataset))
-    test_sampler = torch.utils.data.SequentialSampler(dataset)
+    test_sampler = torch.utils.data.RandomSampler(dataset)#torch.utils.data.SequentialSampler(dataset)
     new_collate_fn = utils.mycollate_fn
     data_loader_test = torch.utils.data.DataLoader(
         dataset, batch_size=1, sampler=test_sampler, num_workers=1, collate_fn=new_collate_fn

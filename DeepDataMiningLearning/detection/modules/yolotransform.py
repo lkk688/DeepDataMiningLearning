@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torchvision
 from torch import nn, Tensor
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, yolov8_non_max_suppression, non_max_suppression, scale_boxes, xyxy2xywh
+from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, yolov8_non_max_suppression, non_max_suppression, scale_boxes, xyxy2xywh, xywh2xyxy
 
 # same_shapes = all(x.shape == im[0].shape for x in im)
 # [self.letterbox(image=x) for x in im]
@@ -64,7 +64,8 @@ class LetterBox:
         if len(labels):
             #yolo uses normalized xywh format
             #labels = self._update_labels(labels, ratio, dw, dh)
-            #labels['bboxes']=xyxy2xywh(labels['bboxes']) #convert xyxy to xywh
+            #normalized xcyc to xmin, ymin, xmax, ymax
+            labels['bboxes']=xywh2xyxy(labels['bboxes'])
             #denormalize bboxes
             origh=shape[0]
             origw=shape[1]
@@ -73,7 +74,9 @@ class LetterBox:
             rw, rh = ratio  # width, height ratios
             labels['bboxes']=self.scale_box(labels['bboxes'], (rw, rh, rw, rh))
             labels['bboxes'][:, 0] += dw #xmin+xoffset(dw)
-            labels['bboxes'][:, 1] += dh #ymin+yoffset, box w, h no chnage
+            labels['bboxes'][:, 1] += dh #ymin+yoffset
+            labels['bboxes'][:, 2] += dw #xmax+xoffset
+            labels['bboxes'][:, 3] += dh #ymax+yoffset
             labels['img'] = img
             labels['resized_shape'] = new_shape
             return labels
