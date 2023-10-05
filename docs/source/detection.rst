@@ -331,7 +331,19 @@ Our custom YOLOv8 training
 .. code-block:: console
 
    $ torchrun --nproc_per_node=2 DeepDataMiningLearning/detection/mytrain_yolo.py --data-path='/data/cmpe249-fa23/waymotrain200cocoyolo/' --dataset='yolo' --model='yolov8' --scale='x' --ckpt='/data/cmpe249-fa23/modelzoo/yolov8x_statedicts.pt' --batch-size=8 --trainable=0 --multigpu=True
-   
+   Epoch4:
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.313
+   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.465
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.336
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.199
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.646
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.710
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.124
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.302
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.346
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.227
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.692
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.785
 
 https://docs.ultralytics.com/quickstart/
 
