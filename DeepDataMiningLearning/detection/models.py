@@ -381,7 +381,7 @@ def load_checkpoint(model, ckpt_file, fp16=False):
     model.half() if fp16 else model.float()
     return model
 
-def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file = None, fp16=False, device= 'cuda:0'):
+def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file = None, fp16=False, device= 'cuda:0', scale='n'):
     model = None
     preprocess = None
     classes = None
@@ -403,7 +403,7 @@ def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file 
         else:
             print("Model name not supported")
     elif modelname.startswith('yolo'):
-        model, preprocess, classes=create_yolomodel(modelname, num_classes, ckpt_file, fp16, device)
+        model, preprocess, classes=create_yolomodel(modelname, num_classes, ckpt_file, fp16, device, scale)
         model= freeze_yolomodel(model, freeze=[])
         #ckpt file is already loaded in create_yolomodel
     else:

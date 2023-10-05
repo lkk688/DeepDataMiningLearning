@@ -170,7 +170,7 @@ def get_transform(is_train, args):
 def get_cocodataset(is_train, is_val, args):
     image_set = "train" if is_train else "val"
     num_classes, mode = {"coco": (91, "instances"), "coco_kp": (2, "person_keypoints")}[args.dataset]
-    with_masks = "mask" in args.model
+    with_masks = False #"mask" in args.model
     ds = get_coco(
         root=args.data_path,
         image_set=image_set,
@@ -224,10 +224,16 @@ def get_yolodataset(is_train, is_val, args):
         data['yaml_file'] = str(dataset_cfgfile)
         data['kpt_shape'] = [17, 3] #for keypoint
     if is_val == True:
-        annotation = os.path.join(rootPath, 'val2017.txt')
+        if args.dataset.startswith('coco'):
+            annotation = os.path.join(rootPath, 'val2017.txt')
+        else:
+            annotation = os.path.join(rootPath, 'images_val.txt')
         yolodataset = YOLODataset(root=rootPath, annotation=annotation, train=False, transform=None, data=data,classes=None,use_segments=False,use_keypoints=False)
     else: #training
-        annotation = os.path.join(rootPath, 'train2017.txt')
+        if args.dataset.startswith('coco'):
+            annotation = os.path.join(rootPath, 'train2017.txt')
+        else:
+            annotation = os.path.join(rootPath, 'images_train.txt')
         yolodataset = YOLODataset(root=rootPath, annotation=annotation, train=is_train, transform=None, data=data,classes=None,use_segments=False,use_keypoints=False)
     num_classes = yolodataset.numclass
     return yolodataset, num_classes

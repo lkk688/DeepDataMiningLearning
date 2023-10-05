@@ -326,6 +326,13 @@ GPU Utilization:
 
 YOLOv8
 -------
+Our custom YOLOv8 training
+
+.. code-block:: console
+
+   $ torchrun --nproc_per_node=2 DeepDataMiningLearning/detection/mytrain_yolo.py --data-path='/data/cmpe249-fa23/waymotrain200cocoyolo/' --dataset='yolo' --model='yolov8' --scale='x' --ckpt='/data/cmpe249-fa23/modelzoo/yolov8x_statedicts.pt' --batch-size=8 --trainable=0 --multigpu=True
+   
+
 https://docs.ultralytics.com/quickstart/
 
 .. code-block:: console
@@ -428,6 +435,7 @@ https://docs.ultralytics.com/quickstart/
                pred[:, :4] = ops.scale_boxes(img.shape[2:], pred[:, :4], orig_img.shape)
 
 Load images
+
 .. code-block:: console
 
    class LoadImages: in ultralytics\data\loaders.py
@@ -485,6 +493,7 @@ Training Process
       def _do_train
          batch = self.preprocess_batch(batch)
          self.loss, self.loss_items = self.model(batch)
+
 v8_transforms
 
 build_transforms in YOLODataset

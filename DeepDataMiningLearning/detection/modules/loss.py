@@ -39,13 +39,13 @@ class BboxLoss(nn.Module):
 
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
-        weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1)
-        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True)
+        weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1) #[16, 8400, 80]->[912, 1]
+        iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True) #[912, 1]
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
         if self.use_dfl:
-            target_ltrb = bbox2dist(anchor_points, target_bboxes, self.reg_max)
+            target_ltrb = bbox2dist(anchor_points, target_bboxes, self.reg_max) #[16, 8400, 4]
             loss_dfl = self._df_loss(pred_dist[fg_mask].view(-1, self.reg_max + 1), target_ltrb[fg_mask]) * weight
             loss_dfl = loss_dfl.sum() / target_scores_sum
         else:
@@ -194,15 +194,15 @@ class myv8DetectionLoss:
             i = targets[:, 0]  # image index, i.e, batch_idx
             _, counts = i.unique(return_counts=True) #total count of images
             counts = counts.to(dtype=torch.int32)
-            out = torch.zeros(batch_size, counts.max(), 5, device=self.device) #out(b, object counts, 5)
+            out = torch.zeros(batch_size, counts.max(), 5, device=self.device) #out(b, object counts, 5) [16, 10, 5]
             for j in range(batch_size):
                 matches = i == j
                 n = matches.sum() #n number of objects in j-th image
                 if n:
                     out[j, :n] = targets[matches, 1:] #copy the targets (cls, bbox) to out[j-th image, 0:n objects, 5(cls+box)]
-            #xcenter, ycenter, w, h to (x1, y1, x2, y2)
-            out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor)) #box*scale to xyxy
-        return out
+            #normalized xcenter, ycenter, w, h to unnormalized (x1, y1, x2, y2)
+            out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor)) #box*scale to xyxy, scale_tensor=tensor([640., 640., 640., 640.]
+        return out #[16, 10, 5]
 
     def bbox_decode(self, anchor_points, pred_dist):
         """Decode predicted object bounding box coordinates from anchor points and distribution."""
@@ -218,25 +218,25 @@ class myv8DetectionLoss:
         loss = torch.zeros(3, device=self.device)  # box, cls, dfl
         feats = preds[1] if isinstance(preds, tuple) else preds
         pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) for xi in feats], 2).split(
-            (self.reg_max * 4, self.nc), 1)
+            (self.reg_max * 4, self.nc), 1) #[16, 64, 8400], [16, 80, 8400]
 
-        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
-        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+        pred_scores = pred_scores.permute(0, 2, 1).contiguous() #->[16, 8400, 80]
+        pred_distri = pred_distri.permute(0, 2, 1).contiguous() #->[16, 8400, 64]
 
         dtype = pred_scores.dtype
         batch_size = pred_scores.shape[0]
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
-        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5) #[8400, 2], [8400, 1]
 
         # targets
-        targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
+        targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1) #[65, 6] [imageid, cls, boxes]
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
         #targets[j-th image, 0:n objects, 5(cls+box)]
-        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # cls, xyxy
-        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
+        gt_labels, gt_bboxes = targets.split((1, 4), 2)  # [16, 10, 1] cls, xyxy [16, 10, 4]
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0) #[16, 10, 1]
 
         # pboxes
-        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4)
+        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4) ->[16, 8400, 4]
 
         _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
             pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
@@ -246,7 +246,7 @@ class myv8DetectionLoss:
 
         # cls loss
         # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
-        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE
+        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum  # BCE [16, 8400, 80]
 
         # bbox loss
         if fg_mask.sum():

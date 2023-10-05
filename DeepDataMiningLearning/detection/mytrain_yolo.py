@@ -13,7 +13,7 @@ from DeepDataMiningLearning.detection.trainutils import create_aspect_ratio_grou
 
 from DeepDataMiningLearning.detection.dataset import get_dataset #get_cocodataset, get_kittidataset, get_transform
 from DeepDataMiningLearning.detection.models import create_detectionmodel #get_torchvision_detection_models, modify_fasterrcnnheader
-from DeepDataMiningLearning.detection.myevaluator import simplemodelevaluate, modelevaluate
+from DeepDataMiningLearning.detection.myevaluator import simplemodelevaluate, modelevaluate, yoloevaluate
 
 try:
     from torchinfo import summary
@@ -22,7 +22,7 @@ except:
 
 
 #Select the visible GPU
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3" #"0,1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "1,2,3" #"0,1"
 
 MACHINENAME='HPC'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
@@ -53,6 +53,7 @@ def get_args_parser(add_help=True):
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
     parser.add_argument("--model", default="yolov8", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
+    parser.add_argument("--scale", default="x", type=str, help="model scale") 
     parser.add_argument("--ckpt", default="/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
     parser.add_argument("--trainable", default=0, type=int, help="number of trainable layers (sequence) of backbone")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
@@ -60,7 +61,7 @@ def get_args_parser(add_help=True):
         "-b", "--batch-size", default=16, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
     parser.add_argument("--epochs", default=60, type=int, metavar="N", help="number of total epochs to run")
-    parser.add_argument("--saveeveryepoch", default=4, type=int, metavar="N", help="number of epochs to save")
+    parser.add_argument("--saveeveryepoch", default=1, type=int, metavar="N", help="number of epochs to save")
     parser.add_argument(
         "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 4)"
     )
@@ -142,7 +143,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
-    parser.add_argument("--expname", default="yolo1002", help="experiment name, create a sub-folder")
+    parser.add_argument("--expname", default="1004", help="experiment name, create a sub-folder")
 
     return parser
 
@@ -223,7 +224,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model, preprocess, classes = create_detectionmodel(args.model, num_classes, args.trainable, ckpt_file=args.ckpt, fp16=False, device= device)
+    model, preprocess, classes = create_detectionmodel(args.model, num_classes, args.trainable, ckpt_file=args.ckpt, fp16=False, device= device, scale=args.scale)
     #model.to(device)
     
     if args.distributed and args.sync_bn:
@@ -278,7 +279,8 @@ def main(args):
 
     if args.test_only:
         #torch.backends.cudnn.deterministic = True
-        simplemodelevaluate(model, data_loader_test, device=device)
+        #simplemodelevaluate(model, data_loader_test, device=device)
+        yoloevaluate(model, data_loader_test, preprocess, device)
         #evaluate(model, data_loader_test, device=device)
         #evaluate(model, data_loader, device=device)
         return
@@ -305,7 +307,8 @@ def main(args):
                 utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
             # evaluate after current epoch
-            modelevaluate(model, data_loader_test, device=device)
+            #modelevaluate(model, data_loader_test, device=device)
+            yoloevaluate(model, data_loader_test, preprocess, device)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

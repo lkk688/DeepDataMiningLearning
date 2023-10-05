@@ -259,6 +259,62 @@ def convert_to_coco_api(ds):#mykittidetectiondataset
     coco_ds.createIndex()
     return coco_ds
 
+def convert_to_coco_api(ds):#mykittidetectiondataset
+    coco_ds = COCO()
+    # annotation IDs need to start at 1, not 0, see torchvision issue #1530
+    ann_id = 1
+    dataset = {"images": [], "categories": [], "annotations": []}
+    categories = set()
+    ds_len=len(ds)
+    print("convert to coco api:")
+    progress_bar = tqdm(range(ds_len))
+    for img_idx in range(ds_len):
+        # find better way to get target
+        # targets = ds.get_annotations(img_idx)
+        img, targets = ds[img_idx] #img is [3, 1280, 1920], 
+        image_id = targets["image_id"] #68400
+        img_dict = {}
+        img_dict["id"] = image_id
+        img_dict["height"] = img.shape[-2] #img is CHW
+        img_dict["width"] = img.shape[-1]
+        dataset["images"].append(img_dict)
+        bboxes = targets["boxes"].clone() #torch.Size([23, 4])
+        bboxes[:, 2:] -= bboxes[:, :2] #[xmin, ymin, xmax, ymax] in torch to [xmin, ymin, width, height] in COCO
+        bboxes = bboxes.tolist() #23 list of [536.0, 623.0, 51.0, 18.0]
+        labels = targets["labels"].tolist() #torch.Size([23]) -> list 23 [1,1,1]
+        areas = targets["area"].tolist() #torch.Size([23]) -> list 23 []
+        iscrowd = targets["iscrowd"].tolist() #torch.Size([23]) -> list
+        if "masks" in targets:
+            masks = targets["masks"]
+            # make masks Fortran contiguous for coco_mask
+            masks = masks.permute(0, 2, 1).contiguous().permute(0, 2, 1)
+        if "keypoints" in targets:
+            keypoints = targets["keypoints"]
+            keypoints = keypoints.reshape(keypoints.shape[0], -1).tolist()
+        num_objs = len(bboxes)
+        for i in range(num_objs):
+            ann = {}
+            ann["image_id"] = image_id
+            ann["bbox"] = bboxes[i]
+            ann["category_id"] = labels[i] #int
+            categories.add(labels[i])
+            ann["area"] = areas[i]
+            ann["iscrowd"] = iscrowd[i]
+            ann["id"] = ann_id
+            if "masks" in targets:
+                ann["segmentation"] = coco_mask.encode(masks[i].numpy())
+            if "keypoints" in targets:
+                ann["keypoints"] = keypoints[i]
+                ann["num_keypoints"] = sum(k != 0 for k in keypoints[i][2::3])
+            dataset["annotations"].append(ann)
+            ann_id += 1
+        progress_bar.update(1)
+    dataset["categories"] = [{"id": i} for i in sorted(categories)]
+    #print("convert_to_coco_api",dataset["categories"])
+    coco_ds.dataset = dataset
+    coco_ds.createIndex()
+    return coco_ds
+    
 def simplemodelevaluate(model, data_loader, device):
 
     cpu_device = torch.device("cpu")
@@ -271,13 +327,13 @@ def simplemodelevaluate(model, data_loader, device):
 
     evalprogress_bar = tqdm(range(len(data_loader)))
 
-    for images, targets in data_loader:
+    for images, targets in data_loader: #images, targets are a tuple (tensor, )
         images = list(img.to(device) for img in images) #list of torch.Size([3, 426, 640]), len=1
         #targets: len=1 dict (image_id=139), boxes[20,4], labels[20]
         model_time = time.time()
-        outputs = model(images) #len1 dict boxes (10x4), labels[10], scores
+        outputs = model(images) #len1 list of dict boxes tensor (10x4), labels tensor[10], scores
 
-        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs] #len1 list of dicts with tensors
         model_time = time.time() - model_time
 
         res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
@@ -339,15 +395,79 @@ def modelevaluate(model, data_loader, device):
     torch.set_num_threads(n_threads)
     return coco_evaluator
 
+def yoloconvert_to_coco_api(ds):#mykittidetectiondataset
+    coco_ds = COCO()
+    # annotation IDs need to start at 1, not 0, see torchvision issue #1530
+    ann_id = 1
+    dataset = {"images": [], "categories": [], "annotations": []}
+    categories = set()
+    ds_len=len(ds)
+    print("convert to coco api:")
+    progress_bar = tqdm(range(ds_len))
+    #for img_idx in range(ds_len):
+    for batch in ds:
+        # find better way to get target
+        # targets = ds.get_annotations(img_idx)
+        #img, targets = ds[img_idx]
+        #batch = ds[img_idx]
+        img = batch['img'] #[3, 640, 640] [1, 3, 640, 640]
+        image_id = batch['image_id'][0] #targets["image_id"] 0
+        img_dict = {}
+        img_dict["id"] = image_id
+        img_dict["height"] = img.shape[-2] #img is CHW
+        img_dict["width"] = img.shape[-1]
+        dataset["images"].append(img_dict)
+        bboxes = batch['bboxes'].clone() #normalized xc, yc, width, height
+        #bboxes = targets["boxes"].clone()
+        W=640
+        H=640
+        bboxes[:,0]=bboxes[:,0]*W
+        bboxes[:,1]=bboxes[:,1]*H
+        bboxes[:,2]=bboxes[:,2]*W
+        bboxes[:,3]=bboxes[:,3]*H
+        bboxes[:,0]=bboxes[:,0]-bboxes[:,2]/2 #-w/2: xmin
+        bboxes[:,1]=bboxes[:,1]-bboxes[:,3]/2 #-H/2: ymin
+        #bboxes[:, 2:] -= bboxes[:, :2] #[xmin, ymin, xmax, ymax] in torch to [xmin, ymin, width, height] in COCO
+        bboxes = bboxes.tolist()
+        labels = batch['cls'].tolist()
+        #labels = targets["labels"].tolist()
+        areas = batch["area"][0].tolist()
+        #areas = targets["area"].tolist()
+        iscrowd = batch["iscrowd"][0].tolist()
+        #iscrowd = targets["iscrowd"].tolist()
+        num_objs = len(bboxes)
+        for i in range(num_objs):
+            ann = {}
+            ann["image_id"] = image_id
+            ann["bbox"] = bboxes[i]
+            ann["category_id"] = labels[i]
+            categories.add(labels[i])
+            ann["area"] = areas[i]
+            ann["iscrowd"] = iscrowd[i]
+            ann["id"] = ann_id
+            dataset["annotations"].append(ann)
+            ann_id += 1
+        progress_bar.update(1)
+    dataset["categories"] = [{"id": i} for i in sorted(categories)]
+    #print("convert_to_coco_api",dataset["categories"])
+    coco_ds.dataset = dataset
+    coco_ds.createIndex()
+    return coco_ds
+
 def yoloevaluate(model, data_loader, preprocess, device):
 
     cpu_device = torch.device("cpu")
     model.eval()
 
     #coco = get_coco_api_from_dataset(data_loader.dataset) #go through the whole dataset, convert_to_coco_api
-    #coco = convert_to_coco_api(data_loader.dataset)
+    #coco = yoloconvert_to_coco_api(data_loader)
     iou_types = ["bbox"] #_get_iou_types(model)
     #coco_evaluator = CocoEvaluator(coco, iou_types)
+    coco_ds = COCO()
+    # annotation IDs need to start at 1, not 0, see torchvision issue #1530
+    ann_id = 1
+    dataset = {"images": [], "categories": [], "annotations": []}
+    categories = set()
 
     evalprogress_bar = tqdm(range(len(data_loader)))
 
@@ -355,23 +475,58 @@ def yoloevaluate(model, data_loader, preprocess, device):
     for batch in data_loader:
         targets={}
         #convert from yolo data format to COCO
+        img = batch['img'] # [1, 3, 640, 640]
+        img_dict = {}
+        image_id = batch['image_id'][0] #batch['image_id'] is tuple, get the 0-th element
+        targets["image_id"]=image_id
+        img_dict["id"] = image_id
+        img_dict["height"] = img.shape[-2] #img is CHW
+        img_dict["width"] = img.shape[-1]
+        dataset["images"].append(img_dict)
+
         box=batch['bboxes'] #normalized xc, yc, width, height
         box=torchvision.ops.box_convert(box, 'cxcywh', 'xyxy')#xcenter, ycenter,wh, to xyxy
         box=box.numpy()
-        
-        targets['labels']=batch['cls'].numpy()
-        targets["image_id"]=batch['image_id'][0]
         (H, W, C)=(640,640,3) #batch['orig_shape'][0] #tuple
         originalshape = [[H, W, C]]
         box[:,0]=box[:,0]*W
         box[:,1]=box[:,1]*H
         box[:,2]=box[:,2]*W
         box[:,3]=box[:,3]*H
-        targets['boxes'] = box
+        targets['boxes'] = box #xmin, ymin, xmax, ymax
+        oneimg=torch.squeeze(img, 0) #[3, 640, 640]
+        targets['labels']=batch['cls'].numpy()
+        #vis_example(targets, oneimg, filename='result1.jpg')
 
-        oneimg=torch.squeeze(batch['img'], 0) #[3, 640, 640]
-        vis_example(targets, oneimg, filename='result1.jpg')
-
+        bboxes = batch['bboxes'].clone() #normalized xc, yc, width, height
+        bboxes[:,0]=bboxes[:,0]*W
+        bboxes[:,1]=bboxes[:,1]*H
+        bboxes[:,2]=bboxes[:,2]*W
+        bboxes[:,3]=bboxes[:,3]*H
+        bboxes[:,0]=bboxes[:,0]-bboxes[:,2]/2 #-w/2: xmin
+        bboxes[:,1]=bboxes[:,1]-bboxes[:,3]/2 #-H/2: ymin
+        #[xmin, ymin, xmax, ymax] in torch to [xmin, ymin, width, height] in COCO
+        bboxes = bboxes.tolist()
+        labels = batch['cls'].tolist()
+        #labels = targets["labels"].tolist()
+        areas = batch["area"][0].tolist()
+        #areas = targets["area"].tolist()
+        iscrowd = batch["iscrowd"][0].tolist()
+        #iscrowd = targets["iscrowd"].tolist()
+        num_objs = len(bboxes)
+        for i in range(num_objs):
+            ann = {}
+            ann["image_id"] = image_id
+            ann["bbox"] = bboxes[i]
+            ann["category_id"] = labels[i]
+            categories.add(labels[i])
+            ann["area"] = areas[i]
+            ann["iscrowd"] = iscrowd[i]
+            ann["id"] = ann_id
+            dataset["annotations"].append(ann)
+            ann_id += 1
+    
+        #Inference
         batch['img']=preprocess(batch['img']) #batch['img'] = batch['img'].to(device)
         #img is already a tensor, preprocess function only do device
 
@@ -385,27 +540,36 @@ def yoloevaluate(model, data_loader, preprocess, device):
         outputs = preprocess.postprocess(preds, imgsize, originalshape)
         #outputs["boxes"] (xmin, ymin, xmax, ymax) format ["scores"] ["labels"]
 
-        vis_example(outputs[0], oneimg, filename='result2.jpg')
+        #vis_example(outputs[0], oneimg, filename='result2.jpg')
 
         #outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
         model_time = time.time() - model_time
 
         targets = [targets] #make it a list
         res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
-        print("res:", res) #image_id: output['boxes'] ['scores'] ['labels']
+        #print("res:", res) #image_id: output['boxes'] ['scores'] ['labels']
         evaluator_time = time.time()
         all_res.append(res)
         #coco_evaluator.update(res)
         evaluator_time = time.time() - evaluator_time
         evalprogress_bar.update(1)
 
+    #for coco evaluation
+    dataset["categories"] = [{"id": i} for i in sorted(categories)]
+    coco_ds.dataset = dataset
+    coco_ds.createIndex()
+
+    coco_evaluator = CocoEvaluator(coco_ds, iou_types)
+    for res in all_res:
+        coco_evaluator.update(res)
+        
 
     # gather the stats from all processes
-    #coco_evaluator.synchronize_between_processes()
+    coco_evaluator.synchronize_between_processes()
 
     # accumulate predictions from all images
-    #coco_evaluator.accumulate()
-    #coco_evaluator.summarize()
+    coco_evaluator.accumulate()
+    coco_evaluator.summarize()
     #torch.set_num_threads(n_threads)
     #return coco_evaluator
 
@@ -437,31 +601,33 @@ from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.dataset import get_dataset
 from DeepDataMiningLearning.detection.models import create_detectionmodel
 class args:
-    data_path = '/data/cmpe249-fa23/coco/' #'/data/cmpe249-fa23/WaymoCOCO/' #'/data/cmpe249-fa23/coco/'
+    data_path = '/data/cmpe249-fa23/coco/' #'/data/cmpe249-fa23/COCOoriginal/' # #'/data/cmpe249-fa23/WaymoCOCO/' #'/data/cmpe249-fa23/coco/'
     annotationfile = '/data/cmpe249-fa23/coco/train2017.txt'
     weights = None
     test_only = True
     backend = 'PIL' #tensor
     use_v2 = False
+    dataset = 'yolo'#'coco'
 if __name__ == "__main__":
     is_train =False
     is_val =True
-    datasetname='yolo' #'waymococo' #'yolo'
+    datasetname='yolo'#'coco' #'waymococo' #'yolo'
     dataset, num_classes=get_dataset(datasetname, is_train, is_val, args)
     print("train set len:", len(dataset))
-    test_sampler = torch.utils.data.RandomSampler(dataset)#torch.utils.data.SequentialSampler(dataset)
-    new_collate_fn = utils.mycollate_fn
+    test_sampler = torch.utils.data.SequentialSampler(dataset) #RandomSampler(dataset)#torch.utils.data.SequentialSampler(dataset)
+    new_collate_fn = utils.mycollate_fn #utils.mycollate_fn
     data_loader_test = torch.utils.data.DataLoader(
         dataset, batch_size=1, sampler=test_sampler, num_workers=1, collate_fn=new_collate_fn
     )
-    for batch in data_loader_test:
-        print(batch.keys()) #['img', 'bboxes', 'cls', 'batch_idx']
-        break
-    #batch=next(iter(data_loader_test))
-    print(batch.keys())
+    # for batch in data_loader_test:
+    #     print(batch.keys()) #['img', 'bboxes', 'cls', 'batch_idx']
+    #     break
+    # #batch=next(iter(data_loader_test))
+    #print(batch.keys())
 
     device='cuda:0'
     model, preprocess, classes = create_detectionmodel('yolov8', num_classes=80, trainable_layers=0, ckpt_file='/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt', fp16=False, device= device)
     model.to(device)
 
     yoloevaluate(model, data_loader_test, preprocess, device)
+    #simplemodelevaluate(model, data_loader_test, device)

@@ -221,8 +221,8 @@ class YoloTransform(nn.Module):
             #img_path = self.batch[0][i]
             # results.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred))
             resdict={}
-            resdict["boxes"] = pred[:, :4].detach().cpu().numpy()
-            resdict["scores"] = pred[:, 4].detach().cpu().numpy()
-            resdict["labels"] = pred[:, 5].detach().cpu().numpy() #class
+            resdict["boxes"] = pred[:, :4].detach().cpu()#.numpy()
+            resdict["scores"] = pred[:, 4].detach().cpu()#.numpy()
+            resdict["labels"] = pred[:, 5].detach().cpu()#.numpy() #class
             detections.append(resdict)
         return detections

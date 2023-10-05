@@ -490,7 +490,8 @@ from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
 import torchvision
 
-def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = 'cuda:0'):
+def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = 'cuda:0', scale='n'):
+    
     modelcfg_file=os.path.join('./DeepDataMiningLearning/detection/modules', modelname+'.yaml')
     cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
     myyolov8 = None
@@ -501,7 +502,7 @@ def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = '
         classes=DEFAULT_CFG_DICT['names']
         nc=len(classes)
         classesList = list(classes.values())
-        myyolov8=YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3) #nc =80
+        myyolov8=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3) #nc =80
         if os.path.exists(ckpt_file):
             myyolov8=load_checkpoint(myyolov8, ckpt_file)
         myyolov8=myyolov8.to(device).eval()

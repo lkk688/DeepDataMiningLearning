@@ -214,7 +214,7 @@ class YOLODataset(torch.utils.data.Dataset):
         (torch.utils.data.Dataset): A PyTorch dataset object that can be used for training an object detection model.
     """
     def __init__(self, root, annotation, train=True, transform=None, data=None, imgsz=640, format='yolo', use_segments=False, use_keypoints=False, **kwargs):
-        super().__init__()
+        #super().__init__()
         self.root = root #/data/cmpe249-fa23/coco/
         if train:
             foldername='train2017'
@@ -270,10 +270,10 @@ class YOLODataset(torch.utils.data.Dataset):
                         f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
                         # F += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
                 else:
-                    raise FileNotFoundError(f'{self.prefix}{p} does not exist')
+                    raise FileNotFoundError(f'{p} does not exist')
             im_files = sorted(x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in IMG_FORMATS)
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
-            assert im_files, f'{self.prefix}No images found in {img_path}'
+            assert im_files, f'No images found in {img_path}'
         except Exception as e:
             raise FileNotFoundError(f'{self.prefix}Error loading data from {img_path}') from e
         if self.fraction < 1:
@@ -427,10 +427,12 @@ class YOLODataset(torch.utils.data.Dataset):
         # if self.transform:
         #     transferred=self.transforms(imageandlabel)
         cls = imageandlabel.pop('cls') #(8, 1) array
+        nl = len(cls)
+        cls = np.squeeze(cls, axis=1) #(8,1) to array(8,)
         bbox = imageandlabel.pop('bboxes') #(8,4) array
         #bbox_format = imageandlabel.pop('bbox_format') #xywh
         #normalized = imageandlabel.pop('normalized') 
-        nl = len(cls)
+        
         
         # target['labels']=torch.from_numpy(cls) if nl else torch.zeros(nl)
         # target['boxes']=torch.from_numpy(bbox) if nl else torch.zeros((nl, 4))
@@ -449,15 +451,16 @@ class YOLODataset(torch.utils.data.Dataset):
                 if self.format=='yolo': #normalized xcenter, ycenter, width, height
                     target_bbox.append([xc/imgw_leterbox, yc/imgh_letterbox, w/imgw_leterbox, h/imgh_letterbox])
                     #target_bbox.append([xc, yc, w, h])
-                    target_labels.append(cls[i])
+                    target_labels.append(int(cls[i]))
                 else:
                     target_bbox.append([xmin, ymin, xmax, ymax]) #torchvison format is xmin, ymin, xmax, ymax
-                    target_labels.append(cls[i]+1) #0 means background
+                    target_labels.append(int(cls[i])+1) #0 means background
                 target_crowds.append(0)
                 area=w*h #w*imgw*h*imgh
                 target_areas.append(area)
         nl=len(target_bbox)
         target = {}
+        #self.format = 'coco'
         if self.format=='yolo':
             target['img']=img #CHW
             target['bboxes'] = torch.as_tensor(target_bbox, dtype=torch.float32) if nl else torch.zeros((nl, 4))
@@ -465,6 +468,8 @@ class YOLODataset(torch.utils.data.Dataset):
             target['batch_idx'] = torch.zeros(nl) #new added in yolo
             target['orig_shape'] = originalimgshape #torch.as_tensor(originalimgshape, dtype=torch.int64)
             target['image_id'] = int(index)
+            target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32) if nl else torch.zeros(nl)
+            target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64) if nl else torch.zeros(nl)
             return target #dict
         else:
             target['boxes'] = torch.as_tensor(target_bbox, dtype=torch.float32) if nl else torch.zeros((nl, 4))
@@ -548,7 +553,7 @@ if __name__ == "__main__":
         data['yaml_file'] = str(dataset_cfgfile)
         data['kpt_shape'] = [17, 3] #for keypoint
     yolodataset = YOLODataset(root=root, annotation=annotation, train=True, transform=None, data=data,classes=None,use_segments=False,use_keypoints=False)
-    target=yolodataset[0]
+    target=yolodataset[1]
     print(target['img'].shape) #torch.Size([3, 480, 640])
     print(target.keys()) #dict_keys(['boxes', 'labels', 'image_id', 'area', 'iscrowd', 'batch_idx'])
     #image, targets = iter(next(yolodataset))
