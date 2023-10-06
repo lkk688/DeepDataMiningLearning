@@ -223,14 +223,16 @@ def get_yolodataset(is_train, is_val, args):
         data = yaml.safe_load(s) or {}  # always return a dict (yaml.safe_load() may return None for empty files)
         data['yaml_file'] = str(dataset_cfgfile)
         data['kpt_shape'] = [17, 3] #for keypoint
+    pathsplits=args.data_path.split('/') 
+    pathsplits=[x for x in pathsplits if x] #filter out empty string
     if is_val == True:
-        if args.dataset.startswith('coco'):
+        if pathsplits[-1].endswith('coco'):
             annotation = os.path.join(rootPath, 'val2017.txt')
         else:
             annotation = os.path.join(rootPath, 'images_val.txt')
         yolodataset = YOLODataset(root=rootPath, annotation=annotation, train=False, transform=None, data=data,classes=None,use_segments=False,use_keypoints=False)
     else: #training
-        if args.dataset.startswith('coco'):
+        if pathsplits[-1].endswith('coco'):
             annotation = os.path.join(rootPath, 'train2017.txt')
         else:
             annotation = os.path.join(rootPath, 'images_train.txt')

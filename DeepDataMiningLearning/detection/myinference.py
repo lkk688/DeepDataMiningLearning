@@ -5,6 +5,7 @@ import cv2
 import torch
 import argparse
 import time
+import torchvision
 from torchvision.models import get_model, get_model_weights, get_weight, list_models
 from torchvision.io.image import read_image
 from torchvision.utils import draw_bounding_boxes
@@ -30,12 +31,13 @@ def savepred_toimage(im0, onedetection, classes=None, usecv2=True, boxformat='xy
         im0=im0[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW
     imgtensor = torch.from_numpy(im0.copy()) #[3, 1080, 810]
     if boxformat =='xyxy':
-        pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
+        pred_bbox_tensor=onedetection["boxes"] #torch.from_numpy(onedetection["boxes"])
     else:
-        pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+        #pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
+        pred_bbox_tensor=torchvision.ops.box_convert(onedetection["boxes"], 'xywh', 'xyxy')
     
     #print(pred_bbox_tensor)
-    pred_labels = onedetection["labels"].astype(int).tolist()
+    pred_labels = onedetection["labels"].numpy().astype(int).tolist()
     if classes:
         labels = [classes[i] for i in pred_labels]
     else:
@@ -52,19 +54,20 @@ def savepred_toimage(im0, onedetection, classes=None, usecv2=True, boxformat='xy
     im = im.save(resultfile)
     return im
 
-def multimodel_inference(modelname, imgpath, ckpt_file, device='cuda:0'):
+def multimodel_inference(modelname, imgpath, ckpt_file, device='cuda:0', scale='n'):
 
-    model, imgtransform, classes = create_detectionmodel(modelname=modelname, num_classes=80, trainable_layers=0, ckpt_file = ckpt_file, fp16=False, device= device)
+    model, imgtransform, classes = create_detectionmodel(modelname=modelname, num_classes=80, trainable_layers=0, ckpt_file = ckpt_file, fp16=False, device= device, scale='n')
 
     if modelname.startswith("yolo"):
         imgtensors, imaglist = myread_image(imgtransform, imgpath, usecv2=True)
     else:
         imgtensors, imaglist= myread_image(imgtransform, imgpath, usecv2=False)
     #inference
-    preds, xtensors = model(imgtensors)
+    preds = model(imgtensors)
     
     newimgsize = imgtensors.shape[2:] #640, 480
-    detections = imgtransform.postprocess(preds, newimgsize, imaglist)
+    origimageshapes=[img.shape for img in imaglist]
+    detections = imgtransform.postprocess(preds, newimgsize, origimageshapes)
 
     idx=0
     onedetection = detections[idx]
@@ -229,7 +232,7 @@ def main(args):
     imgpath = './sampledata/bus.jpg'
     ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt'
     device = 'cuda:0'
-    multimodel_inference(modelname, imgpath, ckpt_file, device)
+    multimodel_inference(modelname, imgpath, ckpt_file, device, scale='n')
 
 if __name__ == "__main__":
     main(args)

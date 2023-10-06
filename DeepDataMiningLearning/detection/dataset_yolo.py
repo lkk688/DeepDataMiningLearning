@@ -275,7 +275,7 @@ class YOLODataset(torch.utils.data.Dataset):
             # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in IMG_FORMATS])  # pathlib
             assert im_files, f'No images found in {img_path}'
         except Exception as e:
-            raise FileNotFoundError(f'{self.prefix}Error loading data from {img_path}') from e
+            raise FileNotFoundError(f'Error loading data from {img_path}') from e
         if self.fraction < 1:
             im_files = im_files[:round(len(im_files) * self.fraction)]
         return im_files
