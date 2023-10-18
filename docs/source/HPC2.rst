@@ -56,7 +56,8 @@ You can also make use of Visual Studio Code Remote Debugging (https://code.visua
    * Add a new SSH connection in the "Remote" extension, then select and open the "coe-hpc1" server.
    * Open the desired folder as your working directory.
    * You can also open Jupyter notebook files in VSCode and use Git to synchronize with GitHub. Please note that this setup is linked only to the head node and not the compute node (GPU node).
-   * Visual Studio Code for the GPU node has been tested and is functioning correctly in HPC2 (HPC1 still not working), allowing for step-by-step debugging. To enable this, you'll need to enable dual-hop SSH. Keep in mind that the Git sync feature is disabled in the GPU node due to the lack of internet access. Add the following setups in your ".ssh/config" file to enable the SSH to the headnode (coe-hpc1) and dual-hop SSH to the GPU node
+   * Visual Studio Code has been successfully tested on the GPU node and is fully functional in HPC2 (please note that it remains non-functional in HPC1). This allows for seamless step-by-step debugging. In order to activate this feature, it's essential to enable dual-hop SSH. It's important to mention that Git sync isn't available on the GPU node due to its lack of internet access. To facilitate this, please add the following configurations to your ".ssh/config" file.
+   * Dual-hop SSH to the HPC1 GPU node isn't operational. An alternative method involves using dual-hop SSH to Prof. Liu's lab server, which utilizes the same NVIDIA P100 GPU and is named "hpc1p100." You will require your SJSU password for the initial authentication to the HPC1 headnode, followed by a secondary password for the lab's P100 machine (the account name is "student," and you should request the password from Prof. Liu). The lab's P100 server is located in ENG276, possesses internet access, and functions as a conventional Linux server without any HPC-related limitations. You are welcome to utilize the lab's P100 server for the purposes of debugging and testing your code. If you have a long-running training job, we recommend that you submit a request for a GPU node from HPC1
 
 .. code-block:: console
 
@@ -68,9 +69,9 @@ You can also make use of Visual Studio Code Remote Debugging (https://code.visua
       ForwardX11Trusted yes
       ServerAliveInterval 30
 
-   Host hpc1gpu
-      Hostname gxxx # change to your allocated GPU node
-      User 0107xxxxxx #your SJSUID
+   Host hpc1p100
+      Hostname 130.65.157.216
+      User student
       ForwardX11 yes
       ForwardX11Trusted yes
       ServerAliveInterval 30
