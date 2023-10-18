@@ -53,6 +53,9 @@ Popular packages
    git clone https://github.com/lkk688/DeepDataMiningLearning.git
    git clone https://github.com/lkk688/WaymoObjectDetection.git
    git clone https://github.com/lkk688/MultiModalDetector.git
+   #if you have previous failed installations, you can clean conda:
+   conda clean --all
+   conda update --all #update all conda packages
 
 Install CUDA
 ~~~~~~~~~~~~~~~~~~

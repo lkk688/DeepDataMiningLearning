@@ -48,16 +48,15 @@ You have several options for transferring files to and from HPC:
    $ sudo apt-get install sshfs
    $ sshfs xxx@coe-hpc1.sjsu.edu:/data/cmpeXXX  .
 
-VSCode Remote
-~~~~~~~~~~~~~
+VSCode Remote to HPC
+~~~~~~~~~~~~~~~~~~~~~
 
 You can also make use of Visual Studio Code Remote Debugging (https://code.visualstudio.com/docs/remote/ssh) with the following steps:
    * Install the "Remote - SSH" extension in Visual Studio Code.
    * Add a new SSH connection in the "Remote" extension, then select and open the "coe-hpc1" server.
    * Open the desired folder as your working directory.
    * You can also open Jupyter notebook files in VSCode and use Git to synchronize with GitHub. Please note that this setup is linked only to the head node and not the compute node (GPU node).
-   * Visual Studio Code has been successfully tested on the GPU node and is fully functional in HPC2 (please note that it remains non-functional in HPC1). This allows for seamless step-by-step debugging. In order to activate this feature, it's essential to enable dual-hop SSH. It's important to mention that Git sync isn't available on the GPU node due to its lack of internet access. To facilitate this, please add the following configurations to your ".ssh/config" file.
-   * Dual-hop SSH to the HPC1 GPU node isn't operational. An alternative method involves using dual-hop SSH to Prof. Liu's lab server, which utilizes the same NVIDIA P100 GPU and is named "hpc1p100." You will require your SJSU password for the initial authentication to the HPC1 headnode, followed by a secondary password for the lab's P100 machine (the account name is "student," and you should request the password from Prof. Liu). The lab's P100 server is located in ENG276, possesses internet access, and functions as a conventional Linux server without any HPC-related limitations. You are welcome to utilize the lab's P100 server for the purposes of debugging and testing your code. If you have a long-running training job, we recommend that you submit a request for a GPU node from HPC1
+   * Visual Studio Code has been successfully tested on the GPU node and is fully functional in HPC2 (please note that it remains non-functional in HPC1). This allows for seamless step-by-step debugging. In order to activate this feature, it's essential to enable dual-hop SSH. It's important to mention that Git sync isn't available on the GPU node due to its lack of internet access. To facilitate this, please add the following configurations to your ".ssh/config" file (can be opened via VSCode Remote Explorer and click the setting button).
 
 .. code-block:: console
 
@@ -69,13 +68,36 @@ You can also make use of Visual Studio Code Remote Debugging (https://code.visua
       ForwardX11Trusted yes
       ServerAliveInterval 30
 
+VSCode Remote to Lab's Server
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Dual-hop SSH to the HPC1 GPU node isn't operational. An alternative method involves using dual-hop SSH to Prof. Liu's lab server, which utilizes the same NVIDIA P100 GPU and is named "hpc1p100." The lab's P100 server is located in ENG276, possesses internet access, and functions as a conventional Linux server without any HPC-related limitations. You are welcome to utilize the lab's P100 server for the purposes of debugging and testing your code. If you have a long-running training job, we recommend that you submit a request for a GPU node from HPC1. 
+
+To access the lab's server, add the following to your ".ssh/config" file
+
+.. code-block:: console
+
    Host hpc1p100
-      Hostname 130.65.157.216
-      User student
-      ForwardX11 yes
-      ForwardX11Trusted yes
-      ServerAliveInterval 30
-      ProxyCommand ssh coe-hpc1 -W %h:%p
+   Hostname 130.65.157.216
+   User student
+   ForwardX11 yes
+   ForwardX11Trusted yes
+   ServerAliveInterval 30
+   ProxyCommand ssh coe-hpc1 -W %h:%p
+
+You can use the following command to access the lab's server
+
+.. code-block:: console
+
+   $ ssh hpc1p100
+   (xxx@coe-hpc1.sjsu.edu) Password: #your HPC headnode password
+   student@130.65.157.216's password: #lab server's password
+
+You will require your SJSU password for the initial authentication to the HPC1 headnode, followed by a secondary password for the lab's P100 machine (the account name is "student," and you should request the password from Prof. Liu). 
+
+
+
+
 
 X11 Window forwarding
 ~~~~~~~~~~~~~~~~~~~~~
