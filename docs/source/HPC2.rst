@@ -96,12 +96,15 @@ You can use the following command to access the lab's server
 You will require your SJSU password for the initial authentication to the HPC1 headnode, followed by a secondary password for the lab's P100 machine (the account name is "student," and you should request the password from Prof. Liu). 
 
 
+GPU node internet access
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 .. code-block:: console
 
    [010796032@g9 ~]$ export http_proxy=http://172.16.1.2:3128
    [010796032@g9 ~]$ export https_proxy=https://172.16.1.2:3128
    curl --proxy https://172.16.1.2:3128 "https://www.sjsu.edu"
-   git clone https://github.com/lkk688/myROS2.git
+   # git works
    172.16.1.1 is hpc1 headnode IP
    172.16.1.2 is hpc2 headnode IP
    import urllib3
@@ -113,7 +116,7 @@ You will require your SJSU password for the initial authentication to the HPC1 h
    proxies = {"http": "http://172.16.1.2:3128", "https": "https://172.16.1.2:3128"}
    r = requests.get("https://www.sjsu.edu/", proxies=proxies, verify=False)
    #https://www.th3r3p0.com/random/python-requests-and-burp-suite.html
-   requests.exceptions.ProxyError: HTTPSConnectionPool(host='www.sjsu.edu', port=443): Max retries exceeded with url: / (Caused by ProxyError('Your proxy appears to only use HTTP and not HTTPS, try changing your proxy URL to be HTTP. See: https://urllib3.readthedocs.io/en/1.26.x/advanced-usage.html#https-proxy-error-http-proxy', SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1007)'))))
+   #requests.exceptions.ProxyError: HTTPSConnectionPool(host='www.sjsu.edu', port=443): Max retries exceeded with url: / (Caused by ProxyError('Your proxy appears to only use HTTP and not HTTPS, try changing your proxy URL to be HTTP. See: https://urllib3.readthedocs.io/en/1.26.x/advanced-usage.html#https-proxy-error-http-proxy', SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1007)'))))
 
 
 
