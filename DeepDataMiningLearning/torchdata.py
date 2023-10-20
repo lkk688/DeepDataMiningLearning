@@ -4,7 +4,7 @@ import torch
 import torchvision
 import torchvision.datasets as datasets
 import os
-mytorchvisiondata='/data/cmpe249-fa22/torchvisiondata/'
+mytorchvisiondata='/data/cmpe249-fa23/torchvisiondata/'
 
 print(torch.__version__)
 cifar_trainset = datasets.CIFAR10(root=mytorchvisiondata, train=True, download=True, transform=None)
@@ -13,6 +13,8 @@ print(cifar_trainset)
 cifar_testset = datasets.CIFAR10(root=mytorchvisiondata, train=False, download=True, transform=None)
 print(cifar_testset)
 #Extracting ./data/cifar-10-python.tar.gz to ./data
+
+
 
 mnist_testset = datasets.MNIST(root=mytorchvisiondata, train=False, download=True, transform=None)
 
@@ -37,7 +39,7 @@ test_data = datasets.FashionMNIST(
 # print(places365)
 
 #Download model
-os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/' #setting the environment variable
+os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/' #setting the environment variable
 resnet18 = torchvision.models.resnet18(pretrained=True)
 print(resnet18)
 resnet50 = torchvision.models.resnet50(weights=torchvision.models.ResNet50_Weights.DEFAULT)#torchvision.models.resnet50(pretrained=True)
