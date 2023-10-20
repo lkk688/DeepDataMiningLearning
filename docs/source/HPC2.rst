@@ -100,7 +100,22 @@ You will require your SJSU password for the initial authentication to the HPC1 h
 
    [010796032@g9 ~]$ export http_proxy=http://172.16.1.2:3128
    [010796032@g9 ~]$ export https_proxy=https://172.16.1.2:3128
+   curl --proxy https://172.16.1.2:3128 "https://www.sjsu.edu"
    git clone https://github.com/lkk688/myROS2.git
+   172.16.1.1 is hpc1 headnode IP
+   172.16.1.2 is hpc2 headnode IP
+   import urllib3
+   proxy = urllib3.ProxyManager('http://172.16.1.2:3128') #https does not work
+   proxy.request("GET", "https://www.sjsu.edu")
+
+   import requests
+   r = requests.get('https://httpbin.org/basic-auth/user/pass', auth=('user', 'pass')) #does not work
+   proxies = {"http": "http://172.16.1.2:3128", "https": "https://172.16.1.2:3128"}
+   r = requests.get("https://www.sjsu.edu/", proxies=proxies, verify=False)
+   #https://www.th3r3p0.com/random/python-requests-and-burp-suite.html
+   requests.exceptions.ProxyError: HTTPSConnectionPool(host='www.sjsu.edu', port=443): Max retries exceeded with url: / (Caused by ProxyError('Your proxy appears to only use HTTP and not HTTPS, try changing your proxy URL to be HTTP. See: https://urllib3.readthedocs.io/en/1.26.x/advanced-usage.html#https-proxy-error-http-proxy', SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1007)'))))
+
+
 
 
 X11 Window forwarding
