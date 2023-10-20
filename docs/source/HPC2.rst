@@ -96,7 +96,11 @@ You can use the following command to access the lab's server
 You will require your SJSU password for the initial authentication to the HPC1 headnode, followed by a secondary password for the lab's P100 machine (the account name is "student," and you should request the password from Prof. Liu). 
 
 
+.. code-block:: console
 
+   [010796032@g9 ~]$ export http_proxy=http://172.16.1.2:3128
+   [010796032@g9 ~]$ export https_proxy=https://172.16.1.2:3128
+   git clone https://github.com/lkk688/myROS2.git
 
 
 X11 Window forwarding
