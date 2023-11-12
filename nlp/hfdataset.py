@@ -5,7 +5,8 @@ from pathlib import Path
 import pandas as pd
 from tqdm.notebook import tqdm
 from datasets import load_dataset
-from datasets import list_datasets
+#from datasets import list_datasets
+from huggingface_hub import list_datasets
 import pandas as pd
 
 def fetch_issues(
@@ -46,8 +47,14 @@ def fetch_issues(
 if __name__ == "__main__":
 
     all_datasets = list_datasets()
-    print(f"There are {len(all_datasets)} datasets currently available on the Hub")
+    all_datasetids = [dataset.id for dataset in all_datasets]
+    print(all_datasetids)
+    print(f"There are {len(all_datasetids)} datasets currently available on the Hub")
     print(f"The first 10 are: {all_datasets[:10]}")
+
+    # Load a dataset and print the first example in the training set
+    squad_dataset = load_dataset('squad')
+    print(squad_dataset['train'][0])
 
     # dataset_id="amazon_reviews_multi"
     # dataset_config="all_languages"
