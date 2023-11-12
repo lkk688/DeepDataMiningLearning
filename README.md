@@ -60,9 +60,13 @@ Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
    * MLIntro-Regression -- [colablink](https://colab.research.google.com/drive/1atrY6rpfPKs5K1VxddfEOWR5QRarxHiG?usp=sharing)
    * MLIntro-RegressionSKLearn -- [colablink](https://colab.research.google.com/drive/1XUzW9vSqyNM02v9F5ueaLMtFb0VorOA3?usp=sharing)
    * [MLIntro2-classification.ipynb](./MLIntro2-classification.ipynb) --[colablink](https://colab.research.google.com/drive/1znfskFZFo-m7VjnI5vgcxdaPWHvLLG9H?usp=sharing)
+      * Breast Cancer Dataset, iris Dataset, BigQuery US Census Income Dataset, multiple classifiers. 
    * DecisionTree -- [colablink](https://colab.research.google.com/drive/15N_qxOY74batHHjTvkh6zoQ0_85bfdDQ?usp=sharing)
+      * SKlearn DecisionTree algorithm on Iris dataset, Breast Cancel Dataset, Make moon dataset, and DecisionTreeRegressor. A berif discussion of Gini Impurity.    
    * GradientBoosting -- [colablink](https://colab.research.google.com/drive/1eT68ZVw3F8Dw1ZjYmfPo3wJutS68S80Q?usp=sharing)
+      *  Gradient boosting process, Gradient boosting regressor with scikit-learn, Gradient boosting classifier with scikit-learn
    * XGBoost -- [colablink](https://colab.research.google.com/drive/1ZKtpwoRnK8r2fy8ucXoz1K9E98X76dFC?usp=sharing)
+      * XGBoost introduction, US Census Income Dataset from Big Query, UCI Dermatology dataset
 
 ## Deep Learning
 Deep learning notebooks (colab link is better)
