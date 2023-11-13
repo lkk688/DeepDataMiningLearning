@@ -5,6 +5,15 @@ from transformers import AutoModelForMaskedLM
 from transformers import TrainingArguments
 import torch
 import os
+from torch.utils.data import DataLoader
+from transformers import default_data_collator
+from torch.optim import AdamW
+from accelerate import Accelerator
+from transformers import get_scheduler
+from tqdm.auto import tqdm
+import torch
+import math
+
 
 class TokenizerWrapper:
     def __init__(self, tokenizer):
@@ -39,6 +48,8 @@ def group_texts(examples):
         k: [t[i : i + block_size] for i in range(0, total_length, block_size)]
         for k, t in concatenated_examples.items()
     }
+    # Create a new labels column
+    result["labels"] = result["input_ids"].copy()
     return result
 
 def testpredictmask(model, text):
@@ -75,7 +86,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=True,
+    parser.add_argument('--usehpc', type=bool, default=False,
                     help='Use HPC')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
@@ -102,19 +113,22 @@ if __name__ == "__main__":
         trainoutput="/data/cmpe249-fa23/trainoutput/huggingface"
         taskname=args.traintag #"eli5asksciencemodeling"
     else:
-        trainoutput="./output"
+        trainoutput=args.outputdir #"./output"
         taskname=args.traintag #taskname="eli5asksciencemodeling"
 
     if args.data_type == "huggingface":
         datasetpath="/data/cmpe249-fa23/Huggingfacecache/imdb/plain_text/1.0.0/d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0"
-        if not args.dataconfig:
+        if USE_HPC:
             #raw_datasets = load_dataset(args.data_name, cache_dir=mycache_dir) #eli5
             trainarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-train.arrow')
             #valarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-validation.arrow')
             testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test.arrow')
             raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath, 'test': testarrowpath})
         else:
-            raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
+            if not args.dataconfig:
+                raw_datasets = load_dataset(args.data_name) #dataconfig="train_asks[:5000]"
+            else:
+                raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
         #Download to home/.cache/huggingface/dataset
         
         print(raw_datasets["train"][0])#multiple key value "text", "label"
@@ -140,7 +154,7 @@ if __name__ == "__main__":
         model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)#"distilroberta-base")
     
     model_num_parameters = model.num_parameters() / 1_000_000
-    print(f"'>>> DistilBERT number of parameters: {round(model_num_parameters)}M'")
+    print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
     #print(f"'>>> BERT number of parameters: 110M'")
 
     text = "This is a great [MASK]."
@@ -175,27 +189,113 @@ if __name__ == "__main__":
 
     lm_datasets = tokenized_datasets.map(group_texts, batched=True)
 
-    tokenizer.pad_token = tokenizer.eos_token #tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    #tokenizer.pad_token = tokenizer.eos_token #tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+    print(tokenizer.eos_token) #None
+    print(tokenizer.pad_token) #[PAD]
     #mlm_probability means the percentage of [MASK]
     data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15) 
     samples = [lm_datasets["train"][i] for i in range(2)]
-    # for sample in samples:
-    #     _ = sample.pop("word_ids")
-    # for chunk in data_collator(samples)["input_ids"]:
-    #     print(f"\n'>>> {tokenizer.decode(chunk)}'")
-    # for chunk in data_collator(samples)["input_ids"]:
-    #     print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'")
+    for sample in samples:
+        _ = sample.pop("word_ids")
+    for chunk in data_collator(samples)["input_ids"]:
+        print(f"\n'>>> {tokenizer.decode(chunk)}'")
+    for chunk in data_collator(samples)["input_ids"]:
+        print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'")
 
-    downsampled_dataset = raw_datasets["train"].train_test_split(test_size=0.2)
+    downsampled_dataset = lm_datasets["train"].train_test_split(test_size=0.2)
 
-
+    batch_size = args.batch_size #64
+    downsampled_dataset = downsampled_dataset.remove_columns(["word_ids"])
     
-    
-    training_args = TrainingArguments(
-        output_dir=os.path.join(trainoutput, model_checkpoint, taskname), #"./output/my_awesome_eli5_mlm_model",
-        evaluation_strategy="epoch",
-        learning_rate=2e-5,
-        num_train_epochs=10,
-        weight_decay=0.01,
-        push_to_hub=True,
+    train_dataloader = DataLoader(
+        downsampled_dataset["train"],
+        shuffle=True,
+        batch_size=batch_size,
+        collate_fn=data_collator,
     )
+    eval_dataset=downsampled_dataset["test"]
+    eval_dataloader = DataLoader(
+        eval_dataset, batch_size=batch_size, collate_fn=default_data_collator
+    )
+
+    optimizer = AdamW(model.parameters(), lr=5e-5)
+    accelerator = Accelerator()
+    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader
+    )
+
+    num_train_epochs = 8
+    num_update_steps_per_epoch = len(train_dataloader) #2500
+    num_training_steps = num_train_epochs * num_update_steps_per_epoch
+
+    lr_scheduler = get_scheduler(
+        "linear",
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=num_training_steps,
+    )
+
+    progress_bar = tqdm(range(num_training_steps))
+    for epoch in range(num_train_epochs):
+        # Training
+        model.train()
+        for batch in train_dataloader:
+            outputs = model(**batch)
+            loss = outputs.loss
+            accelerator.backward(loss)
+
+            optimizer.step()
+            lr_scheduler.step()
+            optimizer.zero_grad()
+            progress_bar.update(1)
+
+        # Evaluation
+        model.eval()
+        losses = []
+        for step, batch in enumerate(eval_dataloader):
+            with torch.no_grad():
+                outputs = model(**batch)
+
+            loss = outputs.loss
+            losses.append(accelerator.gather(loss.repeat(batch_size)))
+
+        losses = torch.cat(losses)
+        losses = losses[: len(eval_dataset)]
+        try:
+            perplexity = math.exp(torch.mean(losses))
+        except OverflowError:
+            perplexity = float("inf")
+
+        print(f">>> Epoch {epoch}: Perplexity: {perplexity}")
+
+        # Save and upload
+        accelerator.wait_for_everyone()
+        unwrapped_model = accelerator.unwrap_model(model)
+        unwrapped_model.save_pretrained(trainoutput, save_function=accelerator.save)
+        # if accelerator.is_main_process:
+        #     tokenizer.save_pretrained(output_dir)
+        #     repo.push_to_hub(
+        #         commit_message=f"Training in progress epoch {epoch}", blocking=False
+        #     )
+    
+    text = "This is a great [MASK]"
+    inputs = tokenizer(text, return_tensors="pt")
+    mask_token_index = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
+    #print(mask_token_index)
+    inputs=inputs.to('cuda')
+    logits = model(**inputs).logits
+    mask_token_logits = logits[0, mask_token_index, :]
+    #mask_token_logits
+    top_3_tokens = torch.topk(mask_token_logits, 3, dim=1).indices[0].tolist()
+
+    for token in top_3_tokens:
+        print(text.replace(tokenizer.mask_token, tokenizer.decode([token])))
+
+    # training_args = TrainingArguments(
+    #     output_dir=os.path.join(trainoutput, model_checkpoint, taskname), #"./output/my_awesome_eli5_mlm_model",
+    #     evaluation_strategy="epoch",
+    #     learning_rate=2e-5,
+    #     num_train_epochs=10,
+    #     weight_decay=0.01,
+    #     push_to_hub=True,
+    # )
