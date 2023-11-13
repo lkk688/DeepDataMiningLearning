@@ -13,6 +13,8 @@ from transformers import get_scheduler
 from tqdm.auto import tqdm
 import torch
 import math
+import collections
+import numpy as np
 
 
 class TokenizerWrapper:
@@ -52,6 +54,42 @@ def group_texts(examples):
     result["labels"] = result["input_ids"].copy()
     return result
 
+def whole_word_masking_data_collator(features):
+    wwm_probability = 0.2
+    for feature in features:
+        word_ids = feature.pop("word_ids")
+
+        # Create a map between words and corresponding token indices
+        mapping = collections.defaultdict(list)
+        current_word_index = -1
+        current_word = None
+        for idx, word_id in enumerate(word_ids):
+            if word_id is not None:
+                if word_id != current_word:
+                    current_word = word_id
+                    current_word_index += 1
+                mapping[current_word_index].append(idx)
+
+        # Randomly mask words
+        mask = np.random.binomial(1, wwm_probability, (len(mapping),))
+        input_ids = feature["input_ids"]
+        labels = feature["labels"]
+        new_labels = [-100] * len(labels)
+        for word_id in np.where(mask)[0]:
+            word_id = word_id.item()
+            for idx in mapping[word_id]:
+                new_labels[idx] = labels[idx]
+                input_ids[idx] = tokenizer.mask_token_id
+
+    return default_data_collator(features)
+
+#insert MASK into the original dataset for evaluator
+def insert_random_mask(batch):
+    features = [dict(zip(batch, t)) for t in zip(*batch.values())]
+    masked_inputs = evaldata_collator(features)
+    # Create a new "masked" column for each column in the dataset
+    return {"masked_" + k: v.numpy() for k, v in masked_inputs.items()}
+
 def testpredictmask(model, text):
     #text = "This is a great [MASK]."
     inputs = tokenizer(text, return_tensors="pt")
@@ -86,7 +124,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=False,
+    parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
@@ -98,6 +136,8 @@ if __name__ == "__main__":
     task = args.task
     print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
 
+    WHOLE_Word = True
+    InsertMask = True
     model_checkpoint = args.model_checkpoint
     
     USE_HPC=args.usehpc
@@ -192,20 +232,44 @@ if __name__ == "__main__":
     #tokenizer.pad_token = tokenizer.eos_token #tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     print(tokenizer.eos_token) #None
     print(tokenizer.pad_token) #[PAD]
+
     #mlm_probability means the percentage of [MASK]
-    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15) 
-    samples = [lm_datasets["train"][i] for i in range(2)]
-    for sample in samples:
-        _ = sample.pop("word_ids")
-    for chunk in data_collator(samples)["input_ids"]:
-        print(f"\n'>>> {tokenizer.decode(chunk)}'")
-    for chunk in data_collator(samples)["input_ids"]:
-        print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'")
+    
+    if WHOLE_Word:
+        data_collator = whole_word_masking_data_collator
+    else:
+        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
+        samples = [lm_datasets["train"][i] for i in range(2)]
+        for sample in samples:
+            _ = sample.pop("word_ids")
+        for chunk in data_collator(samples)["input_ids"]:
+            print(f"\n'>>> {tokenizer.decode(chunk)}'")
+        for chunk in data_collator(samples)["input_ids"]:
+            print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'") 
+
+    global evaldata_collator
+    evaldata_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
 
     downsampled_dataset = lm_datasets["train"].train_test_split(test_size=0.2)
 
     batch_size = args.batch_size #64
     downsampled_dataset = downsampled_dataset.remove_columns(["word_ids"])
+    
+    if InsertMask:
+        eval_dataset = downsampled_dataset["test"].map(
+            insert_random_mask,
+            batched=True,
+            remove_columns=downsampled_dataset["test"].column_names,
+        )
+        eval_dataset = eval_dataset.rename_columns(
+            {
+                "masked_input_ids": "input_ids",
+                "masked_attention_mask": "attention_mask",
+                "masked_labels": "labels",
+            }
+        )
+    else:
+        eval_dataset=downsampled_dataset["test"]
     
     train_dataloader = DataLoader(
         downsampled_dataset["train"],
@@ -213,7 +277,6 @@ if __name__ == "__main__":
         batch_size=batch_size,
         collate_fn=data_collator,
     )
-    eval_dataset=downsampled_dataset["test"]
     eval_dataloader = DataLoader(
         eval_dataset, batch_size=batch_size, collate_fn=default_data_collator
     )
