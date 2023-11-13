@@ -53,6 +53,8 @@ def loadmodels(model_ckpt):
 loadmodels("distilbert-base-uncased")
 
 loadmodels("distilroberta-base")
+
+loadmodels("distilgpt2")
 # model_ckpt = "distilroberta-base"
 # tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
 # config = AutoConfig.from_pretrained(model_ckpt)

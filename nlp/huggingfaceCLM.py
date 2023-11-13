@@ -1,7 +1,7 @@
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from transformers import DataCollatorForLanguageModeling
-from transformers import AutoModelForMaskedLM
+from transformers import AutoModelForMaskedLM, AutoModelForCausalLM
 from transformers import TrainingArguments
 import torch
 import os
@@ -15,6 +15,20 @@ import torch
 import math
 import collections
 import numpy as np
+
+import os
+#os.environ['CUDA_VISIBLE_DEVICES'] = "1,2" #"0,1"
+#print(os.environ['CUDA_VISIBLE_DEVICES'])
+#os.environ['CUDA_VISIBLE_DEVICES'] = "2"
+#print(os.environ['CUDA_VISIBLE_DEVICES'])
+num_gpus= torch.cuda.device_count()
+print("Device numbers:", num_gpus)
+for gpuidx in range(num_gpus):
+    print("Device properties:", torch.cuda.get_device_properties(gpuidx))
+    print("Utilization:", torch.cuda.utilization(gpuidx))
+    print('Memory Usage:')
+    print('Allocated:', round(torch.cuda.memory_allocated(gpuidx)/1024**3,1), 'GB')
+    print('Cached:   ', round(torch.cuda.memory_reserved(gpuidx)/1024**3,1), 'GB')
 
 global data_field
 global block_size
@@ -99,7 +113,7 @@ def insert_random_mask(batch):
     # Create a new "masked" column for each column in the dataset
     return {"masked_" + k: v.numpy() for k, v in masked_inputs.items()}
 
-def testpredictmask(model, text):
+def testpredictmask(model, text, device='cuda'):
     #text = "This is a great [MASK]."
     inputs = tokenizer(text, return_tensors="pt")
     print(inputs)
@@ -111,6 +125,14 @@ def testpredictmask(model, text):
     # Pick the [MASK] candidates with the highest logits
     top_5_tokens = torch.topk(mask_token_logits, 5, dim=1).indices[0].tolist()
     return top_5_tokens
+
+def testgenerate(model, text, device='cuda'):
+    inputs = tokenizer(text, return_tensors="pt").input_ids
+    inputs=inputs.to(device)
+    model=model.to(device)
+    outputs = model.generate(inputs, max_new_tokens=100, do_sample=True, top_k=50, top_p=0.95, pad_token_id=tokenizer.eos_token_id)
+    output_text = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+    return output_text
 
 #data_name="imdb", dataconfig="", model_checkpoint="distilbert-base-uncased"
 if __name__ == "__main__":
@@ -126,10 +148,10 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\aclImdb",
                     help='path to get data')
-    parser.add_argument('--model_checkpoint', type=str, default="distilroberta-base",
-                    help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
+    parser.add_argument('--model_checkpoint', type=str, default="distilgpt2",
+                    help='Model checkpoint name from https://huggingface.co/models, "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="LM",
-                    help='NLP tasks: sentiment, token_classifier, "sequence_classifier", custom_classifier')
+                    help='NLP tasks: MLM, CLM')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
     parser.add_argument('--traintag', type=str, default="eli5asksciencemodeling",
@@ -148,8 +170,17 @@ if __name__ == "__main__":
     task = args.task
     print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
 
-    WHOLE_Word = True
-    InsertMask = True
+    use_accelerator = False
+    CausalLM=True
+    if CausalLM:
+        mlm = False
+        WHOLE_Word = False
+        InsertMask = False
+    else:
+        mlm_probability = 0.15
+        WHOLE_Word = True
+        InsertMask = True
+
     model_checkpoint = args.model_checkpoint
     
     USE_HPC=args.usehpc
@@ -186,7 +217,12 @@ if __name__ == "__main__":
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath, 'test': testarrowpath})
                 data_field='answers.text'
                 #sampletext = "A static force applied eccentric to the center of [MASK]."#mass
-                sampletext = "The Milky Way is a <mask> galaxy."
+                if CausalLM:
+                    sampletext = "Somatic hypermutation allows the immune system to"
+                else: #MLM
+                    sampletext = "The Milky Way is a <mask> galaxy."
+                raw_datasets = raw_datasets.flatten() #nested structure become flat: answers.text
+                #features: ['q_id', 'title', 'selftext', 'document', 'subreddit', 'answers.a_id', 'answers.text', 'answers.score', 'title_urls.url', 'selftext_urls.url', 'answers_urls.url']
         else:
             if not args.dataconfig:
                 raw_datasets = load_dataset(args.data_name) #dataconfig="train_asks[:5000]"
@@ -197,9 +233,7 @@ if __name__ == "__main__":
         print(raw_datasets["train"][0])#multiple key value "text", "label"
         print("features:", raw_datasets["train"].features)
         #extract the text subfield from its nested structure with the flatten method:
-        raw_datasets = raw_datasets.flatten() #nested structure become flat: answers.text
-        #features: ['q_id', 'title', 'selftext', 'document', 'subreddit', 'answers.a_id', 'answers.text', 'answers.score', 'title_urls.url', 'selftext_urls.url', 'answers_urls.url']
-
+        
         print("All keys in raw datasets:", raw_datasets['train'][0].keys())
     
     global tokenizer
@@ -210,12 +244,20 @@ if __name__ == "__main__":
         tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)#, cache_dir=mycache_dir)
     tokenizer.model_max_len=512
     tokenizer_wrapper = TokenizerWrapper(tokenizer)
+    if CausalLM:
+        tokenizer.pad_token = tokenizer.eos_token
 
     if USE_HPC:
         localpath=os.path.join(mycache_dir, model_checkpoint) #modelname="distilroberta-base"
-        model = AutoModelForMaskedLM.from_pretrained(localpath)
+        if CausalLM:
+            model = AutoModelForCausalLM.from_pretrained(localpath)
+        else:
+            model = AutoModelForMaskedLM.from_pretrained(localpath)
     else:
-        model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)#"distilroberta-base")
+        if CausalLM:
+            model = AutoModelForCausalLM.from_pretrained(model_checkpoint)
+        else:
+            model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)#"distilroberta-base")
     
     model_num_parameters = model.num_parameters() / 1_000_000
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
@@ -223,12 +265,17 @@ if __name__ == "__main__":
 
     examples=raw_datasets["train"][0]
     listexamples = [" ".join(x) for x in examples[data_field]]
-    
-    top_5_tokens = testpredictmask(model, sampletext)
     token_train=tokenizer(listexamples)
-
-    for token in top_5_tokens:
-        print(f"'>>> {sampletext.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
+    
+    #device='cpu' #'cuda:1'
+    device = torch.device('cuda:1')  # CUDA GPU 0
+    if CausalLM:
+        result = testgenerate(model, sampletext, device)
+        print(result)
+    else:
+        top_5_tokens = testpredictmask(model, sampletext)
+        for token in top_5_tokens:
+            print(f"'>>> {sampletext.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
 
     # tokenizer(raw_datasets["train"][0]['answers.text'])
     # tokenizer_wrapper = TokenizerWrapper(tokenizer)
@@ -241,12 +288,12 @@ if __name__ == "__main__":
     # tokenized_datasets = raw_datasets.map(
     #     tokenize_function, batched=True, remove_columns=["text", "label"]
     # )
-    tokenized_datasets = raw_datasets.map(tokenizer_wrapper.tokenize_function, batched=True, num_proc=3, remove_columns=raw_datasets["train"].column_names)
+    tokenized_datasets = raw_datasets.map(tokenizer_wrapper.tokenize_function, batched=True, num_proc=8, remove_columns=raw_datasets["train"].column_names)
     # Slicing produces a list of lists for each feature
     tokenized_samples = tokenized_datasets["train"][:3] #generate "input_ids" list and "attention_mask", add "word_ids"
 
     for idx, sample in enumerate(tokenized_samples["input_ids"]):
-        print(f"'>>> Review {idx} length: {len(sample)}'") #length of the input_ids
+        print(f"'>>> Text {idx} length: {len(sample)}'") #length of the input_ids
     
     concatenated_examples = {
         k: sum(tokenized_samples[k], []) for k in tokenized_samples.keys()
@@ -255,34 +302,40 @@ if __name__ == "__main__":
     print(f"'>>> Concatenated reviews length: {total_length}'")
     print(tokenized_samples.keys())
 
-    lm_datasets = tokenized_datasets.map(group_texts, batched=True)
+    lm_datasets = tokenized_datasets.map(group_texts, batched=True, num_proc=8)
 
     #tokenizer.pad_token = tokenizer.eos_token #tokenizer.add_special_tokens({'pad_token': '[PAD]'})
     print(tokenizer.eos_token) #None </s>
     print(tokenizer.pad_token) #[PAD]
 
     #mlm_probability means the percentage of [MASK]
-    
+    global evaldata_collator
     if WHOLE_Word:
         data_collator = whole_word_masking_data_collator
     else:
-        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
-        samples = [lm_datasets["train"][i] for i in range(2)]
-        for sample in samples:
-            _ = sample.pop("word_ids")
-        for chunk in data_collator(samples)["input_ids"]:
-            print(f"\n'>>> {tokenizer.decode(chunk)}'")
-        for chunk in data_collator(samples)["input_ids"]:
-            print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'") 
+        if CausalLM:
+            data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+            evaldata_collator = data_collator #DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+        else:
+            data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=mlm_probability)
+            evaldata_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=mlm_probability)
+            samples = [lm_datasets["train"][i] for i in range(2)]
+            for sample in samples:
+                _ = sample.pop("word_ids")
+            for chunk in data_collator(samples)["input_ids"]:
+                print(f"\n'>>> {tokenizer.decode(chunk)}'")
+            for chunk in data_collator(samples)["input_ids"]:
+                print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'") 
 
-    global evaldata_collator
-    evaldata_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=0.15)
-
+    
     downsampled_dataset = lm_datasets["train"].train_test_split(test_size=0.2)
 
     batch_size = args.batch_size #64
-    #downsampled_dataset = downsampled_dataset.remove_columns(["word_ids"])
-    test_dataset = downsampled_dataset["test"].remove_columns(["word_ids"])
+    if CausalLM:
+        downsampled_dataset = downsampled_dataset.remove_columns(["word_ids"])
+        test_dataset = downsampled_dataset["test"]
+    else:
+        test_dataset = downsampled_dataset["test"].remove_columns(["word_ids"])
     
     if InsertMask:
         eval_dataset = test_dataset.map(
@@ -311,10 +364,11 @@ if __name__ == "__main__":
     )
 
     optimizer = AdamW(model.parameters(), lr=5e-5)
-    accelerator = Accelerator()
-    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader
-    )
+    if use_accelerator:
+        accelerator = Accelerator()
+        model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+            model, optimizer, train_dataloader, eval_dataloader
+        )
 
     num_train_epochs = 8
     num_update_steps_per_epoch = len(train_dataloader) #2500
@@ -332,9 +386,14 @@ if __name__ == "__main__":
         # Training
         model.train()
         for batch in train_dataloader:
+            if not use_accelerator:
+                batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(**batch)
             loss = outputs.loss
-            accelerator.backward(loss)
+            if not use_accelerator:
+                loss.backward()
+            else:
+                accelerator.backward(loss)
 
             optimizer.step()
             lr_scheduler.step()
@@ -370,18 +429,26 @@ if __name__ == "__main__":
         #         commit_message=f"Training in progress epoch {epoch}", blocking=False
         #     )
     
-    #text = "This is a great [MASK]"
-    inputs = tokenizer(sampletext, return_tensors="pt")
-    mask_token_index = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
-    #print(mask_token_index)
-    inputs=inputs.to('cuda')
-    logits = model(**inputs).logits
-    mask_token_logits = logits[0, mask_token_index, :]
-    #mask_token_logits
-    top_3_tokens = torch.topk(mask_token_logits, 3, dim=1).indices[0].tolist()
+    if CausalLM:
+        result = testgenerate(model, sampletext, device)
+        print(result)
+    else:
+        top_5_tokens = testpredictmask(model, sampletext)
+        for token in top_5_tokens:
+            print(f"'>>> {sampletext.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
 
-    for token in top_3_tokens:
-        print(sampletext.replace(tokenizer.mask_token, tokenizer.decode([token])))
+
+    #text = "This is a great [MASK]"
+    # inputs = tokenizer(sampletext, return_tensors="pt")
+    # mask_token_index = torch.where(inputs["input_ids"] == tokenizer.mask_token_id)[1]
+    # #print(mask_token_index)
+    # inputs=inputs.to('cuda')
+    # logits = model(**inputs).logits
+    # mask_token_logits = logits[0, mask_token_index, :]
+    # #mask_token_logits
+    # top_3_tokens = torch.topk(mask_token_logits, 3, dim=1).indices[0].tolist()
+    # for token in top_3_tokens:
+    #     print(sampletext.replace(tokenizer.mask_token, tokenizer.decode([token])))
 
     # training_args = TrainingArguments(
     #     output_dir=os.path.join(trainoutput, model_checkpoint, taskname), #"./output/my_awesome_eli5_mlm_model",
