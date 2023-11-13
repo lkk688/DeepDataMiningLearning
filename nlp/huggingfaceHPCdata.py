@@ -24,6 +24,11 @@ print(dataset)
 train_ds = dataset["train"]
 print(train_ds)
 
+eli5 = load_dataset("eli5", split="train_asks")
+print(eli5)
+
+imdb_dataset = load_dataset("imdb")
+imdb_dataset
 # dataset = load_dataset('imdb', cache_dir=mycache_dir)
 
 # emotions = load_dataset("emotion")
@@ -32,10 +37,30 @@ print(train_ds)
 # print(train_ds.column_names)
 
 
-# from transformers import AutoTokenizer
+from transformers import AutoTokenizer, AutoConfig, AutoModel
 
-# model_ckpt = "distilbert-base-uncased"
+def loadmodels(model_ckpt):
+    #model_ckpt = "distilbert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
+    config = AutoConfig.from_pretrained(model_ckpt)
+    model = AutoModel.from_pretrained(model_ckpt)
+    newpath=os.path.join(mycache_dir, model_ckpt)
+    tokenizer.save_pretrained(newpath)
+    config.save_pretrained(newpath)
+    model.save_pretrained(newpath)
+    print(model)
+
+loadmodels("distilbert-base-uncased")
+
+loadmodels("distilroberta-base")
+# model_ckpt = "distilroberta-base"
 # tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
+# config = AutoConfig.from_pretrained(model_ckpt)
+# newpath=os.path.join(mycache_dir, model_ckpt)
+# tokenizer.save_pretrained(newpath)
+# config.save_pretrained(newpath)
+# model.save_pretrained(newpath)
 
+print("Done")
 # from transformers import AutoModel
 # model = AutoModel.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
