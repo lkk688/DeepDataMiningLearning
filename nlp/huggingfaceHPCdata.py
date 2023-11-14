@@ -41,8 +41,8 @@ imdb_dataset
 #     ReadInstruction('train'),
 #     ReadInstruction('test'),
 # ])
-train_ds, test_ds = load_dataset('bookcorpus', split=['train', 'test'])
-
+#train_ds, test_ds = load_dataset('bookcorpus', split=['train', 'test'])
+train_ds = load_dataset('bookcorpus')
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 
 def loadmodels(model_ckpt):
@@ -61,6 +61,8 @@ loadmodels("distilbert-base-uncased")
 loadmodels("distilroberta-base")
 
 loadmodels("distilgpt2")
+
+loadmodels("meta-llama/Llama-2-7b-chat-hf")
 # model_ckpt = "distilroberta-base"
 # tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
 # config = AutoConfig.from_pretrained(model_ckpt)

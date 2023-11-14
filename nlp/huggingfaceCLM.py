@@ -162,7 +162,7 @@ if __name__ == "__main__":
     parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
     parser.add_argument('--gpuid', default=1, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
@@ -386,9 +386,10 @@ if __name__ == "__main__":
             model, optimizer, train_dataloader, eval_dataloader
         )
 
-    num_train_epochs = 8
+    num_train_epochs = args.total_epochs
     num_update_steps_per_epoch = len(train_dataloader) #2500
     num_training_steps = num_train_epochs * num_update_steps_per_epoch
+    print("Total num_training_steps: ", num_training_steps)
 
     lr_scheduler = get_scheduler(
         "linear",
@@ -397,7 +398,8 @@ if __name__ == "__main__":
         num_training_steps=num_training_steps,
     )
 
-    progress_bar = tqdm(range(num_training_steps))
+    progress_bar = tqdm(range(num_update_steps_per_epoch))
+    evalprogress_bar = tqdm(range(len(eval_dataloader)))
     for epoch in range(num_train_epochs):
         # Training
         model.train()
@@ -415,7 +417,8 @@ if __name__ == "__main__":
             lr_scheduler.step()
             optimizer.zero_grad()
             progress_bar.update(1)
-
+        progress_bar.refresh()  # force print final state
+        progress_bar.reset()
         # Evaluation
         model.eval()
         losses = []
@@ -426,9 +429,12 @@ if __name__ == "__main__":
                 outputs = model(**batch)
             loss = outputs.loss
             if not use_accelerator:
-                losses.append(loss)
+                losses.append(loss.repeat(batch_size))
             else:
                 losses.append(accelerator.gather(loss.repeat(batch_size)))
+            evalprogress_bar.update(1)
+        evalprogress_bar.refresh()  # force print final state
+        evalprogress_bar.reset()
 
         losses = torch.cat(losses)
         losses = losses[: len(eval_dataset)]
@@ -446,13 +452,23 @@ if __name__ == "__main__":
             unwrapped_model.save_pretrained(trainoutput, save_function=accelerator.save)
         else:
             #model.save_pretrained(trainoutput)
-            torch.save(model.state_dict(), os.path.join(trainoutput, 'savedmodel.pth'))
+            #torch.save(model.state_dict(), os.path.join(trainoutput, 'savedmodel.pth'))
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'epoch': epoch
+            }, os.path.join(trainoutput, 'savedmodel.pth'))
+            # load
+            # checkpoint = torch.load(output_model, map_location='cpu')
+            # model.load_state_dict(checkpoint['model_state_dict'])
+            # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         # if accelerator.is_main_process:
         #     tokenizer.save_pretrained(output_dir)
         #     repo.push_to_hub(
         #         commit_message=f"Training in progress epoch {epoch}", blocking=False
         #     )
-    
+    progress_bar.close()
+    evalprogress_bar.close()
     if CausalLM:
         result = testgenerate(model, sampletext, device)
         print(result)
