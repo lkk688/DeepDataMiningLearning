@@ -147,10 +147,10 @@ if __name__ == "__main__":
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\aclImdb",
-                    help='path to get data')
-    parser.add_argument('--model_checkpoint', type=str, default="distilgpt2",
-                    help='Model checkpoint name from https://huggingface.co/models, "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
+    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
+                    help='path to get data r"E:\Dataset\NLPdataset\aclImdb"')
+    parser.add_argument('--model_checkpoint', type=str, default="gpt2",
+                    help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="LM",
                     help='NLP tasks: MLM, CLM')
     parser.add_argument('--outputdir', type=str, default="./output",
@@ -159,12 +159,12 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=True,
+    parser.add_argument('--usehpc', type=bool, default=False,
                     help='Use HPC')
-    parser.add_argument('--gpuid', default=1, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     args = parser.parse_args()
 
@@ -187,7 +187,7 @@ if __name__ == "__main__":
     
     USE_HPC=args.usehpc
     if USE_HPC:
-        mycache_dir="/data/cmpe249-fa23/Huggingfacecache"
+        mycache_dir=args.data_path #"/data/cmpe249-fa23/Huggingfacecache"
         os.environ['TRANSFORMERS_CACHE'] = mycache_dir
         os.environ['HF_HOME'] = mycache_dir
         os.environ['HF_DATASETS_CACHE'] = mycache_dir
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     if args.data_type == "huggingface":
         if USE_HPC:
             if args.data_name=='imdb':
-                datasetpath="/data/cmpe249-fa23/Huggingfacecache/imdb/plain_text/1.0.0/d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0"
+                datasetpath=os.path.join(mycache_dir, args.data_name, "plain_text", "1.0.0", "d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0") #"/data/cmpe249-fa23/Huggingfacecache/imdb/plain_text/1.0.0/d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0"
                 #raw_datasets = load_dataset(args.data_name, cache_dir=mycache_dir) #eli5
                 trainarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-train.arrow')
                 #valarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-validation.arrow')
@@ -213,7 +213,8 @@ if __name__ == "__main__":
                 data_field='text'
                 sampletext = "This is a great [MASK]."
             elif args.data_name=='eli5':
-                datasetpath="/data/cmpe249-fa23/Huggingfacecache/eli5/LFQA_reddit/1.0.0/17574e5502a10f41bbd17beba83e22475b499fa62caa1384a3d093fc856fe6fa"
+                #datasetpath="/data/cmpe249-fa23/Huggingfacecache/eli5/LFQA_reddit/1.0.0/17574e5502a10f41bbd17beba83e22475b499fa62caa1384a3d093fc856fe6fa"
+                datasetpath=os.path.join(mycache_dir, args.data_name, "LFQA_reddit", "1.0.0", "17574e5502a10f41bbd17beba83e22475b499fa62caa1384a3d093fc856fe6fa")
                 trainarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-train'+'_asks.arrow')#eli5-train_asks.arrow
                 testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test'+'_asks.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath, 'test': testarrowpath})
@@ -232,9 +233,6 @@ if __name__ == "__main__":
                     'train': train_ds,
                     'test': test_ds
                 })
-                #raw_datasets={}
-                #raw_datasets["train"] = train_ds.flatten()
-                #raw_datasets["test"] = test_ds.flatten()
                 data_field='answers.text'
                 raw_datasets = raw_datasets.flatten() #nested structure become flat: answers.text
                 if CausalLM:
