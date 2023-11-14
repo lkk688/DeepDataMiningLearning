@@ -13,7 +13,7 @@ import torch
 print(torch.__version__)
 
 #https://huggingface.co/docs/datasets/loading
-from datasets import load_dataset
+from datasets import load_dataset, ReadInstruction
 datasetpath='emotion/split/1.0.0/cca5efe2dfeb58c1d098e0f9eeb200e9927d889b5a03c67097275dfb5fe463bd'
 trainarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-train.arrow')
 valarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-validation.arrow')
@@ -24,7 +24,8 @@ print(dataset)
 train_ds = dataset["train"]
 print(train_ds)
 
-eli5 = load_dataset("eli5", split="train_asks")
+#eli5 = load_dataset("eli5", split="train_asks")
+eli5 = load_dataset("eli5")
 print(eli5)
 
 imdb_dataset = load_dataset("imdb")
@@ -36,6 +37,11 @@ imdb_dataset
 # print(len(train_ds))
 # print(train_ds.column_names)
 
+# train_ds, test_ds = load_dataset('bookcorpus', split=[
+#     ReadInstruction('train'),
+#     ReadInstruction('test'),
+# ])
+train_ds, test_ds = load_dataset('bookcorpus', split=['train', 'test'])
 
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 

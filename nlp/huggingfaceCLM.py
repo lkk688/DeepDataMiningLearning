@@ -159,12 +159,12 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=False,
+    parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
-    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=1, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     args = parser.parse_args()
 
@@ -214,8 +214,8 @@ if __name__ == "__main__":
                 sampletext = "This is a great [MASK]."
             elif args.data_name=='eli5':
                 datasetpath="/data/cmpe249-fa23/Huggingfacecache/eli5/LFQA_reddit/1.0.0/17574e5502a10f41bbd17beba83e22475b499fa62caa1384a3d093fc856fe6fa"
-                trainarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-train'+'_'+args.dataconfig+'.arrow')#eli5-train_asks.arrow
-                testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test'+'_'+args.dataconfig+'.arrow')
+                trainarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-train'+'_asks.arrow')#eli5-train_asks.arrow
+                testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test'+'_asks.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath, 'test': testarrowpath})
                 data_field='answers.text'
                 #sampletext = "A static force applied eccentric to the center of [MASK]."#mass
@@ -421,10 +421,14 @@ if __name__ == "__main__":
         losses = []
         for step, batch in enumerate(eval_dataloader):
             with torch.no_grad():
+                if not use_accelerator:
+                    batch = {k: v.to(device) for k, v in batch.items()}
                 outputs = model(**batch)
-
             loss = outputs.loss
-            losses.append(accelerator.gather(loss.repeat(batch_size)))
+            if not use_accelerator:
+                losses.append(loss)
+            else:
+                losses.append(accelerator.gather(loss.repeat(batch_size)))
 
         losses = torch.cat(losses)
         losses = losses[: len(eval_dataset)]
@@ -436,9 +440,13 @@ if __name__ == "__main__":
         print(f">>> Epoch {epoch}: Perplexity: {perplexity}")
 
         # Save and upload
-        accelerator.wait_for_everyone()
-        unwrapped_model = accelerator.unwrap_model(model)
-        unwrapped_model.save_pretrained(trainoutput, save_function=accelerator.save)
+        if use_accelerator:
+            accelerator.wait_for_everyone()
+            unwrapped_model = accelerator.unwrap_model(model)
+            unwrapped_model.save_pretrained(trainoutput, save_function=accelerator.save)
+        else:
+            #model.save_pretrained(trainoutput)
+            torch.save(model.state_dict(), os.path.join(trainoutput, 'savedmodel.pth'))
         # if accelerator.is_main_process:
         #     tokenizer.save_pretrained(output_dir)
         #     repo.push_to_hub(
