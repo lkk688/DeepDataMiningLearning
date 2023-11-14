@@ -1,4 +1,4 @@
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 from transformers import AutoTokenizer, AutoConfig, AutoModel
 from transformers import DataCollatorForLanguageModeling
 from transformers import AutoModelForMaskedLM, AutoModelForCausalLM
@@ -21,16 +21,17 @@ import os
 #print(os.environ['CUDA_VISIBLE_DEVICES'])
 #os.environ['CUDA_VISIBLE_DEVICES'] = "2"
 #print(os.environ['CUDA_VISIBLE_DEVICES'])
-num_gpus= torch.cuda.device_count()
-print("Device numbers:", num_gpus)
-for gpuidx in range(num_gpus):
-    print("Device properties:", torch.cuda.get_device_properties(gpuidx))
-    print("Utilization:", torch.cuda.utilization(gpuidx))
-    print('Memory Usage:')
-    print('Allocated:', round(torch.cuda.memory_allocated(gpuidx)/1024**3,1), 'GB')
-    print('Cached:   ', round(torch.cuda.memory_reserved(gpuidx)/1024**3,1), 'GB')
+# num_gpus= torch.cuda.device_count()
+# print("Device numbers:", num_gpus)
+# for gpuidx in range(num_gpus):
+#     print("Device properties:", torch.cuda.get_device_properties(gpuidx))
+#     print("Utilization:", torch.cuda.utilization(gpuidx))
+#     print('Memory Usage:')
+#     print('Allocated:', round(torch.cuda.memory_allocated(gpuidx)/1024**3,1), 'GB')
+#     print('Cached:   ', round(torch.cuda.memory_reserved(gpuidx)/1024**3,1), 'GB')
 
 global data_field
+data_field='answers.text'
 global block_size
 block_size = 512 #128
 
@@ -142,7 +143,7 @@ if __name__ == "__main__":
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="eli5",
                     help='data name: eli5, imdb')
-    parser.add_argument('--dataconfig', type=str, default="asks",
+    parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
@@ -158,8 +159,9 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=True,
+    parser.add_argument('--usehpc', type=bool, default=False,
                     help='Use HPC')
+    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=4, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
@@ -224,8 +226,21 @@ if __name__ == "__main__":
                 raw_datasets = raw_datasets.flatten() #nested structure become flat: answers.text
                 #features: ['q_id', 'title', 'selftext', 'document', 'subreddit', 'answers.a_id', 'answers.text', 'answers.score', 'title_urls.url', 'selftext_urls.url', 'answers_urls.url']
         else:
-            if not args.dataconfig:
-                raw_datasets = load_dataset(args.data_name) #dataconfig="train_asks[:5000]"
+            if args.data_name=='eli5':
+                train_ds, test_ds = load_dataset(args.data_name, split=['train_asks', 'test_asks']) #dataconfig="train_asks[:5000]"
+                raw_datasets= DatasetDict({
+                    'train': train_ds,
+                    'test': test_ds
+                })
+                #raw_datasets={}
+                #raw_datasets["train"] = train_ds.flatten()
+                #raw_datasets["test"] = test_ds.flatten()
+                data_field='answers.text'
+                raw_datasets = raw_datasets.flatten() #nested structure become flat: answers.text
+                if CausalLM:
+                    sampletext = "Somatic hypermutation allows the immune system to"
+                else: #MLM
+                    sampletext = "The Milky Way is a <mask> galaxy."
             else:
                 raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
         #Download to home/.cache/huggingface/dataset
@@ -268,7 +283,7 @@ if __name__ == "__main__":
     token_train=tokenizer(listexamples)
     
     #device='cpu' #'cuda:1'
-    device = torch.device('cuda:1')  # CUDA GPU 0
+    device = torch.device('cuda:'+str(args.gpuid))  # CUDA GPU 0
     if CausalLM:
         result = testgenerate(model, sampletext, device)
         print(result)
@@ -288,7 +303,8 @@ if __name__ == "__main__":
     # tokenized_datasets = raw_datasets.map(
     #     tokenize_function, batched=True, remove_columns=["text", "label"]
     # )
-    tokenized_datasets = raw_datasets.map(tokenizer_wrapper.tokenize_function, batched=True, num_proc=8, remove_columns=raw_datasets["train"].column_names)
+    print(data_field)#='answers.text'
+    tokenized_datasets = raw_datasets.map(tokenizer_wrapper.tokenize_function, batched=True, num_proc=1, remove_columns=raw_datasets["train"].column_names)
     # Slicing produces a list of lists for each feature
     tokenized_samples = tokenized_datasets["train"][:3] #generate "input_ids" list and "attention_mask", add "word_ids"
 
