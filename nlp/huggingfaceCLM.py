@@ -148,7 +148,7 @@ if __name__ == "__main__":
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
-                    help='path to get data r"E:\Dataset\NLPdataset\aclImdb"')
+                    help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
     parser.add_argument('--model_checkpoint', type=str, default="gpt2",
                     help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="LM",
@@ -159,7 +159,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=False,
+    parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
@@ -416,7 +416,7 @@ if __name__ == "__main__":
             optimizer.zero_grad()
             progress_bar.update(1)
         progress_bar.refresh()  # force print final state
-        progress_bar.reset()
+        #progress_bar.reset()
         # Evaluation
         model.eval()
         losses = []
@@ -432,7 +432,7 @@ if __name__ == "__main__":
                 losses.append(accelerator.gather(loss.repeat(batch_size)))
             evalprogress_bar.update(1)
         evalprogress_bar.refresh()  # force print final state
-        evalprogress_bar.reset()
+        #evalprogress_bar.reset()
 
         losses = torch.cat(losses)
         losses = losses[: len(eval_dataset)]
