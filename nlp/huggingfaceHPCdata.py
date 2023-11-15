@@ -62,6 +62,8 @@ loadmodels("distilroberta-base")
 
 loadmodels("distilgpt2")
 
+loadmodels("gpt2")
+
 loadmodels("meta-llama/Llama-2-7b-chat-hf")
 # model_ckpt = "distilroberta-base"
 # tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)

@@ -134,6 +134,33 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
    * Tensorflow Recommender: [colab](https://colab.research.google.com/drive/14tfyPInCyZzcr4sk6zRejHR1847WwVR9?usp=sharing)
 
 ## Large Language Models (LLMs) and Apps
+Train a basic language modeling task via basic Pytorch and Torchtext WikiText2 dataset in HPC. 
+```bash
+python nlp/torchtransformer.py
+
+| epoch   1 |  2800/ 2928 batches | lr 5.00 | ms/batch  5.58 | loss  3.31 | ppl    27.49
+-----------------------------------------------------------------------------------------
+| end of epoch   1 | time: 24.00s | valid loss  1.96 | valid ppl     7.08
+-----------------------------------------------------------------------------------------
+| epoch   2 |   200/ 2928 batches | lr 4.75 | ms/batch  5.84 | loss  3.07 | ppl    21.57
+| epoch   2 |  2800/ 2928 batches | lr 4.75 | ms/batch  5.49 | loss  2.58 | ppl    13.26
+-----------------------------------------------------------------------------------------
+| end of epoch   2 | time: 1655.94s | valid loss  1.52 | valid ppl     4.57
+-----------------------------------------------------------------------------------------
+| epoch   3 |   200/ 2928 batches | lr 4.51 | ms/batch  5.04 | loss  2.41 | ppl    11.15
+-----------------------------------------------------------------------------------------
+| end of epoch   3 | time: 15.41s | valid loss  1.44 | valid ppl     4.22
+-----------------------------------------------------------------------------------------
+=========================================================================================
+| End of training | test loss  1.40 | test ppl     4.06
+=========================================================================================
+```
+
+Train GPT2 language models
+```bash
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceCLM.py --model_checkpoint="gpt2" --traintag="1114" --usehpc=True --gpuid=2 --batch_size=16
+```
+
 NLP models based on Huggingface Transformer libraries
 * Starting
    * [HuggingfaceTransformers](notebooks/Transformers.ipynb)

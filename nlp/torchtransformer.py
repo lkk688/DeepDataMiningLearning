@@ -86,11 +86,18 @@ class TransformerModel(nn.Module):
     
 def data_process(raw_text_iter: dataset.IterableDataset) -> Tensor:
     """Converts raw text into a flat Tensor."""
-    data = [torch.tensor(vocab(tokenizer(item)), dtype=torch.long) for item in raw_text_iter]
+    dataitem = [item.strip() for item in raw_text_iter] #remove '\n'
+    newdataitem=[]
+    for item in dataitem:
+        if item: #only add non-empty data
+            newdataitem.append(item)
+    data = [torch.tensor(vocab(tokenizer(item)), dtype=torch.long) for item in newdataitem]
+    #data = [torch.tensor(vocab(tokenizer(item)), dtype=torch.long) for item in raw_text_iter]
     return torch.cat(tuple(filter(lambda t: t.numel() > 0, data))) #.numel() Returns the total number of elements in the input tensor
 
 #arranges the data into batch_size columns
 #If the data does not divide evenly into batch_size columns, then the data is trimmed to fit.
+#batching means that the model treats each column independently
 def batchify(data: Tensor, bsz: int) -> Tensor:
     """Divides the data into ``bsz`` separate sequences, removing extra elements
     that wouldn't cleanly fit.
@@ -103,8 +110,8 @@ def batchify(data: Tensor, bsz: int) -> Tensor:
         Tensor of shape ``[N // bsz, bsz]``
     """
     seq_len = data.size(0) // bsz
-    data = data[:seq_len * bsz]
-    data = data.view(bsz, seq_len).t().contiguous()
+    data = data[:seq_len * bsz] #do not add remaining part data
+    data = data.view(bsz, seq_len).t().contiguous() #20, 1024999 ->torch.Size([102499, 20])
     return data.to(device)
 
 #get_batch() generates a pair of input-target sequences for the transformer model. It subdivides the source data into chunks of length bptt
@@ -119,9 +126,9 @@ def get_batch(source: Tensor, i: int) -> Tuple[Tensor, Tensor]:
         tuple (data, target), where data has shape ``[seq_len, batch_size]`` and
         target has shape ``[seq_len * batch_size]``
     """
-    seq_len = min(bptt, len(source) - 1 - i)
-    data = source[i:i+seq_len]
-    target = source[i+1:i+1+seq_len].reshape(-1)
+    seq_len = min(bptt, len(source) - 1 - i) #35
+    data = source[i:i+seq_len] #torch.Size([35, 20])
+    target = source[i+1:i+1+seq_len].reshape(-1) #35*20 torch.Size([700])
     return data, target
 
 
@@ -134,9 +141,9 @@ def train(model: nn.Module) -> None:
     num_batches = len(train_data) // bptt
     for batch, i in enumerate(range(0, train_data.size(0) - 1, bptt)):
         data, targets = get_batch(train_data, i)
-        output = model(data)
-        output_flat = output.view(-1, ntokens)
-        loss = criterion(output_flat, targets)
+        output = model(data) #torch.Size([35, 20]) ->torch.Size([35, 20, 28782])
+        output_flat = output.view(-1, ntokens) #[700, 28782]
+        loss = criterion(output_flat, targets) #700
 
         optimizer.zero_grad()
         loss.backward()
@@ -189,7 +196,7 @@ if __name__ == "__main__":
     val_data = batchify(val_data, eval_batch_size)
     test_data = batchify(test_data, eval_batch_size)
 
-    ntokens = len(vocab)  # size of vocabulary
+    ntokens = len(vocab)  # size of vocabulary 28782
     emsize = 200  # embedding dimension
     d_hid = 200  # dimension of the feedforward network model in ``nn.TransformerEncoder``
     nlayers = 2  # number of ``nn.TransformerEncoderLayer`` in ``nn.TransformerEncoder``

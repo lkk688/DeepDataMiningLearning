@@ -149,7 +149,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="gpt2",
+    parser.add_argument('--model_checkpoint', type=str, default="distilgpt2",
                     help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="LM",
                     help='NLP tasks: MLM, CLM')
@@ -161,10 +161,10 @@ if __name__ == "__main__":
                     help='Perform training')
     parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
-    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     args = parser.parse_args()
 
@@ -396,7 +396,7 @@ if __name__ == "__main__":
         num_training_steps=num_training_steps,
     )
 
-    progress_bar = tqdm(range(num_update_steps_per_epoch))
+    progress_bar = tqdm(range(num_training_steps))
     evalprogress_bar = tqdm(range(len(eval_dataloader)))
     for epoch in range(num_train_epochs):
         # Training
@@ -415,7 +415,7 @@ if __name__ == "__main__":
             lr_scheduler.step()
             optimizer.zero_grad()
             progress_bar.update(1)
-        progress_bar.refresh()  # force print final state
+        #progress_bar.refresh()  # force print final state
         #progress_bar.reset()
         # Evaluation
         model.eval()
