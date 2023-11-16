@@ -140,13 +140,15 @@ def testgenerate(model, text, device='cuda'):
     output_text = tokenizer.batch_decode(outputs, skip_special_tokens=True)
     return output_text
 
-def modelparameters(model, freezename=""):
+def modelparameters(model, unfreezename=""):
+    if unfreezename:
+        for name, param in model.named_parameters():
+            if name.startswith(unfreezename): # choose whatever you like here
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
-    if freezename:
-        for name, param in model.named_parameters():
-            if name.startswith(freezename): # choose whatever you like here
-                param.requires_grad = False
 
 #data_name="imdb", dataconfig="", model_checkpoint="distilbert-base-uncased"
 if __name__ == "__main__":
@@ -166,6 +168,8 @@ if __name__ == "__main__":
                     help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="MLM",
                     help='NLP tasks: MLM, CLM, LLM')
+    parser.add_argument('--unfreezename', type=str, default="",
+                    help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
     parser.add_argument('--traintag', type=str, default="eli5asksciencemodeling",
@@ -303,7 +307,7 @@ if __name__ == "__main__":
     model_num_parameters = model.num_parameters() / 1_000_000
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
     #print(f"'>>> BERT number of parameters: 110M'")
-    modelparameters(model)
+    modelparameters(model, args.unfreezename)
 
     examples=raw_datasets["train"][0]
     listexamples = [" ".join(x) for x in examples[data_field]]

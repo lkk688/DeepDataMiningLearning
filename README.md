@@ -164,7 +164,11 @@ Train Masked Language model:
 
 Train GPT2 language models
 ```bash
-(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceCLM.py --model_checkpoint="gpt2" --traintag="1114" --usehpc=True --gpuid=2 --batch_size=16
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceLM2.py --model_checkpoint="gpt2" --task="CLM" --traintag="1115gpt2" --usehpc=True --gpuid=2 --batch_size=16
+```
+Train llama2 7b model and only unfreeze the last layers "model.layers.31" (need 500GB) or "lm_head" (need 40GB)
+```bash
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceLM2.py --model_checkpoint="Llama-2-7b-chat-hf" --task="CLM" --unfreezename="model.layers.31" --traintag="1115llama2" --usehpc=True --gpuid=2 --batch_size=8
 ```
 
 
