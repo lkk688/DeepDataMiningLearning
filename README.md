@@ -156,10 +156,18 @@ python nlp/torchtransformer.py
 =========================================================================================
 ```
 
+Train Masked Language model:
+```bash
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceLM2.py --data_name="eli5" --model_checkpoint="distilroberta-base" --task="CLM" --subset=5000 --traintag="1115CLM" --usehpc=True --gpuid=1 --batch_size=32 --learningrate=2e-5
+```
+
+
 Train GPT2 language models
 ```bash
 (mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceCLM.py --model_checkpoint="gpt2" --traintag="1114" --usehpc=True --gpuid=2 --batch_size=16
 ```
+
+
 
 NLP models based on Huggingface Transformer libraries
 * Starting

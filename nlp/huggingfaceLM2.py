@@ -117,14 +117,19 @@ def insert_random_mask(batch):
 def testpredictmask(model, text, device='cuda'):
     #text = "This is a great [MASK]."
     inputs = tokenizer(text, return_tensors="pt")
+    inputs=inputs.to(device)
+    model=model.to(device)
     print(inputs)
     token_logits = model(**inputs).logits #torch.Size([1, 8, 30522]) shape (batch_size, sequence_length, hidden_size)
     # Find the location of [MASK] and extract its logits
     findmask=torch.where(inputs["input_ids"] == tokenizer.mask_token_id)
     mask_token_index = findmask[1] #[1]
-    mask_token_logits = token_logits[0, mask_token_index, :] #torch.Size([1, 30522])
-    # Pick the [MASK] candidates with the highest logits
-    top_5_tokens = torch.topk(mask_token_logits, 5, dim=1).indices[0].tolist()
+    if (mask_token_index.numel()):
+        mask_token_logits = token_logits[0, mask_token_index, :] #torch.Size([1, 30522])
+        # Pick the [MASK] candidates with the highest logits
+        top_5_tokens = torch.topk(mask_token_logits, 5, dim=1).indices[0].tolist()
+    else:
+        print("Did not find the mask token.")
     return top_5_tokens
 
 def testgenerate(model, text, device='cuda'):
@@ -134,6 +139,14 @@ def testgenerate(model, text, device='cuda'):
     outputs = model.generate(inputs, max_new_tokens=100, do_sample=True, top_k=50, top_p=0.95, pad_token_id=tokenizer.eos_token_id)
     output_text = tokenizer.batch_decode(outputs, skip_special_tokens=True)
     return output_text
+
+def modelparameters(model, freezename=""):
+    for name, param in model.named_parameters():
+        print(name, param.requires_grad)
+    if freezename:
+        for name, param in model.named_parameters():
+            if name.startswith(freezename): # choose whatever you like here
+                param.requires_grad = False
 
 #data_name="imdb", dataconfig="", model_checkpoint="distilbert-base-uncased"
 if __name__ == "__main__":
@@ -149,10 +162,10 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="distilgpt2",
+    parser.add_argument('--model_checkpoint', type=str, default="distilroberta-base",
                     help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
-    parser.add_argument('--task', type=str, default="LM",
-                    help='NLP tasks: MLM, CLM')
+    parser.add_argument('--task', type=str, default="MLM",
+                    help='NLP tasks: MLM, CLM, LLM')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
     parser.add_argument('--traintag', type=str, default="eli5asksciencemodeling",
@@ -161,7 +174,7 @@ if __name__ == "__main__":
                     help='Perform training')
     parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
-    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
@@ -173,15 +186,16 @@ if __name__ == "__main__":
     print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
 
     use_accelerator = False
-    CausalLM=True
-    if CausalLM:
-        mlm = False
-        WHOLE_Word = False
-        InsertMask = False
-    else:
+    if task == "MLM":
+        CausalLM=False
         mlm_probability = 0.15
         WHOLE_Word = True
         InsertMask = True
+    else:
+        CausalLM=True
+        mlm = False
+        WHOLE_Word = False
+        InsertMask = False
 
     model_checkpoint = args.model_checkpoint
     
@@ -200,7 +214,10 @@ if __name__ == "__main__":
     else:
         trainoutput=args.outputdir #"./output"
         taskname=args.traintag #taskname="eli5asksciencemodeling"
-
+    trainoutput=os.path.join(trainoutput, model_checkpoint, args.data_name+'_'+args.traintag)
+    os.makedirs(trainoutput, exist_ok=True)
+    print("Trainoutput folder:", trainoutput)
+    
     if args.data_type == "huggingface":
         if USE_HPC:
             if args.data_name=='imdb':
@@ -211,7 +228,7 @@ if __name__ == "__main__":
                 testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath, 'test': testarrowpath})
                 data_field='text'
-                sampletext = "This is a great [MASK]."
+                #sampletext = "This is a great [MASK]."
             elif args.data_name=='eli5':
                 #datasetpath="/data/cmpe249-fa23/Huggingfacecache/eli5/LFQA_reddit/1.0.0/17574e5502a10f41bbd17beba83e22475b499fa62caa1384a3d093fc856fe6fa"
                 datasetpath=os.path.join(mycache_dir, args.data_name, "LFQA_reddit", "1.0.0", "17574e5502a10f41bbd17beba83e22475b499fa62caa1384a3d093fc856fe6fa")
@@ -248,7 +265,18 @@ if __name__ == "__main__":
         #extract the text subfield from its nested structure with the flatten method:
         
         print("All keys in raw datasets:", raw_datasets['train'][0].keys())
-    
+        if args.subset>0:
+            if args.subset<1:
+                trainlen=int(len(raw_datasets["train"])*args.subset)
+                testlen=int(len(raw_datasets["test"])*args.subset)
+            else:
+                trainlen = int(min(args.subset, len(raw_datasets["train"])))
+                testlen = int(trainlen/10)
+            print("trainlen:", trainlen)
+            raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
+            raw_datasets["test"] = raw_datasets["test"].shuffle(seed=42).select([i for i in list(range(testlen))])
+        
+
     global tokenizer
     if USE_HPC:
         localpath=os.path.join(mycache_dir, model_checkpoint)
@@ -275,6 +303,7 @@ if __name__ == "__main__":
     model_num_parameters = model.num_parameters() / 1_000_000
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
     #print(f"'>>> BERT number of parameters: 110M'")
+    modelparameters(model)
 
     examples=raw_datasets["train"][0]
     listexamples = [" ".join(x) for x in examples[data_field]]
@@ -286,7 +315,7 @@ if __name__ == "__main__":
         result = testgenerate(model, sampletext, device)
         print(result)
     else:
-        top_5_tokens = testpredictmask(model, sampletext)
+        top_5_tokens = testpredictmask(model, sampletext, device)
         for token in top_5_tokens:
             print(f"'>>> {sampletext.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
 
@@ -324,15 +353,14 @@ if __name__ == "__main__":
 
     #mlm_probability means the percentage of [MASK]
     global evaldata_collator
-    if WHOLE_Word:
-        data_collator = whole_word_masking_data_collator
+    if CausalLM:
+        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+        evaldata_collator = data_collator #DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
     else:
-        if CausalLM:
-            data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-            evaldata_collator = data_collator #DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+        if WHOLE_Word:
+            data_collator = whole_word_masking_data_collator
         else:
             data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=mlm_probability)
-            evaldata_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=mlm_probability)
             samples = [lm_datasets["train"][i] for i in range(2)]
             for sample in samples:
                 _ = sample.pop("word_ids")
@@ -340,6 +368,9 @@ if __name__ == "__main__":
                 print(f"\n'>>> {tokenizer.decode(chunk)}'")
             for chunk in data_collator(samples)["input_ids"]:
                 print(f"\n'>>> {tokenizer.convert_ids_to_tokens(chunk)}'") 
+        
+        evaldata_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm_probability=mlm_probability)
+        
 
     
     downsampled_dataset = lm_datasets["train"].train_test_split(test_size=0.2)
@@ -398,6 +429,8 @@ if __name__ == "__main__":
 
     progress_bar = tqdm(range(num_training_steps))
     evalprogress_bar = tqdm(range(len(eval_dataloader)))
+    if not use_accelerator:
+        model=model.to(device)
     for epoch in range(num_train_epochs):
         # Training
         model.train()
@@ -471,7 +504,7 @@ if __name__ == "__main__":
         result = testgenerate(model, sampletext, device)
         print(result)
     else:
-        top_5_tokens = testpredictmask(model, sampletext)
+        top_5_tokens = testpredictmask(model, sampletext, device)
         for token in top_5_tokens:
             print(f"'>>> {sampletext.replace(tokenizer.mask_token, tokenizer.decode([token]))}'")
 
