@@ -111,6 +111,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   % pip install portalocker
   % pip install torchdata
   % pip install torchtext
+  pip install sentencepiece
 
 Git configure
 -------------
