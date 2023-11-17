@@ -172,11 +172,11 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="eli5asksciencemodeling",
+    parser.add_argument('--traintag', type=str, default="1116MLM",
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=True,
+    parser.add_argument('--usehpc', type=bool, default=False,
                     help='Use HPC')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
