@@ -32,6 +32,14 @@ imdb_dataset = load_dataset("imdb")
 imdb_dataset
 # dataset = load_dataset('imdb', cache_dir=mycache_dir)
 
+raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
+
+#https://huggingface.co/datasets/opus100
+raw_datasets = load_dataset("opus100", language_pair="en-zh")
+
+#https://huggingface.co/datasets/wmt19
+raw_datasets = load_dataset("wmt19", language_pair=("zh","en"))
+
 # emotions = load_dataset("emotion")
 # train_ds = emotions["train"]
 # print(len(train_ds))
