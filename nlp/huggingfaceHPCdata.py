@@ -51,7 +51,7 @@ raw_datasets = load_dataset("wmt19", language_pair=("zh","en"))
 # ])
 #train_ds, test_ds = load_dataset('bookcorpus', split=['train', 'test'])
 train_ds = load_dataset('bookcorpus')
-from transformers import AutoTokenizer, AutoConfig, AutoModel
+from transformers import AutoTokenizer, AutoConfig, AutoModel, AutoModelForSeq2SeqLM
 
 def loadmodels(model_ckpt):
     #model_ckpt = "distilbert-base-uncased"
@@ -63,6 +63,21 @@ def loadmodels(model_ckpt):
     config.save_pretrained(newpath)
     model.save_pretrained(newpath)
     print(model)
+
+def loadseq2seqmodels(model_ckpt):
+    #model_ckpt = "distilbert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
+    config = AutoConfig.from_pretrained(model_ckpt)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_ckpt)
+    newpath=os.path.join(mycache_dir, model_ckpt)
+    tokenizer.save_pretrained(newpath)
+    config.save_pretrained(newpath)
+    model.save_pretrained(newpath)
+    print(model)
+
+loadseq2seqmodels("facebook/wmt21-dense-24-wide-en-x")
+
+loadseq2seqmodels("facebook/seamless_m4t")
 
 loadmodels("distilbert-base-uncased")
 
