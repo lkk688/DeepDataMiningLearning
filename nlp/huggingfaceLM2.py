@@ -150,6 +150,25 @@ def modelparameters(model, unfreezename=""):
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
 
+def loadmodel(model_checkpoint, task="CLM", mycache_dir="", pretrained="", hpc=True):
+    if hpc==True or pretrained:
+        if pretrained:
+            localpath=pretrained
+        else:
+            localpath=os.path.join(mycache_dir, model_checkpoint)
+        tokenizer = AutoTokenizer.from_pretrained(localpath)
+        if task=="CLM":
+            model = AutoModelForCausalLM.from_pretrained(localpath)
+        else:
+            model = AutoModelForMaskedLM.from_pretrained(localpath)
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)#, cache_dir=mycache_dir)
+        if task=="CLM":
+            model = AutoModelForCausalLM.from_pretrained(model_checkpoint)
+        else:
+            model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)#"distilroberta-base")
+    return model, tokenizer
+
 #data_name="imdb", dataconfig="", model_checkpoint="distilbert-base-uncased"
 if __name__ == "__main__":
     import argparse
@@ -168,6 +187,8 @@ if __name__ == "__main__":
                     help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="MLM",
                     help='NLP tasks: MLM, CLM, LLM')
+    parser.add_argument('--pretrained', type=str, default="",
+                    help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
@@ -282,28 +303,12 @@ if __name__ == "__main__":
         
 
     global tokenizer
-    if USE_HPC:
-        localpath=os.path.join(mycache_dir, model_checkpoint)
-        tokenizer = AutoTokenizer.from_pretrained(localpath)
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)#, cache_dir=mycache_dir)
+    model, tokenizer = loadmodel(model_checkpoint, task=task, mycache_dir=mycache_dir, pretrained=args.pretrained, hpc=USE_HPC)
     tokenizer.model_max_len=512
     tokenizer_wrapper = TokenizerWrapper(tokenizer)
     if CausalLM:
         tokenizer.pad_token = tokenizer.eos_token
 
-    if USE_HPC:
-        localpath=os.path.join(mycache_dir, model_checkpoint) #modelname="distilroberta-base"
-        if CausalLM:
-            model = AutoModelForCausalLM.from_pretrained(localpath)
-        else:
-            model = AutoModelForMaskedLM.from_pretrained(localpath)
-    else:
-        if CausalLM:
-            model = AutoModelForCausalLM.from_pretrained(model_checkpoint)
-        else:
-            model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)#"distilroberta-base")
-    
     model_num_parameters = model.num_parameters() / 1_000_000
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
     #print(f"'>>> BERT number of parameters: 110M'")
