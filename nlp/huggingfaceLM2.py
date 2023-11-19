@@ -151,11 +151,8 @@ def modelparameters(model, unfreezename=""):
         print(name, param.requires_grad)
 
 def loadmodel(model_checkpoint, task="CLM", mycache_dir="", pretrained="", hpc=True):
-    if hpc==True or pretrained:
-        if pretrained:
-            localpath=pretrained
-        else:
-            localpath=os.path.join(mycache_dir, model_checkpoint)
+    if hpc==True:
+        localpath=os.path.join(mycache_dir, model_checkpoint)
         tokenizer = AutoTokenizer.from_pretrained(localpath)
         if task=="CLM":
             model = AutoModelForCausalLM.from_pretrained(localpath)
@@ -167,6 +164,10 @@ def loadmodel(model_checkpoint, task="CLM", mycache_dir="", pretrained="", hpc=T
             model = AutoModelForCausalLM.from_pretrained(model_checkpoint)
         else:
             model = AutoModelForMaskedLM.from_pretrained(model_checkpoint)#"distilroberta-base")
+    if pretrained:
+        checkpoint = torch.load(pretrained, map_location='cpu')
+        print("Pretrained epoch:", checkpoint['epoch'])
+        model.load_state_dict(checkpoint['model_state_dict'])
     return model, tokenizer
 
 #data_name="imdb", dataconfig="", model_checkpoint="distilbert-base-uncased"
