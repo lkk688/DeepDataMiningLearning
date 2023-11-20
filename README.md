@@ -169,6 +169,8 @@ Train GPT2 language models
 Train llama2 7b model and only unfreeze the last layers "model.layers.31" (need 500GB) or "lm_head" (need 40GB)
 ```bash
 (mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceLM2.py --model_checkpoint="Llama-2-7b-chat-hf" --task="CLM" --unfreezename="lm_head" --traintag="1115llama2" --usehpc=True --gpuid=2 --batch_size=8
+
+python nlp/huggingfaceLM2.py --model_checkpoint="Llama-2-7b-chat-hf" --pretrained=="/data/cmpe249-fa23/trainoutput/huggingface/Llama-2-7b-chat-hf/eli5_1115llama2/savedmodel.pth" --task="CLM" --unfreezename="lm_head" --traintag="1119llama2" --usehpc=True --gpuid=2 --batch_size=8
 ```
 
 

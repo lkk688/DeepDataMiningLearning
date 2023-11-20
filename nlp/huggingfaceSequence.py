@@ -23,17 +23,18 @@ data_field='answers.text'
 global block_size
 block_size = 512 #128
 valkey="test"#"validation"
+global tokenizer
 
 #https://huggingface.co/facebook/wmt21-dense-24-wide-en-x
-model = AutoModelForSeq2SeqLM.from_pretrained("facebook/wmt21-dense-24-wide-en-x")
-tokenizer = AutoTokenizer.from_pretrained("facebook/wmt21-dense-24-wide-en-x")
+# model = AutoModelForSeq2SeqLM.from_pretrained("facebook/wmt21-dense-24-wide-en-x")
+# tokenizer = AutoTokenizer.from_pretrained("facebook/wmt21-dense-24-wide-en-x")
 
-inputs = tokenizer("To translate into a target language, the target language id is forced as the first generated token. To force the target language id as the first generated token, pass the forced_bos_token_id parameter to the generate method.", return_tensors="pt")
+# inputs = tokenizer("To translate into a target language, the target language id is forced as the first generated token. To force the target language id as the first generated token, pass the forced_bos_token_id parameter to the generate method.", return_tensors="pt")
 
-# translate English to Chinese
-generated_tokens = model.generate(**inputs, forced_bos_token_id=tokenizer.get_lang_id("zh")) #max_new_tokens
-result=tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
-print(result)
+# # translate English to Chinese
+# generated_tokens = model.generate(**inputs, forced_bos_token_id=tokenizer.get_lang_id("zh")) #max_new_tokens
+# result=tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+# print(result)
 
 # model_checkpoint = "Helsinki-NLP/opus-mt-en-fr"
 # translator = pipeline("translation", model=model_checkpoint)
@@ -78,8 +79,8 @@ def loadmodel(model_checkpoint, task="Seq2SeqLM", mycache_dir="", pretrained="",
 
 max_length = 128
 def preprocess_function(examples):
-    inputs = [ex["en"] for ex in examples["translation"]]
-    targets = [ex["fr"] for ex in examples["translation"]]
+    inputs = [ex["en"] for ex in examples["translation"]] #1000
+    targets = [ex["fr"] for ex in examples["translation"]] #1000
     model_inputs = tokenizer(
         inputs, text_target=targets, max_length=max_length, truncation=True
     )
@@ -89,32 +90,34 @@ def loaddata(args, USE_HPC):
     if args.data_type == "huggingface":
         if USE_HPC:
             if args.data_name=='kde4':
-                datasetpath=os.path.join(mycache_dir, args.data_name, "plain_text", "1.0.0", "d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0") #"/data/cmpe249-fa23/Huggingfacecache/imdb/plain_text/1.0.0/d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0"
+                #raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
+                datasetpath=os.path.join(mycache_dir, args.data_name, "en-fr-lang1\=en\,lang2\=fr", "0.0.0", "/243129fb2398d5b0b4f7f6831ab27ad84774b7ce374cf10f60f6e1ff331648ac") #"/data/cmpe249-fa23/Huggingfacecache/imdb/plain_text/1.0.0/d613c88cf8fa3bab83b4ded3713f1f74830d1100e171db75bbddb80b3345c9c0"
                 #raw_datasets = load_dataset(args.data_name, cache_dir=mycache_dir) #eli5
-                trainarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-train.arrow')
+                datasetpath=os.path.join(mycache_dir, args.data_name)
+                trainarrowpath=os.path.join(mycache_dir, args.data_name, args.data_name+'-train.arrow')
                 #valarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-validation.arrow')
-                testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test.arrow')
-                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath, 'test': testarrowpath})
+                #testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test.arrow')
+                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 data_field='text'
                 #sampletext = "This is a great [MASK]."
         else:
             if args.data_name=='kde4':
                 raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
-                split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
-                # rename the "test" key to "validation" 
-                #split_datasets["validation"] = split_datasets.pop("test")
-                #one element
-                sampletext = split_datasets["train"][1]["translation"]
-                raw_datasets = split_datasets
             else:
                 raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
         #Download to home/.cache/huggingface/dataset
         
         print("All keys in raw datasets:", raw_datasets['train'][0].keys())
+        split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+        # rename the "test" key to "validation" 
+        #split_datasets["validation"] = split_datasets.pop("test")
+        #one element
+        sampletext = split_datasets["train"][1]["translation"]
+        raw_datasets = split_datasets
         if args.subset>0:
             if args.subset<1:
                 trainlen=int(len(raw_datasets["train"])*args.subset)
-                testlen=int(len(raw_datasets["test"])*args.subset)
+                testlen=int(len(raw_datasets[valkey])*args.subset)
             else:
                 trainlen = int(min(args.subset, len(raw_datasets["train"])))
                 testlen = int(trainlen/10)
@@ -122,13 +125,7 @@ def loaddata(args, USE_HPC):
             raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
             raw_datasets["test"] = raw_datasets["test"].shuffle(seed=42).select([i for i in list(range(testlen))])
     
-        tokenized_datasets = raw_datasets.map(
-            preprocess_function,
-            batched=True,
-            remove_columns=split_datasets["train"].column_names,
-        )
-        tokenized_datasets.set_format("torch")
-    return raw_datasets, tokenized_datasets
+    return raw_datasets
 
 def compute_metrics(eval_preds):
     preds, labels = eval_preds
@@ -178,7 +175,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="distilroberta-base",
+    parser.add_argument('--model_checkpoint', type=str, default="Helsinki-NLP/opus-mt-en-fr",
                     help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: ')
@@ -188,11 +185,11 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="1116MLM",
+    parser.add_argument('--traintag', type=str, default="1116",
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=False,
+    parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
@@ -205,18 +202,7 @@ if __name__ == "__main__":
     task = args.task
     print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
 
-    use_accelerator = False
-    if task == "MLM":
-        CausalLM=False
-        mlm_probability = 0.15
-        WHOLE_Word = True
-        InsertMask = True
-    else:
-        CausalLM=True
-        mlm = False
-        WHOLE_Word = False
-        InsertMask = False
-
+    use_accelerator = True
     model_checkpoint = args.model_checkpoint
     
     USE_HPC=args.usehpc
@@ -225,6 +211,7 @@ if __name__ == "__main__":
         os.environ['TRANSFORMERS_CACHE'] = mycache_dir
         os.environ['HF_HOME'] = mycache_dir
         os.environ['HF_DATASETS_CACHE'] = mycache_dir
+        os.environ['HF_EVALUATE_OFFLINE'] = "1"
         os.environ['http_proxy'] = "http://172.16.1.2:3128"
         os.environ['HTTP_PROXY'] = "http://172.16.1.2:3128"
         #os.environ['https_proxy'] = "https://172.16.1.2:3128"
@@ -238,8 +225,6 @@ if __name__ == "__main__":
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
 
-    raw_datasets, tokenized_datasets = loaddata(args, USE_HPC)
-
     model, tokenizer = loadmodel(model_checkpoint, task=task, mycache_dir=mycache_dir, pretrained=args.pretrained, hpc=USE_HPC)
     tokenizer.model_max_len=512
     print(tokenizer.pad_token)
@@ -251,23 +236,35 @@ if __name__ == "__main__":
     #print(f"'>>> BERT number of parameters: 110M'")
     modelparameters(model, args.unfreezename)
 
+    raw_datasets = loaddata(args, USE_HPC)
+    if tokenizer:
+        tokenized_datasets = raw_datasets.map(
+            preprocess_function,
+            batched=True,
+            num_proc=4,
+            remove_columns=raw_datasets["train"].column_names,
+        )#The default batch size is 1000, but you can adjust it with the batch_size argument
+        tokenized_datasets.set_format("torch")
+    else:
+        tokenized_datasets = {}
+
     data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
     #To test this on a few samples
     batch = data_collator([tokenized_datasets["train"][i] for i in range(1, 3)])
-    print(batch.keys())
+    print(batch.keys()) #(['input_ids', 'attention_mask', 'labels', 'decoder_input_ids'])
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
 
-    metric = evaluate.load("sacrebleu") #pip install sacrebleu
-    predictions = [
-        "This plugin lets you translate web pages between several languages automatically."
-    ]
-    references = [
-        [
-            "This plugin allows you to automatically translate web pages between several languages."
-        ]
-    ]
-    metric.compute(predictions=predictions, references=references)
+    # metric = evaluate.load("sacrebleu") #pip install sacrebleu
+    # predictions = [
+    #     "This plugin lets you translate web pages between several languages automatically."
+    # ]
+    # references = [
+    #     [
+    #         "This plugin allows you to automatically translate web pages between several languages."
+    #     ]
+    # ]
+    # metric.compute(predictions=predictions, references=references)
 
     train_dataloader = DataLoader(
         tokenized_datasets["train"],
@@ -353,9 +350,9 @@ if __name__ == "__main__":
                 decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered)
             else:
                 decoded_preds, decoded_labels = postprocess(generated_tokens, labels)
-            metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+            #metric.add_batch(predictions=decoded_preds, references=decoded_labels)
 
-        results = metric.compute()
-        print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+        #results = metric.compute()
+        #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
 
     

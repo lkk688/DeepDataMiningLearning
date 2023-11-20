@@ -11,6 +11,9 @@ os.environ['HF_DATASETS_CACHE'] = mycache_dir
 
 import torch
 print(torch.__version__)
+import evaluate
+metric = evaluate.load("sacrebleu") #pip install sacrebleu
+metric = evaluate.load("accuracy") #save to /data/cmpe249-fa23/Huggingfacecache/metrics
 
 #https://huggingface.co/docs/datasets/loading
 from datasets import load_dataset, ReadInstruction
@@ -39,6 +42,9 @@ raw_datasets = load_dataset("opus100", language_pair="en-zh")
 
 #https://huggingface.co/datasets/wmt19
 raw_datasets = load_dataset("wmt19", language_pair=("zh","en"))
+
+dataset = load_dataset("openwebtext", num_proc=4)
+
 
 # emotions = load_dataset("emotion")
 # train_ds = emotions["train"]
@@ -75,9 +81,12 @@ def loadseq2seqmodels(model_ckpt):
     model.save_pretrained(newpath)
     print(model)
 
-loadseq2seqmodels("facebook/wmt21-dense-24-wide-en-x")
 
-loadseq2seqmodels("facebook/seamless_m4t")
+#loadseq2seqmodels("facebook/wmt21-dense-24-wide-en-x")
+
+#loadseq2seqmodels("facebook/seamless_m4t")
+
+loadseq2seqmodels("Helsinki-NLP/opus-mt-en-fr")
 
 loadmodels("distilbert-base-uncased")
 
