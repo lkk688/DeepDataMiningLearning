@@ -375,6 +375,7 @@ New conda environment based on Python3.10: mycondapy310
    pip install onnxruntime
    pip install seaborn
    pip install sacrebleu
+   pip install sacremoses
 
 Test code:
 

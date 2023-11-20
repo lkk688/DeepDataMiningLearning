@@ -191,7 +191,7 @@ if __name__ == "__main__":
                     help='Perform training')
     parser.add_argument('--usehpc', type=bool, default=True,
                     help='Use HPC')
-    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
