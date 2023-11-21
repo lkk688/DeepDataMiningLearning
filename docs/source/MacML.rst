@@ -112,6 +112,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   % pip install torchdata
   % pip install torchtext
   pip install sentencepiece
+  pip install sacrebleu
 
 Git configure
 -------------
