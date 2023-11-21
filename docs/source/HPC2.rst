@@ -78,12 +78,12 @@ To access the lab's server, add the following to your ".ssh/config" file
 .. code-block:: console
 
    Host hpc1p100
-   Hostname 130.65.157.216
-   User student
-   ForwardX11 yes
-   ForwardX11Trusted yes
-   ServerAliveInterval 30
-   ProxyCommand ssh coe-hpc1 -W %h:%p
+     Hostname 130.65.157.216
+     User student
+     ForwardX11 yes
+     ForwardX11Trusted yes
+     ServerAliveInterval 30
+     ProxyCommand ssh coe-hpc1 -W %h:%p
 
 You can use the following command to access the lab's server
 
@@ -94,6 +94,14 @@ You can use the following command to access the lab's server
    student@130.65.157.216's password: #lab server's password
 
 You will require your SJSU password for the initial authentication to the HPC1 headnode, followed by a secondary password for the lab's P100 machine (the account name is "student," and you should request the password from Prof. Liu). 
+
+Inside the lab server, you can access some existing data or put your own data into this folder "/DATA5T2/Datasets/". 
+You can also mount the HPC folder into the local server into the folder of "/data/cmpe249-fa23", I alreay used "sudo chmod 777 /data/cmpe249-fa23" to add write permission. You can use sshfs to mount the HPC folder:
+
+.. code-block:: console
+
+   (base) student@p100:~$ sshfs yousjsuid@coe-hpc1.sjsu.edu:/data/cmpe249-fa23 /data/cmpe249-fa23
+   (base) student@p100:~$ ls /data/cmpe249-fa23
 
 
 GPU node internet access
