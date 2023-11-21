@@ -23,7 +23,7 @@ data_field='answers.text'
 global block_size
 block_size = 512 #128
 valkey="test"#"validation"
-global tokenizer
+global globaltokenizer
 
 #https://huggingface.co/facebook/wmt21-dense-24-wide-en-x
 # model = AutoModelForSeq2SeqLM.from_pretrained("facebook/wmt21-dense-24-wide-en-x")
@@ -81,7 +81,7 @@ max_length = 128
 def preprocess_function(examples):
     inputs = [ex["en"] for ex in examples["translation"]] #1000
     targets = [ex["fr"] for ex in examples["translation"]] #1000
-    model_inputs = tokenizer(
+    model_inputs = globaltokenizer(
         inputs, text_target=targets, max_length=max_length, truncation=True
     )
     return model_inputs
@@ -185,13 +185,15 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="1116",
+    parser.add_argument('--traintag', type=str, default="1121",
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=True,
+    parser.add_argument('--usehpc', type=bool, default=False,
                     help='Use HPC')
-    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
+    parser.add_argument('--useHFaccelerator', type=bool, default=True,
+                    help='Use Huggingface accelerator')
+    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
@@ -202,7 +204,7 @@ if __name__ == "__main__":
     task = args.task
     print(' '.join(f'{k}={v}' for k, v in vars(args).items())) #get the arguments as a dict by calling vars(args)
 
-    use_accelerator = True
+    use_accelerator = args.useHFaccelerator
     model_checkpoint = args.model_checkpoint
     
     USE_HPC=args.usehpc
@@ -221,6 +223,7 @@ if __name__ == "__main__":
     else:
         trainoutput=args.outputdir #"./output"
         taskname=args.traintag #taskname="eli5asksciencemodeling"
+        mycache_dir="./data/"
     trainoutput=os.path.join(trainoutput, model_checkpoint, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
@@ -229,6 +232,7 @@ if __name__ == "__main__":
     tokenizer.model_max_len=512
     print(tokenizer.pad_token)
     print(tokenizer.eos_token)
+    globaltokenizer = tokenizer
     #tokenizer.pad_token = tokenizer.eos_token
 
     model_num_parameters = model.num_parameters() / 1_000_000
@@ -241,7 +245,7 @@ if __name__ == "__main__":
         tokenized_datasets = raw_datasets.map(
             preprocess_function,
             batched=True,
-            num_proc=4,
+            num_proc=1,
             remove_columns=raw_datasets["train"].column_names,
         )#The default batch size is 1000, but you can adjust it with the batch_size argument
         tokenized_datasets.set_format("torch")
@@ -255,16 +259,16 @@ if __name__ == "__main__":
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
 
-    # metric = evaluate.load("sacrebleu") #pip install sacrebleu
-    # predictions = [
-    #     "This plugin lets you translate web pages between several languages automatically."
-    # ]
-    # references = [
-    #     [
-    #         "This plugin allows you to automatically translate web pages between several languages."
-    #     ]
-    # ]
-    # metric.compute(predictions=predictions, references=references)
+    metric = evaluate.load("sacrebleu") #pip install sacrebleu
+    predictions = [
+        "This plugin lets you translate web pages between several languages automatically."
+    ]
+    references = [
+        [
+            "This plugin allows you to automatically translate web pages between several languages."
+        ]
+    ]
+    metric.compute(predictions=predictions, references=references)
 
     train_dataloader = DataLoader(
         tokenized_datasets["train"],
@@ -289,14 +293,17 @@ if __name__ == "__main__":
         num_training_steps=num_training_steps,
     )
 
-    device = torch.device('cuda:'+str(args.gpuid))  # CUDA GPU 0
-    model.to(device)
-    print("Using device:", device)
     if use_accelerator:
-        accelerator = Accelerator()
+        accelerator = Accelerator(mixed_precision="fp16", gradient_accumulation_steps=2)
         model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
             model, optimizer, train_dataloader, eval_dataloader
         )
+        device = accelerator.device
+        print("Using HF Accelerator and device:", device)
+    else:
+        device = torch.device('cuda:'+str(args.gpuid))  # CUDA GPU 0
+        model.to(device)
+        print("Using device:", device)
     
     progress_bar = tqdm(range(num_training_steps))
 
@@ -350,9 +357,11 @@ if __name__ == "__main__":
                 decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered)
             else:
                 decoded_preds, decoded_labels = postprocess(generated_tokens, labels)
-            #metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+            metric.add_batch(predictions=decoded_preds, references=decoded_labels)
 
-        #results = metric.compute()
-        #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+        results = metric.compute()
+        print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
 
-    
+    del model, optimizer, lr_scheduler
+    if use_accelerator:
+        accelerator.free_memory()

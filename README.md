@@ -159,6 +159,18 @@ python nlp/torchtransformer.py
 Train Masked Language model:
 ```bash
 (mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceLM2.py --data_name="eli5" --model_checkpoint="distilroberta-base" --task="CLM" --subset=5000 --traintag="1115CLM" --usehpc=True --gpuid=1 --batch_size=32 --learningrate=2e-5
+
+python nlp/huggingfaceLM2.py
+data_type=huggingface data_name=eli5 dataconfig= subset=0 data_path=/data/cmpe249-fa23/Huggingfacecache model_checkpoint=distilroberta-base task=MLM unfreezename= outputdir=./output traintag=1116MLM training=True usehpc=False gpuid=0 total_epochs=8 save_every=2 batch_size=32 learningrate=2e-05
+Trainoutput folder: ./output\distilroberta-base\eli5_1116MLM
+....
+Epoch 1: Perplexity: 12.102828644322578                              | 6590/26360 [16:06:09<34:50:06,  6.34s/it]
+ 38%|███████████████████████>>> Epoch 2: Perplexity: 15.187707787848385                              | 9885/26360 [24:00:07<28:57:25,  6.33s/it]
+ 50%|███████████████████████>>> Epoch 3: Perplexity: 15.063201196763071                             | 13180/26360 [31:52:08<23:12:51,  6.34s/it]
+ 62%|███████████████████████>>> Epoch 4: Perplexity: 16.583895970053355                             | 16475/26360 [39:44:32<17:23:28,  6.33s/it]
+ 75%|███████████████████████>>> Epoch 5: Perplexity: 16.27479412837067██████▎                       | 19770/26360 [47:36:46<11:34:43,  6.33s/it]
+ 88%|███████████████████████>>> Epoch 6: Perplexity: 16.424729093343636██████████████████            | 23065/26360 [55:28:38<5:47:18,  6.32s/it]
+100%|███████████████████████>>> Epoch 7: Perplexity: 17.22636450834783
 ```
 
 
@@ -171,6 +183,10 @@ Train llama2 7b model and only unfreeze the last layers "model.layers.31" (need 
 (mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceLM2.py --model_checkpoint="Llama-2-7b-chat-hf" --task="CLM" --unfreezename="lm_head" --traintag="1115llama2" --usehpc=True --gpuid=2 --batch_size=8
 
 python nlp/huggingfaceLM2.py --model_checkpoint="Llama-2-7b-chat-hf" --pretrained=="/data/cmpe249-fa23/trainoutput/huggingface/Llama-2-7b-chat-hf/eli5_1115llama2/savedmodel.pth" --task="CLM" --unfreezename="lm_head" --traintag="1119llama2" --usehpc=True --gpuid=0 --batch_size=8
+.....
+Epoch 0: Perplexity: 9.858825392857694████████████████████████████████████████| 2627/2627 [12:39:17<00:00,  3.30s/it]
+ 25%|█████████████████▊     >>> Epoch 1: Perplexity: 10.051054027867561     | 21014/84056 [22:50:31<56:09:49,  3.21s/it]
+ 38%|███████████████████████>>> Epoch 2: Perplexity: 10.181400762228291     | 31521/84056
 ```
 
 Train translation models based on huggingfaceSequence
