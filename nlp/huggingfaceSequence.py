@@ -24,6 +24,10 @@ global block_size
 block_size = 512 #128
 valkey="test"#"validation"
 global globaltokenizer
+global source_lang
+source_lang="en"
+global target_lang
+target_lang="zh"#"fr"
 
 #https://huggingface.co/facebook/wmt21-dense-24-wide-en-x
 # model = AutoModelForSeq2SeqLM.from_pretrained("facebook/wmt21-dense-24-wide-en-x")
@@ -79,8 +83,8 @@ def loadmodel(model_checkpoint, task="Seq2SeqLM", mycache_dir="", pretrained="",
 
 max_length = 128
 def preprocess_function(examples):
-    inputs = [ex["en"] for ex in examples["translation"]] #1000
-    targets = [ex["fr"] for ex in examples["translation"]] #1000
+    inputs = [ex[source_lang] for ex in examples["translation"]] #1000
+    targets = [ex[target_lang] for ex in examples["translation"]] #1000
     model_inputs = globaltokenizer(
         inputs, text_target=targets, max_length=max_length, truncation=True
     )
@@ -99,6 +103,9 @@ def loaddata(args, USE_HPC):
                 #testarrowpath=os.path.join(mycache_dir, datasetpath, args.data_name+'-test.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 data_field='text'
+                #source_lang="en"
+                #global target_lang
+                target_lang="fr"
                 #sampletext = "This is a great [MASK]."
             elif args.data_name=='opus100':
                 datasetpath=os.path.join(mycache_dir, args.data_name, 'enzh')
@@ -107,6 +114,9 @@ def loaddata(args, USE_HPC):
                 testarrowpath=os.path.join(datasetpath, args.data_name+'-test.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 #data_field='text'
+                #source_lang="en"
+                #global target_lang
+                target_lang="zh"
                 #raw_datasets = load_dataset("opus100", language_pair="en-zh")
         else:
             if args.data_name=='kde4':
