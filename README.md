@@ -192,6 +192,17 @@ Epoch 0: Perplexity: 9.858825392857694██████████████
 Train translation models based on huggingfaceSequence
 ```bash
 python nlp/huggingfaceSequence.py --data_name="kde4" --model_checkpoint="Helsinki-NLP/opus-mt-en-fr" --task="Seq2SeqLM" --traintag="1116" --usehpc=True --gpuid=0 --batch_size=8
+
+epoch 0, BLEU score: 51.78█████████████████████████████████████████████████████████████████████████████████████████████████| 2628/2628 [21:18<00:00,  3.00it/s] 
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2628/2628 [22:54<00:00,  1.91it/s]
+epoch 1, BLEU score: 52.73█████████████████████████████████████████████████████████████████████████████████████████████████| 2628/2628 [22:54<00:00,  2.81it/s] 
+100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2628/2628 [23:06<00:00,  1.90it/s]
+epoch 2, BLEU score: 54.
+epoch 3, BLEU score: 54.
+epoch 4, BLEU score: 55.
+epoch 5, BLEU score: 55.
+epoch 6, BLEU score: 54.
+epoch 7, BLEU score: 55.
 ```
 
 
