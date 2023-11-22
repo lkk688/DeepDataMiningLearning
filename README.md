@@ -205,6 +205,10 @@ epoch 6, BLEU score: 54.
 epoch 7, BLEU score: 55.
 ```
 
+```bash
+python nlp/huggingfaceSequence.py --data_name="opus100" --model_checkpoint="facebook/wmt21-dense-24-wide-en-x" --task="Seq2SeqLM" --traintag="1121" --usehpc=True --gpuid=1 --batch_size=8
+```
+
 
 NLP models based on Huggingface Transformer libraries
 * Starting
