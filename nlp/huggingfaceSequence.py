@@ -100,9 +100,19 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 data_field='text'
                 #sampletext = "This is a great [MASK]."
+            elif args.data_name=='opus100':
+                datasetpath=os.path.join(mycache_dir, args.data_name, 'enzh')
+                trainarrowpath=os.path.join(datasetpath, args.data_name+'-train.arrow')
+                valarrowpath=os.path.join(datasetpath, args.data_name+'-validation.arrow')
+                testarrowpath=os.path.join(datasetpath, args.data_name+'-test.arrow')
+                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
+                #data_field='text'
+                #raw_datasets = load_dataset("opus100", language_pair="en-zh")
         else:
             if args.data_name=='kde4':
                 raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
+            elif args.data_name=='opus100':
+                raw_datasets = load_dataset("opus100", language_pair="en-zh")
             else:
                 raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
         #Download to home/.cache/huggingface/dataset
@@ -167,16 +177,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="kde4",
-                    help='data name: ')
+    parser.add_argument('--data_name', type=str, default="opus100",
+                    help='data name: kde4')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="Helsinki-NLP/opus-mt-en-fr",
-                    help='Model checkpoint name from h ttps://huggingface.co/models, distilgpt2 "distilroberta-base", "bert-base-cased", "distilbert-base-uncased" "cardiffnlp/twitter-roberta-base-emotion"')
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wmt21-dense-24-wide-en-x",
+                    help='Model checkpoint name from h ttps://huggingface.co/models, Helsinki-NLP/opus-mt-en-fr')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: ')
     parser.add_argument('--pretrained', type=str, default="",
