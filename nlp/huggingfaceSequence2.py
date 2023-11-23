@@ -274,7 +274,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_source_length",
         type=int,
-        default=1024,
+        default=128, #1024,
         help=(
             "The maximum total input sequence length after "
             "tokenization.Sequences longer than this will be truncated, sequences shorter will be padded."
