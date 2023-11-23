@@ -291,7 +291,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--num_beams",
         type=int,
-        default=None,
+        default=1,
         help=(
             "Number of beams to use for evaluation. This argument will be "
             "passed to ``model.generate``, which is used during ``evaluate`` and ``predict``."
@@ -549,7 +549,7 @@ if __name__ == "__main__":
 
         # Save the model
         with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
-            json.dump({"eval_bleu": eval_metric["score"]}, f)
+            json.dump({"eval_bleu": results["score"]}, f)
         if use_accelerator:
             accelerator.wait_for_everyone()
             unwrapped_model = accelerator.unwrap_model(model)
