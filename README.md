@@ -209,6 +209,19 @@ epoch 7, BLEU score: 55.
 python nlp/huggingfaceSequence.py --data_name="opus100" --model_checkpoint="facebook/wmt21-dense-24-wide-en-x" --task="Seq2SeqLM" --traintag="1121" --usehpc=True --gpuid=1 --batch_size=8
 ```
 
+```bash
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceSequence2.py --data_name="opus100" --subset=0 --model_checkpoint="Helsinki-NLP/opus-mt-en-zh" --task="Seq2SeqLM" --traintag="1122" --evaluate="" --usehpc=True --
+gpuid=1 --batch_size=32
+```
+
+Train T5-base in local computer
+```bash
+/nlp/huggingfaceSequence2.py
+data_type=huggingface data_name=opus100 dataconfig= subset=0 data_path=/data/cmpe249-fa23/Huggingfacecache model_checkpoint=t5-base task=Seq2SeqLM evaluate=True source_lang=en target_lang=zh source_prefix=None pretrained= unfreezename= outputdir=./output traintag=1122 training=True usehpc=False useHFaccelerator=False gpuid=0 total_epochs=8 save_every=2 batch_size=16 learningrate=2e-05 lr_scheduler_type=linear weight_decay=0.0 gradient_accumulation_steps=1 pad_to_max_length=True max_source_length=128 max_target_length=128 num_beams=1
+Trainoutput folder: ./output\t5-base\opus100_1122
+epoch 0, BLEU score: 48.70
+epoch 1, BLEU score: 50.81
+```
 
 NLP models based on Huggingface Transformer libraries
 * Starting

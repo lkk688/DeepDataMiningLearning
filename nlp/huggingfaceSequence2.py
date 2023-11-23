@@ -211,15 +211,15 @@ if __name__ == "__main__":
                     help='data name: kde4, opus100')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
-    parser.add_argument('--subset', type=float, default=5000,
+    parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="Helsinki-NLP/opus-mt-en-zh",
-                    help='Model checkpoint name from HF, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
+    parser.add_argument('--model_checkpoint', type=str, default="t5-base",
+                    help='Model checkpoint name from HF, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: ')
-    parser.add_argument('--evaluate', type=bool, default=False,
+    parser.add_argument('--evaluate', type=bool, default=True,
                     help='perform evaluation or not')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="zh", help="Target language id for translation.")
@@ -246,7 +246,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
