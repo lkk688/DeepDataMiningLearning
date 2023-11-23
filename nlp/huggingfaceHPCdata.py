@@ -43,7 +43,7 @@ raw_datasets = load_dataset("opus100", language_pair="en-zh")
 #https://huggingface.co/datasets/wmt19
 raw_datasets = load_dataset("wmt19", language_pair=("zh","en"))
 
-dataset = load_dataset("openwebtext", num_proc=4)
+#dataset = load_dataset("openwebtext", num_proc=4)
 
 
 # emotions = load_dataset("emotion")
@@ -87,6 +87,7 @@ def loadseq2seqmodels(model_ckpt):
 #loadseq2seqmodels("facebook/seamless_m4t")
 
 loadseq2seqmodels("Helsinki-NLP/opus-mt-en-fr")
+loadseq2seqmodels("Helsinki-NLP/opus-mt-en-zh")
 
 loadmodels("distilbert-base-uncased")
 

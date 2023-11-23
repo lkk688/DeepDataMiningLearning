@@ -219,6 +219,8 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: ')
+    parser.add_argument('--evaluate', type=bool, default=False,
+                    help='perform evaluation or not')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="zh", help="Target language id for translation.")
     parser.add_argument(
@@ -427,16 +429,17 @@ if __name__ == "__main__":
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
 
-    metric = evaluate.load("sacrebleu") #pip install sacrebleu
-    predictions = [
-        "This plugin lets you translate web pages between several languages automatically."
-    ]
-    references = [
-        [
-            "This plugin allows you to automatically translate web pages between several languages."
+    if args.evaluate:
+        metric = evaluate.load("sacrebleu") #pip install sacrebleu
+        predictions = [
+            "This plugin lets you translate web pages between several languages automatically."
         ]
-    ]
-    metric.compute(predictions=predictions, references=references)
+        references = [
+            [
+                "This plugin allows you to automatically translate web pages between several languages."
+            ]
+        ]
+        metric.compute(predictions=predictions, references=references)
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -542,14 +545,17 @@ if __name__ == "__main__":
                 decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered, ignore_pad_token_for_loss)
             else:
                 decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
-            metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+            if args.evaluate:
+                metric.add_batch(predictions=decoded_preds, references=decoded_labels)
 
-        results = metric.compute()
-        print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
-
-        # Save the model
-        with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
-            json.dump({"eval_bleu": results["score"]}, f)
+        if args.evaluate:
+            results = metric.compute()
+            print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+            # Save the model
+            with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
+                json.dump({"eval_bleu": results["score"]}, f)
+        else:
+            print(f"epoch: {epoch}")
         if use_accelerator:
             accelerator.wait_for_everyone()
             unwrapped_model = accelerator.unwrap_model(model)
