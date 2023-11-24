@@ -52,7 +52,7 @@ def modelparameters(model, unfreezename=""):
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
 
-def loadmodel(model_checkpoint, task="Seq2SeqLM", mycache_dir="", pretrained="", hpc=True):
+def loadmodel(model_checkpoint, task="Seq2SeqLM", mycache_dir="", pretrained="", hpc=True, unfreezename=""):
     if hpc==True:
         localpath=os.path.join(mycache_dir, model_checkpoint)
         tokenizer = AutoTokenizer.from_pretrained(localpath, local_files_only=True)
@@ -77,6 +77,11 @@ def loadmodel(model_checkpoint, task="Seq2SeqLM", mycache_dir="", pretrained="",
     print("Tokenizer length:", len(tokenizer)) #65001
     # if len(tokenizer) > embedding_size:
     #     model.resize_token_embeddings(len(tokenizer))
+
+    model_num_parameters = model.num_parameters() / 1_000_000
+    print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
+    #print(f"'>>> BERT number of parameters: 110M'")
+    modelparameters(model, unfreezename)
     return model, tokenizer, starting_epoch
 
 # max_length = 128
@@ -188,6 +193,125 @@ def postprocess(predictions, labels, ignore_pad_token_for_loss=True):
     decoded_labels = [[label.strip()] for label in decoded_labels]
     return decoded_preds, decoded_labels
 
+import sacrebleu
+class myEvaluator:
+    def __init__(self, metricname, useHFevaluator=False, language="en"):
+        self.useHFevaluator = useHFevaluator
+        self.language = language
+        if useHFevaluator==True:
+            self.metric = evaluate.load(metricname) #"sacrebleu" pip install sacrebleu
+        else:
+            self.metric = None
+            self.preds = []
+            self.refs = []
+
+    
+    def compute(self, predictions=None, references=None):
+        if predictions is not None and references is not None:
+            if self.useHFevaluator==True:
+                results = self.metric.compute(predictions=predictions, references=references)
+                #keys: ['score', 'counts', 'totals', 'precisions', 'bp', 'sys_len', 'ref_len']
+            else:
+                bleu = sacrebleu.corpus_bleu(predictions, references)
+                results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
+                        'precisions': bleu.precisions, 'bp': bleu.bp, 
+                        'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
+                        }
+        else:
+            if self.useHFevaluator==True:
+                results = metric.compute()
+            else:
+                #self.refs should be list of list strings
+                if self.language=="zh":
+                    bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="zh")
+                else:
+                    bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="none")
+                results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
+                        'precisions': bleu.precisions, 'bp': bleu.bp, 
+                        'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
+                        }
+        return results
+    
+    def add_batch(self, predictions, references):
+        if self.useHFevaluator==True:
+            self.metric.add_batch(predictions=predictions, references=references)
+        else:
+            #self.preds.append(predictions)
+            #self.refs.append(references)
+            self.preds.extend(predictions)
+            #references: list of list
+            for ref in references:
+                self.refs.append(ref[0])
+            print(len(self.refs))
+
+    # def compute(self, *args):
+    #     if len(args)==2: #predictions references
+    #         if self.useHFevaluator==True:
+    #             results = self.metric.compute(predictions=predictions, references=references)
+    #             #keys: ['score', 'counts', 'totals', 'precisions', 'bp', 'sys_len', 'ref_len']
+    #         else:
+    #             bleu = sacrebleu.corpus_bleu(predictions, references)
+    #             results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
+    #                     'precisions': bleu.precisions, 'bp': bleu.bp, 
+    #                     'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
+    #                     }
+    #     else:
+    #         if self.useHFevaluator==True:
+    #             results = metric.compute()
+    #         else:
+    #             bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="none")
+    #             results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
+    #                     'precisions': bleu.precisions, 'bp': bleu.bp, 
+    #                     'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
+    #                     }
+    #     return results
+
+def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric, evalmetric):
+    # Evaluation
+    model.eval()
+    gen_kwargs = {
+        "max_length": max_target_length,
+        "num_beams": num_beams,
+    }
+    for batch in tqdm(eval_dataloader):
+        with torch.no_grad():
+            if not use_accelerator:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                generated_tokens = model.generate(
+                    batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    **gen_kwargs,
+                )
+            else:
+                generated_tokens = accelerator.unwrap_model(model).generate(
+                    batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    **gen_kwargs,
+                )
+        labels = batch["labels"]
+        if use_accelerator:
+            # Necessary to pad predictions and labels for being gathered
+            generated_tokens = accelerator.pad_across_processes(
+                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
+            )
+            labels = accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+
+            predictions_gathered = accelerator.gather(generated_tokens)
+            labels_gathered = accelerator.gather(labels)
+
+            decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered, ignore_pad_token_for_loss)
+        else:
+            decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
+        
+        metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+        evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
+    
+    results = metric.compute()
+    evalresults = evalmetric.compute()
+    print(f"BLEU score: {results['score']:.2f}")
+    print(evalresults['score'])
+
+
 import shutil
 def savemodels(model, optimizer, epoch, trainoutput):
     modelfilepath=os.path.join(trainoutput, 'savedmodel.pth')
@@ -207,22 +331,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="opus100",
+    parser.add_argument('--data_name', type=str, default="kde4",
                     help='data name: kde4, opus100')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
-    parser.add_argument('--subset', type=float, default=0,
+    parser.add_argument('--subset', type=float, default=1000,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="t5-base",
-                    help='Model checkpoint name from HF, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
+    parser.add_argument('--model_checkpoint', type=str, default="Helsinki-NLP/opus-mt-en-fr",
+                    help='Model checkpoint name from HF, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
-                    help='NLP tasks: ')
+                    help='NLP tasks: Seq2SeqLM')
     parser.add_argument('--evaluate', type=bool, default=True,
                     help='perform evaluation or not')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
-    parser.add_argument("--target_lang", type=str, default="zh", help="Target language id for translation.")
+    parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
     parser.add_argument(
         "--source_prefix",
         type=str,
@@ -334,7 +458,7 @@ if __name__ == "__main__":
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
 
-    model, tokenizer, starting_epoch = loadmodel(model_checkpoint, task=task, mycache_dir=mycache_dir, pretrained=args.pretrained, hpc=USE_HPC)
+    model, tokenizer, starting_epoch = loadmodel(model_checkpoint, task=task, mycache_dir=mycache_dir, pretrained=args.pretrained, hpc=USE_HPC, unfreezename=args.unfreezename)
     #tokenizer.model_max_len=512
     print(tokenizer.pad_token)
     print(tokenizer.eos_token)
@@ -350,11 +474,6 @@ if __name__ == "__main__":
     source_lang = args.source_lang.split("_")[0]
     target_lang = args.target_lang.split("_")[0]
     prefix = args.source_prefix if args.source_prefix is not None else ""
-
-    model_num_parameters = model.num_parameters() / 1_000_000
-    print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
-    #print(f"'>>> BERT number of parameters: 110M'")
-    modelparameters(model, args.unfreezename)
 
     # Set decoder_start_token_id
     if model.config.decoder_start_token_id is None and isinstance(tokenizer, (MBartTokenizer, MBartTokenizerFast)):
@@ -440,6 +559,9 @@ if __name__ == "__main__":
             ]
         ]
         metric.compute(predictions=predictions, references=references)
+        evalmetric =myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang)
+        results = evalmetric.compute(predictions=predictions, references=references)
+        round(results["score"], 1)
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -476,6 +598,7 @@ if __name__ == "__main__":
         device = accelerator.device
         print("Using HF Accelerator and device:", device)
     else:
+        accelerator = None
         if torch.cuda.is_available():
             device = torch.device('cuda:'+str(args.gpuid))  # CUDA GPU 0
         elif torch.backends.mps.is_available():
@@ -487,6 +610,8 @@ if __name__ == "__main__":
         print("Using device:", device)
     
     progress_bar = tqdm(range(num_training_steps))
+
+    evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric, evalmetric)
 
     for epoch in range(starting_epoch, num_train_epochs):
         # Training
@@ -547,10 +672,13 @@ if __name__ == "__main__":
                 decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
             if args.evaluate:
                 metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+                evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
 
         if args.evaluate:
             results = metric.compute()
+            evalresults = evalmetric.compute()
             print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+            print(evalresults['score'])
             # Save the model
             with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
                 json.dump({"eval_bleu": results["score"]}, f)
