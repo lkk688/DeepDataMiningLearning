@@ -112,13 +112,16 @@ def loaddata(args, USE_HPC):
                 testarrowpath=os.path.join(datasetpath, args.data_name+'-test.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 #raw_datasets = load_dataset("opus100", language_pair="en-zh")
+            else:#wmt19
+                raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
         else:
             if args.data_name=='kde4':
                 raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
             elif args.data_name=='opus100':
                 raw_datasets = load_dataset("opus100", language_pair="en-zh")
             else:
-                raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
+                #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
+                raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
         #Download to home/.cache/huggingface/dataset
         
         print("All keys in raw datasets:", raw_datasets['train'][0].keys()) #obly one ['translation'] key
@@ -330,7 +333,7 @@ if __name__ == "__main__":
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: Seq2SeqLM')
     parser.add_argument('--evaluate', type=str, default="HFevaluate",
-                    help='perform evaluation via HFevaluate')
+                    help='perform evaluation via HFevaluate, localevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
     parser.add_argument(
