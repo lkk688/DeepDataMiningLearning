@@ -254,7 +254,7 @@ class myEvaluator:
             #references: list of list
             for ref in references:
                 self.refs.append(ref[0])
-            print(len(self.refs))
+            #print(len(self.refs))
 
 def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric):
     # Evaluation
@@ -612,10 +612,11 @@ if __name__ == "__main__":
     evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
 
     if args.training == True:
+        print("Start training, total steps:", num_training_steps)
         progress_bar = tqdm(range(num_training_steps))
+        model.train()
         for epoch in range(starting_epoch, num_train_epochs):
             # Training
-            model.train()
             for step, batch in enumerate(train_dataloader):
                 #batch = {k: v.to(device) for k, v in batch.items()}
                 if not use_accelerator:
