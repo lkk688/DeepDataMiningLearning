@@ -88,6 +88,7 @@ def loadseq2seqmodels(model_ckpt):
 
 loadseq2seqmodels("Helsinki-NLP/opus-mt-en-fr")
 loadseq2seqmodels("Helsinki-NLP/opus-mt-en-zh")
+loadseq2seqmodels("t5-base")
 
 loadmodels("distilbert-base-uncased")
 
