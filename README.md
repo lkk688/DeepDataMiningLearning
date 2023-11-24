@@ -187,6 +187,11 @@ python nlp/huggingfaceLM2.py --model_checkpoint="Llama-2-7b-chat-hf" --pretraine
 Epoch 0: Perplexity: 9.858825392857694████████████████████████████████████████| 2627/2627 [12:39:17<00:00,  3.30s/it]
  25%|█████████████████▊     >>> Epoch 1: Perplexity: 10.051054027867561     | 21014/84056 [22:50:31<56:09:49,  3.21s/it]
  38%|███████████████████████>>> Epoch 2: Perplexity: 10.181400762228291     | 31521/84056
+
+Epoch 0: Perplexity: 9.289763256151375
+Epoch 1: Perplexity: 9.530650993830372
+Epoch 2: Perplexity: 9.692566051540275
+
 ```
 
 Train translation models based on huggingfaceSequence
