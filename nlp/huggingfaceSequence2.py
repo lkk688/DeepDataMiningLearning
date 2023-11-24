@@ -123,7 +123,9 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
             elif args.data_name=='opus100':
                 raw_datasets = load_dataset("opus100", language_pair="en-zh")
-            else:
+            elif args.data_name=='opus_books':
+                raw_datasets = load_dataset("opus_books", "en-fr")
+            else: #wmt19
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
         #Download to home/.cache/huggingface/dataset
@@ -207,9 +209,9 @@ class myEvaluator:
         self.dualevaluator = dualevaluator
         self.language = language
         if useHFevaluator==True or dualevaluator==True:
-            self.metric = evaluate.load(metricname) #"sacrebleu" pip install sacrebleu
+            self.HFmetric = evaluate.load(metricname) #"sacrebleu" pip install sacrebleu
         else:
-            self.metric = None
+            self.HFmetric = None
         self.preds = []
         self.refs = []
 
@@ -217,7 +219,7 @@ class myEvaluator:
     def compute(self, predictions=None, references=None):
         if predictions is not None and references is not None:
             if self.useHFevaluator==True:
-                results = self.metric.compute(predictions=predictions, references=references)
+                results = self.HFmetric.compute(predictions=predictions, references=references)
                 #keys: ['score', 'counts', 'totals', 'precisions', 'bp', 'sys_len', 'ref_len']
             else:
                 bleu = sacrebleu.corpus_bleu(predictions, references)
@@ -227,7 +229,7 @@ class myEvaluator:
                         }
         else: #evaluate the whole dataset
             if self.useHFevaluator==True or self.dualevaluator==True:
-                results = metric.compute()
+                results = self.HFmetric.compute()
                 print("HF evaluator:", results["score"])
             else:
                 #self.refs should be list of list strings
@@ -244,7 +246,7 @@ class myEvaluator:
     
     def add_batch(self, predictions, references):
         if self.useHFevaluator==True:
-            self.metric.add_batch(predictions=predictions, references=references)
+            self.HFmetric.add_batch(predictions=predictions, references=references)
         else:
             #self.preds.append(predictions)
             #self.refs.append(references)
@@ -324,19 +326,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="kde4",
-                    help='data name: kde4, opus100')
+    parser.add_argument('--data_name', type=str, default="opus_books",
+                    help='data name: opus_books, kde4, opus100')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=1000,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="Helsinki-NLP/opus-mt-en-fr",
-                    help='Model checkpoint name from HF, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
+    parser.add_argument('--model_checkpoint', type=str, default="t5-small",
+                    help='Model checkpoint name from HF, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: Seq2SeqLM')
-    parser.add_argument('--evaluate', type=str, default="HFevaluate",
+    parser.add_argument('--evaluate', type=str, default="localevaluate",
                     help='perform evaluation via HFevaluate, localevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
