@@ -112,6 +112,10 @@ def loaddata(args, USE_HPC):
                 testarrowpath=os.path.join(datasetpath, args.data_name+'-test.arrow')
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 #raw_datasets = load_dataset("opus100", language_pair="en-zh")
+            elif args.data_name == 'wmt19':
+                datasetpath=os.path.join(mycache_dir, args.data_name, 'zh-en-24b9c423f6ba2174/0.0.0/29e210fae5690e843cae5dc43b53db36c4e02f927db50cd5235a22ab42dde90a')
+                trainarrowpath=os.path.join(datasetpath, args.data_name+'-train*.arrow')
+                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
             else:#wmt19
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
         else:

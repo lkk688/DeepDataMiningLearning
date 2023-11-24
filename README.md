@@ -218,7 +218,9 @@ python nlp/huggingfaceSequence.py --data_name="opus100" --model_checkpoint="face
 (mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceSequence2.py --data_name="opus100" --subset=0 --model_checkpoint="Helsinki-NLP/opus-mt-en-zh" --task="Seq2SeqLM" --traintag="1122" --evaluate="" --usehpc=True --
 gpuid=1 --batch_size=32
 
-python nlp/huggingfaceSequence2.py --data_name="opus100" --subset=0 --model_checkpoint="Helsinki-NLP/opus-mt-en-zh" --pretrained=" /data/cmpe249-fa23/trainoutput/huggingface/Helsinki-NLP/opus-mt-en-zh/opus100_1122/savedmodel.pth" --task="Seq2SeqLM" --target_lang="zh" --traintag="1122" --evaluate=True --usehpc=True --gpuid=1 --total_epochs=16 --batch_size=32
+python nlp/huggingfaceSequence2.py --data_name="opus100" --subset=0 --model_checkpoint="Helsinki-NLP/opus-mt-en-zh" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/Helsinki-NLP/opus-mt-en-zh/opus100_1122/savedmodel.pth" --task="Seq2SeqLM" --target_lang="zh" --traintag="1122" --evaluate=True --usehpc=True --gpuid=1 --total_epochs=16 --batch_size=32
+
+python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=0 --model_checkpoint="Helsinki-NLP/opus-mt-en-zh" --task="Seq2SeqLM" --target_lang="zh" --traintag="1123" --evaluate="localevaluate" --usehpc=True --gpuid=1 --total_epochs=16 --batch_size=32
 ```
 
 Train T5-base in local computer
