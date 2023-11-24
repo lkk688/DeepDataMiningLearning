@@ -549,16 +549,16 @@ if __name__ == "__main__":
     #batch["decoder_input_ids"] #shifted versions of the labels
 
     if args.evaluate:
-        metric = evaluate.load("sacrebleu") #pip install sacrebleu
-        predictions = [
-            "This plugin lets you translate web pages between several languages automatically."
-        ]
-        references = [
-            [
-                "This plugin allows you to automatically translate web pages between several languages."
-            ]
-        ]
-        metric.compute(predictions=predictions, references=references)
+        # metric = evaluate.load("sacrebleu") #pip install sacrebleu
+        # predictions = [
+        #     "This plugin lets you translate web pages between several languages automatically."
+        # ]
+        # references = [
+        #     [
+        #         "This plugin allows you to automatically translate web pages between several languages."
+        #     ]
+        # ]
+        # metric.compute(predictions=predictions, references=references)
         evalmetric =myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang)
         results = evalmetric.compute(predictions=predictions, references=references)
         round(results["score"], 1)
@@ -671,14 +671,14 @@ if __name__ == "__main__":
             else:
                 decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
             if args.evaluate:
-                metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+                #metric.add_batch(predictions=decoded_preds, references=decoded_labels)
                 evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
 
         if args.evaluate:
-            results = metric.compute()
-            evalresults = evalmetric.compute()
+            #results = metric.compute()
+            results = evalmetric.compute()
             print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
-            print(evalresults['score'])
+            #print(evalresults['score'])
             # Save the model
             with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
                 json.dump({"eval_bleu": results["score"]}, f)
