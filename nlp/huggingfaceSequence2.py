@@ -249,6 +249,8 @@ class myEvaluator:
 
 def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric):
     # Evaluation
+    totallen = len(train_dataloader)
+    evalprogress_bar = tqdm(range(num_training_steps))
     model.eval()
     gen_kwargs = {
         "max_length": max_target_length,
@@ -269,6 +271,7 @@ def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, acceler
                     attention_mask=batch["attention_mask"],
                     **gen_kwargs,
                 )
+            evalprogress_bar.update(1)
         labels = batch["labels"]
         if use_accelerator:
             # Necessary to pad predictions and labels for being gathered
@@ -594,11 +597,12 @@ if __name__ == "__main__":
         model.to(device)
         print("Using device:", device)
     
-    progress_bar = tqdm(range(num_training_steps))
+    
 
     evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
 
     if args.training == True:
+        progress_bar = tqdm(range(num_training_steps))
         for epoch in range(starting_epoch, num_train_epochs):
             # Training
             model.train()
