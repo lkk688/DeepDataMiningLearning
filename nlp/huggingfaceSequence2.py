@@ -195,15 +195,16 @@ def postprocess(predictions, labels, ignore_pad_token_for_loss=True):
 
 import sacrebleu
 class myEvaluator:
-    def __init__(self, metricname, useHFevaluator=False, language="en"):
+    def __init__(self, metricname, useHFevaluator=False, language="en", dualevaluator=False):
         self.useHFevaluator = useHFevaluator
+        self.dualevaluator = dualevaluator
         self.language = language
-        if useHFevaluator==True:
+        if useHFevaluator==True or dualevaluator==True:
             self.metric = evaluate.load(metricname) #"sacrebleu" pip install sacrebleu
         else:
             self.metric = None
-            self.preds = []
-            self.refs = []
+        self.preds = []
+        self.refs = []
 
     
     def compute(self, predictions=None, references=None):
@@ -217,11 +218,13 @@ class myEvaluator:
                         'precisions': bleu.precisions, 'bp': bleu.bp, 
                         'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
                         }
-        else:
-            if self.useHFevaluator==True:
+        else: #evaluate the whole dataset
+            if self.useHFevaluator==True or self.dualevaluator==True:
                 results = metric.compute()
+                print("HF evaluator:", results["score"])
             else:
                 #self.refs should be list of list strings
+                #Tokenization method to use for BLEU. If not provided, defaults to `zh` for Chinese, `ja-mecab` for Japanese, `ko-mecab` for Korean and `13a` (mteval) otherwise
                 if self.language=="zh":
                     bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="zh")
                 else:
@@ -244,29 +247,7 @@ class myEvaluator:
                 self.refs.append(ref[0])
             print(len(self.refs))
 
-    # def compute(self, *args):
-    #     if len(args)==2: #predictions references
-    #         if self.useHFevaluator==True:
-    #             results = self.metric.compute(predictions=predictions, references=references)
-    #             #keys: ['score', 'counts', 'totals', 'precisions', 'bp', 'sys_len', 'ref_len']
-    #         else:
-    #             bleu = sacrebleu.corpus_bleu(predictions, references)
-    #             results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
-    #                     'precisions': bleu.precisions, 'bp': bleu.bp, 
-    #                     'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
-    #                     }
-    #     else:
-    #         if self.useHFevaluator==True:
-    #             results = metric.compute()
-    #         else:
-    #             bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="none")
-    #             results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
-    #                     'precisions': bleu.precisions, 'bp': bleu.bp, 
-    #                     'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
-    #                     }
-    #     return results
-
-def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric, evalmetric):
+def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric):
     # Evaluation
     model.eval()
     gen_kwargs = {
@@ -304,12 +285,13 @@ def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, acceler
             decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
         
         metric.add_batch(predictions=decoded_preds, references=decoded_labels)
-        evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
+        #evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
     
     results = metric.compute()
-    evalresults = evalmetric.compute()
-    print(f"BLEU score: {results['score']:.2f}")
-    print(evalresults['score'])
+    #evalresults = evalmetric.compute()
+    #print(f"BLEU score: {results['score']:.2f}")
+    #print(evalresults['score'])
+    return results
 
 
 import shutil
@@ -343,8 +325,8 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: Seq2SeqLM')
-    parser.add_argument('--evaluate', type=bool, default=True,
-                    help='perform evaluation or not')
+    parser.add_argument('--evaluate', type=str, default="HFevaluate",
+                    help='perform evaluation via HFevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
     parser.add_argument(
@@ -368,7 +350,7 @@ if __name__ == "__main__":
     parser.add_argument('--useHFaccelerator', type=bool, default=False,
                     help='Use Huggingface accelerator')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
@@ -548,20 +530,23 @@ if __name__ == "__main__":
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
 
-    if args.evaluate:
-        # metric = evaluate.load("sacrebleu") #pip install sacrebleu
-        # predictions = [
-        #     "This plugin lets you translate web pages between several languages automatically."
-        # ]
-        # references = [
-        #     [
-        #         "This plugin allows you to automatically translate web pages between several languages."
-        #     ]
-        # ]
-        # metric.compute(predictions=predictions, references=references)
-        evalmetric =myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang)
-        results = evalmetric.compute(predictions=predictions, references=references)
-        round(results["score"], 1)
+    predictions = [
+        "This plugin lets you translate web pages between several languages automatically."
+    ]
+    references = [
+        [
+            "This plugin allows you to automatically translate web pages between several languages."
+        ]
+    ]
+    if args.evaluate=="HFevaluate":
+        #metric = evaluate.load("sacrebleu") #pip install sacrebleu
+        #results = metric.compute(predictions=predictions, references=references)
+        #print("Test evaluation via HFevaluate:", round(results["score"], 1))
+        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=True, language=target_lang, dualevaluator=False)
+    else:
+        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang, dualevaluator=False)
+    results = metric.compute(predictions=predictions, references=references)
+    print("Test evaluation:", round(results["score"], 1))
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -611,91 +596,51 @@ if __name__ == "__main__":
     
     progress_bar = tqdm(range(num_training_steps))
 
-    evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric, evalmetric)
+    evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
 
-    for epoch in range(starting_epoch, num_train_epochs):
-        # Training
-        model.train()
-        for step, batch in enumerate(train_dataloader):
-            #batch = {k: v.to(device) for k, v in batch.items()}
-            if not use_accelerator:
-                batch = {k: v.to(device) for k, v in batch.items()}
-            outputs = model(**batch)
-            loss = outputs.loss
-            loss = loss / args.gradient_accumulation_steps
-            if not use_accelerator:
-                loss.backward()
-            else:
-                accelerator.backward(loss)
-
-            if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad()
-                progress_bar.update(1)
-                completed_steps += 1
-
-        # Evaluation
-        model.eval()
-        gen_kwargs = {
-            "max_length": max_target_length,
-            "num_beams": args.num_beams,
-        }
-        for batch in tqdm(eval_dataloader):
-            with torch.no_grad():
+    if args.training == True:
+        for epoch in range(starting_epoch, num_train_epochs):
+            # Training
+            model.train()
+            for step, batch in enumerate(train_dataloader):
+                #batch = {k: v.to(device) for k, v in batch.items()}
                 if not use_accelerator:
                     batch = {k: v.to(device) for k, v in batch.items()}
-                    generated_tokens = model.generate(
-                        batch["input_ids"],
-                        attention_mask=batch["attention_mask"],
-                        **gen_kwargs,
-                    )
+                outputs = model(**batch)
+                loss = outputs.loss
+                loss = loss / args.gradient_accumulation_steps
+                if not use_accelerator:
+                    loss.backward()
                 else:
-                    generated_tokens = accelerator.unwrap_model(model).generate(
-                        batch["input_ids"],
-                        attention_mask=batch["attention_mask"],
-                        **gen_kwargs,
-                    )
-            labels = batch["labels"]
-            if use_accelerator:
-                # Necessary to pad predictions and labels for being gathered
-                generated_tokens = accelerator.pad_across_processes(
-                    generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
-                )
-                labels = accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+                    accelerator.backward(loss)
 
-                predictions_gathered = accelerator.gather(generated_tokens)
-                labels_gathered = accelerator.gather(labels)
+                if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
 
-                decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered, ignore_pad_token_for_loss)
-            else:
-                decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
-            if args.evaluate:
-                #metric.add_batch(predictions=decoded_preds, references=decoded_labels)
-                evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
-
-        if args.evaluate:
-            #results = metric.compute()
-            results = evalmetric.compute()
+            # Evaluation
+            results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
             print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
             #print(evalresults['score'])
-            # Save the model
+            # Save the results
             with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
                 json.dump({"eval_bleu": results["score"]}, f)
-        else:
-            print(f"epoch: {epoch}")
-        if use_accelerator:
-            accelerator.wait_for_everyone()
-            unwrapped_model = accelerator.unwrap_model(model)
-            #unwrapped_model.save_pretrained(trainoutput, save_function=accelerator.save)
-            if accelerator.is_main_process:
+
+            if use_accelerator:
+                accelerator.wait_for_everyone()
+                unwrapped_model = accelerator.unwrap_model(model)
+                #unwrapped_model.save_pretrained(trainoutput, save_function=accelerator.save)
+                if accelerator.is_main_process:
+                    tokenizer.save_pretrained(trainoutput)
+                savemodels(model, optimizer, epoch, trainoutput)
+            else:
+                #model.save_pretrained(trainoutput)
+                #torch.save(model.state_dict(), os.path.join(trainoutput, 'savedmodel.pth'))
+                savemodels(model, optimizer, epoch, trainoutput)
                 tokenizer.save_pretrained(trainoutput)
-            savemodels(model, optimizer, epoch, trainoutput)
-        else:
-            #model.save_pretrained(trainoutput)
-            #torch.save(model.state_dict(), os.path.join(trainoutput, 'savedmodel.pth'))
-            savemodels(model, optimizer, epoch, trainoutput)
-            tokenizer.save_pretrained(trainoutput)
 
     del model, optimizer, lr_scheduler
     if use_accelerator:
