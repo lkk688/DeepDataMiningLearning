@@ -242,10 +242,11 @@ class myEvaluator:
                         'precisions': bleu.precisions, 'bp': bleu.bp, 
                         'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
                         }
+                print("Local evaluator:", results["score"])
         return results
     
     def add_batch(self, predictions, references):
-        if self.useHFevaluator==True:
+        if self.useHFevaluator==True or self.dualevaluator==True:
             self.HFmetric.add_batch(predictions=predictions, references=references)
         else:
             #self.preds.append(predictions)
@@ -330,11 +331,11 @@ if __name__ == "__main__":
                     help='data name: opus_books, kde4, opus100')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
-    parser.add_argument('--subset', type=float, default=1000,
+    parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="t5-small",
+    parser.add_argument('--model_checkpoint', type=str, default="t5-base",
                     help='Model checkpoint name from HF, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="Seq2SeqLM",
                     help='NLP tasks: Seq2SeqLM')
@@ -354,7 +355,7 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="1122",
+    parser.add_argument('--traintag', type=str, default="1124",
                     help='Name the current training')
     parser.add_argument('--training', type=bool, default=True,
                     help='Perform training')
@@ -555,9 +556,9 @@ if __name__ == "__main__":
         #metric = evaluate.load("sacrebleu") #pip install sacrebleu
         #results = metric.compute(predictions=predictions, references=references)
         #print("Test evaluation via HFevaluate:", round(results["score"], 1))
-        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=True, language=target_lang, dualevaluator=False)
+        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=True, language=target_lang, dualevaluator=True)
     else:
-        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang, dualevaluator=False)
+        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang, dualevaluator=True)
     results = metric.compute(predictions=predictions, references=references)
     print("Test evaluation:", round(results["score"], 1))
 

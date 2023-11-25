@@ -228,7 +228,19 @@ python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=0 --model_checkp
 (mycondapy310) [010796032@cs002 DeepDataMiningLearning]$ python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=10000 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --traintag="1123" --useHFaccelerator=True --ev
 aluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=16 --batch_size=64
 .....
+Trainoutput folder: /data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1123
 epoch 0, BLEU score: 2.66
+epoch 1, BLEU score: 3.99
+epoch 2, BLEU score: 5.31
+epoch 3, BLEU score: 6.64
+epoch 4, BLEU score: 8.07
+epoch 5, BLEU score: 9.51
+epoch 9, BLEU score: 14.39
+epoch 14, BLEU score: 18.99
+epoch 15, BLEU score: 19.77
+
+(mycondapy310) [010796032@cs002 DeepDataMiningLearning]$ python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=0 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1123/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=32 --batch_size=64
+
 ```
 
 Train T5-base in local computer
