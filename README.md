@@ -239,7 +239,7 @@ epoch 9, BLEU score: 14.39
 epoch 14, BLEU score: 18.99
 epoch 15, BLEU score: 19.77
 
-(mycondapy310) [010796032@cs002 DeepDataMiningLearning]$ python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=0 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1123/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=32 --batch_size=64
+(mycondapy310) [010796032@cs002 DeepDataMiningLearning]$ python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=50000 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1123/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=32 --batch_size=64
 
 ```
 

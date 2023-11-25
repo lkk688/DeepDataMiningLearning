@@ -18,6 +18,8 @@ import random
 import json
 import os
 valkey="test"#"validation"
+Dualevaluation=False
+
 
 
 #https://huggingface.co/facebook/wmt21-dense-24-wide-en-x
@@ -146,8 +148,13 @@ def loaddata(args, USE_HPC):
                 testlen = int(trainlen/10)
             print("trainlen:", trainlen)
             raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
-            raw_datasets["test"] = raw_datasets["test"].shuffle(seed=42).select([i for i in list(range(testlen))])
+            raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(testlen))])
     
+        #limit the evaluation set size
+        maxtestlen = 5000
+        if len(raw_datasets[valkey])>maxtestlen:
+            raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(maxtestlen))])
+
     return raw_datasets
 
 def get_myoptimizer(model, learning_rate=2e-5, weight_decay=0.0):
@@ -259,7 +266,7 @@ class myEvaluator:
 
 def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric):
     # Evaluation
-    totallen = len(train_dataloader)
+    totallen = len(eval_dataloader)
     print("Total evaluation length:", totallen)
     #evalprogress_bar = tqdm(range(num_training_steps))
     model.eval()
@@ -556,9 +563,9 @@ if __name__ == "__main__":
         #metric = evaluate.load("sacrebleu") #pip install sacrebleu
         #results = metric.compute(predictions=predictions, references=references)
         #print("Test evaluation via HFevaluate:", round(results["score"], 1))
-        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=True, language=target_lang, dualevaluator=True)
+        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=True, language=target_lang, dualevaluator=Dualevaluation)
     else:
-        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang, dualevaluator=True)
+        metric = myEvaluator(metricname="sacrebleu", useHFevaluator=False, language=target_lang, dualevaluator=Dualevaluation)
     results = metric.compute(predictions=predictions, references=references)
     print("Test evaluation:", round(results["score"], 1))
 
