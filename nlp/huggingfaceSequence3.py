@@ -344,7 +344,8 @@ class myEvaluator:
     def add_batch(self, predictions, references):
         if self.useHFevaluator==True or self.dualevaluator==True:
             self.HFmetric.add_batch(predictions=predictions, references=references)
-        else:
+        
+        if self.useHFevaluator==False or self.dualevaluator==True:
             #self.preds.append(predictions)
             self.refs.extend(references)
             self.preds.extend(predictions)
