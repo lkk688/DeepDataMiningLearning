@@ -113,6 +113,8 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   % pip install torchtext
   pip install sentencepiece
   pip install sacrebleu
+  pip install nltk
+  pip install rouge_score
 
 Git configure
 -------------

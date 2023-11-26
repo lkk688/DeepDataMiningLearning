@@ -244,6 +244,14 @@ epoch 16, BLEU score: 50.83
 epoch 31, BLEU score: 56.57
 
 python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=50000 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=48 --batch_size=64
+Trainoutput folder: /data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124
+epoch 32, BLEU score: 9.67
+epoch 33, BLEU score: 13.95
+epoch 35, BLEU score: 20.78
+epoch 45, BLEU score: 37.60
+epoch 47, BLEU score: 39.47
+
+python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset= --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=64 --batch_size=64
 ```
 
 Train T5-base in local computer
@@ -261,6 +269,16 @@ epoch 6, BLEU score: 52.71
 epoch 7, BLEU score: 52.91
 (mycondapy39) PS C:\Users\lkk68\Documents\GitHub\DeepDataMiningLearning> cat .\output\t5-base\opus100_1122\eval_results.json
    {"eval_bleu": 52.909234849408264}
+
+nlp/huggingfaceSequence2.py
+data_type=huggingface data_name=opus_books dataconfig= subset=0 data_path=/data/cmpe249-fa23/Huggingfacecache model_checkpoint=t5-base task=Seq2SeqLM evaluate=localevaluate source_lang=en target_lang=fr source_prefix=None pretrained= unfreezename= outputdir=./output traintag=1124 training=True usehpc=False useHFaccelerator=False gpuid=0 total_epochs=16 save_every=2 batch_size=16 learningrate=2e-05 lr_scheduler_type=linear weight_decay=0.0 gradient_accumulation_steps=1 pad_to_max_length=True max_source_length=128 max_target_length=128 num_beams=1
+Trainoutput folder: ./output\t5-base\opus_books_1124
+HF evaluator: 24.46
+epoch 0, BLEU score: 24.47
+HF evaluator: 26.00
+epoch 14, BLEU score: 26.00
+HF evaluator: 25.89
+epoch 15, BLEU score: 25.90
 ```
 
 NLP models based on Huggingface Transformer libraries
