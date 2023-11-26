@@ -46,6 +46,7 @@ raw_datasets = load_dataset("wmt19", language_pair=("zh","en"))
 #dataset = load_dataset("openwebtext", num_proc=4)
 raw_datasets = load_dataset("cnn_dailymail", "3.0.0")
 raw_datasets = load_dataset("billsum")
+raw_datasets = load_dataset("xsum")
 
 # emotions = load_dataset("emotion")
 # train_ds = emotions["train"]

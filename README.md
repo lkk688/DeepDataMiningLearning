@@ -305,6 +305,12 @@ Evaluation result: {'rouge1': AggregateScore(low=Score(precision=0.4762694298350
 epoch 7, evaluation metric: rouge
 Evaluation result: {'rouge1': AggregateScore(low=Score(precision=0.4762322399523528, recall=0.3612750168693367, fmeasure=0.3859539337308937), mid=Score(precision=0.47741449894622395, recall=0.36223979353915375, fmeasure=0.3867387680371833), high=Score(precision=0.47857623413135664, recall=0.36315881475914685, fmeasure=0.387529008724504)), 'rouge2': AggregateScore(low=Score(precision=0.23795846378692775, recall=0.17739298212614543, fmeasure=0.1895061898823578), mid=Score(precision=0.23901236113717203, recall=0.17821036280792862, fmeasure=0.1902598464683951), high=Score(precision=0.24012950529243016, recall=0.1789825350527308, fmeasure=0.19103010704737328)), 'rougeL': AggregateScore(low=Score(precision=0.38008605052931843, recall=0.28951287826449035, fmeasure=0.307987126768515), mid=Score(precision=0.3811360590765148, recall=0.29038102311603803, fmeasure=0.30870601375792006), high=Score(precision=0.38221337267972383, recall=0.2911927830141367, fmeasure=0.3094361849338897)), 'rougeLsum': AggregateScore(low=Score(precision=0.3800857948090643, recall=0.2895777984554257, fmeasure=0.3080188262526704), mid=Score(precision=0.38110308526126024, recall=0.2903936893613658, fmeasure=0.3087163027737505), high=Score(precision=0.3821455084830249, recall=0.29123147942293837, fmeasure=0.3094164695199439))}
 ```
+Train summarization based on "xsum" dataset
+```bash
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceSequence3.py --data_name="xsum" --subset=
+0 --model_checkpoint="t5-base" --training --usehpc --task="summarization" --source_prefix="summarize: " --traintag="1125
+" --gpuid=1 --total_epochs=8 --batch_size=64
+```
 
 NLP models based on Huggingface Transformer libraries
 * Starting

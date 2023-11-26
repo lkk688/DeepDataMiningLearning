@@ -131,6 +131,12 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 text_column =  "article" #("article", "highlights")
                 target_column = "highlights"
+            elif args.data_name=='xsum': #summarization
+                datasetpath=os.path.join(mycache_dir, args.data_name, 'default/1.2.0/082863bf4754ee058a5b6f6525d0cb2b18eadb62c7b370b095d1364050a52b71')
+                trainarrowpath=os.path.join(datasetpath, args.data_name+'-train.arrow')
+                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
+                text_column = "document"
+                target_column = "summary"
             else:
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
                 text_column =  "en"
