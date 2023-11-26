@@ -19,7 +19,7 @@ import random
 import json
 import os
 valkey="test"#"validation"
-Dualevaluation=False
+#Dualevaluation=True
 
 
 
@@ -214,7 +214,8 @@ def compute_metrics(eval_preds):
 
     # Some simple post-processing
     decoded_preds = [pred.strip() for pred in decoded_preds]
-    decoded_labels = [[label.strip()] for label in decoded_labels]
+    #decoded_labels = [[label.strip()] for label in decoded_labels]
+    decoded_labels = [label.strip() for label in decoded_labels]
 
     result = metric.compute(predictions=decoded_preds, references=decoded_labels)
     return {"bleu": result["score"]}
@@ -244,24 +245,56 @@ def postprocess(predictions, labels, task="translation", ignore_pad_token_for_lo
     return decoded_preds, decoded_labels
 
 import sacrebleu #for translation
-from rouge_score import rouge_scorer #for summarization
+from rouge_score import rouge_scorer, scoring #for summarization
+#ref: https://github.com/huggingface/datasets/blob/main/metrics/rouge/rouge.py
+#ref: https://github.com/google-research/google-research/blob/master/rouge/scoring.py
+class myRouge:
+    def __init__(self, rouge_types=['rouge1', 'rouge2', 'rougeL'], use_aggregator=True):
+        self.rouge_types = rouge_types
+        self.scorer = rouge_scorer.RougeScorer(rouge_types, use_stemmer=True)
+        self.use_aggregator = use_aggregator
+        if use_aggregator:
+            self.aggregator = scoring.BootstrapAggregator()
+        else:
+            self.scores = []
+    
+    def _compute(self, predictions, references):
+        for ref, pred in zip(references, predictions):
+            score = self.scorer.score(ref, pred)
+            if self.use_aggregator:
+                self.aggregator.add_scores(score)
+            else:
+                self.scores.append(score)
+        
+        if self.use_aggregator:
+            result = self.aggregator.aggregate()
+        else:
+            result = {}
+            for key in self.scores[0]:
+                result[key] = [score[key] for score in self.scores]
+        return result
+
+
+
 class myEvaluator:
     def __init__(self, args, useHFevaluator=False, dualevaluator=False):
         self.useHFevaluator = useHFevaluator
         self.dualevaluator = dualevaluator
         self.task = args.task
         if self.task=="translation":
-            metricname = "sacrebleu"
+            self.metricname = "sacrebleu"
             self.language = args.target_lang
         elif self.task=="summarization":
-            metricname = "rouge"
+            rouge_types = ["rouge1", "rouge2", "rougeL", "rougeLsum"] #['rouge1', 'rouge2', 'rougeL']
+            self.metricname = "rouge"
         
         if useHFevaluator==True or dualevaluator==True:
-            self.HFmetric = evaluate.load(metricname) #"sacrebleu" pip install sacrebleu
-        else:
-            self.HFmetric = None
+            self.HFmetric = evaluate.load(self.metricname) #"sacrebleu" pip install sacrebleu
+        
+        if useHFevaluator==False or dualevaluator==True:
             if self.task=="summarization":
-                self.localscorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+                #self.localscorer = rouge_scorer.RougeScorer(rouge_types, use_stemmer=True)
+                self.localscorer = myRouge(rouge_types=rouge_types)
         self.preds = []
         self.refs = []
 
@@ -271,6 +304,7 @@ class myEvaluator:
             if self.useHFevaluator==True:
                 results = self.HFmetric.compute(predictions=predictions, references=references)
                 #keys: ['score', 'counts', 'totals', 'precisions', 'bp', 'sys_len', 'ref_len']
+                print("HF evaluator:", results)
             else:
                 if self.task=="translation":
                     bleu = sacrebleu.corpus_bleu(predictions, references)
@@ -279,11 +313,8 @@ class myEvaluator:
                             'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
                             }
                 elif self.task=="summarization":
-                    if isinstance(predictions, list):
-                        generated_summary=predictions[0]
-                    if isinstance(references, list):
-                        reference_summary=references[0]
-                    self.localscorer.score(reference_summary, generated_summary)
+                    results = self.localscorer._compute(predictions, references)
+                print("Local evaluator:", results)
         else: #evaluate the whole dataset
             if self.useHFevaluator==True or self.dualevaluator==True:
                 if self.task == "translation":
@@ -292,17 +323,21 @@ class myEvaluator:
                     results = self.HFmetric.compute(use_stemmer=True)
                 #print("HF evaluator:", results["score"])
                 print("HF evaluator:", results)
-            else:
-                #self.refs should be list of list strings
-                #Tokenization method to use for BLEU. If not provided, defaults to `zh` for Chinese, `ja-mecab` for Japanese, `ko-mecab` for Korean and `13a` (mteval) otherwise
-                if self.language=="zh":
-                    bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="zh")
-                else:
-                    bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="none")
-                results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
-                        'precisions': bleu.precisions, 'bp': bleu.bp, 
-                        'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
-                        }
+            
+            if self.useHFevaluator==False or self.dualevaluator==True:
+                if self.task=="translation":
+                    #self.refs should be list of list strings
+                    #Tokenization method to use for BLEU. If not provided, defaults to `zh` for Chinese, `ja-mecab` for Japanese, `ko-mecab` for Korean and `13a` (mteval) otherwise
+                    if self.language=="zh":
+                        bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="zh")
+                    else:
+                        bleu = sacrebleu.corpus_bleu(self.preds, [self.refs], tokenize="none")
+                    results = {'score':bleu.score, 'counts':bleu.counts, 'totals': bleu.totals,
+                            'precisions': bleu.precisions, 'bp': bleu.bp, 
+                            'sys_len': bleu.sys_len, 'ref_len': bleu.ref_len
+                            }
+                elif self.task=="summarization":
+                    results = self.localscorer._compute(self.preds, self.refs)
                 print("Local evaluator:", results)
         return results
     
@@ -311,11 +346,11 @@ class myEvaluator:
             self.HFmetric.add_batch(predictions=predictions, references=references)
         else:
             #self.preds.append(predictions)
-            #self.refs.append(references)
+            self.refs.extend(references)
             self.preds.extend(predictions)
             #references: list of list
-            for ref in references:
-                self.refs.append(ref[0])
+            # for ref in references:
+            #     self.refs.append(ref[0])
             #print(len(self.refs))
 
 def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric):
@@ -400,8 +435,10 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="summarization",
                     help='NLP tasks: translation, summarization')
-    parser.add_argument('--evaluate', type=str, default="HFevaluate",
-                    help='perform evaluation via HFevaluate, localevaluate')
+    parser.add_argument('--hfevaluate', type=bool, default=False,
+                    help='perform evaluation via HFevaluate or localevaluate')
+    parser.add_argument('--dualevaluate', type=bool, default=True,
+                    help='perform evaluation via HFevaluate and localevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
     parser.add_argument(
@@ -616,14 +653,8 @@ if __name__ == "__main__":
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
 
-    if args.evaluate=="HFevaluate":
-        #metric = evaluate.load("sacrebleu") #pip install sacrebleu
-        #results = metric.compute(predictions=predictions, references=references)
-        #print("Test evaluation via HFevaluate:", round(results["score"], 1))
-        metric = myEvaluator(args, useHFevaluator=True, dualevaluator=Dualevaluation)
-    else:
-        metric = myEvaluator(args, useHFevaluator=False, dualevaluator=Dualevaluation)
-
+    metric = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate)
+    
     train_dataloader = DataLoader(
         train_dataset,
         shuffle=True,
@@ -702,7 +733,7 @@ if __name__ == "__main__":
             # Evaluation
             results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
             #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
-            print(f"epoch {epoch}, evaluation metric: {metric}")
+            print(f"epoch {epoch}, evaluation metric: {metric.metricname}")
             print("Evaluation result:", results)
             #print(evalresults['score'])
             # Save the results
