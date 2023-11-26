@@ -139,7 +139,8 @@ def loaddata(args, USE_HPC):
                 text_column =  "en"
                 target_column = "fr"
             elif args.data_name=='billsum': #summarization
-                raw_datasets = load_dataset("billsum", split="ca_test")
+                #raw_datasets = load_dataset("billsum", split="ca_test")
+                raw_datasets = load_dataset("billsum")
                 text_column = "text"
                 target_column = "summary"
             elif args.data_name=='cnn_dailymail': #summarization
@@ -387,7 +388,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="cnn_dailymail",
+    parser.add_argument('--data_name', type=str, default="billsum",
                     help='data name: opus_books, kde4, opus100, cnn_dailymail, billsum')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
@@ -700,11 +701,14 @@ if __name__ == "__main__":
 
             # Evaluation
             results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
-            print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+            #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
+            print(f"epoch {epoch}, evaluation metric: {metric}")
+            print("Evaluation result:", results)
             #print(evalresults['score'])
             # Save the results
             with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
-                json.dump({"eval_bleu": results["score"]}, f)
+                #json.dump({"eval_bleu": results["score"]}, f)
+                json.dump(results, f)
 
             if use_accelerator:
                 accelerator.wait_for_everyone()
