@@ -283,7 +283,7 @@ epoch 15, BLEU score: 25.90
 
 Train summarization model
 ```bash
-python nlp/huggingfaceSequence3.py --data_name="cnn_dailymail" --subset=0 --model_checkpoint="t5-base" --task="summarization" --source_prefix="summarize: " --traintag="1125" --useHFaccelerator=False --evaluate="localevaluate" --usehpc=True --gpuid=1 --total_epochs=48 --batch_size=64
+python nlp/huggingfaceSequence3.py --data_name="cnn_dailymail" --subset=0 --model_checkpoint="t5-base" --task="summarization" --source_prefix="summarize: " --traintag="1125" --useHFaccelerator=False --hfevaluate=False --dualevaluate=False --usehpc=True --gpuid=1 --total_epochs=8 --batch_size=64
 ```
 
 NLP models based on Huggingface Transformer libraries
