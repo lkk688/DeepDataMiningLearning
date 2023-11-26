@@ -119,6 +119,18 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 text_column =  "en"
                 target_column = "zh"
+            elif args.data_name=='billsum': #summarization
+                datasetpath=os.path.join(mycache_dir, args.data_name, 'default/3.0.0/75cf1719d38d6553aa0e0714c393c74579b083ae6e164b2543684e3e92e0c4cc')
+                trainarrowpath=os.path.join(datasetpath, args.data_name+'-train.arrow')
+                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
+                text_column = "text"
+                target_column = "summary"
+            elif args.data_name=='cnn_dailymail': #summarization
+                datasetpath=os.path.join(mycache_dir, args.data_name, '3.0.0/3.0.0/1b3c71476f6d152c31c1730e83ccb08bcf23e348233f4fcc11e182248e6bf7de')
+                trainarrowpath=os.path.join(datasetpath, args.data_name+'-train*.arrow')
+                raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
+                text_column =  "article" #("article", "highlights")
+                target_column = "highlights"
             else:#wmt19
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
                 text_column =  "en"
