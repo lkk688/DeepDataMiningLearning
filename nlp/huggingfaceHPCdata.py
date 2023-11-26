@@ -14,6 +14,7 @@ print(torch.__version__)
 import evaluate
 metric = evaluate.load("sacrebleu") #pip install sacrebleu
 metric = evaluate.load("accuracy") #save to /data/cmpe249-fa23/Huggingfacecache/metrics
+metric = evaluate.load("squad")
 
 #https://huggingface.co/docs/datasets/loading
 from datasets import load_dataset, ReadInstruction
@@ -47,6 +48,7 @@ raw_datasets = load_dataset("wmt19", language_pair=("zh","en"))
 raw_datasets = load_dataset("cnn_dailymail", "3.0.0")
 raw_datasets = load_dataset("billsum")
 raw_datasets = load_dataset("xsum")
+raw_datasets = load_dataset("squad")
 
 # emotions = load_dataset("emotion")
 # train_ds = emotions["train"]
