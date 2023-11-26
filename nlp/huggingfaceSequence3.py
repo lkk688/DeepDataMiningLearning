@@ -290,6 +290,8 @@ class myRouge:
 
 class myEvaluator:
     def __init__(self, args, useHFevaluator=False, dualevaluator=False):
+        print("useHFevaluator:", useHFevaluator)
+        print("dualevaluator:", dualevaluator)
         self.useHFevaluator = useHFevaluator
         self.dualevaluator = dualevaluator
         self.task = args.task
@@ -448,9 +450,9 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="summarization",
                     help='NLP tasks: translation, summarization')
-    parser.add_argument('--hfevaluate', type=bool, default=False,
+    parser.add_argument('--hfevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
-    parser.add_argument('--dualevaluate', type=bool, default=True,
+    parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
@@ -468,11 +470,11 @@ if __name__ == "__main__":
                     help='output path')
     parser.add_argument('--traintag', type=str, default="1124",
                     help='Name the current training')
-    parser.add_argument('--training', type=bool, default=True,
+    parser.add_argument('--training', default=False, action='store_true',
                     help='Perform training')
-    parser.add_argument('--usehpc', type=bool, default=False,
+    parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--useHFaccelerator', type=bool, default=False,
+    parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
@@ -531,6 +533,9 @@ if __name__ == "__main__":
         ),
     )
     args = parser.parse_args()
+
+    print("useHFevaluator:", args.hfevaluate)
+    print("dualevaluator:", args.dualevaluate)
 
     global task
     task = args.task

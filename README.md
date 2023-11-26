@@ -283,7 +283,14 @@ epoch 15, BLEU score: 25.90
 
 Train summarization model
 ```bash
-python nlp/huggingfaceSequence3.py --data_name="cnn_dailymail" --subset=0 --model_checkpoint="t5-base" --task="summarization" --source_prefix="summarize: " --traintag="1125" --useHFaccelerator=False --hfevaluate=False --dualevaluate=False --usehpc=True --gpuid=1 --total_epochs=8 --batch_size=64
+(mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceSequence3.py --data_name="cnn_dailymail" --subset=0 --model_checkpoint="t5-base" --training --usehpc --task="summarization" --source_prefix="summarize: " --traintag="1125" --gpuid=1 --total_epochs=8 --batch_size=32
+useHFevaluator: False
+dualevaluator: False
+data_type=huggingface data_name=cnn_dailymail dataconfig= subset=0.0 data_path=/data/cmpe249-fa23/Huggingfacecache model_checkpoint=t5-base task=summarization hfevaluate=False dualevaluate=False source_lang=en target_lang=fr source_prefix=summarize:  pretrained= unfreezename= outputdir=./output traintag=1125 training=True usehpc=True useHFaccelerator=False gpuid=1 total_epochs=8 save_every=2 batch_size=32 learningrate=2e-05 lr_scheduler_type=linear weight_decay=0.0 gradient_accumulation_steps=1 pad_to_max_length=True max_source_length=128 max_target_length=128 num_beams=1
+Trainoutput folder: /data/cmpe249-fa23/trainoutput/huggingface/t5-base/cnn_dailymail_1125
+
+
+python nlp/huggingfaceSequence3.py --data_name="billsum" --subset=0 --model_checkpoint="t5-base" --training --usehpc --task="summarization" --source_prefix="summarize: " --traintag="1125" --gpuid=2 --total_epochs=8 --batch_size=64
 ```
 
 NLP models based on Huggingface Transformer libraries
