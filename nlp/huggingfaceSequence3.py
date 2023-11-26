@@ -131,7 +131,7 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 text_column =  "article" #("article", "highlights")
                 target_column = "highlights"
-            else:#wmt19
+            else:
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
                 text_column =  "en"
                 target_column = "zh"
@@ -159,6 +159,10 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("cnn_dailymail", "3.0.0")
                 text_column =  "article" #("article", "highlights")
                 target_column = "highlights"
+            elif args.data_name=='xsum': #summarization
+                raw_datasets = load_dataset("xsum")
+                text_column = "document"
+                target_column = "summary"
             else: #wmt19
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
@@ -438,8 +442,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="billsum",
-                    help='data name: opus_books, kde4, opus100, cnn_dailymail, billsum')
+    parser.add_argument('--data_name', type=str, default="xsum",
+                    help='data name: opus_books, kde4, opus100, cnn_dailymail, billsum, xsum')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=0,
