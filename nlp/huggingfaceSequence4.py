@@ -870,6 +870,8 @@ if __name__ == "__main__":
         tokenized_datasets["train"] = raw_datasets["train"].map(
             QApreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names,
                 fn_kwargs={"mode": mode})
+        #['input_ids', 'token_type_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping'])
+        #inputs["overflow_to_sample_mapping"]=[0, 0, 0, 0] means one example split into 4 parts (features)
         mode='val'
         validation_dataset =raw_datasets[valkey].map(
             QApreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names,

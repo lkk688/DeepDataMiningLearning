@@ -157,7 +157,7 @@ def preprocess_training_examples(examples):
     return inputs
 
 def preprocess_validation_examples(examples):
-    questions = [q.strip() for q in examples["question"]]
+    questions = [q.strip() for q in examples["question"]] #100 questions
     inputs = tokenizer(
         questions,
         examples["context"],
@@ -169,20 +169,20 @@ def preprocess_validation_examples(examples):
         padding="max_length",
     )
 
-    sample_map = inputs.pop("overflow_to_sample_mapping")
+    sample_map = inputs.pop("overflow_to_sample_mapping")#100, if no overflow, then sample_map=0-99
     example_ids = []
 
     for i in range(len(inputs["input_ids"])):
         sample_idx = sample_map[i]
-        example_ids.append(examples["id"][sample_idx])
+        example_ids.append(examples["id"][sample_idx]) #get example id strings
 
-        sequence_ids = inputs.sequence_ids(i)
-        offset = inputs["offset_mapping"][i] #384 size array (0, 4)
+        sequence_ids = inputs.sequence_ids(i) #[None, 0... None, 1... 1]
+        offset = inputs["offset_mapping"][i] #100 size array of tuple (0, 4)
         inputs["offset_mapping"][i] = [
             o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
-        ]
+        ] #put None in sequence_id==1, i.e., put questions to None
 
-    inputs["example_id"] = example_ids
+    inputs["example_id"] = example_ids #string list
     return inputs
 
 def preprocess_function(examples):
@@ -241,7 +241,7 @@ def testdataset(raw_datasets):
     #'id', 'title','context', 'question', 'answers' (text, answer_start),  
     print("Context: ", oneexample["context"])
     print("Question: ", oneexample["question"])
-    print("Answer: ", oneexample["answers"])#dict with 'text' and 'answer_start'
+    print("Answer: ", oneexample["answers"])#dict with 'text' (list of strings) and 'answer_start' list of integer [515]
     #During training, there is only one possible answer. We can double-check this by using the Dataset.filter() method:
     print(raw_datasets["train"].filter(lambda x: len(x["answers"]["text"]) != 1))
     #For evaluation, however, there are several possible answers for each sample, which may be the same or different:
@@ -251,7 +251,7 @@ def testdataset(raw_datasets):
 
     #We can pass to our tokenizer the question and the context together, and it will properly insert the special tokens [CLS], [SEP]
     inputs = tokenizer(oneexample["question"], oneexample["context"])
-    print(tokenizer.decode(inputs["input_ids"]))
+    print(tokenizer.decode(inputs["input_ids"])) #[CLS] question [SEP] xxxx [SEP]
     #The labels will then be the index of the tokens starting and ending the answer
 
     #deal with very long contexts, use sliding window
@@ -265,7 +265,7 @@ def testdataset(raw_datasets):
         return_offsets_mapping=True,
     )
     print(inputs.keys()) #['input_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping']
-    for ids in inputs["input_ids"]:
+    for ids in inputs["input_ids"]: #4 features with overlaps
         print(tokenizer.decode(ids))
         #split into four inputs, each of them containing the question and some part of the context.
         #some training examples where the answer is not included in the context: labels will be start_position = end_position = 0 (so we predict the [CLS] token)
@@ -281,60 +281,60 @@ def testdataset(raw_datasets):
         return_overflowing_tokens=True,
         return_offsets_mapping=True,
     )
-    print(f"The 4 examples gave {len(inputs['input_ids'])} features.") #11 features
-    print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.") #[0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 3]
+    print(f"The 4 examples gave {len(inputs['input_ids'])} features.") #17 features
+    print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.") #[0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3]
     #'overflow_to_sample_mapping': one example might give us several features if it has a long context, e.g. 0 example has been split into 5 parts
     #'offset_mapping': [[(0,0),(0,3),(3,4)...] ] The offset mappings will give us a map from token to character position in the original context. help us compute the start_positions and end_positions.
 
-    answers = multiexamples["answers"]
+    answers = multiexamples["answers"] #length of 4 
     start_positions = []
     end_positions = []
-    print(inputs["offset_mapping"])
-    for i, offset in enumerate(inputs["offset_mapping"]): #19 array
-        sample_idx = inputs["overflow_to_sample_mapping"][i] #0
-        answer = answers[sample_idx]
+    print(inputs["offset_mapping"]) #size 17
+    for i, offset in enumerate(inputs["offset_mapping"]): #17 array, each array (offset) has 100 elements tuples of two integers representing the span of characters inside the original context.
+        sample_idx = inputs["overflow_to_sample_mapping"][i] #0 current feature map to which sample
+        answer = answers[sample_idx] #get the groundtruth answer in sample idx
         start_char = answer["answer_start"][0]
         end_char = answer["answer_start"][0] + len(answer["text"][0])
-        sequence_ids = inputs.sequence_ids(i) #None 0 1
+        sequence_ids = inputs.sequence_ids(i) #[None 0 0... None 1 1 1... None], 100 tokens belongs to 0 or 1 or None
 
         # Find the start and end of the context
         idx = 0
         while sequence_ids[idx] != 1:
             idx += 1
-        context_start = idx #14
+        context_start = idx #sequence 1 starts at 17th token
         while sequence_ids[idx] == 1:
             idx += 1
         context_end = idx - 1 #98
 
-        # If the answer is not fully inside the context, label is (0, 0)
-        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+        # If the answer is not fully inside the context, label is (0, 0); offset[context_start] in the first part is (0,13), second part is (156, 160), (438, 440)
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char: #answer not in this region
             start_positions.append(0)
             end_positions.append(0)
         else:
             # Otherwise it's the start and end token positions
-            idx = context_start #11
+            idx = context_start #17
             while idx <= context_end and offset[idx][0] <= start_char:
                 idx += 1
-            start_positions.append(idx - 1)
+            start_positions.append(idx - 1) #find the answer start token index
 
             idx = context_end
             while idx >= context_start and offset[idx][1] >= end_char:
                 idx -= 1
-            end_positions.append(idx + 1)
+            end_positions.append(idx + 1) #find the answer end token index
 
-    print(start_positions)
+    print(start_positions) #17 elements, if position is 0, means no answer in this region
     print(end_positions)
 
     idx = 0 #use idx=0 as example
-    sample_idx = inputs["overflow_to_sample_mapping"][idx]
-    answer = answers[sample_idx]["text"][0] #answer text
+    sample_idx = inputs["overflow_to_sample_mapping"][idx] #0-th sample
+    answer = answers[sample_idx]["text"][0] #ground truth answer text
     start = start_positions[idx]
     end = end_positions[idx]
     labeled_answer = tokenizer.decode(inputs["input_ids"][idx][start : end + 1])
     print(f"Theoretical answer: {answer}, labels give: {labeled_answer}")
 
     idx = 4 #use idx=4 as example
-    sample_idx = inputs["overflow_to_sample_mapping"][idx]
+    sample_idx = inputs["overflow_to_sample_mapping"][idx] #sample_idx is 1
     answer = answers[sample_idx]["text"][0]
     start = start_positions[idx]
     end = end_positions[idx]
@@ -428,14 +428,14 @@ if __name__ == "__main__":
 
     model = DistilBertForQuestionAnswering.from_pretrained(model_checkpoint)
     #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
-
+    #Some weights of DistilBertForQuestionAnswering were not initialized from the model checkpoint at distilbert-base-uncased and are newly initialized: ['qa_outputs.weight', 'qa_outputs.bias']
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     model.to(device)
 
     #Test QA
     question = "How many programming languages does BLOOM support?"
     context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
-    answers=QAinference(model, tokenizer, question, context, device, usepipeline=True)
+    answers=QAinference(model, tokenizer, question, context, device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
 
     valkeyname="validation" #"test"
     if args.data_type == "huggingface":
@@ -446,6 +446,7 @@ if __name__ == "__main__":
         testdataset(raw_datasets)
         tokenized_datasets = {}
         tokenized_datasets["train"] = raw_datasets["train"].map(preprocess_training_examples, batched=True, remove_columns=raw_datasets["train"].column_names)
+        #['input_ids', 'attention_mask', 'start_positions', 'end_positions']
         small_eval_set = raw_datasets[valkeyname].select(range(100))
         validation_dataset = small_eval_set.map(
             preprocess_validation_examples, #preprocess_function, #preprocess_validation_examples,
@@ -455,6 +456,8 @@ if __name__ == "__main__":
         print(len(raw_datasets[valkeyname])) #1000
         print(len(validation_dataset)) #1011
         eval_set_for_model = validation_dataset.remove_columns(["example_id", "offset_mapping"])
+        print(validation_dataset.features.keys())#['input_ids', 'attention_mask', 'offset_mapping', 'example_id']
+        print(eval_set_for_model.features.keys())#['input_ids', 'attention_mask']
         eval_set_for_model.set_format("torch")
     else:
         train_contexts, train_questions, train_answers = read_squad(os.path.join(args.data_path, 'train-v2.0.json'))
@@ -481,7 +484,7 @@ if __name__ == "__main__":
     for batch in eval_dataloader:
         break
     testbatch={k: v.shape for k, v in batch.items()}
-    print(testbatch)
+    print(testbatch) #{'input_ids': torch.Size([8, 384]), 'attention_mask': torch.Size([8, 384])}
 
     global metric
     metric = evaluate.load("squad")
