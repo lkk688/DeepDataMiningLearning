@@ -345,6 +345,8 @@ class myEvaluator:
         elif self.task=="summarization":
             rouge_types = ["rouge1", "rouge2", "rougeL", "rougeLsum"] #['rouge1', 'rouge2', 'rougeL']
             self.metricname = "rouge"
+        elif self.task in ["qa", "QA", "QuestionAnswering"]:
+            self.metricname = "squad"
         
         if useHFevaluator==True or dualevaluator==True:
             self.HFmetric = evaluate.load(self.metricname) #"sacrebleu" pip install sacrebleu
@@ -462,6 +464,87 @@ def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, acceler
     #print(evalresults['score'])
     return results
 
+def evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets, device, metric):
+    # Evaluation
+    totallen = len(eval_dataloader)
+    print("Total evaluation length:", totallen)
+    #evalprogress_bar = tqdm(range(num_training_steps))
+    model.eval()
+    start_logits = []
+    end_logits = []
+    for batch in tqdm(eval_dataloader):
+        batch = {k: v.to(device) for k, v in batch.items()}
+        with torch.no_grad():
+            outputs = model(**batch)
+        start_logits.append(outputs.start_logits.cpu().numpy())
+        end_logits.append(outputs.end_logits.cpu().numpy())
+    start_logits = np.concatenate(start_logits) #8, 384 array to (102,384)
+    end_logits = np.concatenate(end_logits)
+    dataset_len=len(validation_dataset) #103
+    start_logits = start_logits[: dataset_len]
+    end_logits = end_logits[: dataset_len]
+    predicted_answers, theoretical_answers = QApostprocessing(
+        start_logits, end_logits, validation_dataset, raw_datasets[valkey]
+    )
+    result=metric.compute(predicted_answers, theoretical_answers)
+    #print(f"epoch {epoch}, evaluation result:", result)
+    return result
+
+def QApostprocessing(start_logits, end_logits, features, examples):
+    n_best = 20
+    max_answer_length = 30
+
+    #features is after tokenization, examples are original dataset
+    example_to_features = collections.defaultdict(list)
+    for idx, feature in enumerate(features):
+        example_to_features[feature["example_id"]].append(idx)
+
+    predicted_answers = []
+    for example in tqdm(examples):
+        example_id = example["id"]
+        context = example["context"]
+        answers = []
+
+        # Loop through all features associated with that example
+        for feature_index in example_to_features[example_id]:
+            start_logit = start_logits[feature_index]
+            end_logit = end_logits[feature_index]
+            offsets = features[feature_index]["offset_mapping"]
+
+            start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    # Skip answers that are not fully in the context
+                    if offsets[start_index] is None or offsets[end_index] is None:
+                        continue
+                    # Skip answers with a length that is either < 0 or > max_answer_length
+                    if (
+                        end_index < start_index
+                        or end_index - start_index + 1 > max_answer_length
+                    ):
+                        continue
+
+                    answer = {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                    answers.append(answer)
+
+        # Select the answer with the best score
+        if len(answers) > 0:
+            best_answer = max(answers, key=lambda x: x["logit_score"])
+            predicted_answers.append(
+                {"id": example_id, "prediction_text": best_answer["text"]}
+            )
+        else:
+            predicted_answers.append({"id": example_id, "prediction_text": ""})
+
+    theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
+    return predicted_answers, theoretical_answers
+    #return metric.compute(predictions=predicted_answers, references=theoretical_answers)
+               
+
 def updateQAtraininputs(inputs, examples):
     offset_mapping = inputs.pop("offset_mapping")
     sample_map = inputs.pop("overflow_to_sample_mapping") #new add
@@ -517,6 +600,24 @@ def updateQAtraininputs(inputs, examples):
     inputs["end_positions"] = end_positions
     return inputs
 
+def updateQAvalinputs(inputs, examples):
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    example_ids = []
+
+    for i in range(len(inputs["input_ids"])):
+        sample_idx = sample_map[i]
+        example_ids.append(examples["id"][sample_idx])
+
+        sequence_ids = inputs.sequence_ids(i)
+        offset = inputs["offset_mapping"][i] #384 size array (0, 4)
+        inputs["offset_mapping"][i] = [
+            o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
+        ]
+
+    inputs["example_id"] = example_ids
+    return inputs
+
+
 import shutil
 def savemodels(model, optimizer, epoch, trainoutput):
     modelfilepath=os.path.join(trainoutput, 'savedmodel.pth')
@@ -536,7 +637,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="xsum",
+    parser.add_argument('--data_name', type=str, default="squad",
                     help='data name: opus_books, kde4, opus100, cnn_dailymail, billsum, xsum')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
@@ -544,11 +645,11 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="t5-base",
+    parser.add_argument('--model_checkpoint', type=str, default="distilbert-base-uncased",
                     help='Model checkpoint name from HF, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
-    parser.add_argument('--task', type=str, default="summarization",
+    parser.add_argument('--task', type=str, default="QA",
                     help='NLP tasks: translation, summarization, QA')
-    parser.add_argument('--hfevaluate', default=False, action='store_true',
+    parser.add_argument('--hfevaluate', default=True, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
@@ -605,7 +706,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_source_length",
         type=int,
-        default=128, #1024,
+        default=384, #128, #1024,
         help=(
             "The maximum total input sequence length after "
             "tokenization.Sequences longer than this will be truncated, sequences shorter will be padded."
@@ -701,8 +802,9 @@ if __name__ == "__main__":
             model.config.decoder_start_token_id = tokenizer.lang_code_to_id[args.target_lang]
         else:
             model.config.decoder_start_token_id = tokenizer.convert_tokens_to_ids(args.target_lang)
-    if model.config.decoder_start_token_id is None:
-        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+    #conflict with QA
+    # if model.config.decoder_start_token_id is None:
+    #     raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
     raw_datasets, text_column, target_column, task_column = loaddata(args, USE_HPC)
     column_names = raw_datasets["train"].column_names
@@ -739,11 +841,9 @@ if __name__ == "__main__":
                 num_proc=1,
                 remove_columns=raw_datasets["train"].column_names,
             )#The default batch size is 1000, but you can adjust it with the batch_size argument
+        tokenized_datasets.set_format("torch")
     elif task in ['qa', 'QA', 'QuestionAnswering']:
-        def QAtrainpreprocess_function(examples):
-            task_column ="question"
-            text_column = "context"
-            target_column = "answers"
+        def QApreprocess_function(examples, mode):
             questions = [ex.strip() for ex in examples[task_column]] #"question"
             context = examples[text_column] #"context"
             stride = 128
@@ -757,16 +857,26 @@ if __name__ == "__main__":
                 return_offsets_mapping=True,
                 padding=padding, #"max_length",
             )
-            #add "start_positions" and "end_positions" into the inputs
-            model_inputs=updateQAtraininputs(model_inputs, examples)
+            if mode=='train':
+                #add "start_positions" and "end_positions" into the inputs
+                model_inputs=updateQAtraininputs(model_inputs, examples)
+            else: #val
+                #add "example_id"
+                model_inputs=updateQAvalinputs(model_inputs, examples)
             return model_inputs
-        tokenized_datasets = {}
-        tokenized_datasets["train"] = raw_datasets["train"].map(
-            QAtrainpreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names)
         
- 
+        tokenized_datasets = {}#raw_datasets.copy()
+        mode='train'
+        tokenized_datasets["train"] = raw_datasets["train"].map(
+            QApreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names,
+                fn_kwargs={"mode": mode})
+        mode='val'
+        validation_dataset =raw_datasets[valkey].map(
+            QApreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names,
+                fn_kwargs={"mode": mode}) 
+        #tokenized_datasets[valkey] = validation_dataset.remove_columns(["example_id", "offset_mapping"]) 
+        tokenized_datasets[valkey] = validation_dataset.remove_columns(["offset_mapping"]) 
 
-    tokenized_datasets.set_format("torch")
     train_dataset = tokenized_datasets["train"]
     eval_dataset = tokenized_datasets[valkey]
     # Log a few random samples from the training set:
@@ -779,7 +889,7 @@ if __name__ == "__main__":
     if args.pad_to_max_length:
         # If padding was already done ot max length, we use the default data collator that will just convert everything
         # to tensors.
-        data_collator = default_data_collator
+        data_collator = default_data_collator #DefaultDataCollator()
     else:
         # Otherwise, `DataCollatorWithPadding` will apply dynamic padding for us (by padding to the maximum length of
         # the samples passed). When using mixed precision, we add `pad_to_multiple_of=8` to pad all tensors to multiple
@@ -793,7 +903,7 @@ if __name__ == "__main__":
 
     #To test this on a few samples
     batch = data_collator([tokenized_datasets["train"][i] for i in range(1, 3)])
-    print(batch.keys()) #['input_ids', 'attention_mask', 'labels']
+    print(batch.keys()) #['input_ids', 'attention_mask', 'labels'], dict_keys(['input_ids', 'attention_mask', 'start_positions', 'end_positions'])
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
 
@@ -846,8 +956,10 @@ if __name__ == "__main__":
         print("Using device:", device)
     
     
-
-    evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
+    if task in ["translation", "summarization"]:
+        evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
+    elif task in ['qa', 'QA', 'QuestionAnswering']:
+        evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
 
     if args.training == True:
         print("Start training, total steps:", num_training_steps)
@@ -875,13 +987,18 @@ if __name__ == "__main__":
                     completed_steps += 1
 
             # Evaluation
-            results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
+            #results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
+            if task in ["translation", "summarization"]:
+                results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
+            elif task in ['qa', 'QA', 'QuestionAnswering']:
+                results = evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
+
             #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
             print(f"epoch {epoch}, evaluation metric: {metric.metricname}")
             print("Evaluation result:", results)
             #print(evalresults['score'])
             # Save the results
-            with open(os.path.join(trainoutput, "eval_results.json"), "w") as f:
+            with open(os.path.join(trainoutput, f"epoch{epoch}_"+"eval_results.json"), "w") as f:
                 #json.dump({"eval_bleu": results["score"]}, f)
                 json.dump(results, f)
 
