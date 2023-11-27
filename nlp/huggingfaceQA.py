@@ -269,6 +269,7 @@ def testdataset(raw_datasets):
         print(tokenizer.decode(ids))
         #split into four inputs, each of them containing the question and some part of the context.
         #some training examples where the answer is not included in the context: labels will be start_position = end_position = 0 (so we predict the [CLS] token)
+    
 
     multiexamples = raw_datasets["train"][2:6]
     inputs = tokenizer(
@@ -282,7 +283,9 @@ def testdataset(raw_datasets):
     )
     print(f"The 4 examples gave {len(inputs['input_ids'])} features.") #11 features
     print(f"Here is where each comes from: {inputs['overflow_to_sample_mapping']}.") #[0, 0, 0, 0, 0, 1, 2, 2, 2, 2, 3]
-    
+    #'overflow_to_sample_mapping': one example might give us several features if it has a long context, e.g. 0 example has been split into 5 parts
+    #'offset_mapping': [[(0,0),(0,3),(3,4)...] ] The offset mappings will give us a map from token to character position in the original context. help us compute the start_positions and end_positions.
+
     answers = multiexamples["answers"]
     start_positions = []
     end_positions = []
