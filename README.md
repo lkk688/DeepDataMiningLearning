@@ -316,6 +316,17 @@ Evaluation result: {'rouge1': AggregateScore(low=Score(precision=0.2206634425318
 epoch 7, evaluation metric: rouge
 Evaluation result: {'rouge1': AggregateScore(low=Score(precision=0.3157722202905392, recall=0.30514034915305777, fmeasure=0.30098661341663313), mid=Score(precision=0.3164460427364083, recall=0.30573870098459877, fmeasure=0.3015941401174891), high=Score(precision=0.31710221504502506, recall=0.30627353921164463, fmeasure=0.3021231398386561)), 'rouge2': AggregateScore(low=Score(precision=0.09545526361853192, recall=0.08805500161867533, fmeasure=0.08929094188051703), mid=Score(precision=0.0959138137320461, recall=0.08846040412480724, fmeasure=0.08970127642926173), high=Score(precision=0.09638196118158575, recall=0.08887820756655522, fmeasure=0.09011808402709783)), 'rougeL': AggregateScore(low=Score(precision=0.2439907968202854, recall=0.23420304190160135, fmeasure=0.23192429294508443), mid=Score(precision=0.2445882204337065, recall=0.23468338778240327, fmeasure=0.23243230200308637), high=Score(precision=0.2451722573264371, recall=0.23517123971453874, fmeasure=0.2329239687124055)), 'rougeLsum': AggregateScore(low=Score(precision=0.24400824561132867, recall=0.23421060757686038, fmeasure=0.2319498933428253), mid=Score(precision=0.24459781572922448, recall=0.23469061202638752, fmeasure=0.2324341602958753), high=Score(precision=0.24514334749025868, recall=0.23516229230273153, fmeasure=0.23293317648718587))}
 ```
+Run question and answering for squad dataset based on huggingfaceSequence4.py.
+```bash
+nlp/huggingfaceSequence4.py
+
+HF evaluator: {'exact_match': 0.22, 'f1': 6.222554522104021}
+Start training, total steps: 79696
+epoch 0, evaluation metric: squad
+Evaluation result: {'exact_match': 63.36, 'f1': 77.10714274394753}
+epoch 15, evaluation metric: squad
+Evaluation result: {'exact_match': 62.08, 'f1': 75.95170387159816}
+```
 
 NLP models based on Huggingface Transformer libraries
 * Starting
