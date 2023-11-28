@@ -486,7 +486,7 @@ def evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets,
     end_logits = end_logits[: dataset_len] #no size change
     predicted_answers, theoretical_answers = QApostprocessing(
         start_logits, end_logits, validation_dataset, raw_datasets[valkey]
-    )
+    )#predicted_answers list of dict['id','prediction_text']; list of dict['id','answers['text', 'answer_start']']
     result=metric.compute(predicted_answers, theoretical_answers)
     #print(f"epoch {epoch}, evaluation result:", result)
     return result
@@ -876,7 +876,7 @@ if __name__ == "__main__":
         #         num_proc=1,
         #         remove_columns=raw_datasets["train"].column_names,
         #     )#The default batch size is 1000, but you can adjust it with the batch_size argument
-        tokenized_datasets = {}#raw_datasets.copy()
+        #tokenized_datasets = {}#raw_datasets.copy()
         train_dataset = raw_datasets["train"]
         eval_dataset = raw_datasets[valkey]
         mode='train'
@@ -895,6 +895,9 @@ if __name__ == "__main__":
         #print(validation_dataset.features.keys())#['input_ids', 'attention_mask', 'offset_mapping', 'example_id']
         #print(eval_set_for_model.features.keys())#['input_ids', 'attention_mask']
         #tokenized_datasets[valkey] = validation_dataset.remove_columns(["offset_mapping"]) 
+        eval_dataset_for_model = eval_dataset.remove_columns(["example_id", "offset_mapping"])
+        print(eval_dataset.features.keys())#['input_ids', 'attention_mask', 'offset_mapping', 'example_id']
+        print(eval_dataset_for_model.features.keys())#['input_ids', 'attention_mask']
 
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
@@ -919,7 +922,7 @@ if __name__ == "__main__":
         )
 
     #To test this on a few samples
-    batch = data_collator([tokenized_datasets["train"][i] for i in range(1, 3)])
+    batch = data_collator([train_dataset[i] for i in range(1, 3)])
     print(batch.keys()) #['input_ids', 'attention_mask', 'labels'], dict_keys(['input_ids', 'attention_mask', 'start_positions', 'end_positions'])
     #batch["labels"] #our labels have been padded to the maximum length of the batch, using -100:
     #batch["decoder_input_ids"] #shifted versions of the labels
@@ -933,7 +936,7 @@ if __name__ == "__main__":
         batch_size=args.batch_size,
     )
     eval_dataloader = DataLoader(
-        eval_dataset, collate_fn=data_collator, batch_size=args.batch_size
+        eval_dataset_for_model, collate_fn=data_collator, batch_size=args.batch_size
     )
 
     #optimizer = AdamW(model.parameters(), lr=2e-5)
@@ -976,7 +979,7 @@ if __name__ == "__main__":
     if task in ["translation", "summarization"]:
         evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
     elif task in ['qa', 'QA', 'QuestionAnswering']:
-        evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets, device, metric)
+        evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
 
     if args.training == True:
         print("Start training, total steps:", num_training_steps)
@@ -1008,7 +1011,7 @@ if __name__ == "__main__":
             if task in ["translation", "summarization"]:
                 results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
             elif task in ['qa', 'QA', 'QuestionAnswering']:
-                results = evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets, device, metric)
+                results = evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
 
             #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
             print(f"epoch {epoch}, evaluation metric: {metric.metricname}")
