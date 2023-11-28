@@ -334,6 +334,7 @@ nlp/huggingfaceSequence4.py
 epoch 0: {'exact_match': 0.7663197729422895, 'f1': 0.8230842005676446}
 epoch 1: {'exact_match': 0.7947019867549668, 'f1': 0.8360138757489753}
 epoch 5: {'exact_match': 0.8609271523178808, 'f1': 0.8607573442010529}
+epoch 7: {'exact_match': 0.8703878902554399, 'f1': 0.8735414695679595}
 ```
 
 NLP models based on Huggingface Transformer libraries
