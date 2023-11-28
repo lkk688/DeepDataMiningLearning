@@ -4,7 +4,7 @@ from datasets import load_dataset, DatasetDict
 from transformers import (AutoConfig, AutoModel, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering,
                           AutoTokenizer, pipeline, get_scheduler,
                           DataCollatorForSeq2Seq, MBartTokenizer, 
-                          MBartTokenizerFast, default_data_collator, EvalPrediction)
+                          MBartTokenizerFast, default_data_collator)
 import evaluate
 import torch
 import os
@@ -21,7 +21,6 @@ import json
 import os
 valkey="test"#"validation"
 #Dualevaluation=True
-from utils_qa import postprocess_qa_predictions, create_and_fill_np_array, updateQAtraininputs, updateQAvalinputs
 
 
 #https://huggingface.co/facebook/wmt21-dense-24-wide-en-x
@@ -465,79 +464,161 @@ def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, acceler
     #print(evalresults['score'])
     return results
 
-def evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric, trainoutput):
+def evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets, device, metric):
     # Evaluation
     totallen = len(eval_dataloader)
     print("Total evaluation length:", totallen)
     #evalprogress_bar = tqdm(range(num_training_steps))
     model.eval()
-    all_start_logits = []
-    all_end_logits = []
+    start_logits = []
+    end_logits = []
     for batch in tqdm(eval_dataloader):
         batch = {k: v.to(device) for k, v in batch.items()}
         with torch.no_grad():
             outputs = model(**batch)
         #Get the highest probability from the model output for the start and end positions:
-        all_start_logits.append(outputs.start_logits.cpu().numpy())
-        all_end_logits.append(outputs.end_logits.cpu().numpy())
-    
-    max_len = max([x.shape[1] for x in all_start_logits])  # Get the max_length of the tensor: 384
-    # concatenate the numpy array
-    start_logits_concat = create_and_fill_np_array(all_start_logits, eval_dataset, max_len) #(5043, 384)
-    end_logits_concat = create_and_fill_np_array(all_end_logits, eval_dataset, max_len) #(5043, 384)
-
-    # delete the list of numpy arrays
-    del all_start_logits
-    del all_end_logits
-
-    predictions = (start_logits_concat, end_logits_concat)
-    #prediction = post_processing_function(raw_datasets[valkey], eval_dataset, outputs_numpy)
-    eval_examples = raw_datasets[valkey]
-    # Post-processing: we match the start logits and end logits to answers in the original context.
-    version_2_with_negative = False
-    max_answer_length = 30
-    n_best_size=20
-    null_score_diff_threshold = 0.0
-    stage="eval"
-    predictions = predictions
-    predictions = postprocess_qa_predictions(
-        examples=eval_examples,
-        features=eval_dataset,
-        predictions=predictions,
-        version_2_with_negative=version_2_with_negative,
-        n_best_size=n_best_size,
-        max_answer_length=max_answer_length,
-        null_score_diff_threshold=null_score_diff_threshold,
-        output_dir=trainoutput,
-        prefix=stage,
-    )
-    # Format the result to the format the metric expects.
-    if version_2_with_negative:
-        formatted_predictions = [
-            {"id": k, "prediction_text": v, "no_answer_probability": 0.0} for k, v in predictions.items()
-        ]
-    else:
-        formatted_predictions = [{"id": k, "prediction_text": v} for k, v in predictions.items()]
-
-    references = [{"id": ex["id"], "answers": ex["answers"]} for ex in eval_examples]
-    prediction = EvalPrediction(predictions=formatted_predictions, label_ids=references)
-    #result=metric.compute(predicted_answers, theoretical_answers)
-    #metric = evaluate.load("squad_v2" if version_2_with_negative else "squad")
-    #result = metric.compute(predictions=prediction.predictions, references=prediction.label_ids)
-    result = metric.compute(prediction.predictions, prediction.label_ids)
-
-    #start_logits = np.concatenate(all_start_logits) #8, 384 array to (102,384)
-    #end_logits = np.concatenate(all_end_logits)
-    # dataset_len=len(validation_dataset) #103
-    # start_logits = start_logits[: dataset_len]
-    # end_logits = end_logits[: dataset_len] #no size change
-    # predicted_answers, theoretical_answers = QApostprocessing(
-    #     start_logits, end_logits, validation_dataset, raw_datasets[valkey]
-    # )#predicted_answers list of dict['id','prediction_text']; list of dict['id','answers['text', 'answer_start']']
-    # result=metric.compute(predicted_answers, theoretical_answers)
+        start_logits.append(outputs.start_logits.cpu().numpy())
+        end_logits.append(outputs.end_logits.cpu().numpy())
+    start_logits = np.concatenate(start_logits) #8, 384 array to (102,384)
+    end_logits = np.concatenate(end_logits)
+    dataset_len=len(validation_dataset) #103
+    start_logits = start_logits[: dataset_len]
+    end_logits = end_logits[: dataset_len] #no size change
+    predicted_answers, theoretical_answers = QApostprocessing(
+        start_logits, end_logits, validation_dataset, raw_datasets[valkey]
+    )#predicted_answers list of dict['id','prediction_text']; list of dict['id','answers['text', 'answer_start']']
+    result=metric.compute(predicted_answers, theoretical_answers)
     #print(f"epoch {epoch}, evaluation result:", result)
     return result
 
+def QApostprocessing(start_logits, end_logits, features, examples):
+    n_best = 20
+    max_answer_length = 30
+
+    #features is after tokenization, examples are original dataset
+    example_to_features = collections.defaultdict(list)
+    for idx, feature in enumerate(features):
+        example_to_features[feature["example_id"]].append(idx)
+
+    predicted_answers = []
+    for example in tqdm(examples):
+        example_id = example["id"]
+        context = example["context"]
+        answers = []
+
+        # Loop through all features associated with that example
+        for feature_index in example_to_features[example_id]:
+            start_logit = start_logits[feature_index]
+            end_logit = end_logits[feature_index]
+            offsets = features[feature_index]["offset_mapping"]
+
+            start_indexes = np.argsort(start_logit)[-1 : -n_best - 1 : -1].tolist()
+            end_indexes = np.argsort(end_logit)[-1 : -n_best - 1 : -1].tolist()
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    # Skip answers that are not fully in the context
+                    if offsets[start_index] is None or offsets[end_index] is None:
+                        continue
+                    # Skip answers with a length that is either < 0 or > max_answer_length
+                    if (
+                        end_index < start_index
+                        or end_index - start_index + 1 > max_answer_length
+                    ):
+                        continue
+
+                    answer = {
+                        "text": context[offsets[start_index][0] : offsets[end_index][1]],
+                        "logit_score": start_logit[start_index] + end_logit[end_index],
+                    }
+                    answers.append(answer)
+
+        # Select the answer with the best score
+        if len(answers) > 0:
+            best_answer = max(answers, key=lambda x: x["logit_score"])
+            predicted_answers.append(
+                {"id": example_id, "prediction_text": best_answer["text"]}
+            )
+        else:
+            predicted_answers.append({"id": example_id, "prediction_text": ""})
+
+    theoretical_answers = [{"id": ex["id"], "answers": ex["answers"]} for ex in examples]
+    return predicted_answers, theoretical_answers
+    #return metric.compute(predictions=predicted_answers, references=theoretical_answers)
+               
+
+def updateQAtraininputs(inputs, examples):
+    offset_mapping = inputs.pop("offset_mapping")
+    sample_map = inputs.pop("overflow_to_sample_mapping") #new add
+    answers = examples["answers"]
+    start_positions = []
+    end_positions = []
+
+    #"overflow_to_sample_mapping"
+    # Since one example might give us several features if it has a long context, we need a map from a feature to
+    # its corresponding example. This key gives us just that.
+    # Looks like [0,1,2,2,2,3,4,5,5...] - Here 2nd input pair has been split in 3 parts
+
+    #"offset_mapping"
+    ## The offset mappings will give us a map from token to character position in the original context. This will
+    # help us compute the start_positions and end_positions.
+    # Looks like [[(0,0),(0,3),(3,4)...] ] - Contains the actual start indices and end indices for each word in the input.
+
+    for i, offset in enumerate(offset_mapping):#17 array, each array (offset) has 100 elements tuples of two integers representing the span of characters inside the original context.
+        sample_idx = sample_map[i] #new add, get the index for samples
+        #answer = answers[i]
+        answer = answers[sample_idx] # sample_idx from sample_map
+        start_char = answer["answer_start"][0]
+        end_char = answer["answer_start"][0] + len(answer["text"][0])
+        sequence_ids = inputs.sequence_ids(i)  #[None 0 0... None 1 1 1... None] 100 tokens belongs to 0 or 1 or None
+        # sequence_ids method to find which part of the offset corresponds to the question and which corresponds to the context.
+
+        # Find the start and end of the context
+        idx = 0
+        while sequence_ids[idx] != 1:
+            idx += 1
+        context_start = idx #sequence 1 starts at xth token
+        while sequence_ids[idx] == 1:
+            idx += 1
+        context_end = idx - 1
+
+        # If the answer is not fully inside the context, label it (0, 0)
+        #offset[context_start] in the first part is (0,13), second part is (156, 160), (438, 440)
+        # if offset[context_start][0] > end_char or offset[context_end][1] < start_char:
+        if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
+            start_positions.append(0) ##answer not in this region
+            end_positions.append(0)
+        else:
+            # Otherwise it's the start and end token positions
+            idx = context_start
+            while idx <= context_end and offset[idx][0] <= start_char:
+                idx += 1
+            start_positions.append(idx - 1) #find the answer start token index
+
+            idx = context_end
+            while idx >= context_start and offset[idx][1] >= end_char:
+                idx -= 1
+            end_positions.append(idx + 1)  #find the answer end token index
+
+    inputs["start_positions"] = start_positions  #17 elements, if position is 0, means no answer in this region
+    inputs["end_positions"] = end_positions
+    return inputs
+
+def updateQAvalinputs(inputs, examples):
+    sample_map = inputs.pop("overflow_to_sample_mapping")
+    example_ids = []
+
+    for i in range(len(inputs["input_ids"])):
+        sample_idx = sample_map[i]
+        example_ids.append(examples["id"][sample_idx]) #example ids are strings
+
+        sequence_ids = inputs.sequence_ids(i)
+        offset = inputs["offset_mapping"][i] #384 size array (0, 4)
+        inputs["offset_mapping"][i] = [
+            o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
+        ] #put None in question positions
+
+    inputs["example_id"] = example_ids
+    return inputs
 
 
 import shutil
@@ -783,7 +864,7 @@ if __name__ == "__main__":
             )
             if mode=='train':
                 #add "start_positions" and "end_positions" into the inputs as the labels
-                model_inputs=updateQAtraininputs(model_inputs, examples, tokenizer)
+                model_inputs=updateQAtraininputs(model_inputs, examples)
             else: #val
                 #add "example_id"
                 model_inputs=updateQAvalinputs(model_inputs, examples)
@@ -898,8 +979,7 @@ if __name__ == "__main__":
     if task in ["translation", "summarization"]:
         evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
     elif task in ['qa', 'QA', 'QuestionAnswering']:
-        #evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
-        evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric, trainoutput)
+        evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
 
     if args.training == True:
         print("Start training, total steps:", num_training_steps)
@@ -958,4 +1038,3 @@ if __name__ == "__main__":
     del model, optimizer, lr_scheduler
     if use_accelerator:
         accelerator.free_memory()
-
