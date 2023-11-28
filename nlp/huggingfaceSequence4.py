@@ -931,7 +931,7 @@ if __name__ == "__main__":
             if task in ["translation", "summarization"]:
                 results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
             elif task in ['qa', 'QA', 'QuestionAnswering']:
-                results = evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
+                results = evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric, trainoutput)
 
             #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
             print(f"epoch {epoch}, evaluation metric: {metric.metricname}")
