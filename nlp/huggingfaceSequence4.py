@@ -56,8 +56,11 @@ def modelparameters(model, unfreezename=""):
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
 
+from mybertmodel import load_QAbertmodel
 def loadmodel(model_checkpoint, task="QA", mycache_dir="", pretrained="", hpc=True, unfreezename=""):
-    if hpc==True:
+    if model_checkpoint.startswith('my'):
+        model, tokenizer = load_QAbertmodel()
+    elif hpc==True:
         localpath=os.path.join(mycache_dir, model_checkpoint)
         tokenizer = AutoTokenizer.from_pretrained(localpath, local_files_only=True)
         if task in ['translation', 'summarization', 'Seq2SeqLM']:
@@ -567,8 +570,8 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="distilbert-base-uncased",
-                    help='Model checkpoint name from HF, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
+    parser.add_argument('--model_checkpoint', type=str, default="mybert",
+                    help='Model checkpoint name from HF, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="QA",
                     help='NLP tasks: translation, summarization, QA')
     parser.add_argument('--hfevaluate', default=True, action='store_true',

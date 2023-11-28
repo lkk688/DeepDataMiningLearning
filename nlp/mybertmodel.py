@@ -968,7 +968,7 @@ class myBertForQuestionAnswering(BertPreTrainedModel):
         self.num_labels = config.num_labels
 
         self.bert = myBertModel(config, add_pooling_layer=False)
-        self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels)
+        self.qa_outputs = nn.Linear(config.hidden_size, config.num_labels) #768,2
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1000,26 +1000,26 @@ class myBertForQuestionAnswering(BertPreTrainedModel):
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         outputs = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
+            input_ids, #[1, 16]
+            attention_mask=attention_mask, #[1, 16]
+            token_type_ids=token_type_ids, #[1, 16] [0,0, ..1,1,]
+            position_ids=position_ids, #None
+            head_mask=head_mask, #None
+            inputs_embeds=inputs_embeds,#None
+            output_attentions=output_attentions,#None
+            output_hidden_states=output_hidden_states,#None
+            return_dict=return_dict, #True
         )
 
-        sequence_output = outputs[0]
+        sequence_output = outputs[0] #last hidden output[1, 16, 768]
 
-        logits = self.qa_outputs(sequence_output)
-        start_logits, end_logits = logits.split(1, dim=-1)
-        start_logits = start_logits.squeeze(-1).contiguous()
-        end_logits = end_logits.squeeze(-1).contiguous()
+        logits = self.qa_outputs(sequence_output) #[1, 16, 2]
+        start_logits, end_logits = logits.split(1, dim=-1) #[1, 16, 1] [1, 16, 1]
+        start_logits = start_logits.squeeze(-1).contiguous() #[1, 16]
+        end_logits = end_logits.squeeze(-1).contiguous() #[1, 16]
 
         total_loss = None
-        if start_positions is not None and end_positions is not None:
+        if start_positions is not None and end_positions is not None: #training mode
             # If we are on multi-GPU, split add a dimension
             if len(start_positions.size()) > 1:
                 start_positions = start_positions.squeeze(-1)
@@ -1035,7 +1035,7 @@ class myBertForQuestionAnswering(BertPreTrainedModel):
             end_loss = loss_fct(end_logits, end_positions)
             total_loss = (start_loss + end_loss) / 2
 
-        if not return_dict:
+        if not return_dict: #not run
             output = (start_logits, end_logits) + outputs[2:]
             return ((total_loss,) + output) if total_loss is not None else output
 
@@ -1047,25 +1047,39 @@ class myBertForQuestionAnswering(BertPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-def load_trainedmodel():
-    model = BertForQuestionAnswering.from_pretrained("deepset/bert-base-cased-squad2")
-    model.save_pretrained('./output/deepset-bert-base-cased-squad2')
+def loadsave_model(modelname="deepset/bert-base-cased-squad2"):
+    modeloutputpath=os.path.join('./output', modelname)
+    os.makedirs(modeloutputpath, exist_ok=True)
+    model = BertForQuestionAnswering.from_pretrained(modelname)
+    model.save_pretrained(modeloutputpath)
 
-    modelfilepath=os.path.join('./output/deepset-bert-base-cased-squad2', 'savedmodel.pth')
+    modelfilepath=os.path.join(modeloutputpath, 'savedmodel.pth')
     torch.save({
             'model_state_dict': model.state_dict()
         }, modelfilepath)
+    
+    tokenizer = AutoTokenizer.from_pretrained(modelname)
+    tokenizer.save_pretrained(modeloutputpath)
 
-def testBertQuestionAnswering(configuration, tokenizer):
+    
+def load_QAbertmodel(rootpath='./output', modelname="deepset/bert-base-cased-squad2"):
+    loadsave_model()
+    
+    modelpath=os.path.join(rootpath, modelname)
+    tokenizer = AutoTokenizer.from_pretrained(modelpath, local_files_only=True)
+
+    configuration = BertConfig()
     configuration.vocab_size = 28996
     mybertqa = myBertForQuestionAnswering(config=configuration)
-    #modelfilepath=os.path.join('./output/deepset-bert-base-cased-squad2', 'savedmodel.pth')
-    modelfilepath='nlp/output/deepset-bert-base-cased-squad2/savedmodel.pth'
+    modelfilepath=os.path.join(modelpath, 'savedmodel.pth')
     checkpoint = torch.load(modelfilepath, map_location='cpu')
     mybertqa.load_state_dict(checkpoint['model_state_dict'])
     embedding_size = mybertqa.get_input_embeddings().weight.shape[0]
     print("Embeeding size:", embedding_size) #28996
+    return mybertqa, tokenizer
 
+def testBertQuestionAnswering():
+    mybertqa, tokenizer = load_QAbertmodel()
     #tokenizer = AutoTokenizer.from_pretrained("deepset/bert-base-cased-squad2")
 
     question, text = "Who was Jim Henson?", "Jim Henson was a nice puppet"
@@ -1073,8 +1087,8 @@ def testBertQuestionAnswering(configuration, tokenizer):
     with torch.no_grad():
         outputs = mybertqa(**inputs)
 
-    answer_start_index = outputs.start_logits.argmax()
-    answer_end_index = outputs.end_logits.argmax()
+    answer_start_index = outputs.start_logits.argmax() #[1, 16] argmax ->12
+    answer_end_index = outputs.end_logits.argmax() #->14
 
     predict_answer_tokens = inputs.input_ids[0, answer_start_index : answer_end_index + 1]
     result=tokenizer.decode(predict_answer_tokens, skip_special_tokens=True)
@@ -1101,6 +1115,7 @@ if __name__ == "__main__":
     outputs = bertmodel(**inputs)
     last_hidden_states = outputs.last_hidden_state #torch.Size([1, 8, 768])
 
-    testBertQuestionAnswering(configuration, tokenizer)
+    loadsave_model()
+    testBertQuestionAnswering()
 
     
