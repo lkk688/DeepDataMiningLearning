@@ -476,13 +476,14 @@ def evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets,
         batch = {k: v.to(device) for k, v in batch.items()}
         with torch.no_grad():
             outputs = model(**batch)
+        #Get the highest probability from the model output for the start and end positions:
         start_logits.append(outputs.start_logits.cpu().numpy())
         end_logits.append(outputs.end_logits.cpu().numpy())
     start_logits = np.concatenate(start_logits) #8, 384 array to (102,384)
     end_logits = np.concatenate(end_logits)
     dataset_len=len(validation_dataset) #103
     start_logits = start_logits[: dataset_len]
-    end_logits = end_logits[: dataset_len]
+    end_logits = end_logits[: dataset_len] #no size change
     predicted_answers, theoretical_answers = QApostprocessing(
         start_logits, end_logits, validation_dataset, raw_datasets[valkey]
     )
@@ -562,41 +563,43 @@ def updateQAtraininputs(inputs, examples):
     # help us compute the start_positions and end_positions.
     # Looks like [[(0,0),(0,3),(3,4)...] ] - Contains the actual start indices and end indices for each word in the input.
 
-    for i, offset in enumerate(offset_mapping):
+    for i, offset in enumerate(offset_mapping):#17 array, each array (offset) has 100 elements tuples of two integers representing the span of characters inside the original context.
         sample_idx = sample_map[i] #new add, get the index for samples
         #answer = answers[i]
         answer = answers[sample_idx] # sample_idx from sample_map
         start_char = answer["answer_start"][0]
         end_char = answer["answer_start"][0] + len(answer["text"][0])
-        sequence_ids = inputs.sequence_ids(i)
+        sequence_ids = inputs.sequence_ids(i)  #[None 0 0... None 1 1 1... None] 100 tokens belongs to 0 or 1 or None
+        # sequence_ids method to find which part of the offset corresponds to the question and which corresponds to the context.
 
         # Find the start and end of the context
         idx = 0
         while sequence_ids[idx] != 1:
             idx += 1
-        context_start = idx
+        context_start = idx #sequence 1 starts at xth token
         while sequence_ids[idx] == 1:
             idx += 1
         context_end = idx - 1
 
         # If the answer is not fully inside the context, label it (0, 0)
+        #offset[context_start] in the first part is (0,13), second part is (156, 160), (438, 440)
         # if offset[context_start][0] > end_char or offset[context_end][1] < start_char:
         if offset[context_start][0] > start_char or offset[context_end][1] < end_char:
-            start_positions.append(0)
+            start_positions.append(0) ##answer not in this region
             end_positions.append(0)
         else:
             # Otherwise it's the start and end token positions
             idx = context_start
             while idx <= context_end and offset[idx][0] <= start_char:
                 idx += 1
-            start_positions.append(idx - 1)
+            start_positions.append(idx - 1) #find the answer start token index
 
             idx = context_end
             while idx >= context_start and offset[idx][1] >= end_char:
                 idx -= 1
-            end_positions.append(idx + 1)
+            end_positions.append(idx + 1)  #find the answer end token index
 
-    inputs["start_positions"] = start_positions
+    inputs["start_positions"] = start_positions  #17 elements, if position is 0, means no answer in this region
     inputs["end_positions"] = end_positions
     return inputs
 
@@ -606,13 +609,13 @@ def updateQAvalinputs(inputs, examples):
 
     for i in range(len(inputs["input_ids"])):
         sample_idx = sample_map[i]
-        example_ids.append(examples["id"][sample_idx])
+        example_ids.append(examples["id"][sample_idx]) #example ids are strings
 
         sequence_ids = inputs.sequence_ids(i)
         offset = inputs["offset_mapping"][i] #384 size array (0, 4)
         inputs["offset_mapping"][i] = [
             o if sequence_ids[k] == 1 else None for k, o in enumerate(offset)
-        ]
+        ] #put None in question positions
 
     inputs["example_id"] = example_ids
     return inputs
@@ -669,7 +672,7 @@ if __name__ == "__main__":
                     help='output path')
     parser.add_argument('--traintag', type=str, default="1124",
                     help='Name the current training')
-    parser.add_argument('--training', default=False, action='store_true',
+    parser.add_argument('--training', default=True, action='store_true',
                     help='Perform training')
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
@@ -842,8 +845,10 @@ if __name__ == "__main__":
                 remove_columns=raw_datasets["train"].column_names,
             )#The default batch size is 1000, but you can adjust it with the batch_size argument
         tokenized_datasets.set_format("torch")
+        train_dataset = tokenized_datasets["train"]
+        eval_dataset = tokenized_datasets[valkey]
     elif task in ['qa', 'QA', 'QuestionAnswering']:
-        def QApreprocess_function(examples, mode):
+        def QApreprocess_function(examples, mode='train'):
             questions = [ex.strip() for ex in examples[task_column]] #"question"
             context = examples[text_column] #"context"
             stride = 128
@@ -854,33 +859,43 @@ if __name__ == "__main__":
                 truncation="only_second",
                 stride=stride,
                 return_overflowing_tokens=True,
-                return_offsets_mapping=True,
+                return_offsets_mapping=True, #map the start and end positions of the answer to the original context 
                 padding=padding, #"max_length",
             )
             if mode=='train':
-                #add "start_positions" and "end_positions" into the inputs
+                #add "start_positions" and "end_positions" into the inputs as the labels
                 model_inputs=updateQAtraininputs(model_inputs, examples)
             else: #val
                 #add "example_id"
                 model_inputs=updateQAvalinputs(model_inputs, examples)
             return model_inputs
         
+        # tokenized_datasets = raw_datasets.map(
+        #         QApreprocess_function,
+        #         batched=True,
+        #         num_proc=1,
+        #         remove_columns=raw_datasets["train"].column_names,
+        #     )#The default batch size is 1000, but you can adjust it with the batch_size argument
         tokenized_datasets = {}#raw_datasets.copy()
+        train_dataset = raw_datasets["train"]
+        eval_dataset = raw_datasets[valkey]
         mode='train'
-        tokenized_datasets["train"] = raw_datasets["train"].map(
+        train_dataset = train_dataset.map(
             QApreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names,
                 fn_kwargs={"mode": mode})
         #['input_ids', 'token_type_ids', 'attention_mask', 'offset_mapping', 'overflow_to_sample_mapping'])
         #inputs["overflow_to_sample_mapping"]=[0, 0, 0, 0] means one example split into 4 parts (features)
         mode='val'
-        validation_dataset =raw_datasets[valkey].map(
+        #small_eval_set = raw_datasets[valkey].select(range(500))
+        eval_dataset =eval_dataset.map(
             QApreprocess_function, batched=True, remove_columns=raw_datasets["train"].column_names,
                 fn_kwargs={"mode": mode}) 
         #tokenized_datasets[valkey] = validation_dataset.remove_columns(["example_id", "offset_mapping"]) 
-        tokenized_datasets[valkey] = validation_dataset.remove_columns(["offset_mapping"]) 
+        #eval_set_for_model = validation_dataset.remove_columns(["example_id", "offset_mapping"])
+        #print(validation_dataset.features.keys())#['input_ids', 'attention_mask', 'offset_mapping', 'example_id']
+        #print(eval_set_for_model.features.keys())#['input_ids', 'attention_mask']
+        #tokenized_datasets[valkey] = validation_dataset.remove_columns(["offset_mapping"]) 
 
-    train_dataset = tokenized_datasets["train"]
-    eval_dataset = tokenized_datasets[valkey]
     # Log a few random samples from the training set:
     for index in random.sample(range(len(train_dataset)), 3):
         print(f"Sample {index} of the training set: {train_dataset[index]}.")
@@ -961,7 +976,7 @@ if __name__ == "__main__":
     if task in ["translation", "summarization"]:
         evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
     elif task in ['qa', 'QA', 'QuestionAnswering']:
-        evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
+        evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets, device, metric)
 
     if args.training == True:
         print("Start training, total steps:", num_training_steps)
@@ -993,7 +1008,7 @@ if __name__ == "__main__":
             if task in ["translation", "summarization"]:
                 results = evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, args.num_beams, metric)
             elif task in ['qa', 'QA', 'QuestionAnswering']:
-                results = evaluateQA_dataset(model, eval_dataloader, eval_dataset, raw_datasets, device, metric)
+                results = evaluateQA_dataset(model, eval_dataloader, validation_dataset, raw_datasets, device, metric)
 
             #print(f"epoch {epoch}, BLEU score: {results['score']:.2f}")
             print(f"epoch {epoch}, evaluation metric: {metric.metricname}")

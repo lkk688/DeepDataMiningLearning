@@ -89,9 +89,11 @@ def QAinference(model, tokenizer, question, context, device, usepipeline=True):
         inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = model(**inputs)
+        #Get the highest probability from the model output for the start and end positions:
         answer_start_index = outputs.start_logits.argmax()
         answer_end_index = outputs.end_logits.argmax()
         #predict_answer_tokens = inputs.input_ids[0, answer_start_index : answer_end_index + 1]
+        #Decode the predicted tokens to get the answer:
         predict_answer_tokens = inputs['input_ids'][0, answer_start_index : answer_end_index + 1]
         answers=tokenizer.decode(predict_answer_tokens)
         print(answers)
