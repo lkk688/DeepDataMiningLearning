@@ -2,10 +2,49 @@ import collections
 import json
 import logging
 import os
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from tqdm.auto import tqdm
+
+
+
+def preprocess_squad_batch(
+        examples,
+        question_column: str,
+        context_column: str,
+        answer_column: str,
+    ) -> Tuple[List[str], List[str]]:
+        questions = examples[question_column]
+        contexts = examples[context_column]
+        answers = examples[answer_column]
+
+        def generate_input(_question, _context):
+            return " ".join(["question:", _question.lstrip(), "context:", _context.lstrip()])
+
+        inputs = [generate_input(question, context) for question, context in zip(questions, contexts)]
+        targets = [answer["text"][0] if len(answer["text"]) > 0 else "" for answer in answers]
+        return inputs, targets
+
+def updateopenQAvalinputs(model_inputs, examples, labels):
+    # Since one example might give us several features if it has a long context, we need a map from a feature to
+    # its corresponding example. This key gives us just that.
+    sample_mapping = model_inputs.pop("overflow_to_sample_mapping")
+
+    # For evaluation, we will need to convert our predictions to substrings of the context, so we keep the
+    # corresponding example_id and we will store the offset mappings.
+    model_inputs["example_id"] = []
+    # Augment the overflowing tokens to the labels
+    labels_out = []
+
+    for i in range(len(model_inputs["input_ids"])):
+        # One example can give several spans, this is the index of the example containing this span of text.
+        sample_index = sample_mapping[i]
+        model_inputs["example_id"].append(examples["id"][sample_index])
+        labels_out.append(labels["input_ids"][sample_index])
+
+    model_inputs["labels"] = labels_out
+    return model_inputs
 
 
 def updateQAtraininputs(tokenized_examples, examples, tokenizer):
