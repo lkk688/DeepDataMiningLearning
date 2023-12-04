@@ -337,6 +337,15 @@ epoch 5: {'exact_match': 0.8609271523178808, 'f1': 0.8607573442010529}
 epoch 7: {'exact_match': 0.8703878902554399, 'f1': 0.8735414695679595}
 ```
 
+Run open-ended question and answering for squadv2 dataset based on T5 model in huggingfaceSequence5.py
+```bash
+epoch 0, evaluation metric: squad_v2
+Evaluation result: {'exact': 75.42, 'f1': 81.2122560694999, 'total': 5000, 'HasAns_exact': 73.17148125384142, 'HasAns_f1': 82.07169033420416, 'HasAns_total': 3254, 'NoAns_exact': 79.61053837342497, 'NoAns_f1': 79.61053837342497, 'NoAns_total': 1746, 'best_exact': 75.36, 'best_exact_thresh': 0.0, 'best_f1': 81.15225606949971, 'best_f1_thresh': 0.0}
+......
+epoch 15, evaluation metric: squad_v2
+Evaluation result: {'exact': 76.38, 'f1': 82.8391234679352, 'total': 5000, 'HasAns_exact': 73.26367547633681, 'HasAns_f1': 83.18857324513708, 'HasAns_total': 3254, 'NoAns_exact': 82.18785796105384, 'NoAns_f1': 82.18785796105384, 'NoAns_total': 1746, 'best_exact': 76.32, 'best_exact_thresh': 0.0, 'best_f1': 82.77912346793502, 'best_f1_thresh': 0.0}
+```
+
 NLP models based on Huggingface Transformer libraries
 * Starting
    * [HuggingfaceTransformers](notebooks/Transformers.ipynb)
