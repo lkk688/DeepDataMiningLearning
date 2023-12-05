@@ -50,11 +50,18 @@ def modelparameters(model, unfreezename=""):
         print(name, param.requires_grad)
 
 
-def loadmodel(model_checkpoint, labels, task="audio-classification", mycache_dir="", pretrained="", hpc=True, unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False):
-    label2id, id2label = {}, {}
-    for i, label in enumerate(labels):
-        label2id[label] = str(i)
-        id2label[str(i)] = label
+def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", mycache_dir="", pretrained="", hpc=True, unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False):
+    # label2id, id2label = {}, {}
+    # for i, label in enumerate(labels):
+    #     label2id[label] = str(i)
+    #     id2label[str(i)] = label
+    
+    # id2label_fn = gtzan["train"].features["genre"].int2str
+    # id2label = {
+    #     str(i): id2label_fn(i)
+    #     for i in range(len(gtzan_encoded["train"].features["label"].names))
+    # }
+    # label2id = {v: k for k, v in id2label.items()}
     
     if hpc==True:
         localpath=os.path.join(mycache_dir, model_checkpoint)
@@ -548,8 +555,14 @@ if __name__ == "__main__":
         raise ValueError(
             f"--label_column_name not found in dataset. "
         )
+    id2label_fn = raw_datasets["train"].features["genre"].int2str
+    id2label = {
+        str(i): id2label_fn(i)
+        for i in range(len(labels))
+    }
+    label2id = {v: k for k, v in id2label.items()}
     
-    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, labels, task=task, mycache_dir=mycache_dir, 
+    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, mycache_dir=mycache_dir, 
                                                          pretrained=args.pretrained, hpc=USE_HPC, unfreezename=args.unfreezename, 
                                                          return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False)
     model_input_name = feature_extractor.model_input_names[0]
@@ -574,7 +587,7 @@ if __name__ == "__main__":
         inputs = feature_extractor(
             audio_arrays,
             sampling_rate=feature_extractor.sampling_rate,
-            max_length=int(feature_extractor.sampling_rate * max_duration),
+            max_length=int(feature_extractor.sampling_rate * args.max_length_seconds),
             truncation=True,
             return_attention_mask=True,
         )
