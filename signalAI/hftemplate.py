@@ -108,8 +108,6 @@ def loadmodel(model_checkpoint, labels, task="audio-classification", mycache_dir
         print("Pretrained epoch:", checkpoint['epoch'])
         starting_epoch = checkpoint['epoch'] +1
         model.load_state_dict(checkpoint['model_state_dict'])
-    embedding_size = model.get_input_embeddings().weight.shape[0]
-    print("Embeeding size:", embedding_size) #65001
 
     model_num_parameters = model.num_parameters() / 1_000_000
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
@@ -221,11 +219,14 @@ def loaddata(args, USE_HPC):
                 task_column ="question"
                 text_column = "context"
                 target_column = "answers"
-            elif args.data_name == "superb": #AUDIO
-                raw_datasets = load_dataset(args.data_name, args.dataconfig)
-                task_column ="audio"
+            elif args.data_name == "speech_commands": #AUDIO
+                raw_datasets = DatasetDict()
+                raw_datasets["train"] = load_dataset(args.data_name, args.dataconfig, split='train')
+                #raw_datasets[valkey] = load_dataset(args.data_name, args.dataconfig, split='validation')
+                #raw_datasets = load_dataset(args.data_name, args.dataconfig, split='test')
+                task_column ="audio" #(['file', 'audio', 'label', 'is_unknown', 'speaker_id', 'utterance_id']
                 text_column = "audio"
-                target_column = "labels"
+                target_column = "label"
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -251,7 +252,9 @@ def loaddata(args, USE_HPC):
             print("Context: ", oneexample[text_column])
             print("Question: ", oneexample[task_column])
             print("Answer: ", oneexample[target_column])#dict with 'text' and 'answer_start'
-
+        elif args.task.startswith("audio"):
+            oneexample = split_datasets["train"][1]
+            print("Audio: ", oneexample[text_column])
         raw_datasets = split_datasets
         if args.subset>0:
             if args.subset<1:
@@ -393,9 +396,9 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="superb",
+    parser.add_argument('--data_name', type=str, default="speech_commands",
                     help='data name: ')
-    parser.add_argument('--dataconfig', type=str, default='ks',
+    parser.add_argument('--dataconfig', type=str, default='v0.02',
                     help='dataset_config_name')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
@@ -545,7 +548,7 @@ if __name__ == "__main__":
                                                          pretrained=args.pretrained, hpc=USE_HPC, unfreezename=args.unfreezename, 
                                                          return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False)
     model_input_name = feature_extractor.model_input_names[0]
-    print("model_input_name:", model_input_name)
+    print("model_input_name:", model_input_name) #input_values
     
     # `datasets` takes care of automatically loading and resampling the audio,
     # so we just need to set the correct target sampling rate.
@@ -556,20 +559,36 @@ if __name__ == "__main__":
     def train_transforms(batch):
         """Apply train_transforms across a batch."""
         subsampled_wavs = []
-        for audio in batch[task_column]:
+        #print(batch.keys())
+        #print(batch[task_column])
+        if isinstance(batch[task_column], list):
+            for audio in batch[task_column]:
+                wav = random_subsample(
+                    audio["array"], max_length=args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
+                )
+                subsampled_wavs.append(wav)
+            inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
+            output_batch = {model_input_name: inputs.get(model_input_name)}
+            output_batch["labels"] = list(batch[target_column])
+        else:
+            audio = batch[task_column]
             wav = random_subsample(
-                audio["array"], max_length=args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
-            )
+                    audio["array"], max_length=args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
+                )
             subsampled_wavs.append(wav)
-        inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
-        output_batch = {model_input_name: inputs.get(model_input_name)}
-        output_batch["labels"] = list(batch[target_column])
+            inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
+            output_batch = {model_input_name: inputs.get(model_input_name)}
+            output_batch["labels"] = batch[target_column]
 
         return output_batch
 
     def val_transforms(batch):
         """Apply val_transforms across a batch."""
-        wavs = [audio["array"] for audio in batch[task_column]]
+        if isinstance(batch[task_column], list):
+            wavs = [audio["array"] for audio in batch[task_column]]
+        else:
+            audio = batch[task_column]
+            wavs = [audio["array"]]
         inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate)
         output_batch = {model_input_name: inputs.get(model_input_name)}
         output_batch["labels"] = list(batch[target_column])
@@ -578,10 +597,16 @@ if __name__ == "__main__":
 
     # Set the training transforms
     raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
+    #transferred_datasets = DatasetDict()
+    #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
     # Set the validation transforms
     raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
+    #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
     train_dataset=raw_datasets["train"]
     eval_dataset=raw_datasets[valkey]
+    #train_dataset=transferred_datasets["train"]
+    #eval_dataset=transferred_datasets[valkey]
+
 
     # Load the accuracy metric from the datasets package
     metric = evaluate.load("accuracy")
@@ -608,7 +633,7 @@ if __name__ == "__main__":
         load_best_model_at_end=True,
         metric_for_best_model="accuracy",
         fp16=True,
-        push_to_hub=True,
+        push_to_hub=False,
     )
     
     # Initialize our trainer
