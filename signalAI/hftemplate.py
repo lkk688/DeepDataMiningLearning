@@ -59,7 +59,7 @@ def loadmodel(model_checkpoint, labels, task="audio-classification", mycache_dir
     if hpc==True:
         localpath=os.path.join(mycache_dir, model_checkpoint)
         if task == "audio-classification":
-            feature_extractor = AutoFeatureExtractor.from_pretrained(localpath, 
+            feature_extractor = AutoFeatureExtractor.from_pretrained(localpath, do_normalize=True, 
                                                                     return_attention_mask=return_attention_mask)
             config = AutoConfig.from_pretrained(
                 localpath,
@@ -227,6 +227,11 @@ def loaddata(args, USE_HPC):
                 task_column ="audio" #(['file', 'audio', 'label', 'is_unknown', 'speaker_id', 'utterance_id']
                 text_column = "audio"
                 target_column = "label"
+            elif args.data_name == "marsyas/gtzan":
+                raw_datasets = load_dataset(args.data_name, "all")
+                task_column ="audio" 
+                text_column = "audio"
+                target_column = "genre"
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -396,7 +401,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="speech_commands",
+    parser.add_argument('--data_name', type=str, default="marsyas/gtzan",
                     help='data name: ')
     parser.add_argument('--dataconfig', type=str, default='v0.02',
                     help='dataset_config_name')
@@ -405,8 +410,8 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
-                    help='Model checkpoint name from HF, ')
+    parser.add_argument('--model_checkpoint', type=str, default="ntu-spml/distilhubert",
+                    help='Model checkpoint name from HF, "facebook/wav2vec2-base"') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='NLP tasks: openqa, translation, summarization, QA')
     parser.add_argument('--hfevaluate', default=True, action='store_true',
@@ -420,7 +425,7 @@ if __name__ == "__main__":
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="1124",
+    parser.add_argument('--traintag', type=str, default="1204",
                     help='Name the current training')
     parser.add_argument('--training', default=True, action='store_true',
                     help='Perform training')
@@ -555,6 +560,25 @@ if __name__ == "__main__":
     raw_datasets = raw_datasets.cast_column(
         task_column, features.Audio(sampling_rate=feature_extractor.sampling_rate)
     )
+
+    sample = raw_datasets["train"][0]["audio"]
+    print(f"Mean: {np.mean(sample['array']):.3}, Variance: {np.var(sample['array']):.3}")
+    inputs = feature_extractor(sample["array"], sampling_rate=sample["sampling_rate"])
+    print(f"inputs keys: {list(inputs.keys())}")
+    print(
+        f"Mean: {np.mean(inputs['input_values']):.3}, Variance: {np.var(inputs['input_values']):.3}"
+    )
+
+    def preprocess_function(examples):
+        audio_arrays = [x["array"] for x in examples["audio"]]
+        inputs = feature_extractor(
+            audio_arrays,
+            sampling_rate=feature_extractor.sampling_rate,
+            max_length=int(feature_extractor.sampling_rate * max_duration),
+            truncation=True,
+            return_attention_mask=True,
+        )
+        return inputs
     
     def train_transforms(batch):
         """Apply train_transforms across a batch."""
@@ -596,16 +620,25 @@ if __name__ == "__main__":
         return output_batch
 
     # Set the training transforms
-    raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
-    #transferred_datasets = DatasetDict()
-    #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
-    # Set the validation transforms
-    raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
-    #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
-    train_dataset=raw_datasets["train"]
-    eval_dataset=raw_datasets[valkey]
-    #train_dataset=transferred_datasets["train"]
-    #eval_dataset=transferred_datasets[valkey]
+    # raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
+    # #transferred_datasets = DatasetDict()
+    # #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
+    # # Set the validation transforms
+    # raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
+    # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
+    # train_dataset=raw_datasets["train"]
+    # eval_dataset=raw_datasets[valkey]
+    # #train_dataset=transferred_datasets["train"]
+    # #eval_dataset=transferred_datasets[valkey]
+
+    dataset_encoded = raw_datasets.map(
+        preprocess_function,
+        remove_columns=["audio", "file"],
+        batched=True,
+        batch_size=100,
+        num_proc=1,
+    )
+    dataset_encoded = dataset_encoded.rename_column("genre", "label")
 
 
     # Load the accuracy metric from the datasets package
@@ -640,8 +673,8 @@ if __name__ == "__main__":
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=raw_datasets["train"],
-        eval_dataset=raw_datasets[valkey],
+        train_dataset=dataset_encoded["train"],
+        eval_dataset=dataset_encoded[valkey],
         compute_metrics=compute_metrics,
         tokenizer=feature_extractor,
     )

@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument(
         "--dataset_split_names",
         type=str,
-        default='Train.100',
+        default='train.100',
         help="The names of the training data set splits to use (via the datasets library).",
     )
     parser.add_argument(
