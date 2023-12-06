@@ -243,7 +243,7 @@ epoch 15, BLEU score: 19.77
 epoch 16, BLEU score: 50.83
 epoch 31, BLEU score: 56.57
 
-python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=50000 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=48 --batch_size=64
+python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=50000 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --total_epochs=48 --batch_size=64
 Trainoutput folder: /data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124
 epoch 32, BLEU score: 9.67
 epoch 33, BLEU score: 13.95
@@ -251,7 +251,11 @@ epoch 35, BLEU score: 20.78
 epoch 45, BLEU score: 37.60
 epoch 47, BLEU score: 39.47
 
-python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset= --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=64 --batch_size=64
+python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=50000 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=True --evaluate="localevaluate" --usehpc=True --total_epochs=64 --batch_size=64
+epoch 48, BLEU score: 60.04
+epoch 63, BLEU score: 59.26
+
+$ python nlp/huggingfaceSequence2.py --data_name="wmt19" --subset=0 --model_checkpoint="t5-base" --task="Seq2SeqLM" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1124" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --useHFaccelerator=False --evaluate="localevaluate" --usehpc=True --gpuid=2 --total_epochs=80 --batch_size=64
 ```
 
 Train T5-base in local computer
