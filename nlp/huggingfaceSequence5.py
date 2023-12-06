@@ -692,12 +692,12 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, mybert, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="openqa",
                     help='NLP tasks: openqa, translation, summarization, QA')
-    parser.add_argument('--hfevaluate', default=True, action='store_true',
+    parser.add_argument('--hfevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
-    parser.add_argument("--target_lang", type=str, default="fr", help="Target language id for translation.")
+    parser.add_argument("--target_lang", type=str, default="zh", help="Target language id for translation.")
     parser.add_argument(
         "--source_prefix",
         type=str,

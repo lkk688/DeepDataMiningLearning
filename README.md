@@ -350,6 +350,10 @@ epoch 15, evaluation metric: squad_v2
 Evaluation result: {'exact': 76.38, 'f1': 82.8391234679352, 'total': 5000, 'HasAns_exact': 73.26367547633681, 'HasAns_f1': 83.18857324513708, 'HasAns_total': 3254, 'NoAns_exact': 82.18785796105384, 'NoAns_f1': 82.18785796105384, 'NoAns_total': 1746, 'best_exact': 76.32, 'best_exact_thresh': 0.0, 'best_f1': 82.77912346793502, 'best_f1_thresh': 0.0}
 ```
 
+```bash
+python nlp/huggingfaceSequence5.py --data_name="wmt19" --subset=100000 --model_checkpoint="t5-base" --task="translation" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1206" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --usehpc --gpuid=1 --total_epochs=80 --batch_size=64
+```
+
 NLP models based on Huggingface Transformer libraries
 * Starting
    * [HuggingfaceTransformers](notebooks/Transformers.ipynb)
