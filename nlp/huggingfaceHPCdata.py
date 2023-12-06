@@ -18,15 +18,15 @@ metric = evaluate.load("squad")
 
 #https://huggingface.co/docs/datasets/loading
 from datasets import load_dataset, ReadInstruction
-datasetpath='emotion/split/1.0.0/cca5efe2dfeb58c1d098e0f9eeb200e9927d889b5a03c67097275dfb5fe463bd'
-trainarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-train.arrow')
-valarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-validation.arrow')
-testarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-test.arrow')
-dataset = load_dataset("arrow", data_files={'train': trainarrowpath, 'val': valarrowpath, 'test': testarrowpath})
+# datasetpath='emotion/split/1.0.0/cca5efe2dfeb58c1d098e0f9eeb200e9927d889b5a03c67097275dfb5fe463bd'
+# trainarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-train.arrow')
+# valarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-validation.arrow')
+# testarrowpath=os.path.join(mycache_dir, datasetpath, 'emotion-test.arrow')
+# dataset = load_dataset("arrow", data_files={'train': trainarrowpath, 'val': valarrowpath, 'test': testarrowpath})
 
-print(dataset)
-train_ds = dataset["train"]
-print(train_ds)
+# print(dataset)
+# train_ds = dataset["train"]
+# print(train_ds)
 
 #eli5 = load_dataset("eli5", split="train_asks")
 eli5 = load_dataset("eli5")
@@ -93,6 +93,13 @@ def loadseq2seqmodels(model_ckpt):
 loadseq2seqmodels("Helsinki-NLP/opus-mt-en-fr")
 loadseq2seqmodels("Helsinki-NLP/opus-mt-en-zh")
 loadseq2seqmodels("t5-base")
+
+loadseq2seqmodels("facebook/wmt21-dense-24-wide-en-x")
+loadseq2seqmodels("facebook/wmt21-dense-24-wide-x-en")
+loadseq2seqmodels("facebook/seamless-m4t-large")
+loadseq2seqmodels("facebook/seamless-m4t-medium")
+loadseq2seqmodels("facebook/seamless-m4t-v2-large")
+loadseq2seqmodels("facebook/seamless-m4t-v2-medium")
 
 loadmodels("distilbert-base-uncased")
 
