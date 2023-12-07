@@ -61,21 +61,22 @@ Install CUDA
 ~~~~~~~~~~~~~~~~~~
 There are two options to install CUDA: 1) using conda to install the cuda; 2) download cuda from nvidia, install cuda to the system.
 
-Option1: install CUDA and cuDNN with conda and pip, and setup the environment path for cudnn
+Option1: install CUDA with conda and pip, and setup the environment path for cudnn
 
 .. code-block:: console
    
    (mycondapy310) lkk@lkk-intel13:~$ conda install -c conda-forge cudatoolkit=11.8.0
+   
+Install cuDNN: this step is not needed for Pytorch  (You can ignore the following steps) 
+
+.. code-block:: console
+
    (mycondapy310) lkk@lkk-intel13:~$ pip install nvidia-cudnn-cu11==8.6.0.163
    (mycondapy310) lkk@lkk-intel13:~$ CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))
    (mycondapy310) lkk@lkk-intel13:~$ echo $CUDNN_PATH
    /home/lkk/miniconda3/envs/mycondapy310/lib/python3.10/site-packages/nvidia/cudnn
    (mycondapy310) lkk@lkk-intel13:~$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib
-
-You can automate it with the following commands. The system paths will be automatically configured when you activate this conda environment.
-
-.. code-block:: console
-   
+   #You can automate it with the following commands. The system paths will be automatically configured when you activate this conda environment.
    (mycondapy310) lkk@lkk-intel13:~$ mkdir -p $CONDA_PREFIX/etc/conda/activate.d
    (mycondapy310) lkk@lkk-intel13:~$ echo 'CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))' >>      $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
    (mycondapy310) lkk@lkk-intel13:~$ echo 'export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib' >> $CONDA_PREFIX/etc/conda/activate.d/env_vars.sh
@@ -113,6 +114,13 @@ When install CUDA, do not select the "install the driver" option. After cuda ins
 
 You can add these path setup code in ~/.bashrc or setup in conda "$CONDA_PREFIX/etc/conda/activate.d/env_vars.sh"
 
+Pytorch2 Installation
+-------------------------
+Install pytorch: https://pytorch.org/get-started/locally/
+
+.. code-block:: console
+
+   (mycondapy310) $ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia #numpy-1.24.3 is also installed
 
    
 Tensorflow Installation
@@ -132,15 +140,6 @@ The tensorflow may show warning of "Could not load dynamic library 'libnvinfer.s
    $ cp /home/lkk/Developer/TensorRT-8.5.3.1/lib/libnvinfer_plugin.so.8 /home/lkk/Developer/TensorRT-8.5.3.1/lib/libnvinfer_plugin.so.7
    $ cp /home/lkk/Developer/TensorRT-8.5.3.1/lib/libnvinfer_plugin.so.8 /home/lkk/Developer/TensorRT-8.5.3.1/lib/libnvinfer_plugin.so.7
 
-Pytorch2.0 Installation
--------------------------
-
-.. code-block:: console
-
-   (mycondapy310) $ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia #numpy-1.24.3 is also installed
-   #torch installation may impact waymo-open-dataset, and show ModuleNotFoundError: No module named 'chardet'
-   $ pip install chardet #solve the problem
-
 Waymo OpenDataset Installation
 ----------------------------------
 
@@ -153,6 +152,8 @@ First install [openexr](https://www.excamera.com/sphinx/articles-openexr.html) f
    $ conda install -c conda-forge openexr-python
    $ python3 -m pip install waymo-open-dataset-tf-2-11-0==1.5.1 #it will force install tensorflow2.11
    >>> from waymo_open_dataset.utils import frame_utils, transform_utils, range_image_utils # test import waymo_open_dataset in python, should show no errors
+   #torch installation may impact waymo-open-dataset, and show ModuleNotFoundError: No module named 'chardet'
+   $ pip install chardet #solve the problem
 
 3D Object Detection
 -------------------------
@@ -254,16 +255,38 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
 
 .. code-block:: console
 
-  % conda install -c conda-forge accelerate
-  % accelerate config
-    Do you wish to use FP16 or BF16 (mixed precision)?                                                                                                          
-  bf16                                                                                                                                                        
-  accelerate configuration saved at /Users/kaikailiu/.cache/huggingface/accelerate/default_config.yaml 
-  % accelerate env
-  % conda install -c huggingface transformers
-  % pip install evaluate
-  % pip install cchardet
-  % conda install -c conda-forge umap-learn #pip install umap-learn
-  % pip install portalocker
-  % pip install torchdata
-  % pip install torchtext
+   % conda install -c conda-forge accelerate
+   % accelerate config
+      Do you wish to use FP16 or BF16 (mixed precision)?                                                                                                          
+   bf16                                                                                                                                                        
+   accelerate configuration saved at /Users/kaikailiu/.cache/huggingface/accelerate/default_config.yaml 
+   % accelerate env
+   % conda install -c huggingface transformers
+   % pip install evaluate
+   % pip install cchardet
+   % conda install -c conda-forge umap-learn #pip install umap-learn
+   % pip install portalocker
+   % pip install torchdata
+   % pip install torchtext
+   $ conda install -c conda-forge spacy #https://spacy.io/usage
+   #$ conda install -c conda-forge cupy #https://docs.cupy.dev/en/stable/install.html
+   $ python -m spacy download en_core_web_sm
+   >>> import spacy
+   >>> spacy.prefer_gpu()
+   True
+   >>> nlp = spacy.load("en_core_web_sm")
+   $ pip install configargparse
+   $ conda install -c huggingface -c conda-forge datasets #pip install datasets
+   $ conda install -c conda-forge scikit-learn
+   $ conda install -c conda-forge tensorboard
+   (mycondapy310) [010796032@g4 MultiModalClassifier]$ python setup.py develop
+   pip install -q torchinfo
+   $ conda install -c conda-forge jupyterlab
+   ipython kernel install --user --name=mycondapy310
+   pip install pyyaml scikit-image onnx onnx-simplifier
+   pip install onnxruntime
+   pip install seaborn
+   pip install sacrebleu
+   pip install sacremoses
+   pip install nltk
+   pip install rouge_score

@@ -583,7 +583,8 @@ if __name__ == "__main__":
     )
 
     def preprocess_function(examples):
-        audio_arrays = [x["array"] for x in examples["audio"]]
+        audio_arrays = [x["array"] for x in examples[task_column]] #"audio"
+        target_labels = [np.int64(x) for x in examples[target_column]]
         inputs = feature_extractor(
             audio_arrays,
             sampling_rate=feature_extractor.sampling_rate,
@@ -591,7 +592,10 @@ if __name__ == "__main__":
             truncation=True,
             return_attention_mask=True,
         )
-        return inputs
+        #return inputs
+        output_batch = inputs #{model_input_name: inputs.get(model_input_name)}
+        output_batch["labels"] = target_labels #list(target_labels) #list(examples[target_column])
+        return output_batch
     
     def train_transforms(batch):
         """Apply train_transforms across a batch."""
@@ -633,9 +637,9 @@ if __name__ == "__main__":
         return output_batch
 
     # Set the training transforms
-    # raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
-    # #transferred_datasets = DatasetDict()
-    # #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
+    #raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
+    #transferred_datasets = DatasetDict()
+    #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
     # # Set the validation transforms
     # raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
     # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
@@ -646,12 +650,12 @@ if __name__ == "__main__":
 
     dataset_encoded = raw_datasets.map(
         preprocess_function,
-        remove_columns=["audio", "file"],
+        remove_columns=raw_datasets["train"].column_names, #["audio", "file"],
         batched=True,
         batch_size=100,
         num_proc=1,
     )
-    dataset_encoded = dataset_encoded.rename_column("genre", "label")
+    #dataset_encoded = dataset_encoded.rename_column("genre", "label")
 
 
     # Load the accuracy metric from the datasets package
