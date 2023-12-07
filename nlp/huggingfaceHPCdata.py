@@ -85,7 +85,16 @@ def loadseq2seqmodels(model_ckpt):
     model.save_pretrained(newpath)
     print(model)
 
-
+def loadseq2seqmodelsnoconfig(model_ckpt):
+    #model_ckpt = "distilbert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
+    #config = AutoConfig.from_pretrained(model_ckpt)
+    model = AutoModelForSeq2SeqLM.from_pretrained(model_ckpt)
+    newpath=os.path.join(mycache_dir, model_ckpt)
+    tokenizer.save_pretrained(newpath)
+    #config.save_pretrained(newpath)
+    model.save_pretrained(newpath)
+    print(model)
 #loadseq2seqmodels("facebook/wmt21-dense-24-wide-en-x")
 
 #loadseq2seqmodels("facebook/seamless_m4t")
@@ -96,10 +105,20 @@ loadseq2seqmodels("t5-base")
 
 loadseq2seqmodels("facebook/wmt21-dense-24-wide-en-x")
 loadseq2seqmodels("facebook/wmt21-dense-24-wide-x-en")
-loadseq2seqmodels("facebook/seamless-m4t-large")
-loadseq2seqmodels("facebook/seamless-m4t-medium")
-loadseq2seqmodels("facebook/seamless-m4t-v2-large")
-loadseq2seqmodels("facebook/seamless-m4t-v2-medium")
+
+from transformers import SeamlessM4TModel
+model_ckpt = "facebook/hf-seamless-m4t-medium"
+model = SeamlessM4TModel.from_pretrained(model_ckpt)
+from transformers import AutoProcessor
+processor = AutoProcessor.from_pretrained(model_ckpt)
+newpath=os.path.join(mycache_dir, model_ckpt)
+processor.save_pretrained(newpath)
+model.save_pretrained(newpath)
+
+# loadseq2seqmodelsnoconfig("facebook/seamless-m4t-large")
+# loadseq2seqmodelsnoconfig("facebook/seamless-m4t-medium")
+# loadseq2seqmodelsnoconfig("facebook/seamless-m4t-v2-large")
+# loadseq2seqmodelsnoconfig("facebook/seamless-m4t-v2-medium")
 
 loadmodels("distilbert-base-uncased")
 
