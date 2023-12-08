@@ -23,6 +23,7 @@ Install Basic Software
     $ sudo apt install -y ./teamviewer_15.37.3_amd64.deb
     $ sudo apt-get install libgtkglext1
     $ sudo dpkg -i anydesk_6.2.1-1_amd64.deb 
+    $ sudo apt install ffmpeg
 
 Download Cisco Anyconnect VPN client from SJSU: https://vpn.sjsu.edu/CACHE/stc/1/index.html
 

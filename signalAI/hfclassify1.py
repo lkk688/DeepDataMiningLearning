@@ -239,6 +239,11 @@ def loaddata(args, USE_HPC):
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "genre"
+            elif args.data_name =="common_language":
+                raw_datasets = load_dataset(args.data_name)
+                task_column ="audio" 
+                text_column = "audio"
+                target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -401,15 +406,15 @@ def savemodels(model, optimizer, epoch, trainoutput):
     #Huggingface format:
     model.save_pretrained(trainoutput)
 
-#data_name="imdb", dataconfig="", model_checkpoint="distilbert-base-uncased"
+#data_name="marsyas/gtzan", dataconfig="", model_checkpoint="ntu-spml/distilhubert"
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="marsyas/gtzan",
-                    help='data name: ')
+    parser.add_argument('--data_name', type=str, default="common_language",
+                    help='data name: marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='v0.02',
                     help='dataset_config_name')
     parser.add_argument('--subset', type=float, default=0,
@@ -417,8 +422,8 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="ntu-spml/distilhubert",
-                    help='Model checkpoint name from HF, "facebook/wav2vec2-base"') 
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
+                    help='Model checkpoint name from HF, "facebook/wav2vec2-base", ntu-spml/distilhubert') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='NLP tasks: openqa, translation, summarization, QA')
     parser.add_argument('--hfevaluate', default=True, action='store_true',
@@ -555,7 +560,7 @@ if __name__ == "__main__":
         raise ValueError(
             f"--label_column_name not found in dataset. "
         )
-    id2label_fn = raw_datasets["train"].features["genre"].int2str
+    id2label_fn = raw_datasets["train"].features[target_column].int2str
     id2label = {
         str(i): id2label_fn(i)
         for i in range(len(labels))
