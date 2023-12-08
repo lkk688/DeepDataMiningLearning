@@ -179,6 +179,11 @@ def loaddata(args, USE_HPC):
                 task_column ="translation"
                 text_column =  "en"
                 target_column = "zh"
+            elif args.data_name=='wmt19':
+                raw_datasets = load_dataset("wmt19", "zh-en")
+                task_column ="translation"
+                text_column =  "en"
+                target_column = "zh"
             elif args.data_name=='opus_books':
                 raw_datasets = load_dataset("opus_books", "en-fr")
                 task_column ="translation"
@@ -683,29 +688,29 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='simple distributed training job')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="squad_v2",
-                    help='data name: squad, opus_books, kde4, opus100, cnn_dailymail, billsum, xsum')
+    parser.add_argument('--data_name', type=str, default="wmt19",
+                    help='data name: squad_v2, squad, opus_books, kde4, opus100, cnn_dailymail, billsum, xsum')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
                     help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="t5-base",
-                    help='Model checkpoint name from HF, mybert, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
-    parser.add_argument('--task', type=str, default="openqa",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wmt21-dense-24-wide-en-x",
+                    help='Model checkpoint name from HF, t5-base, mybert, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
+    parser.add_argument('--task', type=str, default="translation",
                     help='NLP tasks: openqa, translation, summarization, QA')
     parser.add_argument('--hfevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
-    parser.add_argument('--dualevaluate', default=False, action='store_true',
+    parser.add_argument('--dualevaluate', default=True, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
     parser.add_argument("--source_lang", type=str, default="en", help="Source language id for translation.")
     parser.add_argument("--target_lang", type=str, default="zh", help="Target language id for translation.")
     parser.add_argument(
         "--source_prefix",
         type=str,
-        default="answer question: ",
-        help="A prefix to add before every source text (useful for T5 models). translate xx to xx: summarize: ",
+        default="",
+        help="A prefix to add before every source text (useful for T5 models). answer question:  translate xx to xx: summarize: ",
     )
     parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
