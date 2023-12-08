@@ -350,6 +350,7 @@ epoch 15, evaluation metric: squad_v2
 Evaluation result: {'exact': 76.38, 'f1': 82.8391234679352, 'total': 5000, 'HasAns_exact': 73.26367547633681, 'HasAns_f1': 83.18857324513708, 'HasAns_total': 3254, 'NoAns_exact': 82.18785796105384, 'NoAns_f1': 82.18785796105384, 'NoAns_total': 1746, 'best_exact': 76.32, 'best_exact_thresh': 0.0, 'best_f1': 82.77912346793502, 'best_f1_thresh': 0.0}
 ```
 
+Use Sequence5.py for translation training
 ```bash
 python nlp/huggingfaceSequence5.py --data_name="wmt19" --subset=100000 --model_checkpoint="t5-base" --task="translation" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1206" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --usehpc --gpuid=1 --total_epochs=80 --batch_size=64
 ```
@@ -387,3 +388,18 @@ LLMs Apps based on OpenAI API
 LLMs Apps based on LangChain
 * [langchaintest.ipynb](nlp/langchaintest.ipynb)
 
+## SignalAI
+Perform audio classification via "hfclassify1.py":
+```bash
+   {'eval_loss': 0.8612403869628906, 'eval_accuracy': 0.8342342342342343, 'eval_runtime': 244.7536, 'eval_samples_per_second': 9.07, 'eval_steps_per_second': 0.568, 'epoch': 8.0}                                                                                     
+   {'train_runtime': 26052.4526, 'train_samples_per_second': 6.133, 'train_steps_per_second': 0.384, 'train_loss': 1.0575269655821498, 'epoch': 8.0}
+   ***** eval metrics *****
+   epoch                   =        8.0
+   eval_accuracy           =     0.8342
+   eval_loss               =     0.8612
+   eval_runtime            = 0:04:41.22
+   eval_samples_per_second =      7.894
+   eval_steps_per_second   =      0.494
+```
+
+Perform wave2vec2 training via "hfwave2vec2.py"
