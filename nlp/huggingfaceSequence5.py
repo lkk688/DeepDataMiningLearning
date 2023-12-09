@@ -74,14 +74,15 @@ def loadmodel(model_checkpoint, task="QA", mycache_dir="", pretrained="", hpc=Tr
         else:
             model = AutoModel.from_pretrained(localpath, local_files_only=True)
     else:
-        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)#, cache_dir=mycache_dir)
+        modelcache_dir=os.path.join(mycache_dir,'hub')
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
         if task in ['translation', 'summarization', 'Seq2SeqLM', 'openqa']:
-            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
+            model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
         elif task in ['QA', 'qa', 'QuestionAnswering']:
-            model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint)
+            model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
             #model = DistilBertForQuestionAnswering.from_pretrained(model_checkpoint)
         else:
-            model = AutoModel.from_pretrained(model_checkpoint)
+            model = AutoModel.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
     starting_epoch = 0
     if pretrained:
         checkpoint = torch.load(pretrained, map_location='cpu')
@@ -113,6 +114,7 @@ def loaddata(args, USE_HPC):
     task_column =""
     text_column = ""
     target_column =""
+    mycache_dir=args.cache_path
     if args.data_type == "huggingface":
         if USE_HPC:
             if args.data_name=='kde4':
@@ -166,7 +168,8 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
                 text_column =  "en"
                 target_column = "zh"
-        else:
+        else: #not in HPC
+            datacache_dir = os.path.join(mycache_dir, "datasets")
             if args.data_name=='kde4':
                 raw_datasets = load_dataset("kde4", lang1="en", lang2="fr")
                 task_column ="translation"
@@ -180,7 +183,7 @@ def loaddata(args, USE_HPC):
                 text_column =  "en"
                 target_column = "zh"
             elif args.data_name=='wmt19':
-                raw_datasets = load_dataset("wmt19", "zh-en")
+                raw_datasets = load_dataset("wmt19", "zh-en", cache_dir=datacache_dir)
                 task_column ="translation"
                 text_column =  "en"
                 target_column = "zh"
@@ -694,9 +697,9 @@ if __name__ == "__main__":
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
-                    help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wmt21-dense-24-wide-en-x",
+    parser.add_argument('--cache_path', type=str, default="D:/Cache/huggingface",
+                    help='path to huggingface cache: /data/cmpe249-fa23/Huggingfacecache')
+    parser.add_argument('--model_checkpoint', type=str, default="liam168/trans-opus-mt-en-zh",
                     help='Model checkpoint name from HF, t5-base, mybert, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="translation",
                     help='NLP tasks: openqa, translation, summarization, QA')
@@ -808,7 +811,7 @@ if __name__ == "__main__":
     if USE_HPC:
         #https://huggingface.co/docs/transformers/installation#offline-mode
         #HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
-        mycache_dir=args.data_path #"/data/cmpe249-fa23/Huggingfacecache"
+        mycache_dir=args.cache_path #"/data/cmpe249-fa23/Huggingfacecache"
         os.environ['TRANSFORMERS_CACHE'] = mycache_dir
         os.environ['HF_HOME'] = mycache_dir
         os.environ['HF_DATASETS_CACHE'] = mycache_dir
@@ -824,7 +827,15 @@ if __name__ == "__main__":
     else:
         trainoutput=args.outputdir #"./output"
         #taskname=args.traintag #taskname="eli5asksciencemodeling"
-        mycache_dir="./data/"
+        mycache_dir=args.cache_path
+        os.environ['TRANSFORMERS_CACHE'] = mycache_dir
+        os.environ['HF_HOME'] = mycache_dir
+        os.environ['HF_DATASETS_CACHE'] = os.path.join(mycache_dir,"datasets") #"D:\Cache\huggingface\datasets" #os.path.join(hfcache_dir, 'datasets')
+        os.environ['HF_EVALUATE_OFFLINE'] = "1"
+        os.environ['HF_DATASETS_OFFLINE'] = "1"
+        os.environ['TRANSFORMERS_OFFLINE'] = "1"
+        #os.environ['TORCH_HOME'] = os.path.join(mycache_dir, 'torch') #r"D:\Cache\torch"
+        print(os.environ['TRANSFORMERS_CACHE'])
     trainoutput=os.path.join(trainoutput, model_checkpoint, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
