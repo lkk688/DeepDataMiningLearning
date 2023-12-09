@@ -695,7 +695,7 @@ if __name__ == "__main__":
                     help='data name: squad_v2, squad, opus_books, kde4, opus100, cnn_dailymail, billsum, xsum')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='train_asks[:5000]')
-    parser.add_argument('--subset', type=float, default=0,
+    parser.add_argument('--subset', type=float, default=5000,
                     help='0 means all dataset')
     parser.add_argument('--cache_path', type=str, default="D:/Cache/huggingface",
                     help='path to huggingface cache: /data/cmpe249-fa23/Huggingfacecache')
