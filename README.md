@@ -355,6 +355,12 @@ Use Sequence5.py for translation training
 python nlp/huggingfaceSequence5.py --data_name="wmt19" --subset=100000 --model_checkpoint="t5-base" --task="translation" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1206" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --usehpc --gpuid=1 --total_epochs=80 --batch_size=64
 ```
 
+Fine tune "liam168/trans-opus-mt-en-zh" on wmt19 5000 subset
+```bash
+epoch 15, evaluation metric: sacrebleu
+Evaluation result: {'score': 45.11294317735652, 'counts': [200677, 140858, 104286, 81486], 'totals': [283438, 274938, 266464, 258142], 'precisions': [70.8010217402042, 51.232641541001975, 39.1369941155278, 31.566347204251922], 'bp': 0.9805091347328498, 'sys_len': 283438, 'ref_len': 289017}
+```
+
 NLP models based on Huggingface Transformer libraries
 * Starting
    * [HuggingfaceTransformers](notebooks/Transformers.ipynb)

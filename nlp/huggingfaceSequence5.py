@@ -75,7 +75,9 @@ def loadmodel(model_checkpoint, task="QA", mycache_dir="", pretrained="", hpc=Tr
             model = AutoModel.from_pretrained(localpath, local_files_only=True)
     else:
         modelcache_dir=os.path.join(mycache_dir,'hub')
-        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
+        #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, src_lang="en", tgt_lang="zh", cache_dir=modelcache_dir)
+        
         if task in ['translation', 'summarization', 'Seq2SeqLM', 'openqa']:
             model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint, cache_dir=modelcache_dir)
         elif task in ['QA', 'qa', 'QuestionAnswering']:
@@ -699,7 +701,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--cache_path', type=str, default="D:/Cache/huggingface",
                     help='path to huggingface cache: /data/cmpe249-fa23/Huggingfacecache')
-    parser.add_argument('--model_checkpoint', type=str, default="liam168/trans-opus-mt-en-zh",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wmt21-dense-24-wide-en-x",
                     help='Model checkpoint name from HF, t5-base, mybert, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
     parser.add_argument('--task', type=str, default="translation",
                     help='NLP tasks: openqa, translation, summarization, QA')
@@ -717,11 +719,11 @@ if __name__ == "__main__":
     )
     parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
-    parser.add_argument('--unfreezename', type=str, default="",
+    parser.add_argument('--unfreezename', type=str, default="model.decoder.layers.23",
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="1124",
+    parser.add_argument('--traintag', type=str, default="1210",
                     help='Name the current training')
     parser.add_argument('--training', default=True, action='store_true',
                     help='Perform training')
@@ -732,7 +734,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -745,7 +747,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=1,
+        default=2,
         help="Number of updates steps to accumulate before performing a backward/update pass, ref: https://kozodoi.me/blog/20210219/gradient-accumulation.",
     )
     parser.add_argument(
