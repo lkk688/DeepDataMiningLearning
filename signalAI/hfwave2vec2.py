@@ -1,4 +1,5 @@
 """ Pre-Training a 🤗 Wav2Vec2 model on unlabeled audio data """
+#ref: https://github.com/huggingface/transformers/blob/main/examples/pytorch/speech-pretraining/run_wav2vec2_pretraining_no_trainer.py
 
 import argparse
 import math
@@ -31,6 +32,15 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 
 
 logger = get_logger(__name__)
+
+import os
+#hfhome_dir=os.path.join('D:\\','Cache','huggingface')#"/data/cmpe249-fa23/Huggingfacecache"
+hfhome_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
+os.environ['TRANSFORMERS_CACHE'] = hfhome_dir
+os.environ['HF_HOME'] = hfhome_dir
+os.environ['HF_HUB_CACHE'] = os.path.join(hfhome_dir, 'hub')
+os.environ['HF_DATASETS_CACHE'] = hfhome_dir
+#HF_HUB_OFFLINE=1
 
 
 def parse_args():
@@ -252,7 +262,7 @@ def parse_args():
     if args.push_to_hub:
         assert args.output_dir is not None, "Need an `output_dir` to create a repo when `--push_to_hub` is passed."
 
-    if args.output_dir is not None:
+    if args.output_dir is not None: #"./output"
         os.makedirs(args.output_dir, exist_ok=True)
 
     return args
@@ -415,11 +425,11 @@ def main():
     #for dataset_config_name, train_split_name in zip(args.dataset_config_names, args.dataset_split_names):
         # load dataset
     dataset_split = load_dataset(
-        args.dataset_name,
-        args.dataset_config_names,
-        split=args.dataset_split_names,
+        args.dataset_name, #'librispeech_asr'
+        args.dataset_config_names, #'clean'
+        split=args.dataset_split_names, #'train.100'
     )
-    datasets_splits.append(dataset_split)
+    datasets_splits.append(dataset_split) #add to list
 
     # Next, we concatenate all configurations and splits into a single training dataset
     raw_datasets = DatasetDict()
@@ -459,8 +469,8 @@ def main():
         )
 
     # set max & min audio length in number of samples
-    max_length = int(args.max_duration_in_seconds * feature_extractor.sampling_rate)
-    min_length = int(args.min_duration_in_seconds * feature_extractor.sampling_rate)
+    max_length = int(args.max_duration_in_seconds * feature_extractor.sampling_rate) #80000
+    min_length = int(args.min_duration_in_seconds * feature_extractor.sampling_rate) #48000
 
     def prepare_dataset(batch):
         sample = batch[args.audio_column_name]

@@ -144,6 +144,12 @@ You can see disk "sda" from the "lsblk" is not mounted.
     tmpfs            14G  140k   14G   1% /run/user/1001
     /dev/sda         10T   37k  9.5T   1% /DATA10T
 
+Check directory size:
+
+.. code-block:: console
+
+    du -sh /path/to/directory
+
 sshfs
 ------
 .. code-block:: console

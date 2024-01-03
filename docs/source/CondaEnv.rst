@@ -290,3 +290,4 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
    pip install sacremoses
    pip install nltk
    pip install rouge_score
+   pip install soundfile #for audio
