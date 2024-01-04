@@ -36,7 +36,7 @@ logger = get_logger(__name__)
 import os
 #hfhome_dir=os.path.join('D:\\','Cache','huggingface')#"/data/cmpe249-fa23/Huggingfacecache"
 hfhome_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
-os.environ['TRANSFORMERS_CACHE'] = hfhome_dir
+#os.environ['TRANSFORMERS_CACHE'] = hfhome_dir
 os.environ['HF_HOME'] = hfhome_dir
 os.environ['HF_HUB_CACHE'] = os.path.join(hfhome_dir, 'hub')
 os.environ['HF_DATASETS_CACHE'] = hfhome_dir
