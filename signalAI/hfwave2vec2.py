@@ -34,12 +34,12 @@ from transformers.models.wav2vec2.modeling_wav2vec2 import _compute_mask_indices
 logger = get_logger(__name__)
 
 import os
-#hfhome_dir=os.path.join('D:\\','Cache','huggingface')#"/data/cmpe249-fa23/Huggingfacecache"
-hfhome_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
+hfhome_dir="/data/cmpe249-fa23/Huggingfacecache"
+#hfhome_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
 #os.environ['TRANSFORMERS_CACHE'] = hfhome_dir
 os.environ['HF_HOME'] = hfhome_dir
-os.environ['HF_HUB_CACHE'] = os.path.join(hfhome_dir, 'hub')
-os.environ['HF_DATASETS_CACHE'] = hfhome_dir
+#os.environ['HF_HUB_CACHE'] = os.path.join(hfhome_dir, 'hub')
+#os.environ['HF_DATASETS_CACHE'] = hfhome_dir
 #HF_HUB_OFFLINE=1
 
 
@@ -178,7 +178,7 @@ def parse_args():
     parser.add_argument(
         "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
     )
-    parser.add_argument("--output_dir", type=str, default="./output", help="Where to store the final model.")
+    parser.add_argument("--output_dir", type=str, default="./output/wav2vec2", help="Where to store the final model.")
     parser.add_argument("--seed", type=int, default=0, help="A seed for reproducible training.")
     parser.add_argument(
         "--max_gumbel_temperature",
