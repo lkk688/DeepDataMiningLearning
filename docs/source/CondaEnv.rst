@@ -291,3 +291,5 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
    pip install nltk
    pip install rouge_score
    pip install soundfile #for audio
+   pip install librosa #changed numpy-1.26.2 to 1.24.4
+   pip install jiwer #evaluate using the word error rate (WER) metric
