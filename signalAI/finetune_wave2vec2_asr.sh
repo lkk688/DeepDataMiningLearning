@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+python hfwave2vec2_asr.py \
+--output_dir="./output/wav2vec2-large-lv60-100h" \
+--num_train_epochs="30" \
+--per_device_train_batch_size="16" \
+--per_device_eval_batch_size="16" \
+--evaluation_strategy="steps" \
+--save_total_limit="3" \
+--save_steps="500" \
+--eval_steps="100" \
+--logging_steps="50" \
+--learning_rate="5e-4" \
+--warmup_steps="3000" \
+--model_name_or_path="facebook/wav2vec2-large-lv60" \
+--fp16 \
+--dataset_name="mozilla-foundation/common_voice_11_0" \
+--dataset_config_name="en" \
+--train_split_name="train" \
+--target_text_column="sentence" \
+--speech_file_column="path" \
+--preprocessing_num_workers="32" \
+--group_by_length \
+--freeze_feature_extractor
