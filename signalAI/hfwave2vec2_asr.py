@@ -50,6 +50,7 @@ class ModelArguments:
     """
 
     model_name_or_path: str = field(
+        default="facebook/wav2vec2-large-lv60",
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
     cache_dir: Optional[str] = field(
@@ -90,10 +91,10 @@ class DataTrainingArguments:
     """
 
     dataset_name: str = field(
-        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
+        default="mozilla-foundation/common_voice_11_0", metadata={"help": "The name of the dataset to use (via the datasets library)."}
     )
     dataset_config_name: Optional[str] = field(
-        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
+        default="en", metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
     train_split_name: Optional[str] = field(
         default="train",
@@ -110,15 +111,15 @@ class DataTrainingArguments:
         },
     )
     target_text_column: Optional[str] = field(
-        default="text",
+        default="sentence", #"text",
         metadata={"help": "Column in the dataset that contains label (target text). Defaults to 'text'"},
     )
     speech_file_column: Optional[str] = field(
-        default="file",
+        default="path", #"file",
         metadata={"help": "Column in the dataset that contains speech file path. Defaults to 'file'"},
     )
     target_feature_extractor_sampling_rate: Optional[bool] = field(
-        default=False,
+        default=16000,
         metadata={"help": "Resample loaded audio to target feature extractor's sampling rate or not."},
     )
     max_duration_in_seconds: Optional[float] = field(
@@ -344,8 +345,28 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
+    trainoutput="./output/asr/"
+    batch_size=16
+    total_epochs=6
+    gradient_accumulation_steps=1
+    training_args = TrainingArguments(
+        trainoutput,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        learning_rate=5e-5,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        per_device_eval_batch_size=batch_size,
+        num_train_epochs=total_epochs,
+        warmup_ratio=0.1,
+        logging_steps=5,
+        load_best_model_at_end=True,
+        metric_for_best_model="accuracy",
+        fp16=True,
+        push_to_hub=False,
+    )
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, training_args))
 
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
     print("Model args:", model_args)
@@ -393,6 +414,7 @@ def main():
     print("Dataset:", train_dataset)
     train_dataset = train_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
     val_dataset = val_dataset.map(prepare_example, remove_columns=[data_args.speech_file_column])
+    
 
     if data_args.max_duration_in_seconds is not None:
 

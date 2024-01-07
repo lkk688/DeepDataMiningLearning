@@ -705,6 +705,74 @@ if __name__ == "__main__":
         fp16=True,
         push_to_hub=False,
     )
+
+    train_dataloader = DataLoader(
+        dataset_encoded["train"],
+        shuffle=True,
+        collate_fn=None,
+        batch_size=args.batch_size,
+    )
+
+    # Optimizer
+    learning_rate=5e-5
+    adam_beta1=0.9
+    adam_beta2=0.999
+    adam_epsilon=1e-8
+    optimizer = AdamW(
+        list(model.parameters()),
+        lr=learning_rate,
+        betas=[adam_beta1, adam_beta2],
+        eps=adam_epsilon,
+    )
+    gradient_accumulation_steps =1
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
+    max_train_steps = args.total_epochs * num_update_steps_per_epoch
+
+    num_warmup_steps = 10
+    lr_scheduler = get_scheduler(
+            name="linear", #["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=max_train_steps,
+        )
+    
+    #recalculate our number of training epochs
+    num_train_epochs = math.ceil(max_train_steps /  num_update_steps_per_epoch)
+    total_batch_size = args.batch_size * gradient_accumulation_steps
+
+    gpuid=0
+    if torch.cuda.is_available():
+        device = torch.device('cuda:'+str(gpuid))  # CUDA GPU 0
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+    model.to(device)
+
+    progress_bar = tqdm(range(max_train_steps))
+    completed_steps = 0
+    starting_epoch = 0
+    for epoch in range(starting_epoch, num_train_epochs):
+        model.train()
+        losses=[]
+        for step, batch in enumerate(train_dataloader):
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+            loss = outputs.loss
+            if gradient_accumulation_steps > 1:
+                loss = loss / gradient_accumulation_steps
+
+            #backward
+            loss.backward()
+
+            if step % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad()
+                    progress_bar.update(1)
+                    completed_steps += 1
+            
+        print(f"epoch {epoch}, loss: {loss}")
     
     # Initialize our trainer
     trainer = Trainer(

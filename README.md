@@ -407,5 +407,10 @@ Perform audio classification via "hfclassify1.py":
    eval_samples_per_second =      7.894
    eval_steps_per_second   =      0.494
 ```
+Language classification via common_language dataset (https://huggingface.co/datasets/common_language)
+
+Jupyter notebook for finetune wave2vec2: signalAI/hfwave2vec2_finetune.ipynb
+
+Pretrain the wave2vec2 model: signalAI/hfwave2vec2.py
 
 Perform wave2vec2 training via "hfwave2vec2.py"
