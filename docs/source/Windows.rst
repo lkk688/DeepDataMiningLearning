@@ -1,5 +1,10 @@
-WSL2
-=====
+Windows
+==========
+Kill GPU process in Windows:
+
+.. code-block:: console
+    nvidia-smi
+    taskkill /PID 21824 /F
 
 .. _WSL2:
 

@@ -30,6 +30,11 @@ import random
 import json
 from random import randint
 valkey='test'
+import datetime
+
+mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
+os.environ['HF_HOME'] = mycache_dir
+os.environ['HF_DATASETS_CACHE'] = mycache_dir
 
 def random_subsample(wav: np.ndarray, max_length: float, sample_rate: int = 16000):
     """Randomly sample chunks of `max_length` seconds from the input audio"""
@@ -49,6 +54,31 @@ def modelparameters(model, unfreezename=""):
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
 
+def getlabels(raw_datasets, task_column, target_column):
+    labels = raw_datasets["train"].features[target_column].names
+    column_names = raw_datasets["train"].column_names
+    print("column_names:", column_names)
+    if task_column not in raw_datasets["train"].column_names:
+        raise ValueError(
+            f"--audio_column_name not found in dataset. "
+        )
+    if target_column not in raw_datasets["train"].column_names:
+        raise ValueError(
+            f"--label_column_name not found in dataset. "
+        )
+    id2label_fn = raw_datasets["train"].features[target_column].int2str
+    id2label = {
+        str(i): id2label_fn(i)
+        for i in range(len(labels))
+    }
+    label2id = {v: k for k, v in id2label.items()}
+    #print("label2id: ", label2id)
+    #Option2
+    # label2id, id2label = dict(), dict()
+    # for i, label in enumerate(labels):
+    #     label2id[label] = str(i)
+    #     id2label[str(i)] = label
+    return labels, id2label, label2id
 
 def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", mycache_dir="", pretrained="", hpc=True, unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False):
     # label2id, id2label = {}, {}
@@ -69,7 +99,7 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
             feature_extractor = AutoFeatureExtractor.from_pretrained(localpath, do_normalize=True, return_attention_mask=return_attention_mask)
             config = AutoConfig.from_pretrained(
                 localpath,
-                num_labels=len(labels),
+                num_labels=len(label2id), #len(labels),
                 label2id=label2id,
                 id2label=id2label,
                 finetuning_task=task, #"audio-classification",
@@ -86,15 +116,13 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
         if task == "audio-classification":
             # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
             # transformer outputs in the classifier, but it doesn't always lead to better accuracy
-            feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, 
-                                                                    return_attention_mask=return_attention_mask,
-                                                                    cache_dir=mycache_dir)
+            feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, return_attention_mask=return_attention_mask,cache_dir=mycache_dir)
             # model_args.feature_extractor_name or model_args.model_name_or_path,
             # return_attention_mask=model_args.attention_mask,
             # cache_dir=model_args.cache_dir,
             config = AutoConfig.from_pretrained(
                 model_checkpoint,
-                num_labels=len(labels),
+                num_labels=len(label2id), #len(labels),
                 label2id=label2id,
                 id2label=id2label,
                 finetuning_task=task, #"audio-classification",
@@ -243,7 +271,8 @@ def loaddata(args, USE_HPC):
                 task_column ="question"
                 text_column = "context"
                 target_column = "answers"
-            elif args.data_name == "speech_commands": #AUDIO
+            #AUDIO part
+            elif args.data_name == "speech_commands": 
                 raw_datasets = DatasetDict()
                 raw_datasets["train"] = load_dataset(args.data_name, args.dataconfig, split='train')
                 #raw_datasets[valkey] = load_dataset(args.data_name, args.dataconfig, split='validation')
@@ -261,15 +290,43 @@ def loaddata(args, USE_HPC):
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
+            elif args.data_name.endswith("minds14"):
+                #https://huggingface.co/datasets/PolyAI/minds14 contains recordings of people asking an e-banking system questions in several languages and dialects, and has the intent_class for each recording
+                if args.dataconfig:
+                    subsetconfig = args.dataconfig
+                else:
+                    subsetconfig = "all" #"en-AU" "zh-CN"
+                raw_datasets = load_dataset("PolyAI/minds14", name=subsetconfig, split="train")
+                #raw_datasets = raw_datasets.train_test_split(test_size=0.2)
+                #minds can be used to classify intent_class, lang_id, and speech recognition (english_transcription)
+                #contains "path", "audio"dict("path", "array")
+                task_column ="audio" 
+                text_column = "path"
+                if args.task=="audio-classification":
+                    if args.subtask.startswith("intent"):
+                        target_column = "intent_class"
+                    else:
+                        target_column = "lang_id"
+                else:
+                    target_column = "english_transcription"
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
                 text_column = "text"
                 target_column = "summary"
         #Download to home/.cache/huggingface/dataset
+        print(raw_datasets.column_names)
+        #splits=raw_datasets.split
+        # print(raw_datasets.columns)
+        if isinstance(raw_datasets.column_names, dict):
+            print("All keys in raw datasets:", raw_datasets['train']) #obly one ['translation'] key
+            split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+        else: #no train/test split
+            split_datasets = DatasetDict()
+            split_datasets["train"] = raw_datasets
+            split_datasets = split_datasets["train"].train_test_split(train_size=0.9, seed=20)
         
-        print("All keys in raw datasets:", raw_datasets['train'][0].keys()) #obly one ['translation'] key
-        split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+   
         # rename the "test" key to "validation" 
         #split_datasets["validation"] = split_datasets.pop("test")
         #one element
@@ -289,6 +346,7 @@ def loaddata(args, USE_HPC):
         elif args.task.startswith("audio"):
             oneexample = split_datasets["train"][1]
             print("Audio: ", oneexample[text_column])
+            print("Audio target: ", oneexample[target_column])
         raw_datasets = split_datasets
         if args.subset>0:
             if args.subset<1:
@@ -324,6 +382,45 @@ def get_myoptimizer(model, learning_rate=2e-5, weight_decay=0.0):
     ]
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
     return optimizer
+
+from transformers import pipeline
+def inferencesample(datasample, task, model, usepipeline=True, feature_extractor=None, device='cuda', columnname='audio'):
+    sample = datasample[columnname] #raw_datasets["train"][0][task_column]
+    print(f"Mean: {np.mean(sample['array']):.3}, Variance: {np.var(sample['array']):.3}")
+    inputs = feature_extractor(sample["array"], sampling_rate=sample["sampling_rate"])
+    print(f"inputs keys: {list(inputs.keys())}")
+    print(
+        f"Mean: {np.mean(inputs['input_values']):.3}, Variance: {np.var(inputs['input_values']):.3}"
+    )
+    if usepipeline:
+        mypipeline = pipeline(
+            task, #"audio-classification",
+            model=model, #"anton-l/xtreme_s_xlsr_300m_minds14",
+        )
+        #sample = datasample[columnname]
+        result = mypipeline(sample)#sample can be audio (sample["audio"]) or path (minds[0]["path"])
+        print(result)
+    else:
+        #sample=datasample[columnname]
+        #sample["audio"]["array"]
+        print(feature_extractor.sampling_rate)
+        print(sample['sampling_rate']) #dataset.features["audio"].sampling_rate   
+        if isinstance(model, str):
+            feature_extractor = AutoFeatureExtractor.from_pretrained(model)
+            model = AutoModelForAudioClassification.from_pretrained(model)
+            
+        inputs = feature_extractor(sample["array"],sampling_rate=feature_extractor.sampling_rate, return_tensors="pt")
+        model=model.to(device)
+        inputs=inputs.to(device)
+        with torch.no_grad():
+            logits = model(**inputs).logits
+        #Get the class with the highest probability
+        logitsmax=torch.argmax(logits)
+        predicted_class_ids = logitsmax.item()
+        #use the model’s id2label mapping to convert it to a label:
+        result = model.config.id2label[str(predicted_class_ids)]
+        print(result)
+    return result
 
 
 
@@ -430,19 +527,21 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="common_language",
-                    help='data name: marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='v0.02',
-                    help='dataset_config_name')
+    parser.add_argument('--data_name', type=str, default="minds14",
+                    help='data name: minds14, common_language, marsyas/gtzan')
+    parser.add_argument('--dataconfig', type=str, default='',
+                    help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache",
-                    help='path to get data ') #r"E:\Dataset\NLPdataset\aclImdb"
+    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface",
+                    help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
+    parser.add_argument('--model_checkpoint', type=str, default="anton-l/xtreme_s_xlsr_300m_minds14",
                     help='Model checkpoint name from HF, "facebook/wav2vec2-base", ntu-spml/distilhubert') 
     parser.add_argument('--task', type=str, default="audio-classification",
-                    help='NLP tasks: openqa, translation, summarization, QA')
+                    help='tasks: audio-classification, openqa, translation, summarization, QA')
+    parser.add_argument('--subtask', type=str, default="intent-classification",
+                    help='Sub tasks')
     parser.add_argument('--hfevaluate', default=True, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
@@ -458,14 +557,14 @@ if __name__ == "__main__":
                     help='Name the current training')
     parser.add_argument('--training', default=True, action='store_true',
                     help='Perform training')
-    parser.add_argument('--usehpc', default=True, action='store_true',
+    parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -557,36 +656,35 @@ if __name__ == "__main__":
         trainoutput="/data/cmpe249-fa23/trainoutput/huggingface"
         #taskname=args.traintag #"eli5asksciencemodeling"
     else:
+        if os.path.exists(args.data_path):
+            mycache_dir=args.data_path
+        else:
+            mycache_dir="./data/"
+        mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
+        os.environ['HF_HOME'] = mycache_dir
+        os.environ['HF_DATASETS_CACHE'] = mycache_dir
         trainoutput=args.outputdir #"./output"
         #taskname=args.traintag #taskname="eli5asksciencemodeling"
-        mycache_dir="./data/"
+    
+    if torch.cuda.is_available():
+        device = torch.device('cuda:'+str(args.gpuid))  # CUDA GPU 0
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
+        device = torch.device("cpu")
+
     trainoutput=os.path.join(trainoutput, model_checkpoint, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
 
     raw_datasets, text_column, target_column, task_column = loaddata(args, USE_HPC)
-    labels = raw_datasets["train"].features[target_column].names
-    column_names = raw_datasets["train"].column_names
-    print("column_names:", column_names)
-    if task_column not in raw_datasets["train"].column_names:
-        raise ValueError(
-            f"--audio_column_name not found in dataset. "
-        )
-
-    if target_column not in raw_datasets["train"].column_names:
-        raise ValueError(
-            f"--label_column_name not found in dataset. "
-        )
-    id2label_fn = raw_datasets["train"].features[target_column].int2str
-    id2label = {
-        str(i): id2label_fn(i)
-        for i in range(len(labels))
-    }
-    label2id = {v: k for k, v in id2label.items()}
+    labels, id2label, label2id = getlabels(raw_datasets, task_column, target_column)
+    
     
     model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, mycache_dir=mycache_dir, pretrained=args.pretrained, hpc=USE_HPC, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False)
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
+    model = model.to(device)
     
     # `datasets` takes care of automatically loading and resampling the audio,
     # so we just need to set the correct target sampling rate.
@@ -594,13 +692,8 @@ if __name__ == "__main__":
         task_column, features.Audio(sampling_rate=feature_extractor.sampling_rate)
     )
 
-    sample = raw_datasets["train"][0]["audio"]
-    print(f"Mean: {np.mean(sample['array']):.3}, Variance: {np.var(sample['array']):.3}")
-    inputs = feature_extractor(sample["array"], sampling_rate=sample["sampling_rate"])
-    print(f"inputs keys: {list(inputs.keys())}")
-    print(
-        f"Mean: {np.mean(inputs['input_values']):.3}, Variance: {np.var(inputs['input_values']):.3}"
-    )
+    datasample=raw_datasets["train"][0]
+    result=inferencesample(datasample=datasample, task = args.task, model=model, usepipeline=False, feature_extractor=feature_extractor, device=device, columnname=task_column)
 
     def preprocess_function(examples):
         audio_arrays = [x["array"] for x in examples[task_column]] #"audio"
@@ -674,7 +767,7 @@ if __name__ == "__main__":
         batched=True,
         batch_size=100,
         num_proc=1,
-    )
+    )#Get "labels" and inputs
     #dataset_encoded = dataset_encoded.rename_column("genre", "label")
 
 
@@ -688,113 +781,111 @@ if __name__ == "__main__":
         predictions = np.argmax(eval_pred.predictions, axis=1)
         return metric.compute(predictions=predictions, references=eval_pred.label_ids)
 
-
-    training_args = TrainingArguments(
-        trainoutput,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        learning_rate=5e-5,
-        per_device_train_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        per_device_eval_batch_size=args.batch_size,
-        num_train_epochs=args.total_epochs,
-        warmup_ratio=0.1,
-        logging_steps=5,
-        load_best_model_at_end=True,
-        metric_for_best_model="accuracy",
-        fp16=True,
-        push_to_hub=False,
-    )
-
-    train_dataloader = DataLoader(
-        dataset_encoded["train"],
-        shuffle=True,
-        collate_fn=None,
-        batch_size=args.batch_size,
-    )
-
-    # Optimizer
-    learning_rate=5e-5
-    adam_beta1=0.9
-    adam_beta2=0.999
-    adam_epsilon=1e-8
-    optimizer = AdamW(
-        list(model.parameters()),
-        lr=learning_rate,
-        betas=[adam_beta1, adam_beta2],
-        eps=adam_epsilon,
-    )
-    gradient_accumulation_steps =1
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
-    max_train_steps = args.total_epochs * num_update_steps_per_epoch
-
-    num_warmup_steps = 10
-    lr_scheduler = get_scheduler(
-            name="linear", #["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
-            optimizer=optimizer,
-            num_warmup_steps=num_warmup_steps,
-            num_training_steps=max_train_steps,
+    usehftrainer = False
+    if usehftrainer:
+        training_args = TrainingArguments(
+            trainoutput,
+            evaluation_strategy="epoch",
+            save_strategy="epoch",
+            learning_rate=5e-5,
+            per_device_train_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            per_device_eval_batch_size=args.batch_size,
+            num_train_epochs=args.total_epochs,
+            warmup_ratio=0.1,
+            logging_steps=5,
+            load_best_model_at_end=True,
+            metric_for_best_model="accuracy",
+            fp16=True,
+            push_to_hub=False,
         )
-    
-    #recalculate our number of training epochs
-    num_train_epochs = math.ceil(max_train_steps /  num_update_steps_per_epoch)
-    total_batch_size = args.batch_size * gradient_accumulation_steps
 
-    gpuid=0
-    if torch.cuda.is_available():
-        device = torch.device('cuda:'+str(gpuid))  # CUDA GPU 0
-    elif torch.backends.mps.is_available():
-        device = torch.device("mps")
-    else:
-        device = torch.device("cpu")
-    model.to(device)
+        # Initialize our trainer
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=dataset_encoded["train"],
+            eval_dataset=dataset_encoded[valkey],
+            compute_metrics=compute_metrics,
+            tokenizer=feature_extractor,
+        )
 
-    progress_bar = tqdm(range(max_train_steps))
-    completed_steps = 0
-    starting_epoch = 0
-    for epoch in range(starting_epoch, num_train_epochs):
-        model.train()
-        losses=[]
-        for step, batch in enumerate(train_dataloader):
-            batch = {k: v.to(device) for k, v in batch.items()}
-            outputs = model(**batch)
-            loss = outputs.loss
-            if gradient_accumulation_steps > 1:
-                loss = loss / gradient_accumulation_steps
-
-            #backward
-            loss.backward()
-
-            if step % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad()
-                    progress_bar.update(1)
-                    completed_steps += 1
-            
-        print(f"epoch {epoch}, loss: {loss}")
-    
-    # Initialize our trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=dataset_encoded["train"],
-        eval_dataset=dataset_encoded[valkey],
-        compute_metrics=compute_metrics,
-        tokenizer=feature_extractor,
-    )
-
-    if args.training == True:
         checkpoint = None
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
         trainer.save_state()
+
+        #Perform evaluation
+        metrics = trainer.evaluate()
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
+    else:
+        train_dataloader = DataLoader(
+            dataset_encoded["train"],
+            shuffle=True,
+            collate_fn=None,
+            batch_size=args.batch_size,
+        )
+
+        # Optimizer
+        learning_rate=5e-5
+        adam_beta1=0.9
+        adam_beta2=0.999
+        adam_epsilon=1e-8
+        optimizer = AdamW(
+            list(model.parameters()),
+            lr=learning_rate,
+            betas=[adam_beta1, adam_beta2],
+            eps=adam_epsilon,
+        )
+        gradient_accumulation_steps =1
+        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
+        max_train_steps = args.total_epochs * num_update_steps_per_epoch
+
+        num_warmup_steps = 10
+        lr_scheduler = get_scheduler(
+                name="linear", #["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
+                optimizer=optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=max_train_steps,
+            )
+        
+        #recalculate our number of training epochs
+        num_train_epochs = math.ceil(max_train_steps /  num_update_steps_per_epoch)
+        total_batch_size = args.batch_size * gradient_accumulation_steps
+
+        progress_bar = tqdm(range(max_train_steps))
+        completed_steps = 0
+        starting_epoch = 0
+        for epoch in range(starting_epoch, num_train_epochs):
+            model.train()
+            losses=[]
+            for step, batch in enumerate(train_dataloader):
+                batch = {k: v.to(device) for k, v in batch.items()}
+                outputs = model(**batch)
+                loss = outputs.loss
+                if gradient_accumulation_steps > 1:
+                    loss = loss / gradient_accumulation_steps
+
+                #backward
+                loss.backward()
+
+                if step % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                        optimizer.step()
+                        lr_scheduler.step()
+                        optimizer.zero_grad()
+                        progress_bar.update(1)
+                        completed_steps += 1
+                
+            print(f"epoch {epoch}, loss: {loss}")
     
-    metrics = trainer.evaluate()
-    trainer.log_metrics("eval", metrics)
-    trainer.save_metrics("eval", metrics)
+    # using now() to get current time
+    current_time = datetime.datetime.now()
+    # Printing value of now.
+    print("Time now is:", current_time)
+    print("Finished")
 
 
     
