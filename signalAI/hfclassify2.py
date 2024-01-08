@@ -32,10 +32,6 @@ from random import randint
 valkey='test'
 import datetime
 
-mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
-os.environ['HF_HOME'] = mycache_dir
-os.environ['HF_DATASETS_CACHE'] = mycache_dir
-
 def random_subsample(wav: np.ndarray, max_length: float, sample_rate: int = 16000):
     """Randomly sample chunks of `max_length` seconds from the input audio"""
     sample_length = int(round(sample_rate * max_length))
@@ -533,8 +529,7 @@ if __name__ == "__main__":
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface",
-                    help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache"
+    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="anton-l/xtreme_s_xlsr_300m_minds14",
                     help='Model checkpoint name from HF, "facebook/wav2vec2-base", ntu-spml/distilhubert') 
@@ -564,7 +559,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -656,13 +651,20 @@ if __name__ == "__main__":
         trainoutput="/data/cmpe249-fa23/trainoutput/huggingface"
         #taskname=args.traintag #"eli5asksciencemodeling"
     else:
-        if os.path.exists(args.data_path):
+        # if os.path.exists(args.data_path):
+        #     mycache_dir=args.data_path
+        # else:
+        #     mycache_dir="./data/"
+        # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
+        # os.environ['HF_HOME'] = mycache_dir
+        # os.environ['HF_DATASETS_CACHE'] = mycache_dir
+        if os.environ.get('HF_HOME') is None:
             mycache_dir=args.data_path
+            os.environ['HF_HOME'] = mycache_dir
+            os.environ['HF_DATASETS_CACHE'] = mycache_dir
         else:
-            mycache_dir="./data/"
-        mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
-        os.environ['HF_HOME'] = mycache_dir
-        os.environ['HF_DATASETS_CACHE'] = mycache_dir
+            print("HF_HOME:", os.environ['HF_HOME'])
+            mycache_dir=os.environ['HF_HOME']
         trainoutput=args.outputdir #"./output"
         #taskname=args.traintag #taskname="eli5asksciencemodeling"
     
@@ -781,7 +783,7 @@ if __name__ == "__main__":
         predictions = np.argmax(eval_pred.predictions, axis=1)
         return metric.compute(predictions=predictions, references=eval_pred.label_ids)
 
-    usehftrainer = False
+    usehftrainer = True
     if usehftrainer:
         training_args = TrainingArguments(
             trainoutput,
