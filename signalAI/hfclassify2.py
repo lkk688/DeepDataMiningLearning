@@ -1,5 +1,6 @@
 #2023/12/4 modified based on huggingfaceSequence5, remove NLP related
-
+#ref： https://github.com/huggingface/transformers/blob/main/examples/pytorch/audio-classification/run_audio_classification.py
+#https://colab.research.google.com/github/huggingface/notebooks/blob/main/examples/audio_classification.ipynb
 from datasets import load_dataset, DatasetDict, features
 from transformers import (AutoConfig, AutoModel, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering,
                           AutoTokenizer, pipeline, get_scheduler,
@@ -305,6 +306,13 @@ def loaddata(args, USE_HPC):
                         target_column = "lang_id"
                 else:
                     target_column = "english_transcription"
+            elif args.data_name == "superb":
+                #https://huggingface.co/datasets/superb#ks
+                if args.dataconfig:
+                    subsetconfig = args.dataconfig
+                else:
+                    subsetconfig = "ks" #Keyword Spotting (KS)
+                raw_datasets = load_dataset("superb", name=subsetconfig, split="train")
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -531,8 +539,8 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="anton-l/xtreme_s_xlsr_300m_minds14",
-                    help='Model checkpoint name from HF, "facebook/wav2vec2-base", ntu-spml/distilhubert') 
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
+                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
@@ -651,20 +659,21 @@ if __name__ == "__main__":
         trainoutput="/data/cmpe249-fa23/trainoutput/huggingface"
         #taskname=args.traintag #"eli5asksciencemodeling"
     else:
-        # if os.path.exists(args.data_path):
-        #     mycache_dir=args.data_path
-        # else:
-        #     mycache_dir="./data/"
-        # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
-        # os.environ['HF_HOME'] = mycache_dir
-        # os.environ['HF_DATASETS_CACHE'] = mycache_dir
-        if os.environ.get('HF_HOME') is None:
+        if os.path.exists(args.data_path):
             mycache_dir=args.data_path
-            os.environ['HF_HOME'] = mycache_dir
-            os.environ['HF_DATASETS_CACHE'] = mycache_dir
         else:
-            print("HF_HOME:", os.environ['HF_HOME'])
-            mycache_dir=os.environ['HF_HOME']
+            mycache_dir="./data/"
+        # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
+        os.environ['HF_HOME'] = mycache_dir
+        print("HF_HOME:", os.environ['HF_HOME'])
+        # os.environ['HF_DATASETS_CACHE'] = mycache_dir
+        # if os.environ.get('HF_HOME') is None:
+        #     mycache_dir=args.data_path
+        #     os.environ['HF_HOME'] = mycache_dir
+        #     os.environ['HF_DATASETS_CACHE'] = mycache_dir
+        # else:
+        #     print("HF_HOME:", os.environ['HF_HOME'])
+        #     mycache_dir=os.environ['HF_HOME']
         trainoutput=args.outputdir #"./output"
         #taskname=args.traintag #taskname="eli5asksciencemodeling"
     
@@ -711,6 +720,13 @@ if __name__ == "__main__":
         output_batch = inputs #{model_input_name: inputs.get(model_input_name)}
         output_batch["labels"] = target_labels #list(target_labels) #list(examples[target_column])
         return output_batch
+
+    def preprocess_function_simple(examples):
+        audio_arrays = [x["array"] for x in examples["audio"]]
+        inputs = feature_extractor(
+            audio_arrays, sampling_rate=feature_extractor.sampling_rate, max_length=16000, truncation=True
+        )
+        return inputs
     
     def train_transforms(batch):
         """Apply train_transforms across a batch."""
@@ -751,26 +767,28 @@ if __name__ == "__main__":
 
         return output_batch
 
-    # Set the training transforms
-    #raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
-    #transferred_datasets = DatasetDict()
-    #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
-    # # Set the validation transforms
-    # raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
-    # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
-    # train_dataset=raw_datasets["train"]
-    # eval_dataset=raw_datasets[valkey]
-    # #train_dataset=transferred_datasets["train"]
-    # #eval_dataset=transferred_datasets[valkey]
-
-    dataset_encoded = raw_datasets.map(
-        preprocess_function,
-        remove_columns=raw_datasets["train"].column_names, #["audio", "file"],
-        batched=True,
-        batch_size=100,
-        num_proc=1,
-    )#Get "labels" and inputs
-    #dataset_encoded = dataset_encoded.rename_column("genre", "label")
+    processmode=2
+    if processmode == 1:
+        # Set the training transforms
+        raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
+        #transferred_datasets = DatasetDict()
+        #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
+        # # Set the validation transforms
+        raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
+        # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
+        # train_dataset=raw_datasets["train"]
+        # eval_dataset=raw_datasets[valkey]
+        # #train_dataset=transferred_datasets["train"]
+        # #eval_dataset=transferred_datasets[valkey]
+    else:
+        raw_datasets = raw_datasets.map(
+            preprocess_function,
+            remove_columns=raw_datasets["train"].column_names, #["audio", "file"],
+            batched=True,
+            batch_size=100,
+            num_proc=1,
+        )#Get "labels" and inputs
+        #dataset_encoded = dataset_encoded.rename_column("genre", "label")
 
 
     # Load the accuracy metric from the datasets package
@@ -806,8 +824,8 @@ if __name__ == "__main__":
         trainer = Trainer(
             model=model,
             args=training_args,
-            train_dataset=dataset_encoded["train"],
-            eval_dataset=dataset_encoded[valkey],
+            train_dataset=raw_datasets["train"],
+            eval_dataset=raw_datasets[valkey],
             compute_metrics=compute_metrics,
             tokenizer=feature_extractor,
         )
@@ -825,7 +843,7 @@ if __name__ == "__main__":
         trainer.save_metrics("eval", metrics)
     else:
         train_dataloader = DataLoader(
-            dataset_encoded["train"],
+            raw_datasets["train"],
             shuffle=True,
             collate_fn=None,
             batch_size=args.batch_size,
