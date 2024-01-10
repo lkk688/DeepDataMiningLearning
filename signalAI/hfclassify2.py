@@ -548,8 +548,8 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
-                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
-    parser.add_argument('--checkpointfolder', type=str, default="output/facebook/wav2vec2-base/superb_0105/checkpoint-22992",
+                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base, ntu-spml/distilhubert')
+    parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--modelchange', default=True, action='store_true', help='ignore model mismatch, allow model change') 
     parser.add_argument('--task', type=str, default="audio-classification",
@@ -578,8 +578,8 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
-    parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
+    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--learningrate', default=3e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
         type=str,
@@ -591,7 +591,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=1,
+        default=4,
         help="Number of updates steps to accumulate before performing a backward/update pass, ref: https://kozodoi.me/blog/20210219/gradient-accumulation.",
     )
     parser.add_argument(
@@ -729,6 +729,7 @@ if __name__ == "__main__":
             sampling_rate=feature_extractor.sampling_rate,
             max_length=int(feature_extractor.sampling_rate * args.max_length_seconds),
             truncation=True,
+            padding=True, #'max_length'
             return_attention_mask=True,
         )
         #return inputs
@@ -796,11 +797,11 @@ if __name__ == "__main__":
     processmode=1
     if processmode == 1:
         # Set the training transforms
-        raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
+        raw_datasets["train"].set_transform(train_transforms, output_all_columns=True)
         #transferred_datasets = DatasetDict()
         #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
         # # Set the validation transforms
-        raw_datasets[valkey].set_transform(val_transforms, output_all_columns=False)
+        raw_datasets[valkey].set_transform(val_transforms, output_all_columns=True)
         # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
         # train_dataset=raw_datasets["train"]
         # eval_dataset=raw_datasets[valkey]
@@ -865,16 +866,16 @@ if __name__ == "__main__":
             trainoutput,
             evaluation_strategy="epoch",
             save_strategy="epoch",
-            learning_rate=5e-5,
+            learning_rate=3e-5,
             per_device_train_batch_size=args.batch_size,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             per_device_eval_batch_size=args.batch_size,
             num_train_epochs=args.total_epochs,
             warmup_ratio=0.1,
-            logging_steps=5,
+            logging_steps=10,
             load_best_model_at_end=True,
             metric_for_best_model="accuracy",
-            fp16=True,
+            #fp16=True,
             push_to_hub=False,
         )
 
@@ -917,18 +918,16 @@ if __name__ == "__main__":
         results=evaluate_dataset(model, eval_dataloader, device, metriceval)
 
         # Optimizer
-        learning_rate=5e-5
         adam_beta1=0.9
         adam_beta2=0.999
         adam_epsilon=1e-8
         optimizer = AdamW(
             list(model.parameters()),
-            lr=learning_rate,
+            lr=args.learningrate,
             betas=[adam_beta1, adam_beta2],
             eps=adam_epsilon,
         )
-        gradient_accumulation_steps =1
-        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
+        num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
         max_train_steps = args.total_epochs * num_update_steps_per_epoch
 
         num_warmup_steps = 10
@@ -941,7 +940,7 @@ if __name__ == "__main__":
         
         #recalculate our number of training epochs
         num_train_epochs = math.ceil(max_train_steps /  num_update_steps_per_epoch)
-        total_batch_size = args.batch_size * gradient_accumulation_steps
+        total_batch_size = args.batch_size * args.gradient_accumulation_steps
 
         progress_bar = tqdm(range(max_train_steps))
         completed_steps = 0
@@ -952,13 +951,13 @@ if __name__ == "__main__":
                 batch = {k: v.to(device) for k, v in batch.items()}
                 outputs = model(**batch)
                 loss = outputs.loss
-                if gradient_accumulation_steps > 1:
-                    loss = loss / gradient_accumulation_steps
+                if args.gradient_accumulation_steps > 1:
+                    loss = loss / args.gradient_accumulation_steps
 
                 #backward
                 loss.backward()
 
-                if step % gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                         optimizer.step()
                         lr_scheduler.step()
                         optimizer.zero_grad()
