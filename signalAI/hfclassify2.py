@@ -75,9 +75,18 @@ def getlabels(raw_datasets, task_column, target_column):
     # for i, label in enumerate(labels):
     #     label2id[label] = str(i)
     #     id2label[str(i)] = label
-    return labels, id2label, label2id
+    # newtarget_column='label'
+    # raw_datasets["train"][newtarget_column] = raw_datasets["train"].pop(target_column) #split_datasets.pop("test")
+    # raw_datasets[valkey][newtarget_column] = raw_datasets[valkey].pop(target_column)
+    # newcolumn_names = raw_datasets["train"].column_names
+    columns_remove = []
+    for column in column_names:
+        if not (column==target_column or column==task_column):
+            columns_remove.append(column)
+    return labels, id2label, label2id, column_names, columns_remove
 
-def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", mycache_dir="", pretrained="", hpc=True, unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False):
+def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", pretrained="", cache_dir="", unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, modelchange=False):
+    ignore_mismatched_sizes = modelchange #when loading model, ignore size missmatch
     # label2id, id2label = {}, {}
     # for i, label in enumerate(labels):
     #     label2id[label] = str(i)
@@ -89,49 +98,43 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
     #     for i in range(len(gtzan_encoded["train"].features["label"].names))
     # }
     # label2id = {v: k for k, v in id2label.items()}
-    
-    if hpc==True:
-        localpath=model_checkpoint #os.path.join(mycache_dir, model_checkpoint)
-        if task == "audio-classification":
-            feature_extractor = AutoFeatureExtractor.from_pretrained(localpath, do_normalize=True, return_attention_mask=return_attention_mask)
-            config = AutoConfig.from_pretrained(
-                localpath,
-                num_labels=len(label2id), #len(labels),
-                label2id=label2id,
-                id2label=id2label,
-                finetuning_task=task, #"audio-classification",
-                cache_dir=mycache_dir
-            )
-            model = AutoModelForAudioClassification.from_pretrained(
-                localpath,
-                config=config,
-                cache_dir=mycache_dir,
-                ignore_mismatched_sizes=ignore_mismatched_sizes,
-            )
-            #ignore_mismatched_sizes: Will enable to load a pretrained model whose head dimensions are different.
+    if cache_dir:
+        mycache_dir = cache_dir
+    elif os.environ.get('HF_HOME') is not None:
+        mycache_dir = os.environ.get('HF_HOME')
+
+    if modelchange: #task == "audio-classification":
+        # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
+        # transformer outputs in the classifier, but it doesn't always lead to better accuracy
+        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        # model_args.feature_extractor_name or model_args.model_name_or_path,
+        # return_attention_mask=model_args.attention_mask,
+        # cache_dir=model_args.cache_dir,
+        #Option1
+        config = AutoConfig.from_pretrained(
+            model_checkpoint,
+            num_labels=len(label2id), #len(labels),
+            label2id=label2id,
+            id2label=id2label,
+            finetuning_task=task, #"audio-classification",
+            cache_dir=mycache_dir,
+        )
+        model = AutoModelForAudioClassification.from_pretrained(
+            model_checkpoint,
+            config=config,
+            ignore_mismatched_sizes=ignore_mismatched_sizes,
+            cache_dir=mycache_dir,
+        )
     else:
-        if task == "audio-classification":
-            # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
-            # transformer outputs in the classifier, but it doesn't always lead to better accuracy
-            feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, return_attention_mask=return_attention_mask,cache_dir=mycache_dir)
-            # model_args.feature_extractor_name or model_args.model_name_or_path,
-            # return_attention_mask=model_args.attention_mask,
-            # cache_dir=model_args.cache_dir,
-            config = AutoConfig.from_pretrained(
-                model_checkpoint,
-                num_labels=len(label2id), #len(labels),
-                label2id=label2id,
-                id2label=id2label,
-                finetuning_task=task, #"audio-classification",
-                cache_dir=mycache_dir
-            )
-            model = AutoModelForAudioClassification.from_pretrained(
-                model_checkpoint,
-                config=config,
-                cache_dir=mycache_dir,
-                ignore_mismatched_sizes=ignore_mismatched_sizes,
-            )
-            #ignore_mismatched_sizes: Will enable to load a pretrained model whose head dimensions are different.
+        #Option2
+        model = AutoModelForAudioClassification.from_pretrained(
+            model_checkpoint, 
+            num_labels=len(label2id),
+            label2id=label2id,
+            id2label=id2label,
+            cache_dir=mycache_dir,
+        )
+        #ignore_mismatched_sizes: Will enable to load a pretrained model whose head dimensions are different.
 
     starting_epoch = 0
     if pretrained:
@@ -313,6 +316,14 @@ def loaddata(args, USE_HPC):
                 else:
                     subsetconfig = "ks" #Keyword Spotting (KS)
                 raw_datasets = load_dataset("superb", name=subsetconfig, split="train")
+                task_column ="audio" 
+                text_column = "file"
+                target_column = "label"
+            elif args.data_name == "google/fleurs":
+                raw_datasets = load_dataset("google/fleurs", "all", split="train")
+                task_column ="audio" 
+                text_column = "path"
+                target_column = "lang_id" #language
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -349,7 +360,7 @@ def loaddata(args, USE_HPC):
             print("Answer: ", oneexample[target_column])#dict with 'text' and 'answer_start'
         elif args.task.startswith("audio"):
             oneexample = split_datasets["train"][1]
-            print("Audio: ", oneexample[text_column])
+            print("Audio: ", oneexample[task_column])
             print("Audio target: ", oneexample[target_column])
         raw_datasets = split_datasets
         if args.subset>0:
@@ -420,7 +431,7 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
             logits = model(**inputs).logits
         #Get the class with the highest probability
         logitsmax=torch.argmax(logits)
-        predicted_class_ids = logitsmax.item()
+        predicted_class_ids = logitsmax.item() #.item() moves the scalar data to CPU
         #use the model’s id2label mapping to convert it to a label:
         result = model.config.id2label[str(predicted_class_ids)]
         print(result)
@@ -438,76 +449,69 @@ class myEvaluator:
         self.task = args.task
         self.preds = []
         self.refs = []
+        self.HFmetric = None
+        if self.task.startswith("audio"):
+            self.metricname = "accuracy"
+            # Load the accuracy metric from the datasets package
+            self.HFmetric = evaluate.load("accuracy")
+
+    # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
+    # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
+    def compute_metrics(self, eval_pred):
+        """Computes accuracy on a batch of predictions"""
+        predictions = np.argmax(eval_pred.predictions, axis=1)
+        return self.HFmetric.compute(predictions=predictions, references=eval_pred.label_ids)
 
     
     def compute(self, predictions=None, references=None):
         results = []
+        if predictions is not None and references is not None:
+            results = self.HFmetric.compute(predictions=predictions, references=references)
+            #print("HF evaluator:", results)
+        else: #evaluate the whole dataset
+            results = self.HFmetric.compute()
+            #results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
         return results
     
     def add_batch(self, predictions, references):
-        if self.useHFevaluator==True or self.dualevaluator==True:
-            self.HFmetric.add_batch(predictions=predictions, references=references)
-        
-        if self.useHFevaluator==False or self.dualevaluator==True:
-            #self.preds.append(predictions)
-            self.refs.extend(references)
-            self.preds.extend(predictions)
-            #references: list of list
-            # for ref in references:
-            #     self.refs.append(ref[0])
-            #print(len(self.refs))
+        self.HFmetric.add_batch(predictions=predictions, references=references)
+        #self.preds.append(predictions)
+        self.refs.extend(references)
+        self.preds.extend(predictions)
+        #references: list of list
+        # for ref in references:
+        #     self.refs.append(ref[0])
+        #print(len(self.refs))
 
-def evaluate_dataset(model, tokenizer, eval_dataloader, use_accelerator, accelerator, device, max_target_length, num_beams, metric):
+def evaluate_dataset(model, eval_dataloader, device, metric):
     # Evaluation
     totallen = len(eval_dataloader)
     print("Total evaluation length:", totallen)
-    #evalprogress_bar = tqdm(range(num_training_steps))
     model.eval()
-    gen_kwargs = {
-        "max_length": max_target_length,
-        "num_beams": num_beams,
-    }
     for batch in tqdm(eval_dataloader):
         with torch.no_grad():
-            if not use_accelerator:
-                batch = {k: v.to(device) for k, v in batch.items()}
-                generated_tokens = model.generate(
-                    batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    **gen_kwargs,
-                )
-            else:
-                generated_tokens = accelerator.unwrap_model(model).generate(
-                    batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    **gen_kwargs,
-                )
-            #evalprogress_bar.update(1)
-        labels = batch["labels"]
-        if use_accelerator:
-            # Necessary to pad predictions and labels for being gathered
-            generated_tokens = accelerator.pad_across_processes(
-                generated_tokens, dim=1, pad_index=tokenizer.pad_token_id
-            )
-            labels = accelerator.pad_across_processes(labels, dim=1, pad_index=-100)
+            batch = {k: v.to(device) for k, v in batch.items()}
+            outputs = model(**batch)
+        logits = outputs.logits #[4, 12]
+        #Get the class with the highest probability
+        logitsmax=torch.argmax(logits, dim=-1) #argmax (https://pytorch.org/docs/stable/generated/torch.argmax.html) for the last dimension, torch.Size([4])
+        #predicted_class_ids = logitsmax.item() #.item() moves the data to CPU
+        
+        #use the model’s id2label mapping to convert it to a label:
+        #decoded_preds = [model.config.id2label[str(pred.item())] for pred in logitsmax]
+        decoded_preds = [pred.item() for pred in logitsmax]
+        #result = model.config.id2label[str(predicted_class_ids)]
 
-            predictions_gathered = accelerator.gather(generated_tokens)
-            labels_gathered = accelerator.gather(labels)
-
-            #decoded_preds, decoded_labels = postprocess(predictions_gathered, labels_gathered, ignore_pad_token_for_loss)
-            decoded_preds=[]
-            decoded_labels=[]
-        else:
-            #decoded_preds, decoded_labels = postprocess(generated_tokens, labels, ignore_pad_token_for_loss)
-            decoded_preds=[]
-            decoded_labels=[]
+        labels = batch["labels"] #label is also integer
+        decoded_labels = [label.item() for label in labels]
         
         metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+        # result1 = metric.compute(predictions=decoded_preds, references=decoded_labels)
         #evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
     
     results = metric.compute()
     #evalresults = evalmetric.compute()
-    #print(f"BLEU score: {results['score']:.2f}")
+    print(f"Evaluation score: {results}")
     #print(evalresults['score'])
     return results
 
@@ -531,8 +535,8 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="minds14",
-                    help='data name: minds14, common_language, marsyas/gtzan')
+    parser.add_argument('--data_name', type=str, default="superb",
+                    help='data name: superb, google/fleurs, minds14, common_language, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
@@ -540,7 +544,10 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
-                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert') 
+                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    parser.add_argument('--checkpointfolder', type=str, default="output/facebook/wav2vec2-base/superb_0105/checkpoint-22992",
+                    help='Model training checkpoint to resume')
+    parser.add_argument('--modelchange', default=True, action='store_true', help='ignore model mismatch, allow model change') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
@@ -556,7 +563,7 @@ if __name__ == "__main__":
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="0105",
+    parser.add_argument('--traintag', type=str, default="0109",
                     help='Name the current training')
     parser.add_argument('--training', default=True, action='store_true',
                     help='Perform training')
@@ -565,7 +572,7 @@ if __name__ == "__main__":
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
@@ -586,7 +593,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_length_seconds",
         type=int,
-        default=20,
+        default=5, #20,
         help=(
             "Audio clips will be randomly cut to this length during training if the value is set.."
         ),
@@ -661,10 +668,13 @@ if __name__ == "__main__":
     else:
         if os.path.exists(args.data_path):
             mycache_dir=args.data_path
+            os.environ['HF_HOME'] = mycache_dir
+        elif os.environ.get('HF_HOME') is not None:
+            mycache_dir=os.environ['HF_HOME']
         else:
             mycache_dir="./data/"
         # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
-        os.environ['HF_HOME'] = mycache_dir
+        
         print("HF_HOME:", os.environ['HF_HOME'])
         # os.environ['HF_DATASETS_CACHE'] = mycache_dir
         # if os.environ.get('HF_HOME') is None:
@@ -689,10 +699,10 @@ if __name__ == "__main__":
     print("Trainoutput folder:", trainoutput)
 
     raw_datasets, text_column, target_column, task_column = loaddata(args, USE_HPC)
-    labels, id2label, label2id = getlabels(raw_datasets, task_column, target_column)
+    labels, id2label, label2id, column_names, columns_remove = getlabels(raw_datasets, task_column, target_column)
     
     
-    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, mycache_dir=mycache_dir, pretrained=args.pretrained, hpc=USE_HPC, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, ignore_mismatched_sizes=False)
+    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, pretrained=args.pretrained, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, modelchange=args.modelchange)
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
     model = model.to(device)
@@ -709,6 +719,7 @@ if __name__ == "__main__":
     def preprocess_function(examples):
         audio_arrays = [x["array"] for x in examples[task_column]] #"audio"
         target_labels = [np.int64(x) for x in examples[target_column]]
+        #https://huggingface.co/docs/transformers/main_classes/feature_extractor
         inputs = feature_extractor(
             audio_arrays,
             sampling_rate=feature_extractor.sampling_rate,
@@ -722,9 +733,11 @@ if __name__ == "__main__":
         return output_batch
 
     def preprocess_function_simple(examples):
-        audio_arrays = [x["array"] for x in examples["audio"]]
+        audio_arrays = [x["array"] for x in examples[task_column]] #examples[task_column] is list of audio data
         inputs = feature_extractor(
-            audio_arrays, sampling_rate=feature_extractor.sampling_rate, max_length=16000, truncation=True
+            audio_arrays, sampling_rate=feature_extractor.sampling_rate, max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), 
+            truncation=True,
+            padding=True #'max_length'
         )
         return inputs
     
@@ -739,7 +752,11 @@ if __name__ == "__main__":
                     audio["array"], max_length=args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
                 )
                 subsampled_wavs.append(wav)
-            inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
+            inputs = feature_extractor(subsampled_wavs, 
+                                       sampling_rate=feature_extractor.sampling_rate,
+                                       max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), 
+                                       truncation=True,
+                                       padding=True)
             output_batch = {model_input_name: inputs.get(model_input_name)}
             output_batch["labels"] = list(batch[target_column])
         else:
@@ -748,7 +765,10 @@ if __name__ == "__main__":
                     audio["array"], max_length=args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
                 )
             subsampled_wavs.append(wav)
-            inputs = feature_extractor(subsampled_wavs, sampling_rate=feature_extractor.sampling_rate)
+            inputs = feature_extractor(subsampled_wavs,sampling_rate=feature_extractor.sampling_rate,
+                                       max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), 
+                                       truncation=True,
+            padding=True) #'max_length')
             output_batch = {model_input_name: inputs.get(model_input_name)}
             output_batch["labels"] = batch[target_column]
 
@@ -761,13 +781,15 @@ if __name__ == "__main__":
         else:
             audio = batch[task_column]
             wavs = [audio["array"]]
-        inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate)
+        inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate, max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), truncation=True, padding=True)
         output_batch = {model_input_name: inputs.get(model_input_name)}
         output_batch["labels"] = list(batch[target_column])
 
         return output_batch
 
-    processmode=2
+    samplebatch1 = preprocess_function_simple(raw_datasets['train'][:5])
+    samplebatch2 = train_transforms(raw_datasets['train'][:5])
+    processmode=1
     if processmode == 1:
         # Set the training transforms
         raw_datasets["train"].set_transform(train_transforms, output_all_columns=False)
@@ -780,7 +802,7 @@ if __name__ == "__main__":
         # eval_dataset=raw_datasets[valkey]
         # #train_dataset=transferred_datasets["train"]
         # #eval_dataset=transferred_datasets[valkey]
-    else:
+    elif processmode == 2:
         raw_datasets = raw_datasets.map(
             preprocess_function,
             remove_columns=raw_datasets["train"].column_names, #["audio", "file"],
@@ -789,19 +811,51 @@ if __name__ == "__main__":
             num_proc=1,
         )#Get "labels" and inputs
         #dataset_encoded = dataset_encoded.rename_column("genre", "label")
+    else:
+        columns_remove.append("audio")
+        print("columns_remove:", columns_remove)
+        #https://huggingface.co/docs/datasets/about_map_batch
+        raw_datasets = raw_datasets.map(
+            preprocess_function_simple,
+            remove_columns=columns_remove,
+            batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
+            batch_size=100,
+        )
+        column_names = raw_datasets["train"].column_names
+        target_ready = False
+        input_ready = False
+        for column in column_names:
+            if column == target_column:
+                if target_column != "label":
+                    #change target_column name
+                    dataset_encoded = dataset_encoded.rename_column(target_column, "label")
+                    target_column="label"
+                    target_ready = True
+                else:
+                    target_ready = True
+            elif column == model_input_name:
+                input_ready = True
+            else:#remove column
+                print("column name:", column)
+        column_names = raw_datasets["train"].column_names
+        print(column_names)
 
 
     # Load the accuracy metric from the datasets package
-    metric = evaluate.load("accuracy")
-
+    #metric = evaluate.load("accuracy")
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
-    def compute_metrics(eval_pred):
-        """Computes accuracy on a batch of predictions"""
-        predictions = np.argmax(eval_pred.predictions, axis=1)
-        return metric.compute(predictions=predictions, references=eval_pred.label_ids)
+    # def compute_metrics(eval_pred):
+    #     """Computes accuracy on a batch of predictions"""
+    #     predictions = np.argmax(eval_pred.predictions, axis=1)
+    #     return metric.compute(predictions=predictions, references=eval_pred.label_ids)
+    
+    metriceval = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate)
+    #metriceval.compute_metrics
+    result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
+    result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
 
-    usehftrainer = True
+    usehftrainer = False
     if usehftrainer:
         training_args = TrainingArguments(
             trainoutput,
@@ -826,11 +880,15 @@ if __name__ == "__main__":
             args=training_args,
             train_dataset=raw_datasets["train"],
             eval_dataset=raw_datasets[valkey],
-            compute_metrics=compute_metrics,
+            compute_metrics=metriceval.compute_metrics,
             tokenizer=feature_extractor,
         )
 
-        checkpoint = None
+        
+        if args.checkpointfolder and os.path.exists(args.checkpointfolder):
+            checkpoint = args.checkpointfolder #"output/facebook/wav2vec2-base/minds14_0105/checkpoint-14704"
+        else:
+            checkpoint = None
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()
         trainer.log_metrics("train", train_result.metrics)
@@ -848,6 +906,11 @@ if __name__ == "__main__":
             collate_fn=None,
             batch_size=args.batch_size,
         )
+        eval_dataloader = DataLoader(
+            raw_datasets[valkey], collate_fn=None, batch_size=args.batch_size
+        )
+
+        results=evaluate_dataset(model, eval_dataloader, device, metriceval)
 
         # Optimizer
         learning_rate=5e-5
@@ -879,9 +942,8 @@ if __name__ == "__main__":
         progress_bar = tqdm(range(max_train_steps))
         completed_steps = 0
         starting_epoch = 0
+        model.train()
         for epoch in range(starting_epoch, num_train_epochs):
-            model.train()
-            losses=[]
             for step, batch in enumerate(train_dataloader):
                 batch = {k: v.to(device) for k, v in batch.items()}
                 outputs = model(**batch)
@@ -898,8 +960,17 @@ if __name__ == "__main__":
                         optimizer.zero_grad()
                         progress_bar.update(1)
                         completed_steps += 1
-                
-            print(f"epoch {epoch}, loss: {loss}")
+            #Evaluation
+            results=evaluate_dataset(model, eval_dataloader, device, metriceval)   
+            print(f"epoch {epoch}, loss: {loss}, evaluation: {metriceval.metricname}")
+            print("Evaluation result:", results)
+            # Save the results
+            with open(os.path.join(trainoutput, f"epoch{epoch}_"+"eval_results.json"), "w") as f:
+                #json.dump({"eval_bleu": results["score"]}, f)
+                json.dump(results, f)
+            
+            savemodels(model, optimizer, epoch, trainoutput)
+            #feature_extractor.save_pretrained(trainoutput)
     
     # using now() to get current time
     current_time = datetime.datetime.now()
