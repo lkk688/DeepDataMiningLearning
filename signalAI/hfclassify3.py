@@ -8,20 +8,30 @@ from transformers import (AutoConfig, AutoModel, AutoModelForSeq2SeqLM, AutoMode
                           DataCollatorForSeq2Seq, DataCollatorWithPadding, MBartTokenizer, 
                           MBartTokenizerFast, default_data_collator, EvalPrediction)
 from transformers import (
+    AutoProcessor,
+    Wav2Vec2Model,
+    Wav2Vec2Config,
     AutoConfig,
     AutoFeatureExtractor,
     AutoModelForAudioClassification,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
+    Wav2Vec2PreTrainedModel,
     set_seed,
 )
+#https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/modeling_outputs.py
+from transformers.modeling_outputs import TokenClassifierOutput
 from transformers import TrainingArguments
 import evaluate
 import torch
 import os
+import librosa
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn import CrossEntropyLoss
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 import torch
@@ -34,6 +44,7 @@ import json
 from random import randint
 valkey='test'
 import datetime
+from typing import Optional, Tuple, Union
 
 #https://pytorch.org/audio/stable/tutorials/audio_io_tutorial.html#saving-audio-to-file
 def saveaudio_tofile(audiowave, dir, sample_rate, filename="save_example.wav"):
@@ -129,6 +140,111 @@ def getlabels(raw_datasets, task_column, target_column):
             columns_remove.append(column)
     return labels, id2label, label2id, column_names, columns_remove
 
+class MyClassificationHead(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.dense = nn.Linear(config.hidden_size, config.hidden_size)#768
+        self.dropout = nn.Dropout(0.5)
+        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
+
+    def forward(self, x):
+        x = self.dense(x)
+        x = torch.tanh(x)
+        x = self.dropout(x)
+        x = self.out_proj(x)
+        return x
+
+#ref: https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/models/wav2vec2/modeling_wav2vec2.py#L2022
+class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
+    def __init__(self, config, basemodel_name, id2label, label2id, task="audio-classification", mycache_dir=None):
+        super().__init__(config)
+
+        num_classes = len(id2label)
+        if basemodel_name.find("Wav2Vec2") and basemodel_name and num_classes:
+            self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name) #("facebook/wav2vec2-base-960h")
+            # config = AutoConfig.from_pretrained(
+            #     pretrained_model_name_or_path=basemodel_name,
+            # )
+            # config.num_labels = num_classes #num_labels
+            self.config = AutoConfig.from_pretrained(
+                basemodel_name,
+                num_labels=num_classes, #len(labels),
+                label2id=label2id,
+                id2label=id2label,
+                finetuning_task=task, #"audio-classification",
+                cache_dir=mycache_dir,
+            )
+        elif config:
+            self.wav2vec2 = Wav2Vec2Model(config)
+        else:
+            print("Error in MyWave2Vec2Classification init!")
+        
+        print(self.wav2vec2.feature_extractor) #Wav2Vec2FeatureEncoder
+
+        #self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier = MyClassificationHead(config=self.config)
+        self.num_labels = self.config.num_labels
+
+        self.init_weights()
+
+    def freeze_feature_encoder(self):
+        """
+        Calling this function will disable the gradient computation for the feature encoder so that its parameter will
+        not be updated during training.
+        """
+        self.wav2vec2.feature_extractor._freeze_parameters()
+    
+    def freeze_base_model(self):
+        """
+        Calling this function will disable the gradient computation for the base model so that its parameters will not
+        be updated during training. Only the classification head will be updated.
+        """
+        for param in self.wav2vec2.parameters():
+            param.requires_grad = False
+    
+    def forward(
+        self,
+        input_values: Optional[torch.Tensor],
+        attention_mask: Optional[torch.Tensor] = None,
+        labels: Optional[torch.Tensor] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+    ) -> Union[Tuple, TokenClassifierOutput]:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
+            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
+            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
+            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
+        """
+
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict #not used
+        output_hidden_states = True if self.config.use_weighted_layer_sum else output_hidden_states
+
+        outputs = self.wav2vec2(
+            input_values, #[1, 57216]
+            attention_mask=attention_mask, #[1, 57216]
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )#Wav2Vec2BaseModelOutput last_hidden_state:torch.Size([1, 312, 768])
+        hidden_states = outputs[0] #[1, 178, 768]
+        x=torch.mean(hidden_states, dim=1) #torch.Size([1, 768])
+        logits = self.classifier(x)#(hidden_states) torch.Size([1, 45])
+
+        loss = None
+        if labels is not None:
+            loss_fct = CrossEntropyLoss() #[64, 45]
+            # loss = loss_fct(logits.view(-1, self.num_labels), torch.argmax(labels.view(-1, self.num_labels), axis=1))
+            loss = loss_fct(logits.view(-1, self.num_labels), labels)
+        
+        return TokenClassifierOutput(
+            loss=loss,
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
+
 def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", pretrained="", cache_dir="", unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, modelchange=False):
     ignore_mismatched_sizes = modelchange #when loading model, ignore size missmatch
     # label2id, id2label = {}, {}
@@ -147,7 +263,13 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
     elif os.environ.get('HF_HOME') is not None:
         mycache_dir = os.environ.get('HF_HOME')
 
+    useconfig=False
+
     if modelchange: #task == "audio-classification":
+        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        configuration = Wav2Vec2Config()
+        model = MyWave2Vec2Classification(config=configuration,basemodel_name=model_checkpoint, id2label=id2label, label2id=label2id, task=task, mycache_dir=mycache_dir)
+    elif useconfig==True:
         # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
         # transformer outputs in the classifier, but it doesn't always lead to better accuracy
         feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
@@ -452,7 +574,7 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
         f"Mean: {np.mean(inputs['input_values']):.3}, Variance: {np.var(inputs['input_values']):.3}"
     )
     saveaudio_tofile(sample['array'], "./output", sample["sampling_rate"], filename="save_example.wav")
-    loadaudio_fromfile(filepath=sample["path"], plotfig=True)
+    #loadaudio_fromfile(filepath=sample["path"], plotfig=True)
 
     if usepipeline:
         mypipeline = pipeline(
@@ -477,7 +599,7 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
         with torch.no_grad():
             logits = model(**inputs).logits
         #Get the class with the highest probability
-        logitsmax=torch.argmax(logits)
+        logitsmax=torch.argmax(logits) #[1, 45]->33
         predicted_class_ids = logitsmax.item() #.item() moves the scalar data to CPU
         #use the model’s id2label mapping to convert it to a label:
         result = model.config.id2label[str(predicted_class_ids)]
@@ -594,13 +716,13 @@ if __name__ == "__main__":
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--modelchange', default=True, action='store_true', help='ignore model mismatch, allow model change') 
+    parser.add_argument('--modelchange', default=True, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
@@ -727,6 +849,7 @@ if __name__ == "__main__":
             mycache_dir=os.environ['HF_HOME']
         else:
             mycache_dir="./data/"
+            os.environ['HF_HOME'] = mycache_dir
         # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
         
         print("HF_HOME:", os.environ['HF_HOME'])
