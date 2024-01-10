@@ -470,7 +470,11 @@ class myEvaluator:
             #print("HF evaluator:", results)
         else: #evaluate the whole dataset
             results = self.HFmetric.compute()
-            #results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
+            print("HF evaluator result1:", results)
+            results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
+            print("HF evaluator result2:", results2)
+            self.preds.clear()
+            self.refs.clear()
         return results
     
     def add_batch(self, predictions, references):
@@ -942,8 +946,8 @@ if __name__ == "__main__":
         progress_bar = tqdm(range(max_train_steps))
         completed_steps = 0
         starting_epoch = 0
-        model.train()
         for epoch in range(starting_epoch, num_train_epochs):
+            model.train()
             for step, batch in enumerate(train_dataloader):
                 batch = {k: v.to(device) for k, v in batch.items()}
                 outputs = model(**batch)
