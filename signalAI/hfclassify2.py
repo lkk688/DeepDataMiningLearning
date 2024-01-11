@@ -860,7 +860,7 @@ if __name__ == "__main__":
     result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
     result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
 
-    usehftrainer = False
+    usehftrainer = True
     if usehftrainer:
         training_args = TrainingArguments(
             trainoutput,

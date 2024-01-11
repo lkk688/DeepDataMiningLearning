@@ -181,8 +181,8 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
         
         print(self.wav2vec2.feature_extractor) #Wav2Vec2FeatureEncoder
 
-        #self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-        self.classifier = MyClassificationHead(config=self.config)
+        self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
+        #self.classifier = MyClassificationHead(config=self.config)
         self.num_labels = self.config.num_labels
 
         self.init_weights()
@@ -245,8 +245,8 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
             attentions=outputs.attentions,
         )
 
-def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", pretrained="", cache_dir="", unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, modelchange=False):
-    ignore_mismatched_sizes = modelchange #when loading model, ignore size missmatch
+def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification", pretrained="", cache_dir="", unfreezename="", return_attention_mask=True, freeze_feature_encoder=True, custommodel=False):
+    ignore_mismatched_sizes = custommodel #when loading model, ignore size missmatch
     # label2id, id2label = {}, {}
     # for i, label in enumerate(labels):
     #     label2id[label] = str(i)
@@ -264,15 +264,14 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
         mycache_dir = os.environ.get('HF_HOME')
 
     useconfig=False
+    feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
 
-    if modelchange: #task == "audio-classification":
-        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+    if custommodel: #task == "audio-classification":
         configuration = Wav2Vec2Config()
         model = MyWave2Vec2Classification(config=configuration,basemodel_name=model_checkpoint, id2label=id2label, label2id=label2id, task=task, mycache_dir=mycache_dir)
     elif useconfig==True:
         # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
         # transformer outputs in the classifier, but it doesn't always lead to better accuracy
-        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
         # model_args.feature_extractor_name or model_args.model_name_or_path,
         # return_attention_mask=model_args.attention_mask,
         # cache_dir=model_args.cache_dir,
@@ -710,7 +709,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="common_language",
+    parser.add_argument('--data_name', type=str, default="superb",
                     help='data name: common_language, superb, google/fleurs, minds14, common_language, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -722,7 +721,7 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--modelchange', default=True, action='store_true', help='Change model') 
+    parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
@@ -740,7 +739,9 @@ if __name__ == "__main__":
                     help='output path')
     parser.add_argument('--traintag', type=str, default="0110",
                     help='Name the current training')
-    parser.add_argument('--training', default=True, action='store_true',
+    # parser.add_argument('--training', default=True, action='store_true',
+    #                 help='Perform training')
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'],
                     help='Perform training')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
@@ -879,7 +880,7 @@ if __name__ == "__main__":
     labels, id2label, label2id, column_names, columns_remove = getlabels(raw_datasets, task_column, target_column)
     
     
-    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, pretrained=args.pretrained, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, modelchange=args.modelchange)
+    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, pretrained=args.pretrained, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, custommodel=args.custommodel)
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
     model = model.to(device)
@@ -1034,8 +1035,9 @@ if __name__ == "__main__":
     result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
     result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
 
-    usehftrainer = False
-    if usehftrainer:
+    
+    #['HFTrainer','CustomTrain', 'NoTrain']
+    if args.trainmode == 'HFTrainer':
         training_args = TrainingArguments(
             trainoutput,
             evaluation_strategy="epoch",
@@ -1063,7 +1065,6 @@ if __name__ == "__main__":
             tokenizer=feature_extractor,
         )
 
-        
         if args.checkpointfolder and os.path.exists(args.checkpointfolder):
             checkpoint = args.checkpointfolder #"output/facebook/wav2vec2-base/minds14_0105/checkpoint-14704"
         else:
@@ -1078,7 +1079,7 @@ if __name__ == "__main__":
         metrics = trainer.evaluate()
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
-    else:
+    elif args.trainmode == 'CustomTrain':
         train_dataloader = DataLoader(
             raw_datasets["train"],
             shuffle=True,
@@ -1148,7 +1149,13 @@ if __name__ == "__main__":
             
             savemodels(model, optimizer, epoch, trainoutput)
             #feature_extractor.save_pretrained(trainoutput)
-    
+    else: #NoTrain
+        eval_dataloader = DataLoader(
+            raw_datasets[valkey], collate_fn=None, batch_size=args.batch_size
+        )
+        results=evaluate_dataset(model, eval_dataloader, device, metriceval)
+        print("No training, evauate only:", results)
+
     # using now() to get current time
     current_time = datetime.datetime.now()
     # Printing value of now.
