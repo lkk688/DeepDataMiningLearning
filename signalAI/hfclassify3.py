@@ -715,13 +715,13 @@ if __name__ == "__main__":
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
+    parser.add_argument('--custommodel', default=True, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-classification",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
@@ -741,7 +741,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'],
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'],
                     help='Perform training')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
