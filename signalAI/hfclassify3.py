@@ -662,7 +662,7 @@ def evaluate_dataset(model, eval_dataloader, device, metric):
     totallen = len(eval_dataloader)
     print("Total evaluation length:", totallen)
     model.eval()
-    for batch in tqdm(eval_dataloader):
+    for batch in tqdm(eval_dataloader):#'input_values' [64, 16000]
         with torch.no_grad():
             batch = {k: v.to(device) for k, v in batch.items()}
             outputs = model(**batch)
@@ -709,8 +709,8 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="superb",
-                    help='data name: common_language, superb, google/fleurs, minds14, common_language, marsyas/gtzan')
+    parser.add_argument('--data_name', type=str, default="common_language",
+                    help='data name: common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
@@ -771,7 +771,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_length_seconds",
         type=int,
-        default=5, #20,
+        default=1, #20,
         help=(
             "Audio clips will be randomly cut to this length during training if the value is set.."
         ),
@@ -938,7 +938,7 @@ if __name__ == "__main__":
                                        truncation=True,
                                        padding=True)
             output_batch = {model_input_name: inputs.get(model_input_name)}
-            output_batch["labels"] = list(batch[target_column])
+            output_batch["label"] = list(batch[target_column])
         else:
             audio = batch[task_column]
             wav = random_subsample(
@@ -950,7 +950,7 @@ if __name__ == "__main__":
                                        truncation=True,
             padding=True) #'max_length')
             output_batch = {model_input_name: inputs.get(model_input_name)}
-            output_batch["labels"] = batch[target_column]
+            output_batch["label"] = batch[target_column]
 
         return output_batch
 
@@ -963,13 +963,14 @@ if __name__ == "__main__":
             wavs = [audio["array"]]
         inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate, max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), truncation=True, padding=True)
         output_batch = {model_input_name: inputs.get(model_input_name)}
-        output_batch["labels"] = list(batch[target_column])
+        output_batch["label"] = list(batch[target_column])
 
         return output_batch
 
     samplebatch1 = preprocess_function_simple(raw_datasets['train'][:5])
-    samplebatch2 = train_transforms(raw_datasets['train'][:5])
-    processmode=3
+    samplebatch2 = preprocess_function(raw_datasets['train'][:5])
+    samplebatch3 = train_transforms(raw_datasets['train'][:5])
+    processmode=1 # or 3 all works
     if processmode == 1:
         # Set the training transforms
         raw_datasets["train"].set_transform(train_transforms, output_all_columns=True)
@@ -1083,11 +1084,11 @@ if __name__ == "__main__":
         train_dataloader = DataLoader(
             raw_datasets["train"],
             shuffle=True,
-            collate_fn=None,
+            collate_fn=default_data_collator,
             batch_size=args.batch_size,
         )
         eval_dataloader = DataLoader(
-            raw_datasets[valkey], collate_fn=None, batch_size=args.batch_size
+            raw_datasets[valkey], collate_fn=default_data_collator, batch_size=args.batch_size
         )
 
         results=evaluate_dataset(model, eval_dataloader, device, metriceval)
