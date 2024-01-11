@@ -969,7 +969,7 @@ if __name__ == "__main__":
 
     samplebatch1 = preprocess_function_simple(raw_datasets['train'][:5])
     samplebatch2 = train_transforms(raw_datasets['train'][:5])
-    processmode=1
+    processmode=3
     if processmode == 1:
         # Set the training transforms
         raw_datasets["train"].set_transform(train_transforms, output_all_columns=True)
@@ -996,7 +996,7 @@ if __name__ == "__main__":
         print("columns_remove:", columns_remove)
         #https://huggingface.co/docs/datasets/about_map_batch
         raw_datasets = raw_datasets.map(
-            preprocess_function_simple,
+            train_transforms, #preprocess_function_simple,
             remove_columns=columns_remove,
             batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
             batch_size=100,
