@@ -6,6 +6,12 @@ Kill GPU process in Windows:
     nvidia-smi
     taskkill /PID 21824 /F
 
+Delete folder
+
+.. code-block:: console
+
+    rm -Force .\downloads\
+    
 .. _WSL2:
 
 Windows WSL2 Linux Setup Tutorial
