@@ -18,10 +18,11 @@ from transformers import (
     Trainer,
     TrainingArguments,
     Wav2Vec2PreTrainedModel,
+    Wav2Vec2Processor,
+    EvalPrediction,
     set_seed,
 )
-#https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/modeling_outputs.py
-from transformers.modeling_outputs import TokenClassifierOutput
+from sklearn.metrics import classification_report
 from transformers import TrainingArguments
 import evaluate
 import torch
@@ -31,7 +32,7 @@ from torch.utils.data import DataLoader
 from torch.optim import AdamW
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import CrossEntropyLoss
+from torch.nn import CrossEntropyLoss, BCEWithLogitsLoss, MSELoss
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 import torch
@@ -44,7 +45,23 @@ import json
 from random import randint
 valkey='test'
 import datetime
-from typing import Optional, Tuple, Union
+from typing import Dict, List, Optional, Union, Tuple
+from pathlib import Path
+import pandas as pd
+from sklearn.model_selection import train_test_split
+#torch version>1.6
+
+#https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/modeling_outputs.py
+from transformers.modeling_outputs import TokenClassifierOutput
+#Optin1: TokenClassifierOutput, Option2: MyClassifierOutput
+from dataclasses import dataclass
+from transformers.file_utils import ModelOutput
+@dataclass
+class MyClassifierOutput(ModelOutput):
+    loss: Optional[torch.FloatTensor] = None
+    logits: torch.FloatTensor = None
+    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
+    attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 #https://pytorch.org/audio/stable/tutorials/audio_io_tutorial.html#saving-audio-to-file
 def saveaudio_tofile(audiowave, dir, sample_rate, filename="save_example.wav"):
@@ -72,6 +89,68 @@ def loadaudio_fromfile(filepath="save_example.wav", plotfig=True):
         if plotfig==True:
             plot_waveformnp(waveform_np, sample_rate)
 
+#each folder includes specific class with wav files, the folder name is the class name (similar format with image classification). We need to loop over directories and save the paths related to each class based on the directory name.
+def loadaudios_todataset(folder, save_path, audiofileformat=".wav", target_columnname="target", valkey="test"):
+    data = []
+     #"emotion"
+    for path in tqdm(Path(folder).glob("**/*"+audiofileformat)): #"**/*.wav"
+        name = str(path).split('/')[-1].split('.')[0] #filename before .wav
+        label = str(path).split('/')[-2] #folder name
+
+        try:
+            # There are some broken files
+            s = torchaudio.load(path)
+            data.append({
+                "name": name,
+                "path": path,
+                target_columnname: label
+            })
+        except Exception as e:
+            # print(str(path), e)
+            pass
+
+    df = pd.DataFrame(data)
+    # Filter broken and non-existed paths
+    print(f"Data len before filter: {len(df)}")
+    df["status"] = df["path"].apply(lambda path: True if os.path.exists(path) else None)
+    df = df.dropna(subset=["path"])
+    df = df.drop(labels="status", axis=1)
+    print(f"Data len after filter: {len(df)}")
+    labels = df[target_columnname].unique()
+    print("Labels: ", labels)
+    labels_count = df.groupby(target_columnname).count()[["path"]]
+    print(labels_count)
+
+    #get one sample
+    idx = np.random.randint(0, len(df))
+    sample = df.iloc[idx]
+    path = sample["path"]
+    label = sample[target_columnname]
+    speech, sr = torchaudio.load(path) #torch.Size([1, 298614]), sr=44100
+    speech = speech[0].numpy().squeeze() #numpy (298614,)
+    #speech = librosa.resample(np.asarray(speech), sr, 16_000)
+    speech = librosa.resample(y=np.asarray(speech), orig_sr=sr, target_sr=16_000)
+    #import IPython.display as ipd
+    #ipd.Audio(data=np.asarray(speech), autoplay=True, rate=16000)
+    saveaudio_tofile(speech, "./output", 16_000, filename="fileaudio_example.wav")
+
+    #split data into train test sets
+    train_df, test_df = train_test_split(df, test_size=0.2, random_state=101, stratify=df[target_columnname])
+    train_df = train_df.reset_index(drop=True)
+    test_df = test_df.reset_index(drop=True)
+    train_path=f"{save_path}/train.csv"
+    test_path=f"{save_path}/test.csv"
+    train_df.to_csv(train_path, sep="\t", encoding="utf-8", index=False)
+    test_df.to_csv(test_path, sep="\t", encoding="utf-8", index=False)
+    print(train_df.shape)
+    print(test_df.shape)
+    data_files = {
+        "train": train_path,
+        valkey: test_path,
+    }
+    return data_files
+
+
 def plot_waveformnp(waveform, sample_rate):
     #waveform = waveform.numpy()
 
@@ -95,6 +174,58 @@ def random_subsample(wav: np.ndarray, max_length: float, sample_rate: int = 1600
         return wav
     random_offset = randint(0, len(wav) - sample_length - 1)
     return wav[random_offset : random_offset + sample_length]
+
+#data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+@dataclass
+class DataCollatorCTCWithPadding:
+    """
+    Data collator that will dynamically pad the inputs received.
+    Args:
+        processor (:class:`~transformers.Wav2Vec2Processor`)
+            The processor used for proccessing the data.
+        padding (:obj:`bool`, :obj:`str` or :class:`~transformers.tokenization_utils_base.PaddingStrategy`, `optional`, defaults to :obj:`True`):
+            Select a strategy to pad the returned sequences (according to the model's padding side and padding index)
+            among:
+            * :obj:`True` or :obj:`'longest'`: Pad to the longest sequence in the batch (or no padding if only a single
+              sequence if provided).
+            * :obj:`'max_length'`: Pad to a maximum length specified with the argument :obj:`max_length` or to the
+              maximum acceptable input length for the model if that argument is not provided.
+            * :obj:`False` or :obj:`'do_not_pad'` (default): No padding (i.e., can output a batch with sequences of
+              different lengths).
+        max_length (:obj:`int`, `optional`):
+            Maximum length of the ``input_values`` of the returned list and optionally padding length (see above).
+        max_length_labels (:obj:`int`, `optional`):
+            Maximum length of the ``labels`` returned list and optionally padding length (see above).
+        pad_to_multiple_of (:obj:`int`, `optional`):
+            If set will pad the sequence to a multiple of the provided value.
+            This is especially useful to enable the use of Tensor Cores on NVIDIA hardware with compute capability >=
+            7.5 (Volta).
+    """
+
+    processor: Wav2Vec2Processor
+    padding: Union[bool, str] = True
+    max_length: Optional[int] = None
+    max_length_labels: Optional[int] = None
+    pad_to_multiple_of: Optional[int] = None
+    pad_to_multiple_of_labels: Optional[int] = None
+
+    def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+        input_features = [{"input_values": feature["input_values"]} for feature in features]
+        label_features = [feature["labels"] for feature in features]
+
+        d_type = torch.long if isinstance(label_features[0], int) else torch.float
+
+        batch = self.processor.pad(
+            input_features,
+            padding=self.padding,
+            max_length=self.max_length,
+            pad_to_multiple_of=self.pad_to_multiple_of,
+            return_tensors="pt",
+        )
+
+        batch["labels"] = torch.tensor(label_features, dtype=d_type)
+
+        return batch
 
 def modelparameters(model, unfreezename=""):
     if unfreezename:
@@ -144,10 +275,13 @@ class MyClassificationHead(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.dense = nn.Linear(config.hidden_size, config.hidden_size)#768
-        self.dropout = nn.Dropout(0.5)
+        self.dropout = nn.Dropout(0.5) #config.final_dropout
         self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
 
-    def forward(self, x):
+    #def forward(self, x):
+    def forward(self, features, **kwargs):
+        x = features
+        x = self.dropout(x)
         x = self.dense(x)
         x = torch.tanh(x)
         x = self.dropout(x)
@@ -156,33 +290,36 @@ class MyClassificationHead(nn.Module):
 
 #ref: https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/models/wav2vec2/modeling_wav2vec2.py#L2022
 class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
-    def __init__(self, config, basemodel_name, id2label, label2id, task="audio-classification", mycache_dir=None):
+    def __init__(self, config, basemodel_name, id2label, label2id, task="audio-classification", mycache_dir=None, pooling_mode='mean'):
         super().__init__(config)
 
         num_classes = len(id2label)
+        self.pooling_mode = 'mean'#['mean', 'sum', 'max']
         if basemodel_name.find("Wav2Vec2") and basemodel_name and num_classes:
             self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name) #("facebook/wav2vec2-base-960h")
             # config = AutoConfig.from_pretrained(
             #     pretrained_model_name_or_path=basemodel_name,
             # )
             # config.num_labels = num_classes #num_labels
-            self.config = AutoConfig.from_pretrained(
-                basemodel_name,
-                num_labels=num_classes, #len(labels),
-                label2id=label2id,
-                id2label=id2label,
-                finetuning_task=task, #"audio-classification",
-                cache_dir=mycache_dir,
-            )
+            # self.config = AutoConfig.from_pretrained(
+            #     basemodel_name,
+            #     num_labels=num_classes, #len(labels),
+            #     label2id=label2id,
+            #     id2label=id2label,
+            #     finetuning_task=task, #"audio-classification",
+            #     cache_dir=mycache_dir,
+            # )
+            self.config = config
         elif config:
             self.wav2vec2 = Wav2Vec2Model(config)
+            self.config = config
         else:
             print("Error in MyWave2Vec2Classification init!")
         
         print(self.wav2vec2.feature_extractor) #Wav2Vec2FeatureEncoder
 
-        self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
-        #self.classifier = MyClassificationHead(config=self.config)
+        #self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
+        self.classifier = MyClassificationHead(config=self.config)
         self.num_labels = self.config.num_labels
 
         self.init_weights()
@@ -229,16 +366,40 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
             return_dict=return_dict,
         )#Wav2Vec2BaseModelOutput last_hidden_state:torch.Size([1, 312, 768])
         hidden_states = outputs[0] #[1, 178, 768]
-        x=torch.mean(hidden_states, dim=1) #torch.Size([1, 768])
+        if self.pooling_mode == 'mean':
+            x = torch.mean(hidden_states, dim=1) #torch.Size([1, 768])
+        elif self.pooling_mode == 'sum':
+            x = torch.sum(hidden_states, dim=1)
+        else: #'max'
+            x = torch.max(hidden_states, dim=1)[0]
         logits = self.classifier(x)#(hidden_states) torch.Size([1, 45])
 
         loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss() #[64, 45]
-            # loss = loss_fct(logits.view(-1, self.num_labels), torch.argmax(labels.view(-1, self.num_labels), axis=1))
-            loss = loss_fct(logits.view(-1, self.num_labels), labels)
+            if self.config.problem_type is None:
+                if self.num_labels == 1:
+                    self.config.problem_type = "regression"
+                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
+                    self.config.problem_type = "single_label_classification"
+                else:
+                    self.config.problem_type = "multi_label_classification"
+            
+            if self.config.problem_type == "regression":
+                loss_fct = MSELoss()
+                loss = loss_fct(logits.view(-1, self.num_labels), labels)
+            elif self.config.problem_type == "single_label_classification":
+                loss_fct = CrossEntropyLoss() #[64, 45], 64 is batchsize, 45 is number of labels' 
+                # loss = loss_fct(logits.view(-1, self.num_labels), torch.argmax(labels.view(-1, self.num_labels), axis=1))
+                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
+            elif self.config.problem_type == "multi_label_classification":
+                loss_fct = BCEWithLogitsLoss()
+                loss = loss_fct(logits, labels)
         
-        return TokenClassifierOutput(
+        if not return_dict:
+            output = (logits,) + outputs[2:]
+            return ((loss,) + output) if loss is not None else output
+        
+        return MyClassifierOutput( #TokenClassifierOutput
             loss=loss,
             logits=logits,
             hidden_states=outputs.hidden_states,
@@ -264,10 +425,27 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
         mycache_dir = os.environ.get('HF_HOME')
 
     useconfig=False
-    feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+    useprocessor=True
+    if useprocessor==True:
+        processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        feature_extractor = processor.feature_extractor
+    else:
+        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        processor = None
+    
 
     if custommodel: #task == "audio-classification":
-        configuration = Wav2Vec2Config()
+        #option1:
+        #configuration = Wav2Vec2Config()
+        #option2:
+        configuration = AutoConfig.from_pretrained(
+            model_checkpoint,
+            num_labels=len(id2label),
+            label2id=label2id,
+            id2label=id2label,
+            finetuning_task=task, #"audio-classification",
+            cache_dir=mycache_dir,
+        )
         model = MyWave2Vec2Classification(config=configuration,basemodel_name=model_checkpoint, id2label=id2label, label2id=label2id, task=task, mycache_dir=mycache_dir)
     elif useconfig==True:
         # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
@@ -315,7 +493,7 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
     if freeze_feature_encoder:
         model.freeze_feature_encoder()
     modelparameters(model, unfreezename)
-    return model, feature_extractor, starting_epoch
+    return model, feature_extractor, processor, starting_epoch
 
 # max_length = 128
 # def preprocess_function(examples):
@@ -326,7 +504,7 @@ def loadmodel(model_checkpoint, id2label, label2id, task="audio-classification",
 #     )
 #     return model_inputs
 
-def loaddata(args, USE_HPC):
+def loaddata(args, USE_HPC, mycache_dir):
     task_column =""
     text_column = ""
     target_column =""
@@ -451,7 +629,7 @@ def loaddata(args, USE_HPC):
                 text_column = "audio"
                 target_column = "genre"
             elif args.data_name =="common_language":
-                raw_datasets = load_dataset(args.data_name)
+                raw_datasets = load_dataset(args.data_name, cache_dir=mycache_dir)
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
@@ -494,21 +672,40 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset(args.data_name)
                 text_column = "text"
                 target_column = "summary"
+        
+        labels = raw_datasets["train"].features[target_column].names
+        column_names = raw_datasets["train"].column_names
+        print("column_names:", column_names)
+        if task_column not in raw_datasets["train"].column_names:
+            raise ValueError(
+                f"--audio_column_name not found in dataset. "
+            )
+        if target_column not in raw_datasets["train"].column_names:
+            raise ValueError(
+                f"--label_column_name not found in dataset. "
+            )
+        id2label_fn = raw_datasets["train"].features[target_column].int2str
+        id2label = {
+            str(i): id2label_fn(i)
+            for i in range(len(labels))
+        }
+        label2id = {v: k for k, v in id2label.items()}
+        #return column_names, labels, id2label, label2id
+
         #Download to home/.cache/huggingface/dataset
-        print(raw_datasets.column_names)
+        #print(raw_datasets.column_names)
         #splits=raw_datasets.split
         # print(raw_datasets.columns)
         if isinstance(raw_datasets.column_names, dict):
             print("All keys in raw datasets:", raw_datasets['train']) #obly one ['translation'] key
             split_datasets = raw_datasets["train"].train_test_split(train_size=0.9, seed=20)
+                # rename the "test" key to "validation" 
+            #split_datasets["validation"] = split_datasets.pop("test")
         else: #no train/test split
             split_datasets = DatasetDict()
             split_datasets["train"] = raw_datasets
             split_datasets = split_datasets["train"].train_test_split(train_size=0.9, seed=20)
         
-   
-        # rename the "test" key to "validation" 
-        #split_datasets["validation"] = split_datasets.pop("test")
         #one element
         if args.task=="translation":
             sampletext = split_datasets["train"][1][task_column]
@@ -538,13 +735,31 @@ def loaddata(args, USE_HPC):
             print("trainlen:", trainlen)
             raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
             raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(testlen))])
-    
-        #limit the evaluation set size
-        maxtestlen = 5000
-        if len(raw_datasets[valkey])>maxtestlen:
-            raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(maxtestlen))])
 
-    return raw_datasets, text_column, target_column, task_column
+    elif args.data_type == "custom":
+        #/DATA10T/Cache/aesdd/data
+        datafolder=os.path.join(args.data_path, args.data_name, 'data')
+        save_path=os.path.join(args.data_path, args.data_name)
+        task_column = "path" #"audio" 
+        text_column = "path"
+        target_column = "label"
+        data_files = loadaudios_todataset(folder=datafolder, save_path=save_path, audiofileformat=".wav", target_columnname=target_column, valkey=valkey)
+        raw_datasets = load_dataset("csv", data_files = data_files, delimiter="\t")
+        labels = raw_datasets['train'].unique(target_column)
+        labels.sort()  # Let's sort it for determinism
+        num_labels = len(labels)
+        print(f"A classification problem with {num_labels} classes: {labels}")
+        label2id={label: i for i, label in enumerate(labels)}
+        id2label={i: label for i, label in enumerate(labels)}
+        column_names = raw_datasets["train"].column_names
+        print("column_names:", column_names)
+
+    #limit the evaluation set size
+    maxtestlen = 5000
+    if len(raw_datasets[valkey])>maxtestlen:
+        raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(maxtestlen))])
+    #return column_names, labels, id2label, label2id
+    return raw_datasets, text_column, target_column, task_column, column_names, labels, id2label, label2id
 
 def get_myoptimizer(model, learning_rate=2e-5, weight_decay=0.0):
     # Optimizer
@@ -603,15 +818,45 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
         #use the model’s id2label mapping to convert it to a label:
         result = model.config.id2label[str(predicted_class_ids)]
         print(result)
-    
-    
+        #list all classes
+        scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
+        allclasses = [{"class": model.config.id2label[i], "Score": f"{round(score * 100, 3):.1f}%"} for i, score in enumerate(scores)]
     return result
+    
+def inferenceaudiopath(data_path, task, model, usepipeline=True, feature_extractor=None, device='cuda', columnname='audio'):
+    if isinstance(data_path, str):
+        speech_array, _sampling_rate = torchaudio.load(data_path)
+        resampler = torchaudio.transforms.Resample(feature_extractor.sampling_rate)
+        audio_np = resampler(speech_array).squeeze().numpy()
+    #elif isinstance(data_path, np.array):
+    else:
+        audio_np = data_path
+    
+    features = feature_extractor(audio_np, sampling_rate=feature_extractor.sampling_rate, return_tensors="pt", padding=True)
+    input_values = features.input_values.to(device)
+    attention_mask = features.attention_mask.to(device)
+    with torch.no_grad():
+        logits = model(input_values, attention_mask=attention_mask).logits
+    
+    logitsmax=torch.argmax(logits) #[1, 45]->33
+    predicted_class_ids = logitsmax.item() #.item() moves the scalar data to CPU
+    #use the model’s id2label mapping to convert it to a label:
+    result = model.config.id2label[str(predicted_class_ids)]
+    print(result)
+    
+    scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
+    outputs = [{"Target": model.config.id2label[i], "Score": f"{round(score * 100, 3):.1f}%"} for i, score in enumerate(scores)]
+    print(f"file path: {data_path} \t predict: {result} \t score:{scores[predicted_class_ids]} ")
+
+    return result, outputs
+
+
 
 
 
 
 class myEvaluator:
-    def __init__(self, args, useHFevaluator=False, dualevaluator=False):
+    def __init__(self, args, useHFevaluator=False, dualevaluator=False, metricname = "accuracy", labels=None):
         print("useHFevaluator:", useHFevaluator)
         print("dualevaluator:", dualevaluator)
         self.useHFevaluator = useHFevaluator
@@ -619,36 +864,64 @@ class myEvaluator:
         self.task = args.task
         self.preds = []
         self.refs = []
+        self.labels = labels
         self.HFmetric = None
-        if self.task.startswith("audio"):
-            self.metricname = "accuracy"
+        self.metricname = metricname #"accuracy"
+        #if self.task.startswith("audio"):
+        if self.useHFevaluator:
             # Load the accuracy metric from the datasets package
-            self.HFmetric = evaluate.load("accuracy")
+            self.HFmetric = evaluate.load(self.metricname) #evaluate.load("mse")
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
-    def compute_metrics(self, eval_pred):
-        """Computes accuracy on a batch of predictions"""
-        predictions = np.argmax(eval_pred.predictions, axis=1)
-        return self.HFmetric.compute(predictions=predictions, references=eval_pred.label_ids)
+    #eval_pred is EvalPrediction type
+    def compute_metrics(self, eval_pred: EvalPrediction):
+        preds = eval_pred.predictions[0] if isinstance(eval_pred.predictions, tuple) else eval_pred.predictions
+        label_ids = eval_pred.label_ids
+        if self.metricname == "accuracy":
+            """Computes accuracy on a batch of predictions"""
+            preds = np.argmax(preds, axis=1)
+            #return self.HFmetric.compute(predictions=preds, references=label_ids)
+        elif self.metricname == "mse":
+            preds = np.squeeze(preds)
+            #return self.HFmetric.compute(predictions=preds, references=label_ids)
+        return self.compute(predictions=preds, references=label_ids)
 
+    def mycompute(self, predictions=None, references=None):
+        predictions = np.array(predictions)
+        references = np.array(references)
+        if self.metricname == "accuracy":
+            eval_result = (predictions == references).astype(np.float32).mean().item()
+            # if self.labels:
+            #     print("Classification report", classification_report(references, predictions, target_names=self.labels))
+        else: #mse
+            eval_result = ((predictions - references) ** 2).mean().item()
+        results = {self.metricname: eval_result}
+        return results
     
     def compute(self, predictions=None, references=None):
         results = []
         if predictions is not None and references is not None:
-            results = self.HFmetric.compute(predictions=predictions, references=references)
+            if self.useHFevaluator:
+                results = self.HFmetric.compute(predictions=predictions, references=references)
+            else: 
+                results = self.mycompute(predictions=predictions, references=references)
             #print("HF evaluator:", results)
         else: #evaluate the whole dataset
-            results = self.HFmetric.compute()
-            print("HF evaluator result1:", results)
-            results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
-            print("HF evaluator result2:", results2)
+            if self.useHFevaluator:
+                results = self.HFmetric.compute()
+                print("HF evaluator result1:", results)
+                results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
+                print("HF evaluator result2:", results2)
+            else:
+                results = self.mycompute(predictions=self.preds, references=self.refs)
             self.preds.clear()
             self.refs.clear()
         return results
     
     def add_batch(self, predictions, references):
-        self.HFmetric.add_batch(predictions=predictions, references=references)
+        if self.useHFevaluator == True:
+            self.HFmetric.add_batch(predictions=predictions, references=references)
         #self.preds.append(predictions)
         self.refs.extend(references)
         self.preds.extend(predictions)
@@ -707,15 +980,15 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
     #data related arguments
-    parser.add_argument('--data_type', type=str, default="huggingface",
+    parser.add_argument('--data_type', type=str, default="custom",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="common_language",
-                    help='data name: common_language, superb, google/fleurs, minds14, marsyas/gtzan')
+    parser.add_argument('--data_name', type=str, default="aesdd",
+                    help='data name: aesdd(local path), common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
@@ -726,7 +999,7 @@ if __name__ == "__main__":
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
                     help='Sub tasks')
-    parser.add_argument('--hfevaluate', default=True, action='store_true',
+    parser.add_argument('--hfevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
@@ -749,6 +1022,8 @@ if __name__ == "__main__":
                     help='Use HPC')
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')
+    parser.add_argument('--useamp', default=True, action='store_true',
+                    help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
@@ -771,7 +1046,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_length_seconds",
         type=int,
-        default=1, #20,
+        default=5, #20,
         help=(
             "Audio clips will be randomly cut to this length during training if the value is set.."
         ),
@@ -846,14 +1121,18 @@ if __name__ == "__main__":
         if os.path.exists(args.data_path):
             mycache_dir=args.data_path
             os.environ['HF_HOME'] = mycache_dir
+            os.environ['HF_DATASETS_CACHE'] = mycache_dir
         elif os.environ.get('HF_HOME') is not None:
             mycache_dir=os.environ['HF_HOME']
+            os.environ['HF_DATASETS_CACHE'] = mycache_dir
         else:
             mycache_dir="./data/"
             os.environ['HF_HOME'] = mycache_dir
+            os.environ['HF_DATASETS_CACHE'] = mycache_dir
         # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
         
         print("HF_HOME:", os.environ['HF_HOME'])
+        print("HF_DATASETS_CACHE:", os.environ['HF_DATASETS_CACHE'])
         # os.environ['HF_DATASETS_CACHE'] = mycache_dir
         # if os.environ.get('HF_HOME') is None:
         #     mycache_dir=args.data_path
@@ -869,31 +1148,53 @@ if __name__ == "__main__":
         device = torch.device('cuda:'+str(args.gpuid))  # CUDA GPU 0
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
+        args.useamp = False
     else:
         device = torch.device("cpu")
+        args.useamp = False
 
     trainoutput=os.path.join(trainoutput, model_checkpoint, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
 
-    raw_datasets, text_column, target_column, task_column = loaddata(args, USE_HPC)
-    labels, id2label, label2id, column_names, columns_remove = getlabels(raw_datasets, task_column, target_column)
+    raw_datasets, text_column, target_column, task_column, column_names, labels, id2label, label2id = loaddata(args, USE_HPC, mycache_dir)
+    #labels, id2label, label2id, column_names, columns_remove = getlabels(raw_datasets, task_column, target_column)
     
     
-    model, feature_extractor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, pretrained=args.pretrained, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, custommodel=args.custommodel)
+    model, feature_extractor, processor, starting_epoch = loadmodel(model_checkpoint, id2label, label2id, task=task, pretrained=args.pretrained, unfreezename=args.unfreezename, return_attention_mask=True, freeze_feature_encoder=True, custommodel=args.custommodel)
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
     model = model.to(device)
-    
-    # `datasets` takes care of automatically loading and resampling the audio,
-    # so we just need to set the correct target sampling rate.
-    raw_datasets = raw_datasets.cast_column(
-        task_column, features.Audio(sampling_rate=feature_extractor.sampling_rate)
-    )
 
     rand_idx = randint(0, len(raw_datasets["train"])-1)
     datasample=raw_datasets["train"][rand_idx]
-    result=inferencesample(datasample=datasample, task = args.task, model=model, usepipeline=False, feature_extractor=feature_extractor, device=device, columnname=task_column)
+    #result=inferencesample(datasample=datasample, task = args.task, model=model, usepipeline=False, feature_extractor=feature_extractor, device=device, columnname=task_column)
+
+    def preprocess_loadaudio(examples):
+        audio_list=[]
+        target_list=[]
+        for path in examples[task_column]:
+            #path=example #example[task_column] #'path'
+            speech_array, sampling_rate = torchaudio.load(path)
+            resampler = torchaudio.transforms.Resample(sampling_rate, feature_extractor.sampling_rate)
+            speech = resampler(speech_array).squeeze().numpy()
+            speech_sub = random_subsample(
+                    speech, max_length=args.max_length_seconds, sample_rate=feature_extractor.sampling_rate
+                )
+            audio_list.append(speech_sub)
+        for label in examples[target_column]:
+            #add label
+            #label = example #example[target_column]
+            if len(labels) > 0:
+                target = labels.index(label) if label in labels else -1
+                target_list.append(target)
+        
+        inputs = feature_extractor(audio_list, 
+                                   sampling_rate=feature_extractor.sampling_rate,max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), truncation=True, padding=True)
+        result = {model_input_name: inputs.get(model_input_name)}
+        result["labels"] = list(target_list)
+        #result["labels"] = example[target_column]
+        return result
 
     def preprocess_function(examples):
         audio_arrays = [x["array"] for x in examples[task_column]] #"audio"
@@ -912,14 +1213,14 @@ if __name__ == "__main__":
         output_batch["labels"] = target_labels #list(target_labels) #list(examples[target_column])
         return output_batch
 
-    def preprocess_function_simple(examples):
-        audio_arrays = [x["array"] for x in examples[task_column]] #examples[task_column] is list of audio data
-        inputs = feature_extractor(
-            audio_arrays, sampling_rate=feature_extractor.sampling_rate, max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), 
-            truncation=True,
-            padding=True #'max_length'
-        )
-        return inputs
+    # def preprocess_function_simple(examples):
+    #     audio_arrays = [x["array"] for x in examples[task_column]] #examples[task_column] is list of audio data
+    #     inputs = feature_extractor(
+    #         audio_arrays, sampling_rate=feature_extractor.sampling_rate, max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), 
+    #         truncation=True,
+    #         padding=True #'max_length'
+    #     )
+    #     return inputs
     
     def train_transforms(batch):
         """Apply train_transforms across a batch."""
@@ -967,59 +1268,70 @@ if __name__ == "__main__":
 
         return output_batch
 
-    samplebatch1 = preprocess_function_simple(raw_datasets['train'][:5])
-    samplebatch2 = preprocess_function(raw_datasets['train'][:5])
-    samplebatch3 = train_transforms(raw_datasets['train'][:5])
-    processmode=1 # or 3 all works
-    if processmode == 1:
-        # Set the training transforms
-        raw_datasets["train"].set_transform(train_transforms, output_all_columns=True)
-        #transferred_datasets = DatasetDict()
-        #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
-        # # Set the validation transforms
-        raw_datasets[valkey].set_transform(val_transforms, output_all_columns=True)
-        # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
-        # train_dataset=raw_datasets["train"]
-        # eval_dataset=raw_datasets[valkey]
-        # #train_dataset=transferred_datasets["train"]
-        # #eval_dataset=transferred_datasets[valkey]
-    elif processmode == 2:
-        raw_datasets = raw_datasets.map(
-            preprocess_function,
-            remove_columns=raw_datasets["train"].column_names, #["audio", "file"],
-            batched=True,
-            batch_size=100,
-            num_proc=1,
-        )#Get "labels" and inputs
-        #dataset_encoded = dataset_encoded.rename_column("genre", "label")
+    
+
+    if args.data_type == "huggingface":
+        #samplebatch1 = preprocess_function_simple(raw_datasets['train'][:5])
+        samplebatch2 = preprocess_function(raw_datasets['train'][:5])
+        samplebatch3 = train_transforms(raw_datasets['train'][:5])
+    
+        # `datasets` takes care of automatically loading and resampling the audio,
+        # so we just need to set the correct target sampling rate.
+        raw_datasets = raw_datasets.cast_column(
+            task_column, features.Audio(sampling_rate=feature_extractor.sampling_rate)
+        )
+        processmode=1 #1 or 2 all works
+        if processmode == 1:
+            # Set the training transforms
+            raw_datasets["train"].set_transform(train_transforms, output_all_columns=True)
+            #transferred_datasets = DatasetDict()
+            #transferred_datasets["train"]=raw_datasets["train"].map(train_transforms)
+            # # Set the validation transforms
+            raw_datasets[valkey].set_transform(val_transforms, output_all_columns=True)
+            # #transferred_datasets[valkey]=raw_datasets[valkey].map(val_transforms)
+            # train_dataset=raw_datasets["train"]
+            # eval_dataset=raw_datasets[valkey]
+            # #train_dataset=transferred_datasets["train"]
+            # #eval_dataset=transferred_datasets[valkey]
+        else:
+            #columns_remove.append("audio")
+            #print("columns_remove:", columns_remove)
+            #https://huggingface.co/docs/datasets/about_map_batch
+            raw_datasets = raw_datasets.map(
+                train_transforms, #preprocess_function, preprocess_function_simple,
+                remove_columns=column_names, #columns_remove,
+                batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
+                batch_size=100,
+            )
+            column_names = raw_datasets["train"].column_names
+            # target_ready = False
+            # input_ready = False
+            # for column in column_names:
+            #     if column == target_column:
+            #         if target_column != "label":
+            #             #change target_column name
+            #             dataset_encoded = dataset_encoded.rename_column(target_column, "label")
+            #             target_column="label"
+            #             target_ready = True
+            #         else:
+            #             target_ready = True
+            #     elif column == model_input_name:
+            #         input_ready = True
+            #     else:#remove column
+            #         print("column name:", column)
+            # column_names = raw_datasets["train"].column_names
+            print(column_names)
     else:
-        columns_remove.append("audio")
-        print("columns_remove:", columns_remove)
-        #https://huggingface.co/docs/datasets/about_map_batch
+        samplebatch1 = preprocess_loadaudio(raw_datasets['train'][:5])
+        #custom dataset, audio is not loaded
+        #preprocess_loadaudio
         raw_datasets = raw_datasets.map(
-            train_transforms, #preprocess_function_simple,
-            remove_columns=columns_remove,
+            preprocess_loadaudio,
+            remove_columns=column_names, #columns_remove,
             batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
             batch_size=100,
         )
         column_names = raw_datasets["train"].column_names
-        target_ready = False
-        input_ready = False
-        for column in column_names:
-            if column == target_column:
-                if target_column != "label":
-                    #change target_column name
-                    dataset_encoded = dataset_encoded.rename_column(target_column, "label")
-                    target_column="label"
-                    target_ready = True
-                else:
-                    target_ready = True
-            elif column == model_input_name:
-                input_ready = True
-            else:#remove column
-                print("column name:", column)
-        column_names = raw_datasets["train"].column_names
-        print(column_names)
 
 
     # Load the accuracy metric from the datasets package
@@ -1031,7 +1343,7 @@ if __name__ == "__main__":
     #     predictions = np.argmax(eval_pred.predictions, axis=1)
     #     return metric.compute(predictions=predictions, references=eval_pred.label_ids)
     
-    metriceval = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate)
+    metriceval = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels)
     #metriceval.compute_metrics
     result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
     result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
@@ -1081,14 +1393,21 @@ if __name__ == "__main__":
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
     elif args.trainmode == 'CustomTrain':
+        if processor:
+            #processor = Wav2Vec2Processor.from_pretrained(model_name_or_path)
+            data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+            #the padding tokens in the labels with -100 so that those tokens are not taken into account when computing the loss.
+        else:
+            data_collator = default_data_collator
+        
         train_dataloader = DataLoader(
             raw_datasets["train"],
             shuffle=True,
-            collate_fn=default_data_collator,
+            collate_fn=data_collator,
             batch_size=args.batch_size,
         )
         eval_dataloader = DataLoader(
-            raw_datasets[valkey], collate_fn=default_data_collator, batch_size=args.batch_size
+            raw_datasets[valkey], collate_fn=data_collator, batch_size=args.batch_size
         )
 
         results=evaluate_dataset(model, eval_dataloader, device, metriceval)
@@ -1121,20 +1440,39 @@ if __name__ == "__main__":
         progress_bar = tqdm(range(max_train_steps))
         completed_steps = 0
         starting_epoch = 0
+        if args.useamp == True:
+            # Creates a GradScaler once at the beginning of training.
+            scaler = torch.cuda.amp.GradScaler()
+
         for epoch in range(starting_epoch, num_train_epochs):
             model.train()
             for step, batch in enumerate(train_dataloader):
                 batch = {k: v.to(device) for k, v in batch.items()}
-                outputs = model(**batch)
-                loss = outputs.loss
+                # Enables autocasting for the forward pass (model + loss)
+                if args.useamp == True:
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        outputs = model(**batch)
+                        loss = outputs.loss
+                else:
+                    outputs = model(**batch)
+                    loss = outputs.loss
+                
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
 
                 #backward
-                loss.backward()
+                if args.useamp == True:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
 
                 if step % args.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
-                        optimizer.step()
+                        if args.useamp == True:
+                            scaler.step(optimizer)
+                            # Updates the scale for next iteration.
+                            scaler.update()
+                        else:
+                            optimizer.step()
                         lr_scheduler.step()
                         optimizer.zero_grad()
                         progress_bar.update(1)
