@@ -617,14 +617,14 @@ def loaddata(args, USE_HPC, mycache_dir):
             #AUDIO part
             elif args.data_name == "speech_commands": 
                 raw_datasets = DatasetDict()
-                raw_datasets["train"] = load_dataset(args.data_name, args.dataconfig, split='train')
+                raw_datasets["train"] = load_dataset(args.data_name, args.dataconfig, split='train', cache_dir=mycache_dir)
                 #raw_datasets[valkey] = load_dataset(args.data_name, args.dataconfig, split='validation')
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig, split='test')
                 task_column ="audio" #(['file', 'audio', 'label', 'is_unknown', 'speaker_id', 'utterance_id']
                 text_column = "audio"
                 target_column = "label"
             elif args.data_name == "marsyas/gtzan":
-                raw_datasets = load_dataset(args.data_name, "all")
+                raw_datasets = load_dataset(args.data_name, "all", cache_dir=mycache_dir)
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "genre"
@@ -639,7 +639,7 @@ def loaddata(args, USE_HPC, mycache_dir):
                     subsetconfig = args.dataconfig
                 else:
                     subsetconfig = "all" #"en-AU" "zh-CN"
-                raw_datasets = load_dataset("PolyAI/minds14", name=subsetconfig, split="train")
+                raw_datasets = load_dataset("PolyAI/minds14", name=subsetconfig, split="train", cache_dir=mycache_dir)
                 #raw_datasets = raw_datasets.train_test_split(test_size=0.2)
                 #minds can be used to classify intent_class, lang_id, and speech recognition (english_transcription)
                 #contains "path", "audio"dict("path", "array")
@@ -658,12 +658,12 @@ def loaddata(args, USE_HPC, mycache_dir):
                     subsetconfig = args.dataconfig
                 else:
                     subsetconfig = "ks" #Keyword Spotting (KS)
-                raw_datasets = load_dataset("superb", name=subsetconfig, split="train", ignore_verifications=True)
+                raw_datasets = load_dataset("superb", name=subsetconfig, split="train", ignore_verifications=True, cache_dir=mycache_dir)
                 task_column ="audio" 
                 text_column = "file"
                 target_column = "label"
             elif args.data_name == "google/fleurs":
-                raw_datasets = load_dataset("google/fleurs", "all", split="train")
+                raw_datasets = load_dataset("google/fleurs", "all", split="train", cache_dir=mycache_dir)
                 task_column ="audio" 
                 text_column = "path"
                 target_column = "lang_id" #language
@@ -673,25 +673,6 @@ def loaddata(args, USE_HPC, mycache_dir):
                 text_column = "text"
                 target_column = "summary"
         
-        labels = raw_datasets["train"].features[target_column].names
-        column_names = raw_datasets["train"].column_names
-        print("column_names:", column_names)
-        if task_column not in raw_datasets["train"].column_names:
-            raise ValueError(
-                f"--audio_column_name not found in dataset. "
-            )
-        if target_column not in raw_datasets["train"].column_names:
-            raise ValueError(
-                f"--label_column_name not found in dataset. "
-            )
-        id2label_fn = raw_datasets["train"].features[target_column].int2str
-        id2label = {
-            str(i): id2label_fn(i)
-            for i in range(len(labels))
-        }
-        label2id = {v: k for k, v in id2label.items()}
-        #return column_names, labels, id2label, label2id
-
         #Download to home/.cache/huggingface/dataset
         #print(raw_datasets.column_names)
         #splits=raw_datasets.split
@@ -735,6 +716,25 @@ def loaddata(args, USE_HPC, mycache_dir):
             print("trainlen:", trainlen)
             raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
             raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(testlen))])
+        
+        labels = raw_datasets["train"].features[target_column].names
+        column_names = raw_datasets["train"].column_names
+        print("column_names:", column_names)
+        if task_column not in raw_datasets["train"].column_names:
+            raise ValueError(
+                f"--audio_column_name not found in dataset. "
+            )
+        if target_column not in raw_datasets["train"].column_names:
+            raise ValueError(
+                f"--label_column_name not found in dataset. "
+            )
+        id2label_fn = raw_datasets["train"].features[target_column].int2str
+        id2label = {
+            str(i): id2label_fn(i)
+            for i in range(len(labels))
+        }
+        label2id = {v: k for k, v in id2label.items()}
+        #return column_names, labels, id2label, label2id
 
     elif args.data_type == "custom":
         #/DATA10T/Cache/aesdd/data
@@ -980,9 +980,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple distributed training job')
     #data related arguments
-    parser.add_argument('--data_type', type=str, default="custom",
+    parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="aesdd",
+    parser.add_argument('--data_name', type=str, default="google/fleurs",
                     help='data name: aesdd(local path), common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -1239,7 +1239,7 @@ if __name__ == "__main__":
                                        truncation=True,
                                        padding=True)
             output_batch = {model_input_name: inputs.get(model_input_name)}
-            output_batch["label"] = list(batch[target_column])
+            output_batch["labels"] = list(batch[target_column])
         else:
             audio = batch[task_column]
             wav = random_subsample(
@@ -1251,7 +1251,7 @@ if __name__ == "__main__":
                                        truncation=True,
             padding=True) #'max_length')
             output_batch = {model_input_name: inputs.get(model_input_name)}
-            output_batch["label"] = batch[target_column]
+            output_batch["labels"] = batch[target_column]
 
         return output_batch
 
@@ -1264,7 +1264,7 @@ if __name__ == "__main__":
             wavs = [audio["array"]]
         inputs = feature_extractor(wavs, sampling_rate=feature_extractor.sampling_rate, max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), truncation=True, padding=True)
         output_batch = {model_input_name: inputs.get(model_input_name)}
-        output_batch["label"] = list(batch[target_column])
+        output_batch["labels"] = list(batch[target_column])
 
         return output_batch
 
@@ -1303,24 +1303,24 @@ if __name__ == "__main__":
                 batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
                 batch_size=100,
             )
-            column_names = raw_datasets["train"].column_names
-            # target_ready = False
-            # input_ready = False
-            # for column in column_names:
-            #     if column == target_column:
-            #         if target_column != "label":
-            #             #change target_column name
-            #             dataset_encoded = dataset_encoded.rename_column(target_column, "label")
-            #             target_column="label"
-            #             target_ready = True
-            #         else:
-            #             target_ready = True
-            #     elif column == model_input_name:
-            #         input_ready = True
-            #     else:#remove column
-            #         print("column name:", column)
-            # column_names = raw_datasets["train"].column_names
-            print(column_names)
+        column_names = raw_datasets["train"].column_names
+        # target_ready = False
+        # input_ready = False
+        # for column in column_names:
+        #     if column == target_column:
+        #         if target_column != "label":
+        #             #change target_column name
+        #             dataset_encoded = dataset_encoded.rename_column(target_column, "label")
+        #             target_column="label"
+        #             target_ready = True
+        #         else:
+        #             target_ready = True
+        #     elif column == model_input_name:
+        #         input_ready = True
+        #     else:#remove column
+        #         print("column name:", column)
+        # column_names = raw_datasets["train"].column_names
+        print(column_names)
     else:
         samplebatch1 = preprocess_loadaudio(raw_datasets['train'][:5])
         #custom dataset, audio is not loaded
