@@ -457,6 +457,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             ctc_loss_reduction="mean", 
             pad_token_id=processor.tokenizer.pad_token_id,
         )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
+        config.vocab_size
 
     starting_epoch = 0
     if pretrained:
@@ -707,15 +708,6 @@ def loaddata(args, USE_HPC, mycache_dir):
             print("trainlen:", trainlen)
             raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select([i for i in list(range(trainlen))])
             raw_datasets[valkey] = raw_datasets[valkey].shuffle(seed=42).select([i for i in list(range(testlen))])
-        
-        labels = raw_datasets["train"].features[target_column].names
-        id2label_fn = raw_datasets["train"].features[target_column].int2str
-        id2label = {
-            str(i): id2label_fn(i)
-            for i in range(len(labels))
-        }
-        label2id = {v: k for k, v in id2label.items()}
-        #return column_names, labels, id2label, label2id
 
     elif args.data_type == "custom":
         #/DATA10T/Cache/aesdd/data
@@ -726,14 +718,6 @@ def loaddata(args, USE_HPC, mycache_dir):
         target_column = "label"
         data_files = loadaudios_todataset(folder=datafolder, save_path=save_path, audiofileformat=".wav", target_columnname=target_column, valkey=valkey)
         raw_datasets = load_dataset("csv", data_files = data_files, delimiter="\t")
-        labels = raw_datasets['train'].unique(target_column)
-        labels.sort()  # Let's sort it for determinism
-        num_labels = len(labels)
-        print(f"A classification problem with {num_labels} classes: {labels}")
-        label2id={label: i for i, label in enumerate(labels)}
-        id2label={i: label for i, label in enumerate(labels)}
-        column_names = raw_datasets["train"].column_names
-        print("column_names:", column_names)
 
     column_names = raw_datasets["train"].column_names
     print("column_names:", column_names)
@@ -747,9 +731,11 @@ def loaddata(args, USE_HPC, mycache_dir):
         )
     
     #remove other columns
-    column_names = column_names.remove(task_column)
-    column_names = column_names.remove(target_column)
-    raw_datasets = raw_datasets.remove_columns(column_names)
+    columnnames_remove = []
+    for columnname in column_names:
+        if columnname not in [task_column, target_column]:
+            columnnames_remove.append(columnname)
+    raw_datasets = raw_datasets.remove_columns(columnnames_remove)
 
     #limit the evaluation set size
     maxtestlen = 5000
@@ -840,13 +826,13 @@ def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_co
     #Option2
     #newtokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
             
-    config = AutoConfig.from_pretrained(model_checkpoint)
-    tokenizer_type = config.model_type if config.tokenizer_class is None else None
-    config = config if config.tokenizer_class is not None else None
+    config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
+    tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
+    config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
     tokenizer = AutoTokenizer.from_pretrained(
-        vocab_filepath,
+        savepath, #vocab_filepath,
         config=config,
-        tokenizer_type=tokenizer_type,
+        tokenizer_type=tokenizer_type, #'wav2vec2'
         unk_token="[UNK]",
         pad_token="[PAD]",
         word_delimiter_token="|",
@@ -987,7 +973,7 @@ def inferenceaudiopath(data_path, task, model, usepipeline=True, feature_extract
 
 
 class myEvaluator:
-    def __init__(self, args, useHFevaluator=False, dualevaluator=False, metricname = "accuracy", labels=None, processor=None):
+    def __init__(self, args, useHFevaluator=False, dualevaluator=False, labels=None, processor=None):
         print("useHFevaluator:", useHFevaluator)
         print("dualevaluator:", dualevaluator)
         self.useHFevaluator = useHFevaluator
@@ -998,7 +984,10 @@ class myEvaluator:
         self.labels = labels
         self.processor = processor
         self.HFmetric = None
-        self.metricname = metricname #"accuracy" "mse" "wer"
+        if args.task == "audio-classification":
+            self.metricname = "accuracy" #"mse" "wer"
+        elif args.task == "audio-asr":
+            self.metricname = "wer"
         self.LOmetric = None
         #https://huggingface.co/spaces/evaluate-metric/wer
         #if self.task.startswith("audio"):
@@ -1127,7 +1116,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="common_voice",
+    parser.add_argument('--data_name', type=str, default="timit",
                     help='data name: aesdd(local path), common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -1140,7 +1129,7 @@ if __name__ == "__main__":
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--custommodel', default=True, action='store_true', help='Change model') 
-    parser.add_argument('--task', type=str, default="audio-classification",
+    parser.add_argument('--task', type=str, default="audio-asr",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
                     help='Sub tasks')
@@ -1155,11 +1144,11 @@ if __name__ == "__main__":
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--traintag', type=str, default="0110",
+    parser.add_argument('--traintag', type=str, default="0112",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'],
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'],
                     help='Perform training')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
@@ -1304,6 +1293,7 @@ if __name__ == "__main__":
 
     raw_datasets, text_column, target_column, task_column, column_names= loaddata(args, USE_HPC, mycache_dir)
     #labels, id2label, label2id, column_names, columns_remove = getlabels(raw_datasets, task_column, target_column)
+    labels = None
     id2label = None
     label2id = None
     tokenizer=None
@@ -1500,6 +1490,7 @@ if __name__ == "__main__":
         )
         column_names = raw_datasets["train"].column_names
     elif args.data_type == "huggingface" and args.task=="audio-asr":
+        column_names = raw_datasets["train"].column_names
         raw_datasets = raw_datasets.map(
             prepare_asrdataset,
             remove_columns=column_names, #columns_remove,
@@ -1518,7 +1509,7 @@ if __name__ == "__main__":
     #     predictions = np.argmax(eval_pred.predictions, axis=1)
     #     return metric.compute(predictions=predictions, references=eval_pred.label_ids)
     
-    metriceval = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels)
+    metriceval = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels, processor=processor)
     #metriceval.compute_metrics
     result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
     result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
