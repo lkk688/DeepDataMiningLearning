@@ -389,13 +389,42 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
             attentions=outputs.attentions,
         )
 
-def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", id2label=None, label2id=None, tokenizer=None, pretrained="", cache_dir="", unfreezename="", freeze_feature_encoder=True, return_attention_mask=True):
+#https://github.com/huggingface/transformers/tree/main/src/transformers/models/wav2vec2
+def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", id2label=None, label2id=None, vocab_path=None, pretrained="", cache_dir="", unfreezename="", freeze_feature_encoder=True, return_attention_mask=True):
     ignore_mismatched_sizes = custommodel #when loading model, ignore size 
     if cache_dir:
         mycache_dir = cache_dir
     elif os.environ.get('HF_HOME') is not None:
         mycache_dir = os.environ.get('HF_HOME')
 
+    #option1
+    #tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    #Option2
+    #newtokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
+    #config.vocab_size:32
+    config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
+    tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
+    config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
+    if vocab_path and task =="audio-asr":
+        tokenizer = AutoTokenizer.from_pretrained(
+            vocab_path, #vocab_filepath,
+            cache_dir = mycache_dir,
+            config=config,#None
+            tokenizer_type=tokenizer_type, #'wav2vec2'
+            do_lower_case=True,
+            unk_token="[UNK]",
+            pad_token="[PAD]",
+            word_delimiter_token="|",
+            )
+    elif task =="audio-asr":
+        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, \
+                                                  cache_dir = mycache_dir,\
+                                                do_lower_case=True, \
+                                                word_delimiter_token="|",)
+        
+    #if datatype=="huggingface":
+
+    #Create Processor
     processoroption1=False
     if processoroption1==True:
         processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
@@ -452,12 +481,13 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             )
             #ignore_mismatched_sizes: Will enable to load a pretrained model whose head dimensions are different.
     elif task == "audio-asr":
+        config = AutoConfig.from_pretrained(model_checkpoint)
+        config.vocab_size = 30
         model = AutoModelForCTC.from_pretrained(
             model_checkpoint, 
             ctc_loss_reduction="mean", 
             pad_token_id=processor.tokenizer.pad_token_id,
         )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
-        config.vocab_size
 
     starting_epoch = 0
     if pretrained:
@@ -658,7 +688,12 @@ def loaddata(args, USE_HPC, mycache_dir):
                 raw_datasets = load_dataset("timit_asr", data_dir=data_dir)
                 task_column ="audio" 
                 text_column = "file"
-                target_column = "text" #language
+                target_column = "text"
+            elif args.data_name == "librispeech_asr":
+                raw_datasets = load_dataset("librispeech_asr", "clean", split="train.100", cache_dir=mycache_dir)
+                task_column ="audio" 
+                text_column = "file"
+                target_column = "text" 
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -782,63 +817,53 @@ def show_random_elements(dataset, num_examples=10):
     #display(HTML(df.to_html()))
 
 import re
-def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_column="text", datatype="huggingface", savepath="./output"): 
+def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_column="text", datatype="huggingface", savepath=None): 
+    show_random_elements(raw_datasets["train"].remove_columns(task_column))
+
     #remove special characters, normalize the text to only have lower case letters and append a word separator token at the end.
     chars_to_ignore_regex = '[\,\?\.\!\-\;\:\"]'
     def remove_special_characters(batch):
-        batch[target_column] = re.sub(chars_to_ignore_regex, '', batch[target_column]).lower() + " "
+        replace_str = re.sub(chars_to_ignore_regex, '', batch[target_column])
+        replace_str = replace_str.lower() + " "
+        batch[target_column] =  replace_str
+        return batch
     
     raw_datasets = raw_datasets.map(remove_special_characters)
+
     show_random_elements(raw_datasets["train"].remove_columns(task_column))
 
-    vocab_filepath = os.path.join(savepath, 'vocab.json')
-    #Create vocab
-    if not (savepath and os.path.exists(vocab_filepath)):
-        #extract all distinct letters
-        def extract_all_chars(batch):
-            all_text = " ".join(batch[target_column])
-            vocab = list(set(all_text))
-            return {"vocab": [vocab], "all_text": [all_text]}
-        
-        vocabs = raw_datasets.map(
-            extract_all_chars,
-            batched=True,
-            batch_size=-1,
-            keep_in_memory=True, 
-            remove_columns=raw_datasets.column_names["train"]
-            )
-        #create the union of all distinct letters into an enumerated dictionary.
-        vocab_list = list(set(vocabs["train"]["vocab"][0]) | set(vocabs[valkey]["vocab"][0]))
-        vocab_dict = {v: k for k, v in enumerate(vocab_list)}
-        vocab_dict["|"] = vocab_dict[" "] #convert space to more visible character |
-        del vocab_dict[" "]
-        vocab_dict["[UNK]"] = len(vocab_dict)
-        vocab_dict["[PAD]"] = len(vocab_dict)
-        print("vocab dict:", vocab_dict)
-        vocab_len=len(vocab_dict)
-        print("vocab len:", vocab_len)
-    
-        with open(vocab_filepath, 'w') as vocab_file:
-            json.dump(vocab_dict, vocab_file)
-
-    #option1
-    #tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    #Option2
-    #newtokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
+    if savepath: #use vocab
+        vocab_filepath = os.path.join(savepath, 'vocab.json')
+        #Create vocab
+        if not (os.path.exists(vocab_filepath)):
+            #extract all distinct letters
+            def extract_all_chars(batch):
+                all_text = " ".join(batch[target_column])
+                vocab = list(set(all_text))
+                return {"vocab": [vocab], "all_text": [all_text]}
             
-    config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
-    tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
-    config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
-    tokenizer = AutoTokenizer.from_pretrained(
-        savepath, #vocab_filepath,
-        config=config,
-        tokenizer_type=tokenizer_type, #'wav2vec2'
-        unk_token="[UNK]",
-        pad_token="[PAD]",
-        word_delimiter_token="|",
-        )
-    #if datatype=="huggingface":
-    return tokenizer
+            vocabs = raw_datasets.map(
+                extract_all_chars,
+                batched=True,
+                batch_size=-1,
+                keep_in_memory=True, 
+                remove_columns=raw_datasets.column_names["train"]
+                )
+            #create the union of all distinct letters into an enumerated dictionary.
+            vocab_list = list(set(vocabs["train"]["vocab"][0]) | set(vocabs[valkey]["vocab"][0]))
+            vocab_dict = {v: k for k, v in enumerate(vocab_list)}
+            vocab_dict["|"] = vocab_dict[" "] #convert space to more visible character |
+            del vocab_dict[" "]
+            vocab_dict["[UNK]"] = len(vocab_dict)
+            vocab_dict["[PAD]"] = len(vocab_dict)
+            print("vocab dict:", vocab_dict)
+            vocab_len=len(vocab_dict)
+            print("vocab len:", vocab_len) #30
+        
+            with open(vocab_filepath, 'w') as vocab_file:
+                json.dump(vocab_dict, vocab_file)
+
+    return raw_datasets
 
             
         
@@ -895,15 +920,24 @@ def get_myoptimizer(model, learning_rate=2e-5, weight_decay=0.0):
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
     return optimizer
 
+def loaddefaultmodel_fromname(modelname="facebook/wav2vec2-base-960h", task="audio-asr"):
+    if task == "audio-classification":
+        feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
+        model = AutoModelForAudioClassification.from_pretrained(modelname)
+        tokenizer = None
+        processor = None
+    elif task == "audio-asr":
+        model = AutoModelForCTC.from_pretrained(modelname)
+        tokenizer = AutoTokenizer.from_pretrained(modelname)
+        feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
+        processor = AutoProcessor.from_pretrained(modelname)
+    return model, feature_extractor, tokenizer, processor
+
 from transformers import pipeline
-def inferencesample(datasample, task, model, usepipeline=True, feature_extractor=None, device='cuda', columnname='audio'):
-    sample = datasample[columnname] #raw_datasets["train"][0][task_column]
+def inferencesample(datasample, task, model, usepipeline=True, feature_extractor=None, processor=None, device='cuda', task_column='audio', target_column='text'):
+    sample = datasample[task_column] #raw_datasets["train"][0][task_column]
     print(f"Mean: {np.mean(sample['array']):.3}, Variance: {np.var(sample['array']):.3}")
-    inputs = feature_extractor(sample["array"], sampling_rate=sample["sampling_rate"])
-    print(f"inputs keys: {list(inputs.keys())}")
-    print(
-        f"Mean: {np.mean(inputs['input_values']):.3}, Variance: {np.var(inputs['input_values']):.3}"
-    )
+
     saveaudio_tofile(sample['array'], "./output", sample["sampling_rate"], filename="save_example.wav")
     #loadaudio_fromfile(filepath=sample["path"], plotfig=True)
 
@@ -919,25 +953,61 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
         #sample=datasample[columnname]
         #sample["audio"]["array"]
         print(feature_extractor.sampling_rate)
-        print(sample['sampling_rate']) #dataset.features["audio"].sampling_rate   
+        print(sample['sampling_rate']) #dataset.features["audio"].sampling_rate 
+        
         if isinstance(model, str):
-            feature_extractor = AutoFeatureExtractor.from_pretrained(model)
-            model = AutoModelForAudioClassification.from_pretrained(model)
-            
-        inputs = feature_extractor(sample["array"],sampling_rate=feature_extractor.sampling_rate, return_tensors="pt")
+            model, feature_extractor, tokenizer, processor = loaddefaultmodel_fromname(modelname=model, task=task)
+        
+        inputs = feature_extractor(sample["array"], sampling_rate=feature_extractor.sampling_rate, return_tensors="pt")
+        # inputs = feature_extractor(sample["array"], sampling_rate=sample["sampling_rate"])
+        print(f"inputs keys: {list(inputs.keys())}")#[1, 49562]
+        input_values=inputs['input_values'].numpy()#(1, 48640)
+        print(
+            f"Mean: {np.mean(input_values):.3}, Variance: {np.var(input_values):.3}"
+        )
+        if processor:
+            inputs2 = processor(sample["array"], sampling_rate=sample["sampling_rate"], return_tensors="pt")
+            input_values=inputs2['input_values'].numpy()
+            print(
+                f"Mean: {np.mean(input_values):.3}, Variance: {np.var(input_values):.3}"
+            )
+
         model=model.to(device)
         inputs=inputs.to(device)
         with torch.no_grad():
             logits = model(**inputs).logits
         #Get the class with the highest probability
-        logitsmax=torch.argmax(logits) #[1, 45]->33
-        predicted_class_ids = logitsmax.item() #.item() moves the scalar data to CPU
-        #use the model’s id2label mapping to convert it to a label:
-        result = model.config.id2label[str(predicted_class_ids)]
-        print(result)
-        #list all classes
-        scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
-        allclasses = [{"class": model.config.id2label[i], "Score": f"{round(score * 100, 3):.1f}%"} for i, score in enumerate(scores)]
+        predicted_ids=torch.argmax(logits, dim=-1) #[1, 45]->33; [1, 113, 32]->[1, 113]
+
+        if task == "audio-classification":
+            predicted_class_ids = predicted_ids.item() #.item() moves the scalar data to CPU
+            #use the model’s id2label mapping to convert it to a label:
+            result = model.config.id2label[str(predicted_class_ids)]
+            print(result)
+            #list all classes
+            scores = F.softmax(logits, dim=1).detach().cpu().numpy()[0]
+            allclasses = [{"class": model.config.id2label[i], "Score": f"{round(score * 100, 3):.1f}%"} for i, score in enumerate(scores)]
+        elif task == "audio-asr":
+            # transcribe speech
+            transcription = processor.batch_decode(predicted_ids)
+            result = transcription[0]
+            print(transcription[0])
+            # retrieve word stamps (analogous commands for `output_char_offsets`)
+            outputs = processor.tokenizer.decode(np.squeeze(predicted_ids), output_word_offsets=True)
+            print(outputs["text"])
+            text=datasample[target_column]
+            # compute `time_offset` in seconds as product of downsampling ratio and sampling_rate 
+            time_offset = model.config.inputs_to_logits_ratio / feature_extractor.sampling_rate
+            word_offsets = [
+                {
+                    "word": d["word"],
+                    "start_time": round(d["start_offset"] * time_offset, 2),
+                    "end_time": round(d["end_offset"] * time_offset, 2),
+                }
+                for d in outputs.word_offsets
+            ]
+            print(word_offsets[:3])
+
     return result
     
 def inferenceaudiopath(data_path, task, model, usepipeline=True, feature_extractor=None, device='cuda', columnname='audio'):
@@ -995,14 +1065,14 @@ class myEvaluator:
             # Load the accuracy metric from the datasets package
             self.HFmetric = evaluate.load(self.metricname) #evaluate.load("mse")
         elif self.metricname == "wer":
-            self.LOmetric = load_metric("wer")#
+            self.LOmetric = load_metric("wer", trust_remote_code=True)#deprecated
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
     #eval_pred is EvalPrediction type
     def compute_metrics(self, eval_pred: EvalPrediction):
         preds = eval_pred.predictions[0] if isinstance(eval_pred.predictions, tuple) else eval_pred.predictions
-        label_ids = eval_pred.label_ids
+        label_ids = eval_pred.label_ids #(462, 79)
         if self.metricname == "accuracy":
             """Computes accuracy on a batch of predictions"""
             preds = np.argmax(preds, axis=1)
@@ -1011,11 +1081,11 @@ class myEvaluator:
             preds = np.squeeze(preds)
             #return self.HFmetric.compute(predictions=preds, references=label_ids)
         elif self.metricname == "wer":
-            preds = np.argmax(preds, axis=-1)
+            preds = np.argmax(preds, axis=-1)#(462, 329, 32)->(462, 329)
             label_ids[label_ids == -100] = self.processor.tokenizer.pad_token_id
-            preds = self.processor.batch_decode(preds)
+            preds = self.processor.batch_decode(preds)#get str
             # we do not want to group tokens when computing the metrics
-            label_ids = self.processor.batch_decode(label_ids, group_tokens=False)
+            label_ids = self.processor.batch_decode(label_ids, group_tokens=False)#get str (462,79)->(462)
 
         return self.compute(predictions=preds, references=label_ids)
 
@@ -1034,19 +1104,25 @@ class myEvaluator:
         return results
     
     def compute(self, predictions=None, references=None):
-        results = []
+        results = {}
         if predictions is not None and references is not None:
             if self.useHFevaluator:
                 results = self.HFmetric.compute(predictions=predictions, references=references)
             else: 
                 results = self.mycompute(predictions=predictions, references=references)
             #print("HF evaluator:", results)
+            if not isinstance(results, dict):
+                #wer output is float, convert to dict
+                results = {self.metricname: results}
         else: #evaluate the whole dataset
             if self.useHFevaluator:
                 results = self.HFmetric.compute()
                 print("HF evaluator result1:", results)
                 results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
                 print("HF evaluator result2:", results2)
+                if not isinstance(results, dict):
+                    #wer output is float, convert to dict
+                    results = {self.metricname: results}
             else:
                 results = self.mycompute(predictions=self.preds, references=self.refs)
             self.preds.clear()
@@ -1117,14 +1193,14 @@ if __name__ == "__main__":
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="timit",
-                    help='data name: aesdd(local path), common_language, superb, google/fleurs, minds14, marsyas/gtzan')
+                    help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1133,7 +1209,7 @@ if __name__ == "__main__":
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
                     help='Sub tasks')
-    parser.add_argument('--hfevaluate', default=False, action='store_true',
+    parser.add_argument('--hfevaluate', default=True, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
@@ -1161,7 +1237,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=64, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1297,15 +1373,17 @@ if __name__ == "__main__":
     id2label = None
     label2id = None
     tokenizer=None
+    vocab_path = None
     if args.task == "audio-classification":
         labels, id2label, label2id, num_labels = getlabels_classifier(raw_datasets, target_column=target_column, datatype=args.data_type)
     elif args.task == "audio-asr":
-        tokenizer = getlabels_asr(raw_datasets, model_checkpoint, task_column=task_column, target_column=target_column, datatype=args.data_type, savepath=os.path.join(mycache_dir, args.data_name))
+        vocab_path = None #os.path.join(mycache_dir, args.data_name)
+        raw_datasets = getlabels_asr(raw_datasets, model_checkpoint, task_column=task_column, target_column=target_column, datatype=args.data_type, savepath=vocab_path)
 
     model, feature_extractor, processor, starting_epoch = \
         loadmodel(model_checkpoint, custommodel=args.custommodel, \
                 task=task, id2label=id2label, label2id=label2id, \
-                tokenizer=tokenizer, pretrained=args.pretrained, \
+                vocab_path=vocab_path, pretrained=args.pretrained, \
                 unfreezename=args.unfreezename, freeze_feature_encoder=True, return_attention_mask=True)
 
     model_input_name = feature_extractor.model_input_names[0]
@@ -1314,17 +1392,21 @@ if __name__ == "__main__":
 
     rand_idx = randint(0, len(raw_datasets["train"])-1)
     datasample=raw_datasets["train"][rand_idx]
-    #result=inferencesample(datasample=datasample, task = args.task, model=model, usepipeline=False, feature_extractor=feature_extractor, device=device, columnname=task_column)
+    result=inferencesample(datasample=datasample, task = args.task, model=model, usepipeline=False, feature_extractor=feature_extractor, processor=processor, device=device, task_column=task_column, target_column=target_column)
+
 
     def prepare_asrdataset(batch):
         audio = batch[task_column] #"audio"
 
         # batched output is "un-batched" to ensure mapping is correct
+        #https://github.com/huggingface/transformers/blob/main/src/transformers/models/wav2vec2/processing_wav2vec2.py
         batch["input_values"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_values[0]
         batch["input_length"] = len(batch["input_values"])
         
-        with processor.as_target_processor():
-            batch["labels"] = processor(batch[target_column]).input_ids
+        #forwards all its arguments to PreTrainedTokenizer
+        # with processor.as_target_processor():
+        #     batch["labels"] = processor(batch[target_column]).input_ids
+        batch["labels"] = processor.tokenizer(batch[target_column]).input_ids
         return batch
 
     def preprocess_loadaudio(examples):
@@ -1491,6 +1573,7 @@ if __name__ == "__main__":
         column_names = raw_datasets["train"].column_names
     elif args.data_type == "huggingface" and args.task=="audio-asr":
         column_names = raw_datasets["train"].column_names
+        samplebatch1 = prepare_asrdataset(raw_datasets['train'][1])
         raw_datasets = raw_datasets.map(
             prepare_asrdataset,
             remove_columns=column_names, #columns_remove,
@@ -1511,8 +1594,8 @@ if __name__ == "__main__":
     
     metriceval = myEvaluator(args, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels, processor=processor)
     #metriceval.compute_metrics
-    result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
-    result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
+    #result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
+    #result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
 
     
     #['HFTrainer','CustomTrain', 'NoTrain']
@@ -1530,7 +1613,7 @@ if __name__ == "__main__":
             warmup_ratio=0.1,
             logging_steps=10,
             load_best_model_at_end=True,
-            metric_for_best_model="accuracy",
+            #metric_for_best_model=myEvaluator.#"accuracy",
             fp16=args.use_fp16,
             push_to_hub=False,
         )
@@ -1563,7 +1646,7 @@ if __name__ == "__main__":
     elif args.trainmode == 'CustomTrain':
         if processor:
             #processor = Wav2Vec2Processor.from_pretrained(model_name_or_path)
-            data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
+            data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True, task=args.task)
             #the padding tokens in the labels with -100 so that those tokens are not taken into account when computing the loss.
         else:
             data_collator = default_data_collator
