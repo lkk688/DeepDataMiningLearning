@@ -482,11 +482,17 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             #ignore_mismatched_sizes: Will enable to load a pretrained model whose head dimensions are different.
     elif task == "audio-asr":
         config = AutoConfig.from_pretrained(model_checkpoint)
-        config.vocab_size = 30
+        print("Config vocab size", config.vocab_size)
         model = AutoModelForCTC.from_pretrained(
             model_checkpoint, 
             ctc_loss_reduction="mean", 
             pad_token_id=processor.tokenizer.pad_token_id,
+            vocab_size=len(processor.tokenizer),
+            attention_dropout=0.1,
+            hidden_dropout=0.1,
+            feat_proj_dropout=0.0,
+            mask_time_prob=0.05,
+            layerdrop=0.1,
         )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
 
     starting_epoch = 0
@@ -821,7 +827,8 @@ def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_co
     show_random_elements(raw_datasets["train"].remove_columns(task_column))
 
     #remove special characters, normalize the text to only have lower case letters and append a word separator token at the end.
-    chars_to_ignore_regex = '[\,\?\.\!\-\;\:\"]'
+    #chars_to_ignore_regex = '[\,\?\.\!\-\;\:\"]'
+    chars_to_ignore_regex = '[\,\?\.\!\-\;\:\"\“\%\‘\”\�]'
     def remove_special_characters(batch):
         replace_str = re.sub(chars_to_ignore_regex, '', batch[target_column])
         replace_str = replace_str.lower() + " "
@@ -1192,7 +1199,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="timit",
+    parser.add_argument('--data_name', type=str, default="librispeech_asr",
                     help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -1201,7 +1208,7 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
-                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--custommodel', default=True, action='store_true', help='Change model') 
@@ -1237,7 +1244,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1611,11 +1618,14 @@ if __name__ == "__main__":
             per_device_eval_batch_size=args.batch_size,
             num_train_epochs=args.total_epochs,
             warmup_ratio=0.1,
-            logging_steps=10,
+            #warmup_steps=500,
+            logging_steps=100,
+            save_total_limit=2,
             load_best_model_at_end=True,
             #metric_for_best_model=myEvaluator.#"accuracy",
             fp16=args.use_fp16,
             push_to_hub=False,
+            gradient_checkpointing=True,#reduce GPU memory, or use model.gradient_checkpointing_enable()
         )
         data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True, task=args.task)
         # Initialize our trainer
@@ -1626,7 +1636,7 @@ if __name__ == "__main__":
             train_dataset=raw_datasets["train"],
             eval_dataset=raw_datasets[valkey],
             compute_metrics=metriceval.compute_metrics,
-            tokenizer=feature_extractor,
+            tokenizer=processor.feature_extractor, #feature_extractor,
         )
 
         if args.checkpointfolder and os.path.exists(args.checkpointfolder):
