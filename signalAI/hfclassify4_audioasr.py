@@ -178,7 +178,7 @@ def random_subsample(wav: np.ndarray, max_length: float, sample_rate: int = 1600
 
 #data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
 @dataclass
-class DataCollatorCTCWithPadding:
+class MyDataCollatorWithPadding:
     """
     Data collator that will dynamically pad the inputs received.
     Args:
@@ -222,7 +222,7 @@ class DataCollatorCTCWithPadding:
             return_tensors="pt",
         )
 
-        if self.task and self.task == "audio-asr":
+        if self.task and self.task == "audio-asr": #CTC padding
             label_features = [{"input_ids": feature["labels"]} for feature in features]
             with self.processor.as_target_processor():
                 labels_batch = self.processor.pad(
@@ -1209,7 +1209,7 @@ if __name__ == "__main__":
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
@@ -1229,19 +1229,19 @@ if __name__ == "__main__":
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
     #training related arguments
-    parser.add_argument('--outputdir', type=str, default="./output",
-                    help='output path')
+    parser.add_argument('--outputdir', type=str, default=r"E:\output",
+                    help='output path')#r"E:\output\" "./output"
     parser.add_argument('--traintag', type=str, default="0112",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'],
-                    help='Perform training')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
-    parser.add_argument('--use_vocabpath', default=False, action='store_true',
-                    help='Use HPC')
+    parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
+    parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
+                    help='Use gradientcheckpoint')#gradient_checkpointing_enable
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
@@ -1404,8 +1404,12 @@ if __name__ == "__main__":
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
     model = model.to(device)
-    model.gradient_checkpointing_enable()
+    if args.use_gradientcheckpoint:
+        #https://huggingface.co/docs/transformers/main_classes/model
+        #model.gradient_checkpointing_enable() #save GPU memory 
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant":False}) #https://pytorch.org/docs/stable/checkpoint.html
 
+    #inference example
     rand_idx = randint(0, len(raw_datasets["train"])-1)
     datasample=raw_datasets["train"][rand_idx]
     result=inferencesample(datasample=datasample, task = args.task, model=model, usepipeline=False, feature_extractor=feature_extractor, processor=processor, device=device, task_column=task_column, target_column=target_column)
@@ -1613,6 +1617,12 @@ if __name__ == "__main__":
     #result1=metriceval.compute(predictions=[2,7,6,1], references=[2,7,7,7])
     #result2=metriceval.compute(predictions=[2,7,6,1,1], references=[2,7,6,1,1])
 
+    if processor:
+        #processor = Wav2Vec2Processor.from_pretrained(model_name_or_path)
+        data_collator = MyDataCollatorWithPadding(processor=processor, padding=True, task=args.task)
+        #the padding tokens in the labels with -100 so that those tokens are not taken into account when computing the loss.
+    else:
+        data_collator = default_data_collator
     
     #['HFTrainer','CustomTrain', 'NoTrain']
     if args.trainmode == 'HFTrainer':
@@ -1634,9 +1644,8 @@ if __name__ == "__main__":
             #metric_for_best_model=myEvaluator.#"accuracy",
             fp16=args.use_fp16,
             push_to_hub=False,
-            gradient_checkpointing=True,#reduce GPU memory, or use model.gradient_checkpointing_enable()
+            #gradient_checkpointing=True,#reduce GPU memory, or use model.gradient_checkpointing_enable()
         )
-        data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True, task=args.task)
         # Initialize our trainer
         trainer = Trainer(
             model=model,
@@ -1663,12 +1672,6 @@ if __name__ == "__main__":
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
     elif args.trainmode == 'CustomTrain':
-        if processor:
-            #processor = Wav2Vec2Processor.from_pretrained(model_name_or_path)
-            data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True, task=args.task)
-            #the padding tokens in the labels with -100 so that those tokens are not taken into account when computing the loss.
-        else:
-            data_collator = default_data_collator
         
         train_dataloader = DataLoader(
             raw_datasets["train"],

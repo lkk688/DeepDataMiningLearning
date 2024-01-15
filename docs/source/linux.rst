@@ -195,3 +195,11 @@ Common errors
     python ./VisUtils/testmayavi.py
     libGL error: No matching fbConfigs or visuals found
     libGL error: failed to load driver: swrast
+
+Fix nvidia-smi error of "NVIDIA-SMI has failed because it couldn't communicate with the NVIDIA driver", reinstall the nvidia driver
+
+.. code-block:: console
+
+    sudo ubuntu-drivers devices #check the latest and recommended driver version
+    sudo apt install nvidia-driver-545
+    sudo reboot
