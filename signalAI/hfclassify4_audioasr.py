@@ -483,16 +483,17 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     elif task == "audio-asr":
         config = AutoConfig.from_pretrained(model_checkpoint)
         print("Config vocab size", config.vocab_size)
+        print(len(processor.tokenizer))
         model = AutoModelForCTC.from_pretrained(
             model_checkpoint, 
             ctc_loss_reduction="mean", 
             pad_token_id=processor.tokenizer.pad_token_id,
-            vocab_size=len(processor.tokenizer),
-            attention_dropout=0.1,
-            hidden_dropout=0.1,
-            feat_proj_dropout=0.0,
-            mask_time_prob=0.05,
-            layerdrop=0.1,
+            vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
+            # attention_dropout=0.1,
+            # hidden_dropout=0.1,
+            # feat_proj_dropout=0.0,
+            # mask_time_prob=0.05,
+            # layerdrop=0.1,
         )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
 
     starting_epoch = 0
@@ -1147,7 +1148,7 @@ class myEvaluator:
         #     self.refs.append(ref[0])
         #print(len(self.refs))
 
-def evaluate_dataset(model, eval_dataloader, device, metric):
+def evaluate_dataset(model, eval_dataloader, device, metric, processor=None):
     # Evaluation
     totallen = len(eval_dataloader)
     print("Total evaluation length:", totallen)
@@ -1161,14 +1162,17 @@ def evaluate_dataset(model, eval_dataloader, device, metric):
         logitsmax=torch.argmax(logits, dim=-1) #argmax (https://pytorch.org/docs/stable/generated/torch.argmax.html) for the last dimension, torch.Size([4])
         #predicted_class_ids = logitsmax.item() #.item() moves the data to CPU
         
-        #use the model’s id2label mapping to convert it to a label:
-        #decoded_preds = [model.config.id2label[str(pred.item())] for pred in logitsmax]
-        decoded_preds = [pred.item() for pred in logitsmax]
-        #result = model.config.id2label[str(predicted_class_ids)]
+        if metric.metricname == "wer": #audio-asr
+            decoded_preds = processor.batch_decode(logitsmax)
+            decoded_labels = processor.batch_decode(batch["labels"])
+        else:
+            #use the model’s id2label mapping to convert it to a label:
+            #decoded_preds = [model.config.id2label[str(pred.item())] for pred in logitsmax]
+            decoded_preds = [pred.item() for pred in logitsmax]
+            #result = model.config.id2label[str(predicted_class_ids)]
+            labels = batch["labels"] #label is also integer
+            decoded_labels = [label.item() for label in labels]
 
-        labels = batch["labels"] #label is also integer
-        decoded_labels = [label.item() for label in labels]
-        
         metric.add_batch(predictions=decoded_preds, references=decoded_labels)
         # result1 = metric.compute(predictions=decoded_preds, references=decoded_labels)
         #evalmetric.add_batch(predictions=decoded_preds, references=decoded_labels)
@@ -1231,8 +1235,11 @@ if __name__ == "__main__":
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'],
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'],
                     help='Perform training')
+    #vocab_path
+    parser.add_argument('--use_vocabpath', default=False, action='store_true',
+                    help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
     parser.add_argument('--usehpc', default=False, action='store_true',
@@ -1384,7 +1391,8 @@ if __name__ == "__main__":
     if args.task == "audio-classification":
         labels, id2label, label2id, num_labels = getlabels_classifier(raw_datasets, target_column=target_column, datatype=args.data_type)
     elif args.task == "audio-asr":
-        vocab_path = None #os.path.join(mycache_dir, args.data_name)
+        if args.use_vocabpath:
+            vocab_path = os.path.join(mycache_dir, args.data_name)
         raw_datasets = getlabels_asr(raw_datasets, model_checkpoint, task_column=task_column, target_column=target_column, datatype=args.data_type, savepath=vocab_path)
 
     model, feature_extractor, processor, starting_epoch = \
@@ -1396,6 +1404,7 @@ if __name__ == "__main__":
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
     model = model.to(device)
+    model.gradient_checkpointing_enable()
 
     rand_idx = randint(0, len(raw_datasets["train"])-1)
     datasample=raw_datasets["train"][rand_idx]
@@ -1671,7 +1680,7 @@ if __name__ == "__main__":
             raw_datasets[valkey], collate_fn=data_collator, batch_size=args.batch_size
         )
 
-        results=evaluate_dataset(model, eval_dataloader, device, metriceval)
+        results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
 
         # Optimizer
         adam_beta1=0.9
@@ -1739,7 +1748,7 @@ if __name__ == "__main__":
                         progress_bar.update(1)
                         completed_steps += 1
             #Evaluation
-            results=evaluate_dataset(model, eval_dataloader, device, metriceval)   
+            results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)   
             print(f"epoch {epoch}, loss: {loss}, evaluation: {metriceval.metricname}")
             print("Evaluation result:", results)
             # Save the results
@@ -1753,7 +1762,7 @@ if __name__ == "__main__":
         eval_dataloader = DataLoader(
             raw_datasets[valkey], collate_fn=None, batch_size=args.batch_size
         )
-        results=evaluate_dataset(model, eval_dataloader, device, metriceval)
+        results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
         print("No training, evauate only:", results)
 
     # using now() to get current time
