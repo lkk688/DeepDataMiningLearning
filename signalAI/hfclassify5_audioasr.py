@@ -1213,7 +1213,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
                     help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1241,7 +1241,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--use_gradientcheckpoint', default=False, action='store_true',
+    parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
                     help='Use gradientcheckpoint')#gradient_checkpointing_enable
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
