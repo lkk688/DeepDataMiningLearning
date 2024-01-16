@@ -1163,8 +1163,10 @@ def evaluate_dataset(model, eval_dataloader, device, metric, processor=None):
         #predicted_class_ids = logitsmax.item() #.item() moves the data to CPU
         
         if metric.metricname == "wer": #audio-asr
+            label_ids = batch["labels"]
+            label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
             decoded_preds = processor.batch_decode(logitsmax)
-            decoded_labels = processor.batch_decode(batch["labels"])
+            decoded_labels = processor.batch_decode(label_ids, group_tokens=False)
         else:
             #use the model’s id2label mapping to convert it to a label:
             #decoded_preds = [model.config.id2label[str(pred.item())] for pred in logitsmax]
@@ -1203,7 +1205,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="timit",
+    parser.add_argument('--data_name', type=str, default="librispeech_asr",
                     help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -1234,7 +1236,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
