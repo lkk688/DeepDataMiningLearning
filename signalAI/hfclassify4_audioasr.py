@@ -1235,7 +1235,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
@@ -1406,8 +1406,8 @@ if __name__ == "__main__":
     model = model.to(device)
     if args.use_gradientcheckpoint:
         #https://huggingface.co/docs/transformers/main_classes/model
-        #model.gradient_checkpointing_enable() #save GPU memory 
-        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant":False}) #https://pytorch.org/docs/stable/checkpoint.html
+        model.gradient_checkpointing_enable() #save GPU memory 
+        #model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant":False}) #https://pytorch.org/docs/stable/checkpoint.html
 
     #inference example
     rand_idx = randint(0, len(raw_datasets["train"])-1)
