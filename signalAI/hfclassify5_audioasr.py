@@ -1434,6 +1434,12 @@ if __name__ == "__main__":
         model.gradient_checkpointing_enable() #save GPU memory 
         #model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant":False}) #https://pytorch.org/docs/stable/checkpoint.html
 
+    # `datasets` takes care of automatically loading and resampling the audio,
+    # so we just need to set the correct target sampling rate.
+    raw_datasets = raw_datasets.cast_column(
+        task_column, features.Audio(sampling_rate=feature_extractor.sampling_rate)
+    )
+
     #inference example
     rand_idx = randint(0, len(raw_datasets["train"])-1)
     datasample=raw_datasets["train"][rand_idx]
@@ -1559,11 +1565,6 @@ if __name__ == "__main__":
         samplebatch2 = preprocess_function(raw_datasets['train'][:5])
         samplebatch3 = train_transforms(raw_datasets['train'][:5])
     
-        # `datasets` takes care of automatically loading and resampling the audio,
-        # so we just need to set the correct target sampling rate.
-        raw_datasets = raw_datasets.cast_column(
-            task_column, features.Audio(sampling_rate=feature_extractor.sampling_rate)
-        )
         processmode=1 #1 or 2 all works
         if processmode == 1:
             # Set the training transforms
