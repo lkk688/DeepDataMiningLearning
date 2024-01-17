@@ -405,45 +405,6 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     unk_token="[UNK]"
     pad_token="[PAD]"
     word_delimiter_token="|"
-    config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
-    tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
-    config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
-    tokenizer_kwargs = {
-        "config": config,
-        "tokenizer_type": tokenizer_type,
-        "unk_token": unk_token,
-        "pad_token": pad_token,
-        "word_delimiter_token": word_delimiter_token,
-    }
-    if vocab_path and task =="audio-asr":
-        tokenizer = AutoTokenizer.from_pretrained(
-            vocab_path, #vocab_filepath,
-            **tokenizer_kwargs,
-            # cache_dir = mycache_dir,
-            # config=config,#None
-            # tokenizer_type=tokenizer_type, #'wav2vec2'
-            # do_lower_case=True,
-            # unk_token=unk_token,
-            # pad_token=pad_token,
-            # word_delimiter_token=word_delimiter_token,
-            )
-    elif task =="audio-asr":
-        tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
-        # tokenizer = AutoTokenizer.from_pretrained(
-        #     tokenizer_name_or_path,
-        #     #token=data_args.token,
-        #     #trust_remote_code=data_args.trust_remote_code,
-        #     **tokenizer_kwargs,
-        # )
-        tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, \
-                                                  cache_dir = mycache_dir,\
-                                                do_lower_case=True, \
-                                                word_delimiter_token="|",)
-    #test tokenizer
-    print(len(tokenizer))
-    #outputids = tokenizer("test the tokenizer")
-    tokenizer.save_pretrained("./output")
-    #if datatype=="huggingface":
 
     #Create Processor
     processoroption1=False
@@ -451,6 +412,46 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
         feature_extractor = processor.feature_extractor
     else:
+        config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
+        tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
+        config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
+        tokenizer_kwargs = {
+            "config": config,
+            "tokenizer_type": tokenizer_type,
+            "unk_token": unk_token,
+            "pad_token": pad_token,
+            "word_delimiter_token": word_delimiter_token,
+        }
+        if vocab_path and task =="audio-asr":
+            tokenizer = AutoTokenizer.from_pretrained(
+                vocab_path, #vocab_filepath,
+                **tokenizer_kwargs,
+                # cache_dir = mycache_dir,
+                # config=config,#None
+                # tokenizer_type=tokenizer_type, #'wav2vec2'
+                # do_lower_case=True,
+                # unk_token=unk_token,
+                # pad_token=pad_token,
+                # word_delimiter_token=word_delimiter_token,
+                )
+        elif task =="audio-asr":
+            tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
+            # tokenizer = AutoTokenizer.from_pretrained(
+            #     tokenizer_name_or_path,
+            #     #token=data_args.token,
+            #     #trust_remote_code=data_args.trust_remote_code,
+            #     **tokenizer_kwargs,
+            # )
+            tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, \
+                                                    cache_dir = mycache_dir,\
+                                                    do_lower_case=True, \
+                                                    word_delimiter_token="|",)
+        #test tokenizer
+        print(len(tokenizer))
+        #outputids = tokenizer("test the tokenizer")
+        tokenizer.save_pretrained("./output")
+        #if datatype=="huggingface":
+
         feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
         #processor = None
         processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
@@ -1237,7 +1238,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="TencentGameMate/chinese-wav2vec2-base",
+    parser.add_argument('--model_checkpoint', type=str, default="jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn",
                     help='Model checkpoint name from HF, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1416,10 +1417,11 @@ if __name__ == "__main__":
     if args.task == "audio-classification":
         labels, id2label, label2id, num_labels = getlabels_classifier(raw_datasets, target_column=target_column, datatype=args.data_type)
     elif args.task == "audio-asr":
-        if args.dataconfig:
-            vocab_path = os.path.join(mycache_dir, args.dataconfig, args.data_name)
-        else:
-            vocab_path = os.path.join(mycache_dir, args.data_name)
+        if args.use_vocabpath:
+            if args.dataconfig:
+                vocab_path = os.path.join(mycache_dir, args.data_name, args.dataconfig)
+            else:
+                vocab_path = os.path.join(mycache_dir, args.data_name)
         raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
 
     model, feature_extractor, processor, starting_epoch = \
