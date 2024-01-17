@@ -1416,7 +1416,9 @@ if __name__ == "__main__":
     if args.task == "audio-classification":
         labels, id2label, label2id, num_labels = getlabels_classifier(raw_datasets, target_column=target_column, datatype=args.data_type)
     elif args.task == "audio-asr":
-        if args.use_vocabpath:
+        if args.dataset_config_name:
+            vocab_path = os.path.join(mycache_dir, args.dataset_config_name, args.data_name)
+        else:
             vocab_path = os.path.join(mycache_dir, args.data_name)
         raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
 
