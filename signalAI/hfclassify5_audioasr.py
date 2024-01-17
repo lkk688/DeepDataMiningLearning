@@ -224,14 +224,14 @@ class MyDataCollatorWithPadding:
 
         if self.task and self.task == "audio-asr": #CTC padding
             label_features = [{"input_ids": feature["labels"]} for feature in features]
-            with self.processor.as_target_processor():
-                labels_batch = self.processor.pad(
-                    label_features,
-                    padding=self.padding,
-                    max_length=self.max_length_labels,
-                    pad_to_multiple_of=self.pad_to_multiple_of_labels,
-                    return_tensors="pt",
-                )
+            #with self.processor.as_target_processor():
+            labels_batch = self.processor.pad(
+                labels = label_features,
+                padding=self.padding,
+                max_length=self.max_length_labels,
+                pad_to_multiple_of=self.pad_to_multiple_of_labels,
+                return_tensors="pt",
+            )
 
             # replace padding with -100 to ignore loss correctly
             labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
@@ -402,26 +402,47 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     #Option2
     #newtokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
     #config.vocab_size:32
+    unk_token="[UNK]"
+    pad_token="[PAD]"
+    word_delimiter_token="|"
     config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
     tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
     config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
+    tokenizer_kwargs = {
+        "config": config,
+        "tokenizer_type": tokenizer_type,
+        "unk_token": unk_token,
+        "pad_token": pad_token,
+        "word_delimiter_token": word_delimiter_token,
+    }
     if vocab_path and task =="audio-asr":
         tokenizer = AutoTokenizer.from_pretrained(
             vocab_path, #vocab_filepath,
-            cache_dir = mycache_dir,
-            config=config,#None
-            tokenizer_type=tokenizer_type, #'wav2vec2'
-            do_lower_case=True,
-            unk_token="[UNK]",
-            pad_token="[PAD]",
-            word_delimiter_token="|",
+            **tokenizer_kwargs,
+            # cache_dir = mycache_dir,
+            # config=config,#None
+            # tokenizer_type=tokenizer_type, #'wav2vec2'
+            # do_lower_case=True,
+            # unk_token=unk_token,
+            # pad_token=pad_token,
+            # word_delimiter_token=word_delimiter_token,
             )
     elif task =="audio-asr":
+        tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
+        # tokenizer = AutoTokenizer.from_pretrained(
+        #     tokenizer_name_or_path,
+        #     #token=data_args.token,
+        #     #trust_remote_code=data_args.trust_remote_code,
+        #     **tokenizer_kwargs,
+        # )
         tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, \
                                                   cache_dir = mycache_dir,\
                                                 do_lower_case=True, \
                                                 word_delimiter_token="|",)
-        
+    #test tokenizer
+    print(len(tokenizer))
+    #outputids = tokenizer("test the tokenizer")
+    tokenizer.save_pretrained("./output")
     #if datatype=="huggingface":
 
     #Create Processor
@@ -824,7 +845,7 @@ def show_random_elements(dataset, num_examples=10):
     #display(HTML(df.to_html()))
 
 import re
-def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_column="text", datatype="huggingface", savepath=None): 
+def getlabels_asr(raw_datasets, task_column="audio", target_column="text", vocabpath=None): 
     show_random_elements(raw_datasets["train"].remove_columns(task_column))
 
     #remove special characters, normalize the text to only have lower case letters and append a word separator token at the end.
@@ -840,8 +861,8 @@ def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_co
 
     show_random_elements(raw_datasets["train"].remove_columns(task_column))
 
-    if savepath: #use vocab
-        vocab_filepath = os.path.join(savepath, 'vocab.json')
+    if vocabpath: #use vocab
+        vocab_filepath = os.path.join(vocabpath, 'vocab.json')
         #Create vocab
         if not (os.path.exists(vocab_filepath)):
             #extract all distinct letters
@@ -859,7 +880,7 @@ def getlabels_asr(raw_datasets, model_checkpoint, task_column="audio", target_co
                 )
             #create the union of all distinct letters into an enumerated dictionary.
             vocab_list = list(set(vocabs["train"]["vocab"][0]) | set(vocabs[valkey]["vocab"][0]))
-            vocab_dict = {v: k for k, v in enumerate(vocab_list)}
+            vocab_dict = {v: k for k, v in enumerate(sorted(vocab_list))}
             vocab_dict["|"] = vocab_dict[" "] #convert space to more visible character |
             del vocab_dict[" "]
             vocab_dict["[UNK]"] = len(vocab_dict)
@@ -979,6 +1000,9 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
             print(
                 f"Mean: {np.mean(input_values):.3}, Variance: {np.var(input_values):.3}"
             )
+            #test tokenizer
+            tokenids = processor.tokenizer(datasample[target_column]).input_ids
+            decoded_str = processor.batch_decode(tokenids)
 
         model=model.to(device)
         inputs=inputs.to(device)
@@ -1205,7 +1229,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="librispeech_asr",
+    parser.add_argument('--data_name', type=str, default="timit",
                     help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -1213,8 +1237,8 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base",
-                    help='Model checkpoint name from HF, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
+                    help='Model checkpoint name from HF, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
@@ -1232,7 +1256,7 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path')#r"E:\output\" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0112",
+    parser.add_argument('--traintag', type=str, default="0116",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -1271,7 +1295,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_length_seconds",
         type=int,
-        default=5, #20,
+        default=20, #20,
         help=(
             "Audio clips will be randomly cut to this length during training if the value is set.."
         ),
@@ -1394,7 +1418,7 @@ if __name__ == "__main__":
     elif args.task == "audio-asr":
         if args.use_vocabpath:
             vocab_path = os.path.join(mycache_dir, args.data_name)
-        raw_datasets = getlabels_asr(raw_datasets, model_checkpoint, task_column=task_column, target_column=target_column, datatype=args.data_type, savepath=vocab_path)
+        raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
 
     model, feature_extractor, processor, starting_epoch = \
         loadmodel(model_checkpoint, custommodel=args.custommodel, \
