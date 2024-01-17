@@ -888,7 +888,7 @@ def getlabels_asr(raw_datasets, task_column="audio", target_column="text", vocab
             print("vocab dict:", vocab_dict)
             vocab_len=len(vocab_dict)
             print("vocab len:", vocab_len) #30
-        
+            os.makedirs(vocabpath, exist_ok=True)
             with open(vocab_filepath, 'w') as vocab_file:
                 json.dump(vocab_dict, vocab_file)
 
@@ -1416,8 +1416,8 @@ if __name__ == "__main__":
     if args.task == "audio-classification":
         labels, id2label, label2id, num_labels = getlabels_classifier(raw_datasets, target_column=target_column, datatype=args.data_type)
     elif args.task == "audio-asr":
-        if args.dataset_config_name:
-            vocab_path = os.path.join(mycache_dir, args.dataset_config_name, args.data_name)
+        if args.dataconfig:
+            vocab_path = os.path.join(mycache_dir, args.dataconfig, args.data_name)
         else:
             vocab_path = os.path.join(mycache_dir, args.data_name)
         raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
