@@ -672,7 +672,7 @@ def loaddata(args, USE_HPC, mycache_dir):
                 text_column = "audio"
                 target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
             elif args.data_name =="common_voice": #not available
-                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", "en", split="train+validation", cache_dir=mycache_dir)
+                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", args.dataconfig, split="train+validation", cache_dir=mycache_dir) #"en" "zh-CN"
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "sentence"
@@ -1231,13 +1231,13 @@ if __name__ == "__main__":
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='',
+    parser.add_argument('--dataconfig', type=str, default='zh-CN',
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
+    parser.add_argument('--model_checkpoint', type=str, default="TencentGameMate/chinese-wav2vec2-base",
                     help='Model checkpoint name from HF, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1255,7 +1255,7 @@ if __name__ == "__main__":
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
     #training related arguments
-    parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path')#r"E:\output\" "./output" "/DATA10T/output/"
+    parser.add_argument('--outputdir', type=str, default=r"E:\output", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
     parser.add_argument('--traintag', type=str, default="0116",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
