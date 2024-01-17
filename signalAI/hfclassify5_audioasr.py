@@ -672,10 +672,10 @@ def loaddata(args, USE_HPC, mycache_dir):
                 text_column = "audio"
                 target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
             elif args.data_name =="common_voice": #not available
-                raw_datasets = load_dataset(args.data_name, "tr", split="train+validation", cache_dir=mycache_dir)
+                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", "en", split="train+validation", cache_dir=mycache_dir)
                 task_column ="audio" 
                 text_column = "audio"
-                target_column = "gender"
+                target_column = "sentence"
             elif args.data_name.endswith("minds14"):
                 #https://huggingface.co/datasets/PolyAI/minds14 contains recordings of people asking an e-banking system questions in several languages and dialects, and has the intent_class for each recording
                 if args.dataconfig:
@@ -1229,7 +1229,7 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="timit",
+    parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='',
                     help='dataset_config_name, e.g., subset')
@@ -1295,7 +1295,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_length_seconds",
         type=int,
-        default=20, #20,
+        default=5, #20,
         help=(
             "Audio clips will be randomly cut to this length during training if the value is set.."
         ),
