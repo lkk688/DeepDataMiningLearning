@@ -1319,10 +1319,10 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="common_voice",
+    parser.add_argument('--data_name', type=str, default="timit",
                     help='data name: common_voice, librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='en',
-                    help='dataset_config_name, e.g., subset zh-CN')
+    parser.add_argument('--dataconfig', type=str, default='',
+                    help='dataset_config_name, e.g., common_voice subset en, zh-CN')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
@@ -1346,7 +1346,7 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0116",
+    parser.add_argument('--traintag', type=str, default="0117",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -1714,12 +1714,18 @@ if __name__ == "__main__":
     elif args.data_type == "huggingface" and args.task=="audio-asr":
         column_names = raw_datasets["train"].column_names
         samplebatch1 = prepare_asrdataset(raw_datasets['train'][1])
-        raw_datasets = raw_datasets.map(
-            prepare_asrdataset,
-            remove_columns=column_names, #columns_remove,
-            #batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
-            #batch_size=100,
-        )
+        settransformoption =False
+        if settransformoption:
+            raw_datasets["train"].set_transform(prepare_asrdataset, output_all_columns=True)
+            raw_datasets[valkey].set_transform(prepare_asrdataset, output_all_columns=True)
+        else:
+            raw_datasets = raw_datasets.map(
+                prepare_asrdataset,
+                remove_columns=column_names, #columns_remove,
+                #batched=True, #The primary objective of batch mapping is to speed up processing. The default batch size is 1000
+                #batch_size=100,
+            )
+        
 
 
 
