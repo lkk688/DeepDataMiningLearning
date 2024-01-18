@@ -1232,13 +1232,13 @@ if __name__ == "__main__":
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='zh-CN',
+    parser.add_argument('--dataconfig', type=str, default='en',
                     help='dataset_config_name, e.g., subset')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn",
+    parser.add_argument('--model_checkpoint', type=str, default="jonatasgrosman/wav2vec2-large-xlsr-53-english",
                     help='Model checkpoint name from HF, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
