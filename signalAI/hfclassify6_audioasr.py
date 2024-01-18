@@ -58,7 +58,7 @@ from transformers.modeling_outputs import TokenClassifierOutput
 from dataclasses import dataclass
 from transformers.file_utils import ModelOutput
 @dataclass
-class MyClassifierOutput(ModelOutput):
+class MyModelOutput(ModelOutput):
     loss: Optional[torch.FloatTensor] = None
     logits: torch.FloatTensor = None
     hidden_states: Optional[Tuple[torch.FloatTensor]] = None
@@ -272,14 +272,14 @@ class MyClassificationHead(nn.Module):
         return x
 
 #ref: https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/models/wav2vec2/modeling_wav2vec2.py#L2022
-class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
-    def __init__(self, config, basemodel_name, id2label, label2id, task="audio-classification", mycache_dir=None, pooling_mode='mean'):
+#Wav2Vec2ForCTC
+class MyWave2Vec2ClassificationCTC(Wav2Vec2PreTrainedModel):
+    def __init__(self, config, basemodel_name, task="audio-classification", mycache_dir=None, pooling_mode='mean'):
         super().__init__(config)
 
-        num_classes = len(id2label)
-        self.pooling_mode = 'mean'#['mean', 'sum', 'max']
-        if basemodel_name.find("Wav2Vec2") and basemodel_name and num_classes:
-            self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name) #("facebook/wav2vec2-base-960h")
+        self.pooling_mode = pooling_mode#['mean', 'sum', 'max']
+        if basemodel_name.find("Wav2Vec2") and basemodel_name:
+            self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name,cache_dir = mycache_dir) #("facebook/wav2vec2-base-960h")
             # config = AutoConfig.from_pretrained(
             #     pretrained_model_name_or_path=basemodel_name,
             # )
@@ -301,11 +301,24 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
         
         print(self.wav2vec2.feature_extractor) #Wav2Vec2FeatureEncoder
 
-        #self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
-        self.classifier = MyClassificationHead(config=self.config)
-        self.num_labels = self.config.num_labels
+        if task=="audio-classification":
+            #self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
+            #num_classes = len(id2label)
+            self.classifier = MyClassificationHead(config=self.config)
+            self.num_labels = self.config.num_labels
+            self.init_weights()
+        elif task=="audio-asr":
+            self.dropout = nn.Dropout(config.final_dropout)
+            #self.target_lang = target_lang
+            print("Config vocab size:", config.vocab_size)
+            output_hidden_size = (
+                config.output_hidden_size if hasattr(config, "add_adapter") and config.add_adapter else config.hidden_size
+            )#1024
+            self.lm_head_new = nn.Linear(output_hidden_size, config.vocab_size)
+            # Initialize weights and apply final processing
+            #self.post_init()
+        
 
-        self.init_weights()
 
     def freeze_feature_encoder(self):
         """
@@ -349,16 +362,20 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
             return_dict=return_dict,
         )#Wav2Vec2BaseModelOutput last_hidden_state:torch.Size([1, 312, 768])
         hidden_states = outputs[0] #[1, 178, 768]
-        if self.pooling_mode == 'mean':
-            x = torch.mean(hidden_states, dim=1) #torch.Size([1, 768])
-        elif self.pooling_mode == 'sum':
-            x = torch.sum(hidden_states, dim=1)
-        else: #'max'
-            x = torch.max(hidden_states, dim=1)[0]
-        logits = self.classifier(x)#(hidden_states) torch.Size([1, 45])
+        if task == "audio-classification":
+            if self.pooling_mode == 'mean':
+                x = torch.mean(hidden_states, dim=1) #torch.Size([1, 768])
+            elif self.pooling_mode == 'sum':
+                x = torch.sum(hidden_states, dim=1)
+            else: #'max'
+                x = torch.max(hidden_states, dim=1)[0]
+            logits = self.classifier(x)#(hidden_states) torch.Size([1, 45])
+        elif task == "audio-asr":
+            hidden_states = self.dropout(hidden_states)
+            logits = self.lm_head_new(hidden_states)
 
         loss = None
-        if labels is not None:
+        if labels is not None and task == "audio-classification":
             if self.config.problem_type is None:
                 if self.num_labels == 1:
                     self.config.problem_type = "regression"
@@ -377,12 +394,49 @@ class MyWave2Vec2Classification(Wav2Vec2PreTrainedModel):
             elif self.config.problem_type == "multi_label_classification":
                 loss_fct = BCEWithLogitsLoss()
                 loss = loss_fct(logits, labels)
-        
+        elif labels is not None and task=="audio-asr":
+            r"""
+            labels (`torch.LongTensor` of shape `(batch_size, target_length)`, *optional*):
+                Labels for connectionist temporal classification. Note that `target_length` has to be smaller or equal to
+                the sequence length of the output logits. Indices are selected in `[-100, 0, ..., config.vocab_size - 1]`.
+                All labels set to `-100` are ignored (masked), the loss is only computed for labels in `[0, ...,
+                config.vocab_size - 1]`.
+            """
+            if labels.max() >= self.config.vocab_size:
+                raise ValueError(f"Label values must be <= vocab_size: {self.config.vocab_size}")
+
+            # retrieve loss input_lengths from attention_mask
+            attention_mask = (
+                attention_mask if attention_mask is not None else torch.ones_like(input_values, dtype=torch.long)
+            )
+            input_lengths = self._get_feat_extract_output_lengths(attention_mask.sum(-1)).to(torch.long)
+
+            # assuming that padded tokens are filled with -100
+            # when not being attended to
+            labels_mask = labels >= 0
+            target_lengths = labels_mask.sum(-1)
+            flattened_targets = labels.masked_select(labels_mask)
+
+            # ctc_loss doesn't support fp16
+            log_probs = nn.functional.log_softmax(logits, dim=-1, dtype=torch.float32).transpose(0, 1)
+
+            with torch.backends.cudnn.flags(enabled=False):
+                loss = nn.functional.ctc_loss(
+                    log_probs,
+                    flattened_targets,
+                    input_lengths,
+                    target_lengths,
+                    blank=self.config.pad_token_id,
+                    reduction=self.config.ctc_loss_reduction,
+                    zero_infinity=self.config.ctc_zero_infinity,
+                )
+
         if not return_dict:
-            output = (logits,) + outputs[2:]
+            _HIDDEN_STATES_START_POSITION = 2
+            output = (logits,) + outputs[_HIDDEN_STATES_START_POSITION:]
             return ((loss,) + output) if loss is not None else output
-        
-        return MyClassifierOutput( #TokenClassifierOutput
+
+        return MyModelOutput( #TokenClassifierOutput
             loss=loss,
             logits=logits,
             hidden_states=outputs.hidden_states,
@@ -407,14 +461,14 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     word_delimiter_token="|"
 
     #Create Processor
-    processoroption1=True
+    processoroption1=False
     if processoroption1==True:
         processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
         feature_extractor = processor.feature_extractor
     else:
         config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
         tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
-        config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
+        #config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
         tokenizer_kwargs = {
             "config": config,
             "tokenizer_type": tokenizer_type,
@@ -425,14 +479,14 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         if vocab_path and task =="audio-asr":
             tokenizer = AutoTokenizer.from_pretrained(
                 vocab_path, #vocab_filepath,
-                **tokenizer_kwargs,
-                # cache_dir = mycache_dir,
-                # config=config,#None
+                #**tokenizer_kwargs,
+                cache_dir = mycache_dir,
+                #config=config,#None
                 # tokenizer_type=tokenizer_type, #'wav2vec2'
-                # do_lower_case=True,
+                do_lower_case=True,
                 # unk_token=unk_token,
                 # pad_token=pad_token,
-                # word_delimiter_token=word_delimiter_token,
+                word_delimiter_token=word_delimiter_token,
                 )
         elif task =="audio-asr":
             tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
@@ -452,7 +506,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         tokenizer.save_pretrained("./output")
         #if datatype=="huggingface":
 
-        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, do_normalize=True,return_attention_mask=return_attention_mask)
         #processor = None
         processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     
@@ -470,7 +524,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
                 finetuning_task=task, #"audio-classification",
                 cache_dir=mycache_dir,
             )
-            model = MyWave2Vec2Classification(config=configuration,basemodel_name=model_checkpoint, id2label=id2label, label2id=label2id, task=task, mycache_dir=mycache_dir)
+            model = MyWave2Vec2ClassificationCTC(config=configuration,basemodel_name=model_checkpoint, task=task, mycache_dir=mycache_dir)
         elif useconfig==True:
             # Setting `return_attention_mask=True` is the way to get a correctly masked mean-pooling over
             # transformer outputs in the classifier, but it doesn't always lead to better accuracy
@@ -503,20 +557,52 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             )
             #ignore_mismatched_sizes: Will enable to load a pretrained model whose head dimensions are different.
     elif task == "audio-asr":
-        config = AutoConfig.from_pretrained(model_checkpoint)
-        print("Config vocab size", config.vocab_size)
-        print(len(processor.tokenizer))
-        model = AutoModelForCTC.from_pretrained(
-            model_checkpoint, 
-            ctc_loss_reduction="mean", 
-            pad_token_id=processor.tokenizer.pad_token_id,
-            vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
-            # attention_dropout=0.1,
-            # hidden_dropout=0.1,
-            # feat_proj_dropout=0.0,
-            # mask_time_prob=0.05,
-            # layerdrop=0.1,
-        )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
+        if custommodel: #
+            #option1:
+            #configuration = Wav2Vec2Config()
+            #option2:
+            configuration = AutoConfig.from_pretrained(
+                model_checkpoint,
+                cache_dir=mycache_dir,
+                trust_remote_code=True,
+            )
+            configuration.update(
+                {
+                    "final_dropout": 0.0,
+                    "mask_time_prob": 0.05,
+                    #"mask_time_length": model_args.mask_time_length,
+                    #"mask_feature_prob": model_args.mask_feature_prob,
+                    #"mask_feature_length": model_args.mask_feature_length,
+                    "gradient_checkpointing": True,
+                    "layerdrop": 0.0, #The LayerDrop probability
+                    "ctc_loss_reduction": "mean",
+                    "pad_token_id": processor.tokenizer.pad_token_id,
+                    "vocab_size": len(processor.tokenizer),
+                    "adapter_attn_dim": 16,
+                }
+            )
+            model = MyWave2Vec2ClassificationCTC(config=configuration,basemodel_name=model_checkpoint, task=task, mycache_dir=mycache_dir)
+
+            # pretrained_model = AutoModelForCTC.from_pretrained(model_checkpoint) 
+            # model.load_state_dict(pretrained_model.state_dict(), strict= False)
+        else:
+            config = AutoConfig.from_pretrained(model_checkpoint)
+            print("Config vocab size", config.vocab_size)
+            print(len(processor.tokenizer))
+            #processor.tokenizer.add_tokens("_")
+            #print(len(processor.tokenizer))
+            model = AutoModelForCTC.from_pretrained(
+                model_checkpoint, 
+                #ignore_mismatched_sizes=True,
+                ctc_loss_reduction="mean", 
+                pad_token_id=processor.tokenizer.pad_token_id,
+                vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
+                # attention_dropout=0.1,
+                # hidden_dropout=0.1,
+                # feat_proj_dropout=0.0,
+                # mask_time_prob=0.05,
+                # layerdrop=0.1,
+            )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
 
     starting_epoch = 0
     if pretrained:
@@ -1005,8 +1091,8 @@ def inferencesample(datasample, task, model, usepipeline=True, feature_extractor
                 f"Mean: {np.mean(input_values):.3}, Variance: {np.var(input_values):.3}"
             )
             #test tokenizer
-            tokenids = processor.tokenizer(datasample[target_column]).input_ids
-            decoded_str = processor.batch_decode(tokenids)
+            #tokenids = processor.tokenizer(datasample[target_column]).input_ids
+            #decoded_str = processor.tokenizer.batch_decode(tokenids, group_tokens=False)
 
         model=model.to(device)
         inputs=inputs.to(device)
@@ -1234,18 +1320,18 @@ if __name__ == "__main__":
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="common_voice",
-                    help='data name: librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
+                    help='data name: common_voice, librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
     parser.add_argument('--dataconfig', type=str, default='en',
                     help='dataset_config_name, e.g., subset zh-CN')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="jonatasgrosman/wav2vec2-large-xlsr-53-english",
-                    help='Model checkpoint name from HF, TencentGameMate/chinese-wav2vec2-base, facebook/facebook/wav2vec2-xls-r-300m, wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
+                    help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
+    parser.add_argument('--custommodel', default=True, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-asr",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
     parser.add_argument('--subtask', type=str, default="intent-classification",
@@ -1278,9 +1364,9 @@ if __name__ == "__main__":
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=6, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=10, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1299,7 +1385,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_length_seconds",
         type=int,
-        default=5, #20,
+        default=8, #20,
         help=(
             "Audio clips will be randomly cut to this length during training if the value is set.."
         ),
@@ -1425,6 +1511,7 @@ if __name__ == "__main__":
                 vocab_path = os.path.join(mycache_dir, args.data_name, args.dataconfig)
             else:
                 vocab_path = os.path.join(mycache_dir, args.data_name)
+            vocab_path = "./output/mytokenizer/"
         raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
 
     model, feature_extractor, processor, starting_epoch = \
