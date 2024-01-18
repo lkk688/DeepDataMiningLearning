@@ -4,13 +4,14 @@
 import matplotlib.pyplot as plt
 from datasets import load_dataset, DatasetDict, features, load_metric
 from transformers import (AutoConfig, AutoModel, AutoModelForSeq2SeqLM, AutoModelForQuestionAnswering,
-                          AutoTokenizer, pipeline, get_scheduler,
+                          AutoTokenizer, Wav2Vec2CTCTokenizer, pipeline, get_scheduler,
                           DataCollatorForSeq2Seq, DataCollatorWithPadding, MBartTokenizer, 
                           MBartTokenizerFast, default_data_collator, EvalPrediction)
 from transformers import (
     AutoProcessor,
     Wav2Vec2Model,
     Wav2Vec2Config,
+    Wav2Vec2FeatureExtractor,
     AutoConfig,
     AutoFeatureExtractor,
     AutoModelForAudioClassification,
@@ -488,6 +489,13 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
                 # pad_token=pad_token,
                 word_delimiter_token=word_delimiter_token,
                 )
+            tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+                vocab_path, #vocab_filepath,
+                cache_dir = mycache_dir,
+                unk_token=unk_token,
+                pad_token=pad_token,
+                word_delimiter_token=word_delimiter_token,
+                )
         elif task =="audio-asr":
             tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
             # tokenizer = AutoTokenizer.from_pretrained(
@@ -503,10 +511,11 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         #test tokenizer
         print(len(tokenizer))
         #outputids = tokenizer("test the tokenizer")
-        tokenizer.save_pretrained("./output")
+        #tokenizer.save_pretrained("./output")
         #if datatype=="huggingface":
 
         feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, do_normalize=True,return_attention_mask=return_attention_mask)
+        feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
         #processor = None
         processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     
