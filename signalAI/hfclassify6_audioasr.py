@@ -47,6 +47,7 @@ import random
 import json
 from random import randint
 valkey='test'
+TrustRemoteCode = True
 import datetime
 from typing import Dict, List, Optional, Union, Tuple
 from pathlib import Path
@@ -206,7 +207,7 @@ class MyDataCollatorWithPadding:
     """
 
     processor: Wav2Vec2Processor
-    padding: Union[bool, str] = True
+    padding: Union[bool, str] = "longest" #= True
     task: Optional[str] = None
     max_length: Optional[int] = None
     max_length_labels: Optional[int] = None
@@ -219,8 +220,8 @@ class MyDataCollatorWithPadding:
         batch = self.processor.pad(
             input_features,
             padding=self.padding,
-            #max_length=self.max_length,
-            #pad_to_multiple_of=self.pad_to_multiple_of,
+            max_length=self.max_length, #not used
+            pad_to_multiple_of=self.pad_to_multiple_of, #not used
             return_tensors="pt",
         )
 
@@ -234,16 +235,21 @@ class MyDataCollatorWithPadding:
             #     pad_to_multiple_of=self.pad_to_multiple_of_labels,
             #     return_tensors="pt",
             # )
-            with self.processor.as_target_processor():
-                labels_batch = self.processor.pad(
-                    label_features,
-                    padding=self.padding,
-                    return_tensors="pt",
-                )
-
+            # with self.processor.as_target_processor():
+            #     labels_batch = self.processor.pad(
+            #         label_features,
+            #         padding=self.padding,
+            #         return_tensors="pt",
+            #     )
+            labels_batch = self.processor.pad(labels=label_features, 
+                                              padding=self.padding,max_length=self.max_length_labels,
+                                              pad_to_multiple_of=self.pad_to_multiple_of_labels,
+                                              return_tensors="pt",)
             # replace padding with -100 to ignore loss correctly
             labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
             batch["labels"] = labels
+            if "attention_mask" in batch:
+                batch["attention_mask"] = batch["attention_mask"].to(torch.long)
 
         else:
             label_features = [feature["labels"] for feature in features]
@@ -287,7 +293,7 @@ class MyWave2Vec2ClassificationCTC(Wav2Vec2PreTrainedModel):
 
         self.pooling_mode = pooling_mode#['mean', 'sum', 'max']
         if basemodel_name.find("Wav2Vec2") and basemodel_name:
-            self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name,cache_dir = mycache_dir) #("facebook/wav2vec2-base-960h")
+            self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name,cache_dir = mycache_dir, trust_remote_code=TrustRemoteCode) #("facebook/wav2vec2-base-960h")
             # config = AutoConfig.from_pretrained(
             #     pretrained_model_name_or_path=basemodel_name,
             # )
@@ -502,6 +508,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
                 unk_token=unk_token,
                 pad_token=pad_token,
                 word_delimiter_token=word_delimiter_token,
+                trust_remote_code=TrustRemoteCode,
                 )
         elif task =="audio-asr":
             #tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
@@ -514,7 +521,8 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, \
                                                     cache_dir = mycache_dir,\
                                                     do_lower_case=True, \
-                                                    word_delimiter_token="|",)
+                                                    word_delimiter_token="|",
+                                                    trust_remote_code=TrustRemoteCode)
         #test tokenizer
         print("Tokenizer encoder len:", len(tokenizer.encoder))
         print("Tokenizer len:", len(tokenizer))
@@ -523,7 +531,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         #if datatype=="huggingface":
 
         if model_checkpoint:
-            feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, do_normalize=True,return_attention_mask=return_attention_mask)
+            feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, do_normalize=True,return_attention_mask=return_attention_mask, trust_remote_code=TrustRemoteCode)
         else:
             feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
         #processor = None
@@ -795,7 +803,7 @@ def loaddata(args, USE_HPC, mycache_dir):
             elif args.data_name =="common_voice": #not available
                 Train_SAMPLES = 10000
                 data_split=f"train[:{Train_SAMPLES}]" #"train+validation"
-                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", args.dataconfig, split=data_split, cache_dir=mycache_dir) #"en" "zh-CN"
+                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", args.dataconfig, split=data_split, cache_dir=mycache_dir, trust_remote_code=TrustRemoteCode) #"en" "zh-CN"
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "sentence"
@@ -1058,19 +1066,30 @@ def getlabels(raw_datasets, task_column, target_column):
 
 def get_myoptimizer(model, learning_rate=2e-5, weight_decay=0.0):
     # Optimizer
-    # Split weights in two groups, one with weight decay and the other not.
-    no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
-    optimizer_grouped_parameters = [
-        {
-            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
-            "weight_decay": weight_decay,
-        },
-        {
-            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
-            "weight_decay": 0.0,
-        },
-    ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
+    if weight_decay>0:
+        # Split weights in two groups, one with weight decay and the other not.
+        no_decay = ["bias", "LayerNorm.weight", "layer_norm.weight"]
+        optimizer_grouped_parameters = [
+            {
+                "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "weight_decay": weight_decay,
+            },
+            {
+                "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+                "weight_decay": 0.0,
+            },
+        ]
+        optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=learning_rate)
+    else:
+        adam_beta1=0.9
+        adam_beta2=0.999
+        adam_epsilon=1e-8
+        optimizer = AdamW(
+            list(model.parameters()),
+            lr=learning_rate,
+            betas=[adam_beta1, adam_beta2],
+            eps=adam_epsilon,
+        )
     return optimizer
 
 def loaddefaultmodel_fromname(modelname="facebook/wav2vec2-base-960h", task="audio-asr"):
@@ -1390,18 +1409,18 @@ if __name__ == "__main__":
     parser.add_argument('--use_vocabpath', default=True, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
+    parser.add_argument('--use_gradientcheckpoint', default=False, action='store_true',
                     help='Use gradientcheckpoint')#gradient_checkpointing_enable
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')
-    parser.add_argument('--useamp', default=False, action='store_true',
+    parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=10, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1410,11 +1429,13 @@ if __name__ == "__main__":
         help="The scheduler type to use.",
         choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"],
     )
+    #warmup_ratio
+    parser.add_argument("--warmup_steps", type=int, default=20, help="Warmup steps in learning rate scheduling.")
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=2,
+        default=4,
         help="Number of updates steps to accumulate before performing a backward/update pass, ref: https://kozodoi.me/blog/20210219/gradient-accumulation.",
     )
     parser.add_argument(
@@ -1794,8 +1815,8 @@ if __name__ == "__main__":
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             per_device_eval_batch_size=args.batch_size,
             num_train_epochs=args.total_epochs,
-            warmup_ratio=0.1,
-            #warmup_steps=500,
+            #warmup_ratio=args.warmup_ratio, #0.1,
+            warmup_steps=args.warmup_steps, #500,
             logging_steps=100,
             save_total_limit=2,
             load_best_model_at_end=True,
@@ -1844,19 +1865,12 @@ if __name__ == "__main__":
         results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
 
         # Optimizer
-        adam_beta1=0.9
-        adam_beta2=0.999
-        adam_epsilon=1e-8
-        optimizer = AdamW(
-            list(model.parameters()),
-            lr=args.learningrate,
-            betas=[adam_beta1, adam_beta2],
-            eps=adam_epsilon,
-        )
+        optimizer = get_myoptimizer(model, learning_rate=args.learningrate, weight_decay=args.weight_decay)
+        
         num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
         max_train_steps = args.total_epochs * num_update_steps_per_epoch
 
-        num_warmup_steps = 10
+        num_warmup_steps = args.warmup_steps #10
         lr_scheduler = get_scheduler(
                 name=args.lr_scheduler_type, #["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"]
                 optimizer=optimizer,
