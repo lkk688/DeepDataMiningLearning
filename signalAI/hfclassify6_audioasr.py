@@ -649,8 +649,8 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     if freeze_feature_encoder:
         #model.freeze_feature_extractor()
         model.freeze_feature_encoder()
-    #if freeze_base_model:
-        #model.freeze_base_model()
+    if freeze_base_model:
+        model.freeze_base_model()
     modelparameters(model, unfreezename)
     return model, feature_extractor, processor, starting_epoch
 
@@ -1378,6 +1378,7 @@ if __name__ == "__main__":
                     help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
+    parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Use HPC')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
     parser.add_argument('--traintag', type=str, default="0118",
@@ -1395,12 +1396,12 @@ if __name__ == "__main__":
                     help='Use HPC')
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')
-    parser.add_argument('--useamp', default=True, action='store_true',
+    parser.add_argument('--useamp', default=False, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=10, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1413,7 +1414,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--gradient_accumulation_steps",
         type=int,
-        default=4,
+        default=2,
         help="Number of updates steps to accumulate before performing a backward/update pass, ref: https://kozodoi.me/blog/20210219/gradient-accumulation.",
     )
     parser.add_argument(
@@ -1552,7 +1553,7 @@ if __name__ == "__main__":
         loadmodel(model_checkpoint, custommodel=args.custommodel, \
                 task=task, id2label=id2label, label2id=label2id, \
                 vocab_path=vocab_path, pretrained=args.pretrained, \
-                unfreezename=args.unfreezename, freeze_feature_encoder=True, freeze_base_model=True, return_attention_mask=True)
+                unfreezename=args.unfreezename, freeze_feature_encoder=True, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
 
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
