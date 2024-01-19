@@ -11,6 +11,7 @@ from transformers import (
     AutoProcessor,
     Wav2Vec2Model,
     Wav2Vec2Config,
+    Wav2Vec2ForCTC,
     Wav2Vec2FeatureExtractor,
     AutoConfig,
     AutoFeatureExtractor,
@@ -218,21 +219,27 @@ class MyDataCollatorWithPadding:
         batch = self.processor.pad(
             input_features,
             padding=self.padding,
-            max_length=self.max_length,
-            pad_to_multiple_of=self.pad_to_multiple_of,
+            #max_length=self.max_length,
+            #pad_to_multiple_of=self.pad_to_multiple_of,
             return_tensors="pt",
         )
 
         if self.task and self.task == "audio-asr": #CTC padding
             label_features = [{"input_ids": feature["labels"]} for feature in features]
             #with self.processor.as_target_processor():
-            labels_batch = self.processor.pad(
-                labels = label_features,
-                padding=self.padding,
-                max_length=self.max_length_labels,
-                pad_to_multiple_of=self.pad_to_multiple_of_labels,
-                return_tensors="pt",
-            )
+            # labels_batch = self.processor.pad(
+            #     labels = label_features,
+            #     padding=self.padding,
+            #     max_length=self.max_length_labels,
+            #     pad_to_multiple_of=self.pad_to_multiple_of_labels,
+            #     return_tensors="pt",
+            # )
+            with self.processor.as_target_processor():
+                labels_batch = self.processor.pad(
+                    label_features,
+                    padding=self.padding,
+                    return_tensors="pt",
+                )
 
             # replace padding with -100 to ignore loss correctly
             labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
@@ -478,17 +485,17 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             "word_delimiter_token": word_delimiter_token,
         }
         if vocab_path and task =="audio-asr":
-            tokenizer = AutoTokenizer.from_pretrained(
-                vocab_path, #vocab_filepath,
-                #**tokenizer_kwargs,
-                cache_dir = mycache_dir,
-                #config=config,#None
-                # tokenizer_type=tokenizer_type, #'wav2vec2'
-                do_lower_case=True,
-                # unk_token=unk_token,
-                # pad_token=pad_token,
-                word_delimiter_token=word_delimiter_token,
-                )
+            # tokenizer = AutoTokenizer.from_pretrained(
+            #     vocab_path, #vocab_filepath,
+            #     #**tokenizer_kwargs,
+            #     cache_dir = mycache_dir,
+            #     #config=config,#None
+            #     # tokenizer_type=tokenizer_type, #'wav2vec2'
+            #     do_lower_case=True,
+            #     # unk_token=unk_token,
+            #     # pad_token=pad_token,
+            #     word_delimiter_token=word_delimiter_token,
+            #     )
             tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
                 vocab_path, #vocab_filepath,
                 cache_dir = mycache_dir,
@@ -497,7 +504,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
                 word_delimiter_token=word_delimiter_token,
                 )
         elif task =="audio-asr":
-            tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
+            #tokenizer_name_or_path=model_checkpoint #"anton-l/wav2vec2-tokenizer-turkish" #model_checkpoint
             # tokenizer = AutoTokenizer.from_pretrained(
             #     tokenizer_name_or_path,
             #     #token=data_args.token,
@@ -509,13 +516,16 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
                                                     do_lower_case=True, \
                                                     word_delimiter_token="|",)
         #test tokenizer
-        print(len(tokenizer))
+        print("Tokenizer encoder len:", len(tokenizer.encoder))
+        print("Tokenizer len:", len(tokenizer))
         #outputids = tokenizer("test the tokenizer")
         #tokenizer.save_pretrained("./output")
         #if datatype=="huggingface":
 
-        feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, do_normalize=True,return_attention_mask=return_attention_mask)
-        feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
+        if model_checkpoint:
+            feature_extractor = AutoFeatureExtractor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, do_normalize=True,return_attention_mask=return_attention_mask)
+        else:
+            feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
         #processor = None
         processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     
@@ -600,18 +610,30 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             print(len(processor.tokenizer))
             #processor.tokenizer.add_tokens("_")
             #print(len(processor.tokenizer))
-            model = AutoModelForCTC.from_pretrained(
-                model_checkpoint, 
-                #ignore_mismatched_sizes=True,
-                ctc_loss_reduction="mean", 
-                pad_token_id=processor.tokenizer.pad_token_id,
-                vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
-                # attention_dropout=0.1,
-                # hidden_dropout=0.1,
+            # model = AutoModelForCTC.from_pretrained(
+            #     model_checkpoint, 
+            #     #ignore_mismatched_sizes=True,
+            #     ctc_loss_reduction="mean", 
+            #     pad_token_id=processor.tokenizer.pad_token_id,
+            #     vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
+            #     # attention_dropout=0.1,
+            #     # hidden_dropout=0.1,
+            #     # feat_proj_dropout=0.0,
+            #     # mask_time_prob=0.05,
+            #     # layerdrop=0.1,
+            # )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
+            model = Wav2Vec2ForCTC.from_pretrained(
+                model_checkpoint, #"facebook/wav2vec2-xls-r-300m",
+                cache_dir = mycache_dir,
+                # attention_dropout=0.0,
+                # hidden_dropout=0.0,
                 # feat_proj_dropout=0.0,
                 # mask_time_prob=0.05,
-                # layerdrop=0.1,
-            )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
+                # layerdrop=0.0,
+                ctc_loss_reduction="mean",
+                pad_token_id=processor.tokenizer.pad_token_id,
+                vocab_size=len(processor.tokenizer),
+            )
 
     starting_epoch = 0
     if pretrained:
@@ -625,9 +647,10 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
 
     # freeze the convolutional waveform encoder
     if freeze_feature_encoder:
+        #model.freeze_feature_extractor()
         model.freeze_feature_encoder()
-    if freeze_base_model:
-        model.freeze_base_model()
+    #if freeze_base_model:
+        #model.freeze_base_model()
     modelparameters(model, unfreezename)
     return model, feature_extractor, processor, starting_epoch
 
@@ -770,7 +793,9 @@ def loaddata(args, USE_HPC, mycache_dir):
                 text_column = "audio"
                 target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
             elif args.data_name =="common_voice": #not available
-                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", args.dataconfig, split="train+validation", cache_dir=mycache_dir) #"en" "zh-CN"
+                Train_SAMPLES = 10000
+                data_split=f"train[:{Train_SAMPLES}]" #"train+validation"
+                raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", args.dataconfig, split=data_split, cache_dir=mycache_dir) #"en" "zh-CN"
                 task_column ="audio" 
                 text_column = "audio"
                 target_column = "sentence"
@@ -1202,8 +1227,8 @@ class myEvaluator:
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
     #eval_pred is EvalPrediction type
     def compute_metrics(self, eval_pred: EvalPrediction):
-        preds = eval_pred.predictions[0] if isinstance(eval_pred.predictions, tuple) else eval_pred.predictions
-        label_ids = eval_pred.label_ids #(462, 79)
+        preds = eval_pred.predictions[0] if isinstance(eval_pred.predictions, tuple) else eval_pred.predictions #(1000, 593, 46)
+        label_ids = eval_pred.label_ids #(462, 79) (1000, 109)
         if self.metricname == "accuracy":
             """Computes accuracy on a batch of predictions"""
             preds = np.argmax(preds, axis=1)
@@ -1328,15 +1353,15 @@ if __name__ == "__main__":
     #data related arguments
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="timit",
+    parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: common_voice, librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='',
+    parser.add_argument('--dataconfig', type=str, default='en',
                     help='dataset_config_name, e.g., common_voice subset en, zh-CN')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-base-960h",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-xls-r-300m",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1355,7 +1380,7 @@ if __name__ == "__main__":
                     help='Unfreezename in models')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0117",
+    parser.add_argument('--traintag', type=str, default="0118",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -1375,8 +1400,8 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=10, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
-    parser.add_argument('--learningrate', default=3e-5, type=float, help='Learning rate')
+    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
         type=str,
@@ -1520,7 +1545,7 @@ if __name__ == "__main__":
                 vocab_path = os.path.join(mycache_dir, args.data_name, args.dataconfig)
             else:
                 vocab_path = os.path.join(mycache_dir, args.data_name)
-            vocab_path = "./output/mytokenizer/"
+            #vocab_path = "./signalAI/"
         raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
 
     model, feature_extractor, processor, starting_epoch = \
@@ -1735,9 +1760,6 @@ if __name__ == "__main__":
                 #batch_size=100,
             )
         
-
-
-
     # Load the accuracy metric from the datasets package
     #metric = evaluate.load("accuracy")
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
