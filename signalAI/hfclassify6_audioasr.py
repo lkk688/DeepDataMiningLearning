@@ -1393,14 +1393,15 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--pretrained', type=str, default="",
+    parser.add_argument('--pretrained', type=str, default="/DATA10T/output/facebook/wav2vec2-xls-r-300m/common_voice_0119/epoch7_savedmodel.pth",
                     help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
-    parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Use HPC')
+    parser.add_argument('--freeze_featureencoder', default=False, action='store_true', help='Freeze the featureencoder')
+    parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0118",
+    parser.add_argument('--traintag', type=str, default="0119",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -1420,7 +1421,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=6, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1574,7 +1575,7 @@ if __name__ == "__main__":
         loadmodel(model_checkpoint, custommodel=args.custommodel, \
                 task=task, id2label=id2label, label2id=label2id, \
                 vocab_path=vocab_path, pretrained=args.pretrained, \
-                unfreezename=args.unfreezename, freeze_feature_encoder=True, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
+                unfreezename=args.unfreezename, freeze_feature_encoder=args.freeze_featureencoder, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
 
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
@@ -1868,7 +1869,7 @@ if __name__ == "__main__":
         optimizer = get_myoptimizer(model, learning_rate=args.learningrate, weight_decay=args.weight_decay)
         
         num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-        max_train_steps = args.total_epochs * num_update_steps_per_epoch
+        max_train_steps = (args.total_epochs - starting_epoch) * num_update_steps_per_epoch
 
         num_warmup_steps = args.warmup_steps #10
         lr_scheduler = get_scheduler(
@@ -1884,7 +1885,7 @@ if __name__ == "__main__":
 
         progress_bar = tqdm(range(max_train_steps))
         completed_steps = 0
-        starting_epoch = 0
+        #starting_epoch = 0
         if args.useamp == True:
             # Creates a GradScaler once at the beginning of training.
             scaler = torch.cuda.amp.GradScaler()
