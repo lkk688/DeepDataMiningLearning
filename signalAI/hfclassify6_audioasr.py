@@ -1395,7 +1395,7 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--pretrained', type=str, default="",
+    parser.add_argument('--pretrained', type=str, default="/DATA10T/output/facebook/wav2vec2-large-xlsr-53/common_voice_0120/epoch8_savedmodel.pth",
                     help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
@@ -1412,7 +1412,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_vocabpath', default=True, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
+    parser.add_argument('--use_gradientcheckpoint', default=False, action='store_true',
                     help='Use gradientcheckpoint')#gradient_checkpointing_enable
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
