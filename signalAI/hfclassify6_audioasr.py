@@ -618,30 +618,30 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             print(len(processor.tokenizer))
             #processor.tokenizer.add_tokens("_")
             #print(len(processor.tokenizer))
-            # model = AutoModelForCTC.from_pretrained(
-            #     model_checkpoint, 
-            #     #ignore_mismatched_sizes=True,
-            #     ctc_loss_reduction="mean", 
-            #     pad_token_id=processor.tokenizer.pad_token_id,
-            #     vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
-            #     # attention_dropout=0.1,
-            #     # hidden_dropout=0.1,
+            model = AutoModelForCTC.from_pretrained(
+                model_checkpoint, 
+                #ignore_mismatched_sizes=True,
+                ctc_loss_reduction="mean", 
+                pad_token_id=processor.tokenizer.pad_token_id,
+                vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,
+                attention_dropout=0.1,
+                hidden_dropout=0.1,
+                feat_proj_dropout=0.0,
+                mask_time_prob=0.05,
+                layerdrop=0.1,
+            )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
+            # model = Wav2Vec2ForCTC.from_pretrained(
+            #     model_checkpoint, #"facebook/wav2vec2-xls-r-300m",
+            #     cache_dir = mycache_dir,
+            #     # attention_dropout=0.0,
+            #     # hidden_dropout=0.0,
             #     # feat_proj_dropout=0.0,
             #     # mask_time_prob=0.05,
-            #     # layerdrop=0.1,
-            # )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
-            model = Wav2Vec2ForCTC.from_pretrained(
-                model_checkpoint, #"facebook/wav2vec2-xls-r-300m",
-                cache_dir = mycache_dir,
-                # attention_dropout=0.0,
-                # hidden_dropout=0.0,
-                # feat_proj_dropout=0.0,
-                # mask_time_prob=0.05,
-                # layerdrop=0.0,
-                ctc_loss_reduction="mean",
-                pad_token_id=processor.tokenizer.pad_token_id,
-                vocab_size=len(processor.tokenizer),
-            )
+            #     # layerdrop=0.0,
+            #     ctc_loss_reduction="mean",
+            #     pad_token_id=processor.tokenizer.pad_token_id,
+            #     vocab_size=len(processor.tokenizer),
+            # )
 
     starting_epoch = 0
     if pretrained:
@@ -654,6 +654,8 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
 
     # freeze the convolutional waveform encoder
+    if hasattr(model, "freeze_feature_extractor"):
+        model.freeze_feature_extractor()
     if freeze_feature_encoder:
         #model.freeze_feature_extractor()
         model.freeze_feature_encoder()
@@ -1380,7 +1382,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-xls-r-300m",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-large-xlsr-53",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1393,15 +1395,15 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--pretrained', type=str, default="/DATA10T/output/facebook/wav2vec2-xls-r-300m/common_voice_0119/epoch7_savedmodel.pth",
+    parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
-    parser.add_argument('--freeze_featureencoder', default=False, action='store_true', help='Freeze the featureencoder')
+    parser.add_argument('--freeze_feature_encoder', default=False, action='store_true', help='Freeze the featureencoder')
     parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0119",
+    parser.add_argument('--traintag', type=str, default="0120",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -1410,7 +1412,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_vocabpath', default=True, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--use_gradientcheckpoint', default=False, action='store_true',
+    parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
                     help='Use gradientcheckpoint')#gradient_checkpointing_enable
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
@@ -1421,7 +1423,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=6, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -1575,7 +1577,7 @@ if __name__ == "__main__":
         loadmodel(model_checkpoint, custommodel=args.custommodel, \
                 task=task, id2label=id2label, label2id=label2id, \
                 vocab_path=vocab_path, pretrained=args.pretrained, \
-                unfreezename=args.unfreezename, freeze_feature_encoder=args.freeze_featureencoder, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
+                unfreezename=args.unfreezename, freeze_feature_encoder=args.freeze_feature_encoder, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
 
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
