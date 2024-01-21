@@ -654,7 +654,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
 
     # freeze the convolutional waveform encoder
-    if hasattr(model, "freeze_feature_extractor"):
+    if hasattr(model, "freeze_feature_extractor"):#not used
         model.freeze_feature_extractor()
     if freeze_feature_encoder:
         #model.freeze_feature_extractor()
@@ -1094,18 +1094,52 @@ def get_myoptimizer(model, learning_rate=2e-5, weight_decay=0.0):
         )
     return optimizer
 
-def loaddefaultmodel_fromname(modelname="facebook/wav2vec2-base-960h", task="audio-asr"):
+def loaddefaultmodel_fromname(modelname="facebook/wav2vec2-base-960h", task="audio-asr", cache_dir="./output"):
     if task == "audio-classification":
-        feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
-        model = AutoModelForAudioClassification.from_pretrained(modelname)
+        feature_extractor = AutoFeatureExtractor.from_pretrained(modelname, cache_dir=cache_dir)
+        model = AutoModelForAudioClassification.from_pretrained(modelname, cache_dir=cache_dir)
         tokenizer = None
         processor = None
     elif task == "audio-asr":
-        model = AutoModelForCTC.from_pretrained(modelname)
-        tokenizer = AutoTokenizer.from_pretrained(modelname)
-        feature_extractor = AutoFeatureExtractor.from_pretrained(modelname)
-        processor = AutoProcessor.from_pretrained(modelname)
+        model = AutoModelForCTC.from_pretrained(modelname, cache_dir=cache_dir)
+        tokenizer = AutoTokenizer.from_pretrained(modelname, cache_dir=cache_dir)
+        feature_extractor = AutoFeatureExtractor.from_pretrained(modelname, cache_dir=cache_dir)
+        processor = AutoProcessor.from_pretrained(modelname, cache_dir=cache_dir)
     return model, feature_extractor, tokenizer, processor
+
+def settarget_lang(model, processor, target_lang='eng'):
+    processor.tokenizer.set_target_lang(target_lang) #"cmn-script_simplified"
+    model.load_adapter(target_lang)
+
+import librosa
+def asrinference_path(datasample, model, samplerate=16_000, processor=None, device='cuda'):
+    if isinstance(datasample, str):#batch["path"] get numpyarray
+        datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
+        batchdecode=False
+    elif isinstance(datasample, list):
+        datasamples=[]
+        for sample in datasample:
+            onespeech, sampling_rate = librosa.load(sample, sr=samplerate)
+            datasamples.append(onespeech)
+        batchdecode=True
+    
+    inputs = processor(datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
+    print("Input:", type(inputs))
+
+    model=model.to(device)
+    inputs=inputs.to(device)
+
+    with torch.no_grad():
+        outputs = model(**inputs).logits
+
+    print("Output logits shape:", outputs.shape)
+    if batchdecode:
+        predicted_ids = torch.argmax(outputs, dim=-1)
+        transcription = processor.batch_decode(predicted_ids)
+    else:
+        ids = torch.argmax(outputs, dim=-1)[0]
+        transcription = processor.decode(ids)
+    return transcription
 
 from transformers import pipeline
 def inferencesample(datasample, task, model, usepipeline=True, feature_extractor=None, processor=None, device='cuda', task_column='audio', target_column='text'):
@@ -1382,7 +1416,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wav2vec2-large-xlsr-53",
+    parser.add_argument('--model_checkpoint', type=str, default="facebook/mms-1b-all",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
@@ -1395,7 +1429,7 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--pretrained', type=str, default="/DATA10T/output/facebook/wav2vec2-large-xlsr-53/common_voice_0120/epoch8_savedmodel.pth",
+    parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
@@ -1412,7 +1446,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_vocabpath', default=True, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--use_gradientcheckpoint', default=False, action='store_true',
+    parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
                     help='Use gradientcheckpoint')#gradient_checkpointing_enable
     parser.add_argument('--usehpc', default=False, action='store_true',
                     help='Use HPC')
