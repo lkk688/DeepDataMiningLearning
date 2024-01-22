@@ -1,0 +1,2 @@
+valkey='test'
+TrustRemoteCode=True
