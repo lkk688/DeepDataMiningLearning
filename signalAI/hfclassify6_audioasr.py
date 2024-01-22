@@ -1420,6 +1420,8 @@ if __name__ == "__main__":
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
+    parser.add_argument('--pretrained', type=str, default="/DATA10T/output/facebook/mms-1b-all/common_voice_0120/epoch9_savedmodel.pth",
+                    help='Pretrained model path')
     parser.add_argument('--custommodel', default=True, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-asr",
                     help='tasks: audio-classification, openqa, translation, summarization, QA')
@@ -1429,8 +1431,6 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--pretrained', type=str, default="",
-                    help='Pretrained model path')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
     parser.add_argument('--freeze_feature_encoder', default=False, action='store_true', help='Freeze the featureencoder')
@@ -1455,9 +1455,9 @@ if __name__ == "__main__":
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=25, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
