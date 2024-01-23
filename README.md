@@ -11,6 +11,8 @@ Install this python package (optional) via
 % python3 -m pip install flit
 % flit install --symlink
 ```
+You will see the package "DeepDataMiningLearning" is install in your python virionment, you can "import DeepDataMiningLearning" as a package.
+
 ref "docs/python.rst" for detailed python package description
 
 Open the Jupyter notebook in local machine:

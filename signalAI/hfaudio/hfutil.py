@@ -1,2 +1,0 @@
-valkey='test'
-TrustRemoteCode=True

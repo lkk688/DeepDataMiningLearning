@@ -8,8 +8,8 @@ import collections
 import numpy as np
 import random
 
-from hfdata import saveaudio_tofile
-from hfmodels import loaddefaultmodel_fromname
+from DeepDataMiningLearning.hfaudio.hfdata import saveaudio_tofile
+from DeepDataMiningLearning.hfaudio.hfmodels import loaddefaultmodel_fromname
 
 def settarget_lang(model, processor, target_lang='eng'):
     processor.tokenizer.set_target_lang(target_lang) #"cmn-script_simplified"

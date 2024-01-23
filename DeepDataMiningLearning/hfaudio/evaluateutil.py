@@ -8,27 +8,27 @@ from transformers import EvalPrediction
 from tqdm.auto import tqdm
 
 class myEvaluator:
-    def __init__(self, args, useHFevaluator=False, dualevaluator=False, labels=None, processor=None):
+    def __init__(self, task, useHFevaluator=False, dualevaluator=False, labels=None, processor=None, mycache_dir=None):
         print("useHFevaluator:", useHFevaluator)
         print("dualevaluator:", dualevaluator)
         self.useHFevaluator = useHFevaluator
         self.dualevaluator = dualevaluator
-        self.task = args.task
+        self.task = task
         self.preds = []
         self.refs = []
         self.labels = labels
         self.processor = processor
         self.HFmetric = None
-        if args.task == "audio-classification":
+        if self.task == "audio-classification":
             self.metricname = "accuracy" #"mse" "wer"
-        elif args.task == "audio-asr":
-            self.metricname = "wer"
+        elif self.task == "audio-asr":
+            self.metricname = "wer" #word error rate (WER)
         self.LOmetric = None
         #https://huggingface.co/spaces/evaluate-metric/wer
         #if self.task.startswith("audio"):
         if self.useHFevaluator:
             # Load the accuracy metric from the datasets package
-            self.HFmetric = evaluate.load(self.metricname) #evaluate.load("mse")
+            self.HFmetric = evaluate.load(self.metricname, cache_dir=mycache_dir) #evaluate.load("mse")
         elif self.metricname == "wer":
             self.LOmetric = load_metric("wer", trust_remote_code=True)#deprecated
 

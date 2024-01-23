@@ -9,7 +9,7 @@ from transformers import (AutoConfig, AutoTokenizer, pipeline, AutoProcessor,
                             Wav2Vec2Processor,
                             EvalPrediction,
                             set_seed,)
-from transformers.models.wav2vec2.modeling_wav2vec2 import WAV2VEC2_ADAPTER_SAFE_FILE
+#from transformers.models.wav2vec2.modeling_wav2vec2 import WAV2VEC2_ADAPTER_SAFE_FILE
 import numpy as np
 import torch
 import torch.nn as nn
@@ -19,6 +19,15 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union
 import os
 import shutil
+import re
+import json
+
+from DeepDataMiningLearning.hfaudio.hfdata import create_vocabulary_from_data
+from DeepDataMiningLearning.hfaudio.hfutil import valkey, TrustRemoteCode, logger
+
+unk_token="[UNK]"
+pad_token="[PAD]"
+word_delimiter_token="|"
 
 #https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/modeling_outputs.py
 from transformers.modeling_outputs import TokenClassifierOutput
@@ -27,7 +36,7 @@ from dataclasses import dataclass
 from transformers.file_utils import ModelOutput
 from typing import Dict, List, Optional, Union, Tuple
 
-from hfutil import valkey, TrustRemoteCode
+
 
 @dataclass
 class MyModelOutput(ModelOutput):
@@ -309,9 +318,6 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     #Option2
     #newtokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
     #config.vocab_size:32
-    unk_token="[UNK]"
-    pad_token="[PAD]"
-    word_delimiter_token="|"
 
     #Create Processor
     processoroption1=False
@@ -319,7 +325,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
         feature_extractor = processor.feature_extractor
     else:
-        config = AutoConfig.from_pretrained(model_checkpoint)#config.model_type:'wav2vec2' config.tokenizer_class=None
+        config = AutoConfig.from_pretrained(model_checkpoint, cache_dir=mycache_dir, trust_remote_code=TrustRemoteCode)#config.model_type:'wav2vec2' config.tokenizer_class=None
         tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
         #config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
         tokenizer_kwargs = {
@@ -341,7 +347,8 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             #     # pad_token=pad_token,
             #     word_delimiter_token=word_delimiter_token,
             #     )
-            tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+            #Wav2Vec2CTCTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(
                 vocab_path, #vocab_filepath,
                 cache_dir = mycache_dir,
                 unk_token=unk_token,
@@ -503,6 +510,164 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     modelparameters(model, unfreezename)
     return model, feature_extractor, processor, starting_epoch
 
+def multilingual_tokenizer(model_name_or_path, tokenizer_name_or_path=None, mycache_dir=None, output_dir=None, datasets=None, target_column='text', target_language="en", overwrite_lang_vocab=True, overwrite_output_dir=False):
+    
+    if tokenizer_name_or_path=="":
+        tokenizer_name_or_path = None
+    # load the config as we might need it to create
+    # the tokenizer
+    # load config
+    config = AutoConfig.from_pretrained(
+        model_name_or_path,
+        cache_dir=mycache_dir,
+        #token=data_args.token,
+        trust_remote_code=TrustRemoteCode,
+    )
+
+    # 4. if no tokenizer file is defined,
+    # we create the vocabulary of the model by extracting all unique characters from
+    # the training and evaluation datasets
+    # We need to make sure that only first rank saves vocabulary
+    # make sure all processes wait until vocab is created
+    tokenizer_kwargs = {}
+
+    vocab_dict = {}
+    if tokenizer_name_or_path: # and tokenizer_name_or_path is not None:
+        # load vocabulary of other adapter languages so that new language can be appended
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name_or_path,
+            #token=data_args.token,
+            trust_remote_code=TrustRemoteCode,
+        )
+        vocab_dict = tokenizer.vocab.copy()
+        if tokenizer.target_lang is None:
+            raise ValueError("Make sure to load a multi-lingual tokenizer with a set target language.")
+
+        if target_language in tokenizer.vocab and not overwrite_lang_vocab:
+            logger.info(
+                "Adapter language already exists."
+                " Skipping vocabulary creating. If you want to create a new vocabulary"
+                f" for {target_language} make sure to add '--overwrite_lang_vocab'"
+            )
+        else:
+            tokenizer_name_or_path = None
+
+    if tokenizer_name_or_path is None:
+        # save vocab in training output dir
+        tokenizer_name_or_path = output_dir
+
+        vocab_file = os.path.join(tokenizer_name_or_path, "vocab.json")
+        if overwrite_output_dir and os.path.isfile(vocab_file):
+            try:
+                os.remove(vocab_file)
+            except OSError:
+                # in shared file-systems it might be the case that
+                # two processes try to delete the vocab file at the some time
+                pass
+        
+        if not os.path.isfile(vocab_file):
+            os.makedirs(tokenizer_name_or_path, exist_ok=True)
+            lang_dict = create_vocabulary_from_data(
+                datasets,
+                target_column=target_column,
+                word_delimiter_token=word_delimiter_token,
+                unk_token=unk_token,
+                pad_token=pad_token,
+            )
+
+            # if we doing adapter language training, save
+            # vocab with adpter language
+
+            if target_language is not None:
+                vocab_dict[target_language] = lang_dict
+
+            # save vocab dict to be loaded into tokenizer
+            with open(vocab_file, "w") as file:
+                json.dump(vocab_dict, file)
+        
+        # if tokenizer has just been created
+        # it is defined by `tokenizer_class` if present in config else by `model_type`
+        print(config.tokenizer_class) #None
+        print(config.model_type) #wave2vec2
+        tokenizer_kwargs = {
+            "config": config if config.tokenizer_class is not None else None,
+            "tokenizer_type": config.model_type if config.tokenizer_class is None else None,
+            "unk_token": unk_token,
+            "pad_token": pad_token,
+            "word_delimiter_token": word_delimiter_token,
+            "target_lang": target_language,
+        }
+    
+    # 5. Now we can instantiate the feature extractor, tokenizer and model
+    # Note for distributed training, the .from_pretrained methods guarantee that only
+    # one local process can concurrently download model & vocab.
+
+    # load feature_extractor and tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_name_or_path,
+        #token=data_args.token,
+        trust_remote_code=TrustRemoteCode,
+        **tokenizer_kwargs,
+    )
+    return tokenizer
+    
+def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_args=None, gradient_checkpointing=False):
+    if model_args is None:
+        model_args = AudioModelArguments(model_name_or_path=model_name)
+
+    feature_extractor = AutoFeatureExtractor.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=cache_dir,
+        #token=data_args.token,
+        trust_remote_code=TrustRemoteCode,
+    )
+    # adapt config
+    if not config:
+        config = AutoConfig.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=cache_dir,
+            #token=data_args.token,
+            trust_remote_code=TrustRemoteCode,
+        )
+    config.update(
+        {
+            "final_dropout": model_args.final_dropout,
+            "mask_time_prob": model_args.mask_time_prob,
+            "mask_time_length": model_args.mask_time_length,
+            "mask_feature_prob": model_args.mask_feature_prob,
+            "mask_feature_length": model_args.mask_feature_length,
+            "gradient_checkpointing": gradient_checkpointing,
+            "layerdrop": model_args.layerdrop,
+            "ctc_loss_reduction": model_args.ctc_loss_reduction,
+            "pad_token_id": tokenizer.pad_token_id,
+            "vocab_size": len(tokenizer),
+            "adapter_attn_dim": model_args.adapter_attn_dim,
+        }
+    )
+    # create model
+    model = AutoModelForCTC.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=cache_dir,
+        config=config,
+        #token=data_args.token,
+        trust_remote_code=TrustRemoteCode,
+        ignore_mismatched_sizes=True,
+    )
+
+    # if attn adapter is defined, freeze all non-adapter weights
+    if model.config.adapter_attn_dim is not None: #16
+        model.init_adapter_layers()
+        # first we freeze the whole base model
+        model.freeze_base_model()
+
+        # next we unfreeze all adapter layers
+        adapter_weights = model._get_adapters()
+        for param in adapter_weights.values():
+            param.requires_grad = True
+    
+    processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    return model, processor, feature_extractor
+
 def loaddefaultmodel_fromname(modelname="facebook/wav2vec2-base-960h", task="audio-asr", cache_dir="./output"):
     if task == "audio-classification":
         feature_extractor = AutoFeatureExtractor.from_pretrained(modelname, cache_dir=cache_dir)
@@ -527,9 +692,66 @@ def savemodels(model, optimizer, epoch, trainoutput):
     shutil.copy(modelfilepath, modelfilepathwithepoch)
     #Huggingface format:
     model.save_pretrained(trainoutput)
+
+#from https://github.com/huggingface/transformers/blob/main/src/transformers/trainer_utils.py
+PREFIX_CHECKPOINT_DIR = "checkpoint"
+_re_checkpoint = re.compile(r"^" + PREFIX_CHECKPOINT_DIR + r"\-(\d+)$")
+def get_last_checkpoint(folder):
+    content = os.listdir(folder)
+    checkpoints = [
+        path
+        for path in content
+        if _re_checkpoint.search(path) is not None and os.path.isdir(os.path.join(folder, path))
+    ]
+    if len(checkpoints) == 0:
+        return
+    return os.path.join(folder, max(checkpoints, key=lambda x: int(_re_checkpoint.search(x).groups()[0])))
+
+WAV2VEC2_ADAPTER_PT_FILE = "adapter.{}.bin"
+WAV2VEC2_ADAPTER_SAFE_FILE = "adapter.{}.safetensors"
+from safetensors.torch import save_file as safe_save_file
+def save_adapterweights(model, target_language, output_dir):
+    # make sure that adapter weights are saved seperately
+    adapter_file = WAV2VEC2_ADAPTER_SAFE_FILE.format(target_language)
+    adapter_file = os.path.join(output_dir, adapter_file)
+    logger.info(f"Saving adapter weights under {adapter_file}...")
+    safe_save_file(model._get_adapters(), adapter_file, metadata={"format": "pt"})
+
+def load_hfcheckpoint(checkpoint_dir, overwrite_output_dir=False):
+    last_checkpoint = None
+    if os.path.isdir(checkpoint_dir) and not overwrite_output_dir:
+        last_checkpoint = get_last_checkpoint(checkpoint_dir)
+        if last_checkpoint is None and len(os.listdir(checkpoint_dir)) > 0:
+            raise ValueError(
+                f"Output directory ({checkpoint_dir}) already exists and is not empty. "
+                "Use --overwrite_output_dir to overcome."
+            )
+        elif last_checkpoint is not None:
+            logger.info(
+                f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
+                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
+            )
+    return last_checkpoint
+
 #jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert
+
+
 if __name__ == "__main__":
+    from hfdata import gettestdata
+    from datasets import DatasetDict
     model_name = "facebook/wav2vec2-xls-r-300m"
-    model_name = AudioModelArguments(model_name_or_path=model_name)
-    print(model_name.final_dropout)
-    print(model_name)
+    model_args = AudioModelArguments(model_name_or_path=model_name)
+    print(model_args.final_dropout)
+    print(model_args)
+
+    mycache_dir = "/DATA10T/Cache"
+    output_dir = './output'
+
+    dataset_name = "mozilla-foundation/common_voice_11_0"
+    language = 'en'
+    dataset_test = gettestdata(dataset_name, language=language, split="test", sampling_rate=16000, mycache_dir=mycache_dir, streaming=False, samples = 100, task_column="audio", target_column="sentence")
+    raw_datasets = DatasetDict()
+    raw_datasets["train"] = dataset_test
+
+    tokenizer = multilingual_tokenizer(model_name, tokenizer_name_or_path="", mycache_dir=mycache_dir, output_dir=output_dir, datasets=raw_datasets, target_column="sentence", target_language="en", overwrite_lang_vocab=True, overwrite_output_dir=True)
+    print(tokenizer)
