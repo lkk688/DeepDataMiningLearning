@@ -348,7 +348,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             #     word_delimiter_token=word_delimiter_token,
             #     )
             #Wav2Vec2CTCTokenizer
-            tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
                 vocab_path, #vocab_filepath,
                 cache_dir = mycache_dir,
                 unk_token=unk_token,
@@ -641,7 +641,7 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
             "ctc_loss_reduction": model_args.ctc_loss_reduction,
             "pad_token_id": tokenizer.pad_token_id,
             "vocab_size": len(tokenizer),
-            "adapter_attn_dim": model_args.adapter_attn_dim,
+            "adapter_attn_dim": model_args.adapter_attn_dim,#add adapter for multi-language
         }
     )
     # create model

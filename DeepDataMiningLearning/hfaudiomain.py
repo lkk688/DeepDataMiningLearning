@@ -47,11 +47,7 @@ def trainmain(args):
         labels, id2label, label2id, num_labels = getlabels_classifier(raw_datasets, target_column=target_column, datatype=args.data_type)
     elif args.task == "audio-asr":
         if args.use_vocabpath:
-            if args.dataconfig:
-                vocab_path = os.path.join(mycache_dir, args.data_name, args.dataconfig)
-            else:
-                vocab_path = os.path.join(mycache_dir, args.data_name)
-            #vocab_path = "./signalAI/"
+            vocab_path = trainoutput #"./signalAI/"
         raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
         
         tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
@@ -238,14 +234,14 @@ if __name__ == "__main__":
     parser.add_argument('--dataconfig', type=str, default='en',
                     help='dataset_config_name, e.g., common_voice subset en, zh-CN')
     parser.add_argument('--target_language', type=str, default='en',
-                    help='target_language')
+                    help='target_language: en')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_name_or_path', type=str, default="facebook/mms-1b-all",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
-    parser.add_argument('--checkpointfolder', type=str, default="/DATA10T/output/common_voice_0122/",
+    parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
@@ -264,11 +260,11 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0122",
+    parser.add_argument('--traintag', type=str, default="0123en",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
@@ -282,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--total_epochs', default=10, type=int, help='Total epochs to train the model')
+    parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
     parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
