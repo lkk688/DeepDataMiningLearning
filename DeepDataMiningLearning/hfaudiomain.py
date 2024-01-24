@@ -231,13 +231,13 @@ if __name__ == "__main__":
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: common_voice, librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='en',
+    parser.add_argument('--dataconfig', type=str, default='zh-CN',
                     help='dataset_config_name, e.g., common_voice subset en, zh-CN')
-    parser.add_argument('--target_language', type=str, default='en',
+    parser.add_argument('--target_language', type=str, default='zh',
                     help='target_language: en')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/DATA10T/Cache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_name_or_path', type=str, default="facebook/mms-1b-all",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
@@ -259,8 +259,8 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_feature_encoder', default=False, action='store_true', help='Freeze the featureencoder')
     parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
     #training related arguments
-    parser.add_argument('--outputdir', type=str, default="/DATA10T/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0123en",
+    parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
+    parser.add_argument('--traintag', type=str, default="0123zh",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -271,7 +271,7 @@ if __name__ == "__main__":
                     help='Use HPC')
     parser.add_argument('--use_gradientcheckpoint', default=True, action='store_true',
                     help='Use gradientcheckpoint')#gradient_checkpointing_enable
-    parser.add_argument('--usehpc', default=False, action='store_true',
+    parser.add_argument('--usehpc', default=True, action='store_true',
                     help='Use HPC')
     parser.add_argument('--useHFaccelerator', default=False, action='store_true',
                     help='Use Huggingface accelerator')

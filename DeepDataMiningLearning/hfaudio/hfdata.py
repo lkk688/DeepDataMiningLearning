@@ -1,4 +1,4 @@
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 import datasets
 from datasets import load_dataset, DatasetDict, features, load_metric, Audio
 import torch
@@ -116,6 +116,7 @@ def loadaudios_todataset(folder, save_path, audiofileformat=".wav", target_colum
 
 
 def plot_waveformnp(waveform, sample_rate):
+    import matplotlib.pyplot as plt
     #waveform = waveform.numpy()
 
     num_channels, num_frames = waveform.shape
