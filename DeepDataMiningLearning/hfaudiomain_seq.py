@@ -4,16 +4,16 @@ import math
 import torch
 from torch.utils.data import DataLoader
 import os
-from transformers import Trainer, TrainingArguments, get_scheduler
+from transformers import Trainer, Seq2SeqTrainer, TrainingArguments, Seq2SeqTrainingArguments, get_scheduler
 from accelerate import Accelerator
 from tqdm.auto import tqdm
 import datetime
 
 from DeepDataMiningLearning.hfaudio.hfutil import valkey, deviceenv_set, get_device
 from DeepDataMiningLearning.hfaudio.hfdata import savedict2file, load_audiodataset, getlabels_classifier, getlabels_asr, dataset_removecharacters, dataset_castsamplingrate, dataset_preprocessing, filter_datasetlength
-from DeepDataMiningLearning.hfaudio.hfmodels import loadmodel, multilingual_tokenizer, load_featureextractor_model, savemodels, load_hfcheckpoint, save_adapterweights
+from DeepDataMiningLearning.hfaudio.hfmodels import loadmodel, multilingual_tokenizer, load_featureextractor_model, savemodels, load_hfcheckpoint, save_adapterweights, load_featureextractor_seqmodel
 from DeepDataMiningLearning.hfaudio.evaluateutil import myEvaluator, evaluate_dataset
-from DeepDataMiningLearning.hfaudio.trainutil import get_datacollator, get_myoptimizer
+from DeepDataMiningLearning.hfaudio.trainutil import get_datacollator, DataCollatorSpeechSeq2SeqWithPadding, get_myoptimizer
 
 def saveargs2file(args, trainoutput):
     args_dict={}
@@ -49,11 +49,11 @@ def trainmain(args):
         if args.use_vocabpath:
             vocab_path = trainoutput #"./signalAI/"
         #raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
-        
+            
         tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
-
-        model, processor, feature_extractor = load_featureextractor_model(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, config=None, model_args=None, gradient_checkpointing=args.use_gradientcheckpoint)
-        starting_epoch = 0
+        
+        model, processor, feature_extractor, forward_attention_mask = load_featureextractor_seqmodel(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, outputdir=trainoutput, language=args.target_language, task=args.task, freeze_feature_encoder=args.freeze_feature_encoder, freeze_encoder=args.freeze_basemodel)
+        starting_epoch=0
     
     # model, feature_extractor, processor, starting_epoch = \
     #     loadmodel(args.model_name_or_path, custommodel=args.custommodel, \
@@ -71,19 +71,26 @@ def trainmain(args):
     
     raw_datasets = dataset_castsamplingrate(raw_datasets, sampling_rate=feature_extractor.sampling_rate, audio_column_name=task_column)
 
-    vectorized_datasets = dataset_preprocessing(raw_datasets, tokenizer, processor, task_column=task_column, target_column=target_column, max_length_seconds=args.max_length_seconds, model_input_name=model_input_name, labels=labels, data_type = args.data_type, task=args.task)
+    vectorized_datasets = dataset_preprocessing(raw_datasets, tokenizer, processor, task_column=task_column, target_column=target_column, max_length_seconds=args.max_length_seconds, model_input_name=model_input_name, labels=labels, data_type = args.data_type, task=args.task, forward_attention_mask=forward_attention_mask)
 
-    vectorized_datasets = filter_datasetlength(vectorized_datasets, args.min_length_seconds, args.max_length_seconds, sampling_rate=feature_extractor.sampling_rate)
+    #vectorized_datasets = filter_datasetlength(vectorized_datasets, args.min_length_seconds, args.max_length_seconds, sampling_rate=feature_extractor.sampling_rate)
+
+    onesample=next(iter(vectorized_datasets['train']))
 
     print(f"Data preprocessing finished. Files cached at {vectorized_datasets.cache_files}")
 
     metriceval = myEvaluator(args.task, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels, processor=processor)
 
-    data_collator = get_datacollator(processor, args.task, padding=True)
+    #data_collator = get_datacollator(processor, args.task, padding=True)
+    data_collator = DataCollatorSpeechSeq2SeqWithPadding(
+        processor=processor,
+        decoder_start_token_id=model.config.decoder_start_token_id,
+        forward_attention_mask=forward_attention_mask,
+    )
 
     #['HFTrainer','CustomTrain', 'NoTrain']
     if args.trainmode == 'HFTrainer':
-        training_args = TrainingArguments(
+        training_args = Seq2SeqTrainingArguments(
             trainoutput,
             group_by_length=True,#makes training more efficient by grouping training samples of similar input length into one batch.
             evaluation_strategy="epoch",
@@ -104,7 +111,7 @@ def trainmain(args):
             #gradient_checkpointing=True,#reduce GPU memory, or use model.gradient_checkpointing_enable()
         )
         # Initialize our trainer
-        trainer = Trainer(
+        trainer = Seq2SeqTrainer(
             model=model,
             data_collator=data_collator,
             args=training_args,
@@ -231,17 +238,17 @@ if __name__ == "__main__":
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: common_voice, librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='zh-CN',
+    parser.add_argument('--dataconfig', type=str, default='en',
                     help='dataset_config_name, e.g., common_voice subset en, zh-CN')
-    parser.add_argument('--target_language', type=str, default='zh',
+    parser.add_argument('--target_language', type=str, default='en',
                     help='target_language: en')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_name_or_path', type=str, default="facebook/mms-1b-all",
+    parser.add_argument('--model_name_or_path', type=str, default="facebook/wav2vec2-xls-r-300m-en-to-15",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
-    parser.add_argument('--checkpointfolder', type=str, default="/data/rnd-liu/output/common_voice_0123zh/epoch9_savedmodel.pth",
+    parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
@@ -256,15 +263,15 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate and localevaluate')
     parser.add_argument('--unfreezename', type=str, default="",
                     help='Unfreezename in models')
-    parser.add_argument('--freeze_feature_encoder', default=False, action='store_true', help='Freeze the featureencoder')
-    parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
+    parser.add_argument('--freeze_feature_encoder', default=True, action='store_true', help='Freeze the featureencoder')
+    parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0123zh2",
+    parser.add_argument('--traintag', type=str, default="0124seq",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
@@ -277,10 +284,10 @@ if __name__ == "__main__":
                     help='Use Huggingface accelerator')
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
-    parser.add_argument('--gpuid', default=1, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=2, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",

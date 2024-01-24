@@ -152,5 +152,62 @@ def inferenceaudiopath(data_path, task, model, usepipeline=True, feature_extract
 
     return result, outputs
 
+#select the correct forced_bos_token_id given your choosen language id
+MAPPING = {
+    "de": 250003,
+    "tr": 250023,
+    "fa": 250029,
+    "sv": 250042,
+    "mn": 250037,
+    "zh": 250025,
+    "cy": 250007,
+    "ca": 250005,
+    "sl": 250052,
+    "et": 250006,
+    "id": 250032,
+    "ar": 250001,
+    "ta": 250044,
+    "lv": 250017,
+    "ja": 250012,
+}
+
+def wave2vec2seq_inference(model_name, dataset, cache_dir, target_language='en'):
+    #https://huggingface.co/facebook/wav2vec2-xls-r-1b-en-to-15
+    #"facebook/wav2vec2-xls-r-1b-en-to-15" "facebook/wav2vec2-xls-r-300m-en-to-15"
+    #Facebook's Wav2Vec2 XLS-R fine-tuned for Speech Translation
+    import torch
+    from transformers import Speech2Text2Processor, SpeechEncoderDecoderModel
+    model = SpeechEncoderDecoderModel.from_pretrained(model_name, cache_dir=cache_dir)
+    processor = Speech2Text2Processor.from_pretrained(model_name)#, cache_dir=cache_dir)
+    forced_bos_token = MAPPING[target_language]
+
+    inputs = processor(dataset[0]["audio"]["array"], sampling_rate=dataset[0]["audio"]["array"]["sampling_rate"], return_tensors="pt")
+    generated_ids = model.generate(input_ids=inputs["input_features"], attention_mask=inputs["attention_mask"], forced_bos_token_id=forced_bos_token)
+    transcription = processor.batch_decode(generated_ids)
+    print(transcription)
+
+
+if __name__ == "__main__":
+    from hfdata import gettestdata
+    from datasets import DatasetDict
+    from hfutil import deviceenv_set
+
+    USE_HPC = True
+    if USE_HPC:
+        mycache_dir = deviceenv_set(True, data_path='/data/cmpe249-fa23/Huggingfacecache')
+    else:
+        mycache_dir = "/DATA10T/Cache"
+
+    #model_name = "facebook/wav2vec2-xls-r-300m"
+    output_dir = './output'
+
+    dataset_name = "mozilla-foundation/common_voice_11_0"
+    language = 'en'
+    dataset_test = gettestdata(dataset_name, language=language, split="test", sampling_rate=16000, mycache_dir=mycache_dir, streaming=False, samples = 100, task_column="audio", target_column="sentence")
+    #raw_datasets = DatasetDict()
+    #raw_datasets["train"] = dataset_test
+
+    model_name = "facebook/wav2vec2-xls-r-300m-en-to-15" #"facebook/wav2vec2-xls-r-1b-en-to-15"
+    wave2vec2seq_inference(model_name, dataset_test, cache_dir=mycache_dir, target_language='en')
 
 

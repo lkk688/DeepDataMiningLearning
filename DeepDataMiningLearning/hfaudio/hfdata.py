@@ -165,8 +165,11 @@ def load_audiodataset(data_name, dataconfig, mycache_dir, data_type="huggingface
             text_column = "audio"
             target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
         elif data_name =="common_voice": #not available
-            Train_SAMPLES = 10000
-            data_split=f"train[:{Train_SAMPLES}]" #"train+validation"
+            Train_SAMPLES = None #40000 #10000
+            if Train_SAMPLES:
+                data_split=f"train[:{Train_SAMPLES}]" #"train+validation"
+            else:
+                data_split="train"
             raw_datasets = load_dataset("mozilla-foundation/common_voice_11_0", dataconfig, split=data_split, cache_dir=mycache_dir, trust_remote_code=TrustRemoteCode) #"en" "zh-CN"
             task_column ="audio" 
             text_column = "audio"
@@ -545,7 +548,7 @@ def create_vocabulary_from_data(
 
     return vocab_dict
 
-def dataset_preprocessing(raw_datasets, tokenizer, processor, task_column="audio", target_column="text", max_length_seconds=10, model_input_name="input_values", labels=None, data_type = "huggingface", task="audio-asr"):
+def dataset_preprocessing(raw_datasets, tokenizer, processor, task_column="audio", target_column="text", max_length_seconds=10, model_input_name="input_values", labels=None, data_type = "huggingface", task="audio-asr", forward_attention_mask=False):
     feature_extractor = processor.feature_extractor
     #args.max_length_seconds
     #args.data_type == "huggingface" and args.task=="audio-asr"
@@ -554,8 +557,9 @@ def dataset_preprocessing(raw_datasets, tokenizer, processor, task_column="audio
 
         # batched output is "un-batched" to ensure mapping is correct
         #https://github.com/huggingface/transformers/blob/main/src/transformers/models/wav2vec2/processing_wav2vec2.py
-        batch["input_values"] = processor(audio["array"], sampling_rate=audio["sampling_rate"]).input_values[0]
-        batch["input_length"] = len(batch["input_values"])
+        inputs = processor(audio["array"], sampling_rate=audio["sampling_rate"],return_attention_mask=forward_attention_mask)#.input_values[0]
+        batch[model_input_name] = inputs.get(model_input_name)[0]
+        batch["input_length"] = len(batch[model_input_name]) #len(audio["array"])
         
         #forwards all its arguments to PreTrainedTokenizer
         # with processor.as_target_processor():
@@ -583,7 +587,7 @@ def dataset_preprocessing(raw_datasets, tokenizer, processor, task_column="audio
                 target_list.append(target)
         
         inputs = feature_extractor(audio_list, 
-                                   sampling_rate=feature_extractor.sampling_rate,max_length=int(feature_extractor.sampling_rate * args.max_length_seconds), truncation=True, padding=True)
+                                   sampling_rate=feature_extractor.sampling_rate,max_length=int(feature_extractor.sampling_rate * max_length_seconds), truncation=True, padding=True)
         result = {model_input_name: inputs.get(model_input_name)}
         result["labels"] = list(target_list)
         #result["labels"] = example[target_column]

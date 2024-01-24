@@ -1,5 +1,6 @@
 from transformers import (AutoConfig, AutoTokenizer, pipeline, AutoProcessor,
-                          AutoFeatureExtractor, AutoModelForAudioClassification, AutoModelForCTC,
+                          AutoFeatureExtractor, AutoModelForAudioClassification, AutoModelForCTC, AutoModelForSpeechSeq2Seq,
+                          SpeechEncoderDecoderModel,
                             Wav2Vec2Model,
                             Wav2Vec2Config,
                             Wav2Vec2ForCTC,
@@ -603,12 +604,27 @@ def multilingual_tokenizer(model_name_or_path, tokenizer_name_or_path=None, myca
     # one local process can concurrently download model & vocab.
 
     # load feature_extractor and tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name_or_path,
-        #token=data_args.token,
-        trust_remote_code=TrustRemoteCode,
-        **tokenizer_kwargs,
-    )
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name_or_path,
+            #token=data_args.token,
+            cache_dir = mycache_dir,
+            trust_remote_code=TrustRemoteCode,
+            **tokenizer_kwargs,
+        )
+    except:
+        tokenizer_kwargs = {
+            "unk_token": unk_token,
+            "pad_token": pad_token,
+            "word_delimiter_token": word_delimiter_token,
+            "target_lang": target_language,
+        }
+        tokenizer = Wav2Vec2CTCTokenizer.from_pretrained(
+                tokenizer_name_or_path, #vocab_filepath,
+                cache_dir = mycache_dir,
+                trust_remote_code=TrustRemoteCode,
+                **tokenizer_kwargs,
+                )
     return tokenizer
     
 def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_args=None, gradient_checkpointing=False):
@@ -653,10 +669,20 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
         trust_remote_code=TrustRemoteCode,
         ignore_mismatched_sizes=True,
     )
+    # model = Wav2Vec2ForCTC.from_pretrained(
+    #     model_args.model_name_or_path,
+    #     cache_dir=cache_dir,
+    #     config=config,
+    #     #token=data_args.token,
+    #     trust_remote_code=TrustRemoteCode,
+    #     ignore_mismatched_sizes=True,
+    #     target_lang="cmn-script_simplified",
+    # )
 
     # if attn adapter is defined, freeze all non-adapter weights
     if model.config.adapter_attn_dim is not None: #16
         model.init_adapter_layers()
+        #model.load_adapter("cmn-script_simplified")
         # first we freeze the whole base model
         model.freeze_base_model()
 
@@ -665,8 +691,98 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
         for param in adapter_weights.values():
             param.requires_grad = True
     
+    modelparameters(model, unfreezename="")
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     return model, processor, feature_extractor
+
+def load_featureextractor_seqmodel(model_name, tokenizer=None, cache_dir="", outputdir="", language=None, task="", freeze_feature_encoder=False, freeze_encoder=False):
+    # if model_args is None:
+    #     model_args = AudioModelArguments(model_name_or_path=model_name)
+
+    config = AutoConfig.from_pretrained(
+        model_name,
+        cache_dir=cache_dir,
+        #revision=model_args.model_revision,
+        #token=model_args.token,
+        trust_remote_code=TrustRemoteCode,
+    )#use_cache:True
+
+    #config.update({"forced_decoder_ids": model_args.forced_decoder_ids, "suppress_tokens": model_args.suppress_tokens})
+
+    # SpecAugment for whisper models
+    if getattr(config, "model_type", None) == "whisper":
+        config.update({"apply_spec_augment": False}) #model_args.apply_spec_augment
+
+    feature_extractor = AutoFeatureExtractor.from_pretrained(
+        model_name,
+        cache_dir=cache_dir,
+        #revision=model_args.model_revision,
+        #token=data_args.token,
+        trust_remote_code=TrustRemoteCode,
+    )
+
+    if tokenizer is None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            use_fast=True, #model_args.use_fast_tokenizer,
+            #revision=model_args.model_revision,
+            #token=model_args.token,
+            trust_remote_code=TrustRemoteCode,
+        )
+    # create model
+    #
+    #AutoModelForSpeechSeq2Seq
+    model = SpeechEncoderDecoderModel.from_pretrained(
+        model_name,
+        config=config,
+        cache_dir=cache_dir,
+        #revision=model_args.model_revision,
+        #token=model_args.token,
+        trust_remote_code=TrustRemoteCode,
+        ignore_mismatched_sizes=True,
+    )
+    if model.config.decoder_start_token_id is None:
+        raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
+
+
+    #if freeze_feature_encoder:
+        #model.freeze_feature_encoder()
+
+    # if freeze_encoder:
+    #     model.freeze_encoder()
+    #     model.model.encoder.gradient_checkpointing = False
+    
+    if language is not None and hasattr(tokenizer, 'set_prefix_tokens'):
+        # We only need to set the task id when the language is specified (i.e. in a multilingual setting)
+        #https://github.com/huggingface/transformers/blob/main/src/transformers/models/whisper/tokenization_whisper.py
+        tokenizer.set_prefix_tokens(language=language, task=None) #data_args.task
+    
+    feature_extractor.save_pretrained(outputdir)
+    tokenizer.save_pretrained(outputdir)
+    config.save_pretrained(outputdir)
+    #AutoProcessor
+    #processor = AutoProcessor.from_pretrained(outputdir)
+    processor = Wav2Vec2Processor.from_pretrained(outputdir)
+
+    # if SpecAugment is used for whisper models, return attention_mask to guide the mask along time axis
+    forward_attention_mask = (
+        getattr(config, "model_type", None) == "whisper"
+        and getattr(config, "apply_spec_augment", False)
+        and getattr(config, "mask_time_prob", 0) > 0
+    )
+
+    for name, param in model.named_parameters():
+        #if name.startswith("model.decoder.layers"): # choose whatever you like here
+        if "adapter" in name:
+            param.requires_grad = True
+        else:
+            param.requires_grad = False
+
+    modelparameters(model, unfreezename="")
+    #model.decoder.layers
+
+    return model, processor, feature_extractor, forward_attention_mask
 
 def loaddefaultmodel_fromname(modelname="facebook/wav2vec2-base-960h", task="audio-asr", cache_dir="./output"):
     if task == "audio-classification":
