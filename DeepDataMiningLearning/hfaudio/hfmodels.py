@@ -8,6 +8,7 @@ from transformers import (AutoConfig, AutoTokenizer, pipeline, AutoProcessor,
                             Wav2Vec2CTCTokenizer,
                             Wav2Vec2PreTrainedModel,
                             Wav2Vec2Processor,
+                            Wav2Vec2BertProcessor,
                             EvalPrediction,
                             set_seed,)
 #from transformers.models.wav2vec2.modeling_wav2vec2 import WAV2VEC2_ADAPTER_SAFE_FILE
@@ -680,20 +681,33 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
     # )
 
     # if attn adapter is defined, freeze all non-adapter weights
-    if model.config.adapter_attn_dim is not None: #16
+    if False and model.config.adapter_attn_dim is not None: #16
         model.init_adapter_layers()
         #model.load_adapter("cmn-script_simplified")
         # first we freeze the whole base model
         model.freeze_base_model()
-
         # next we unfreeze all adapter layers
         adapter_weights = model._get_adapters()
         for param in adapter_weights.values():
             param.requires_grad = True
     
     modelparameters(model, unfreezename="")
-    processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    #processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     return model, processor, feature_extractor
+
+#https://huggingface.co/docs/transformers/model_doc/speech-encoder-decoder
+def load_SpeechEncoderDecoderModel(encoder_id = "facebook/wav2vec2-base-960h", decoder_id = "bert-base-uncased", cache_dir="", outputdir="", language=None, task="", freeze_feature_encoder=False, freeze_encoder=False):
+    feature_extractor = AutoFeatureExtractor.from_pretrained(encoder_id, cache_dir=cache_dir, trust_remote_code=TrustRemoteCode,)
+    tokenizer = AutoTokenizer.from_pretrained(decoder_id, cache_dir=cache_dir, trust_remote_code=TrustRemoteCode,)
+
+    # Combine pre-trained encoder and pre-trained decoder to form a Seq2Seq model
+    model = SpeechEncoderDecoderModel.from_encoder_decoder_pretrained(encoder_id, decoder_id, cache_dir=cache_dir)
+    print(tokenizer.bos_token_id)
+    model.config.decoder_start_token_id = tokenizer.cls_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
+
+    return model, feature_extractor, tokenizer
 
 def load_featureextractor_seqmodel(model_name, tokenizer=None, cache_dir="", outputdir="", language=None, task="", freeze_feature_encoder=False, freeze_encoder=False):
     # if model_args is None:
@@ -742,6 +756,7 @@ def load_featureextractor_seqmodel(model_name, tokenizer=None, cache_dir="", out
         trust_remote_code=TrustRemoteCode,
         ignore_mismatched_sizes=True,
     )
+    
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
 
@@ -763,7 +778,8 @@ def load_featureextractor_seqmodel(model_name, tokenizer=None, cache_dir="", out
     config.save_pretrained(outputdir)
     #AutoProcessor
     #processor = AutoProcessor.from_pretrained(outputdir)
-    processor = Wav2Vec2Processor.from_pretrained(outputdir)
+    processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    #processor = Wav2Vec2Processor.from_pretrained(outputdir)
 
     # if SpecAugment is used for whisper models, return attention_mask to guide the mask along time axis
     forward_attention_mask = (

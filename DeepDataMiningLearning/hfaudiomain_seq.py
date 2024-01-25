@@ -52,14 +52,17 @@ def trainmain(args):
             
         tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
         
-        model, processor, feature_extractor, forward_attention_mask = load_featureextractor_seqmodel(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, outputdir=trainoutput, language=args.target_language, task=args.task, freeze_feature_encoder=args.freeze_feature_encoder, freeze_encoder=args.freeze_basemodel)
+        # model, processor, feature_extractor, forward_attention_mask = load_featureextractor_seqmodel(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, outputdir=trainoutput, language=args.target_language, task=args.task, freeze_feature_encoder=args.freeze_feature_encoder, freeze_encoder=args.freeze_basemodel)
         starting_epoch=0
+
+        model, processor, feature_extractor =load_featureextractor_model(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, config=None, model_args=None, gradient_checkpointing=False)
     
     # model, feature_extractor, processor, starting_epoch = \
     #     loadmodel(args.model_name_or_path, custommodel=args.custommodel, \
     #             task=args.task, id2label=id2label, label2id=label2id, \
     #             vocab_path=vocab_path, pretrained=args.pretrained, \
     #             unfreezename=args.unfreezename, freeze_feature_encoder=args.freeze_feature_encoder, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
+        
     
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values
@@ -71,6 +74,7 @@ def trainmain(args):
     
     raw_datasets = dataset_castsamplingrate(raw_datasets, sampling_rate=feature_extractor.sampling_rate, audio_column_name=task_column)
 
+    forward_attention_mask = False
     vectorized_datasets = dataset_preprocessing(raw_datasets, tokenizer, processor, task_column=task_column, target_column=target_column, max_length_seconds=args.max_length_seconds, model_input_name=model_input_name, labels=labels, data_type = args.data_type, task=args.task, forward_attention_mask=forward_attention_mask)
 
     #vectorized_datasets = filter_datasetlength(vectorized_datasets, args.min_length_seconds, args.max_length_seconds, sampling_rate=feature_extractor.sampling_rate)
@@ -246,7 +250,7 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_name_or_path', type=str, default="facebook/wav2vec2-xls-r-300m-en-to-15",
+    parser.add_argument('--model_name_or_path', type=str, default="facebook/w2v-bert-2.0",
                     help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')

@@ -165,7 +165,7 @@ def load_audiodataset(data_name, dataconfig, mycache_dir, data_type="huggingface
             text_column = "audio"
             target_column = "language" #['client_id', 'path', 'audio', 'sentence', 'age', 'gender', 'language']
         elif data_name =="common_voice": #not available
-            Train_SAMPLES = None #40000 #10000
+            Train_SAMPLES = 20000 #29000 #10000
             if Train_SAMPLES:
                 data_split=f"train[:{Train_SAMPLES}]" #"train+validation"
             else:

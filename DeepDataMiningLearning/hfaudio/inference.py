@@ -152,6 +152,35 @@ def inferenceaudiopath(data_path, task, model, usepipeline=True, feature_extract
 
     return result, outputs
 
+#https://huggingface.co/facebook/seamless-m4t-v2-large
+#eng	English
+#cmn	Mandarin Chinese
+def seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=None, device="cuda:0", cache_dir="", target_language='eng'):
+    #model_name="facebook/seamless-m4t-v2-large"
+    from transformers import AutoProcessor, SeamlessM4Tv2Model
+    import scipy
+
+    
+    model = SeamlessM4Tv2Model.from_pretrained(model_name, cache_dir=cache_dir)
+    processor = AutoProcessor.from_pretrained(model_name, cache_dir=cache_dir, use_fast = False)
+
+    model = model.to(device)
+    sample_rate = dataset[0]["audio"]["sampling_rate"]
+    audio = dataset[0]["audio"]["array"]
+
+    inputs = processor(audios=audio, sampling_rate=sample_rate, return_tensors="pt").to(device) #torch.Size([1, 314, 160])
+
+    #audio to audio
+    audio_array_from_audio = model.generate(**inputs, tgt_lang=target_language)[0].cpu().numpy().squeeze()
+
+    scipy.io.wavfile.write("./output/seamless_m4t_out.wav", rate=sample_rate, data=audio_array_from_audio) #
+
+    #audio to text
+    output_tokens = model.generate(**inputs, tgt_lang=target_language, generate_speech=False)
+    translated_text_from_audio = processor.decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
+    print(f"Translation from audio: {translated_text_from_audio}")
+
+
 #select the correct forced_bos_token_id given your choosen language id
 MAPPING = {
     "de": 250003,
@@ -171,18 +200,22 @@ MAPPING = {
     "ja": 250012,
 }
 
-def wave2vec2seq_inference(model_name, dataset, cache_dir, target_language='en'):
+def wave2vec2seq_inference(model_name, dataset, device="cuda:0", cache_dir="", target_language='en'):
     #https://huggingface.co/facebook/wav2vec2-xls-r-1b-en-to-15
     #"facebook/wav2vec2-xls-r-1b-en-to-15" "facebook/wav2vec2-xls-r-300m-en-to-15"
     #Facebook's Wav2Vec2 XLS-R fine-tuned for Speech Translation
     import torch
     from transformers import Speech2Text2Processor, SpeechEncoderDecoderModel
     model = SpeechEncoderDecoderModel.from_pretrained(model_name, cache_dir=cache_dir)
-    processor = Speech2Text2Processor.from_pretrained(model_name)#, cache_dir=cache_dir)
+    processor = Speech2Text2Processor.from_pretrained(model_name, cache_dir=cache_dir)#, use_fast = False)
     forced_bos_token = MAPPING[target_language]
 
-    inputs = processor(dataset[0]["audio"]["array"], sampling_rate=dataset[0]["audio"]["array"]["sampling_rate"], return_tensors="pt")
-    generated_ids = model.generate(input_ids=inputs["input_features"], attention_mask=inputs["attention_mask"], forced_bos_token_id=forced_bos_token)
+    model = model.to(device)
+    sample_rate = dataset[0]["audio"]["sampling_rate"]
+    audio = dataset[0]["audio"]["array"]
+
+    inputs = processor(audio, sampling_rate=sample_rate, return_tensors="pt").to(device)
+    generated_ids = model.generate(**inputs)#, forced_bos_token_id=forced_bos_token)
     transcription = processor.batch_decode(generated_ids)
     print(transcription)
 
@@ -207,7 +240,11 @@ if __name__ == "__main__":
     #raw_datasets = DatasetDict()
     #raw_datasets["train"] = dataset_test
 
-    model_name = "facebook/wav2vec2-xls-r-300m-en-to-15" #"facebook/wav2vec2-xls-r-1b-en-to-15"
-    wave2vec2seq_inference(model_name, dataset_test, cache_dir=mycache_dir, target_language='en')
+    model_name = "facebook/s2t-wav2vec2-large-en-de"#"facebook/wav2vec2-xls-r-1b-en-to-15"
+    wave2vec2seq_inference(model_name, dataset_test, cache_dir=mycache_dir, target_language='de')
+
+    seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=dataset_test, device="cuda:0", cache_dir=mycache_dir, target_language='eng')
+
+    
 
 
