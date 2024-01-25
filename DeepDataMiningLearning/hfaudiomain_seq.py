@@ -85,12 +85,12 @@ def trainmain(args):
 
     metriceval = myEvaluator(args.task, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels, processor=processor)
 
-    #data_collator = get_datacollator(processor, args.task, padding=True)
-    data_collator = DataCollatorSpeechSeq2SeqWithPadding(
-        processor=processor,
-        decoder_start_token_id=model.config.decoder_start_token_id,
-        forward_attention_mask=forward_attention_mask,
-    )
+    data_collator = get_datacollator(processor, args.task, padding=True)
+    # data_collator = DataCollatorSpeechSeq2SeqWithPadding(
+    #     processor=processor,
+    #     decoder_start_token_id=model.config.decoder_start_token_id,
+    #     forward_attention_mask=forward_attention_mask,
+    # )
 
     #['HFTrainer','CustomTrain', 'NoTrain']
     if args.trainmode == 'HFTrainer':
@@ -275,7 +275,7 @@ if __name__ == "__main__":
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
