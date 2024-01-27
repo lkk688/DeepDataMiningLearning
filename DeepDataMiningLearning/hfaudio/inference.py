@@ -180,6 +180,32 @@ def seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=N
     translated_text_from_audio = processor.decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
     print(f"Translation from audio: {translated_text_from_audio}")
 
+#https://huggingface.co/facebook/w2v-bert-2.0
+def w2vbert_inference(model_name="facebook/w2v-bert-2.0", dataset=None, device="cuda:0", cache_dir=""):
+    from transformers import AutoFeatureExtractor, AutoProcessor, Wav2Vec2BertProcessor, Wav2Vec2BertForCTC, Wav2Vec2CTCTokenizer, SeamlessM4TFeatureExtractor
+    # tokenizer = Wav2Vec2CTCTokenizer.from_pretrained("/data/rnd-liu/output/common_voice_0124seq/", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
+    # feature_extractor = SeamlessM4TFeatureExtractor.from_pretrained(model_name)
+    #processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    processor = AutoProcessor.from_pretrained(model_name, cache_dir=cache_dir)#, use_fast = False)
+
+    model = Wav2Vec2BertForCTC.from_pretrained(model_name, cache_dir=cache_dir) #vocab_size=len(tokenizer), 
+
+    model = model.to(device)
+    sample_rate = dataset[0]["audio"]["sampling_rate"]
+    audio = dataset[0]["audio"]["array"]
+    text = dataset[0]["sentence"]
+
+    inputs = processor(audio=audio, return_tensors="pt").to(device) #torch.Size([1, 314, 160])
+    textids = processor(text=text, return_tensors="pt")
+
+    # input_values = inputs.input_values.to(device)
+    # attention_mask = inputs.attention_mask.to(device)
+    with torch.no_grad():
+        outputs = model(**inputs).logits
+    
+    predicted_ids = torch.argmax(outputs, dim=-1)
+    transcription = processor.batch_decode(predicted_ids)
+    print(transcription)
 
 #select the correct forced_bos_token_id given your choosen language id
 MAPPING = {
@@ -239,6 +265,9 @@ if __name__ == "__main__":
     dataset_test = gettestdata(dataset_name, language=language, split="test", sampling_rate=16000, mycache_dir=mycache_dir, streaming=False, samples = 100, task_column="audio", target_column="sentence")
     #raw_datasets = DatasetDict()
     #raw_datasets["train"] = dataset_test
+
+    #"facebook/w2v-bert-2.0" is the basemodel
+    w2vbert_inference(model_name="hf-audio/wav2vec2-bert-CV16-en", dataset=dataset_test, device="cuda:0", cache_dir=mycache_dir)
 
     model_name = "facebook/s2t-wav2vec2-large-en-de"#"facebook/wav2vec2-xls-r-1b-en-to-15"
     wave2vec2seq_inference(model_name, dataset_test, cache_dir=mycache_dir, target_language='de')

@@ -10,8 +10,8 @@ from tqdm.auto import tqdm
 import datetime
 
 from DeepDataMiningLearning.hfaudio.hfutil import valkey, deviceenv_set, get_device
-from DeepDataMiningLearning.hfaudio.hfdata import savedict2file, load_audiodataset, getlabels_classifier, getlabels_asr, dataset_removecharacters, dataset_castsamplingrate, dataset_preprocessing, filter_datasetlength
-from DeepDataMiningLearning.hfaudio.hfmodels import loadmodel, multilingual_tokenizer, load_featureextractor_model, savemodels, load_hfcheckpoint, save_adapterweights, load_featureextractor_seqmodel
+from DeepDataMiningLearning.hfaudio.hfdata import savedict2file, load_audiodataset, getlabels_classifier, vocab_asr, dataset_removecharacters, dataset_castsamplingrate, dataset_preprocessing, filter_datasetlength
+from DeepDataMiningLearning.hfaudio.hfmodels import loadmodel, multilingual_tokenizer, load_featureextractor_model, savemodels, load_hfcheckpoint, save_adapterweights, freezemodel, load_featureextractor_seqmodel
 from DeepDataMiningLearning.hfaudio.evaluateutil import myEvaluator, evaluate_dataset
 from DeepDataMiningLearning.hfaudio.trainutil import get_datacollator, DataCollatorSpeechSeq2SeqWithPadding, get_myoptimizer
 
@@ -48,21 +48,20 @@ def trainmain(args):
     elif args.task == "audio-asr":
         if args.use_vocabpath:
             vocab_path = trainoutput #"./signalAI/"
-        #raw_datasets = getlabels_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
+            raw_datasets = vocab_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
             
-        tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
+        #tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
         
         # model, processor, feature_extractor, forward_attention_mask = load_featureextractor_seqmodel(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, outputdir=trainoutput, language=args.target_language, task=args.task, freeze_feature_encoder=args.freeze_feature_encoder, freeze_encoder=args.freeze_basemodel)
-        starting_epoch=0
-
-        model, processor, feature_extractor, starting_epoch =load_featureextractor_model(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, config=None, pretrained=args.pretrained, use_adapter=False)
+        #model, processor, feature_extractor, starting_epoch =load_featureextractor_model(args.model_name_or_path, tokenizer, cache_dir=mycache_dir, config=None, pretrained=args.pretrained, use_adapter=False)
     
-    # model, feature_extractor, processor, starting_epoch = \
-    #     loadmodel(args.model_name_or_path, custommodel=args.custommodel, \
-    #             task=args.task, id2label=id2label, label2id=label2id, \
-    #             vocab_path=vocab_path, pretrained=args.pretrained, \
-    #             unfreezename=args.unfreezename, freeze_feature_encoder=args.freeze_feature_encoder, freeze_base_model=args.freeze_basemodel, return_attention_mask=True)
-        
+    model, feature_extractor, processor, starting_epoch = \
+    loadmodel(args.model_name_or_path, custommodel=args.custommodel, \
+                task=args.task, id2label=id2label, label2id=label2id, \
+                vocab_path=vocab_path, pretrained=args.pretrained, \
+                return_attention_mask=True)
+
+    model = freezemodel(model, unfreezename=args.unfreezename, freezename="", freeze_feature_encoder=args.freeze_feature_encoder, freeze_base_model=args.freeze_basemodel, use_adapter =False)
     
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values, input_features
@@ -251,10 +250,14 @@ if __name__ == "__main__":
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
     parser.add_argument('--model_name_or_path', type=str, default="facebook/w2v-bert-2.0",
-                    help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+                    help='Model checkpoint name from HF, hf-audio/wav2vec2-bert-CV16-en, facebook/w2v-bert-2.0, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    #autotokenizer
+    parser.add_argument('--autotokenizer', default=True, action='store_true',
+                    help='If some models contains the tokenizer, autotokenizer=True means use the default buildin tokenizer')
+    parser.add_argument('--use_vocabpath', default=True, action='store_true', help='Use new vocab file')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--pretrained', type=str, default="/data/rnd-liu/output/common_voice_0125seq/epoch19_savedmodel.pth",
+    parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
     parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-asr",
@@ -265,19 +268,18 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--unfreezename', type=str, default="",
+    parser.add_argument('--unfreezename', type=str, default="adapter",
                     help='Unfreezename in models')
     parser.add_argument('--freeze_feature_encoder', default=True, action='store_true', help='Freeze the featureencoder')
     parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0125seq",
+    parser.add_argument('--traintag', type=str, default="0126w2vbert3noadapter",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
     parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
-    parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use HPC')
     parser.add_argument('--use_fp16', default=False, action='store_true',
                     help='Use HPC')
     parser.add_argument('--use_gradientcheckpoint', default=False, action='store_true',
@@ -288,10 +290,10 @@ if __name__ == "__main__":
                     help='Use Huggingface accelerator')
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
-    parser.add_argument('--gpuid', default=2, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",

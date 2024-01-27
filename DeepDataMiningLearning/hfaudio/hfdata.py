@@ -394,8 +394,16 @@ def show_random_elements(dataset, num_examples=10):
     #display(HTML(df.to_html()))
 
 import re
-def getlabels_asr(raw_datasets, task_column="audio", target_column="text", vocabpath=None): 
+def vocab_asr(raw_datasets, task_column="audio", target_column="text", vocabpath=None): 
     show_random_elements(raw_datasets["train"].remove_columns(task_column))
+
+    def remove_characters(batch):
+        #batch[target_column] = re.sub(r'[a-z]+', '', batch[target_column])# remove latin characters
+        batch[target_column] = re.sub('[^A-Za-z0-9 ]+', '', batch[target_column]) #re.sub(r'[^a-zA-Z]', '', mystring)
+        #the a-zA-Z are character ranges that indicate all the lowercase and uppercase letter, respectively, and the caret ^ at the beginning of the character class indicates negation, e.g. "anything except these".
+        return batch
+    
+    raw_datasets = raw_datasets.map(remove_characters)
 
     #remove special characters, normalize the text to only have lower case letters and append a word separator token at the end.
     #chars_to_ignore_regex = '[\,\?\.\!\-\;\:\"]'

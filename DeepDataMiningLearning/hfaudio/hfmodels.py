@@ -4,6 +4,7 @@ from transformers import (AutoConfig, AutoTokenizer, pipeline, AutoProcessor,
                             Wav2Vec2Model,
                             Wav2Vec2Config,
                             Wav2Vec2ForCTC,
+                            Wav2Vec2BertForCTC,
                             Wav2Vec2FeatureExtractor,
                             Wav2Vec2CTCTokenizer,
                             Wav2Vec2PreTrainedModel,
@@ -26,6 +27,7 @@ import json
 
 from DeepDataMiningLearning.hfaudio.hfdata import create_vocabulary_from_data
 from DeepDataMiningLearning.hfaudio.hfutil import valkey, TrustRemoteCode, logger
+from DeepDataMiningLearning.hfaudio.hfmodels_custom import MyWave2Vec2ClassificationCTC
 
 unk_token="[UNK]"
 pad_token="[PAD]"
@@ -38,14 +40,6 @@ from dataclasses import dataclass
 from transformers.file_utils import ModelOutput
 from typing import Dict, List, Optional, Union, Tuple
 
-
-
-@dataclass
-class MyModelOutput(ModelOutput):
-    loss: Optional[torch.FloatTensor] = None
-    logits: torch.FloatTensor = None
-    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-    attentions: Optional[Tuple[torch.FloatTensor]] = None
 
 @dataclass
 class AudioModelArguments:
@@ -107,208 +101,53 @@ class AudioModelArguments:
         },
     )
 
-def modelparameters(model, unfreezename=""):
+def freezemodel(model, unfreezename="", freezename="", freeze_feature_encoder=True, freeze_base_model=True, use_adapter =False):
+    model_num_parameters = model.num_parameters() / 1_000_000
+    print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
+
+    # if attn adapter is defined, freeze all non-adapter weights
+    if use_adapter and model.config.adapter_attn_dim is not None: #16
+        model.init_adapter_layers()
+        #model.load_adapter("cmn-script_simplified")
+        # first we freeze the whole base model
+        model.freeze_base_model()
+        # next we unfreeze all adapter layers
+        adapter_weights = model._get_adapters()
+        for param in adapter_weights.values():
+            param.requires_grad = True
+    else:
+        # freeze the convolutional waveform encoder
+        if hasattr(model, "freeze_feature_extractor"):#not used
+            model.freeze_feature_extractor()
+        if freeze_feature_encoder and hasattr(model, "freeze_feature_encoder"):
+            #model.freeze_feature_extractor()
+            model.freeze_feature_encoder()
+        if freeze_base_model and hasattr(model, "freeze_base_model"):
+            model.freeze_base_model()
+        modelparameters(model, unfreezename, freezename)
+    return model
+
+def modelparameters(model, unfreezename="", freezename="", unfreezehead=True):
     if unfreezename:
         for name, param in model.named_parameters():
-            if name.startswith(unfreezename): # choose whatever you like here
+            #if name.startswith(unfreezename): # choose whatever you like here
+            if unfreezename in name:
+                param.requires_grad = True
+            elif unfreezehead and 'head' in name:
                 param.requires_grad = True
             else:
                 param.requires_grad = False
+    if freezename:
+        for name, param in model.named_parameters():
+            if freezename in name:
+                param.requires_grad = False
+
     for name, param in model.named_parameters():
         print(name, param.requires_grad)
 
-class MyClassificationHead(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.dense = nn.Linear(config.hidden_size, config.hidden_size)#768
-        self.dropout = nn.Dropout(0.5) #config.final_dropout
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
-
-    #def forward(self, x):
-    def forward(self, features, **kwargs):
-        x = features
-        x = self.dropout(x)
-        x = self.dense(x)
-        x = torch.tanh(x)
-        x = self.dropout(x)
-        x = self.out_proj(x)
-        return x
-    
-#ref: https://github.com/huggingface/transformers/blob/v4.36.1/src/transformers/models/wav2vec2/modeling_wav2vec2.py#L2022
-#Wav2Vec2ForCTC
-class MyWave2Vec2ClassificationCTC(Wav2Vec2PreTrainedModel):
-    def __init__(self, config, basemodel_name, task="audio-classification", mycache_dir=None, pooling_mode='mean'):
-        super().__init__(config)
-
-        self.pooling_mode = pooling_mode#['mean', 'sum', 'max']
-        self.task = task
-        if basemodel_name.find("Wav2Vec2") and basemodel_name:
-            self.wav2vec2 = Wav2Vec2Model.from_pretrained(basemodel_name,cache_dir = mycache_dir, trust_remote_code=TrustRemoteCode) #("facebook/wav2vec2-base-960h")
-            # config = AutoConfig.from_pretrained(
-            #     pretrained_model_name_or_path=basemodel_name,
-            # )
-            # config.num_labels = num_classes #num_labels
-            # self.config = AutoConfig.from_pretrained(
-            #     basemodel_name,
-            #     num_labels=num_classes, #len(labels),
-            #     label2id=label2id,
-            #     id2label=id2label,
-            #     finetuning_task=task, #"audio-classification",
-            #     cache_dir=mycache_dir,
-            # )
-            self.config = config
-        elif config:
-            self.wav2vec2 = Wav2Vec2Model(config)
-            self.config = config
-        else:
-            print("Error in MyWave2Vec2Classification init!")
-        
-        print(self.wav2vec2.feature_extractor) #Wav2Vec2FeatureEncoder
-
-        if self.task=="audio-classification":
-            #self.classifier = nn.Linear(self.config.hidden_size, self.config.num_labels)
-            #num_classes = len(id2label)
-            self.classifier = MyClassificationHead(config=self.config)
-            self.num_labels = self.config.num_labels
-            self.init_weights()
-        elif self.task=="audio-asr":
-            self.dropout = nn.Dropout(config.final_dropout)
-            #self.target_lang = target_lang
-            print("Config vocab size:", config.vocab_size)
-            output_hidden_size = (
-                config.output_hidden_size if hasattr(config, "add_adapter") and config.add_adapter else config.hidden_size
-            )#1024
-            self.lm_head_new = nn.Linear(output_hidden_size, config.vocab_size)
-            # Initialize weights and apply final processing
-            #self.post_init()
-        
-
-
-    def freeze_feature_encoder(self):
-        """
-        Calling this function will disable the gradient computation for the feature encoder so that its parameter will
-        not be updated during training.
-        """
-        self.wav2vec2.feature_extractor._freeze_parameters()
-    
-    def freeze_base_model(self):
-        """
-        Calling this function will disable the gradient computation for the base model so that its parameters will not
-        be updated during training. Only the classification head will be updated.
-        """
-        for param in self.wav2vec2.parameters():
-            param.requires_grad = False
-    
-    def forward(
-        self,
-        input_values: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
-        output_attentions: Optional[bool] = None,
-        output_hidden_states: Optional[bool] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, TokenClassifierOutput]:
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
-            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
-            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
-            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
-        """
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict #not used
-        output_hidden_states = True if self.config.use_weighted_layer_sum else output_hidden_states
-
-        outputs = self.wav2vec2(
-            input_values, #[1, 57216]
-            attention_mask=attention_mask, #[1, 57216]
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )#Wav2Vec2BaseModelOutput last_hidden_state:torch.Size([1, 312, 768])
-        hidden_states = outputs[0] #[1, 178, 768]
-        if self.task == "audio-classification":
-            if self.pooling_mode == 'mean':
-                x = torch.mean(hidden_states, dim=1) #torch.Size([1, 768])
-            elif self.pooling_mode == 'sum':
-                x = torch.sum(hidden_states, dim=1)
-            else: #'max'
-                x = torch.max(hidden_states, dim=1)[0]
-            logits = self.classifier(x)#(hidden_states) torch.Size([1, 45])
-        elif self.task == "audio-asr":
-            hidden_states = self.dropout(hidden_states)
-            logits = self.lm_head_new(hidden_states)
-
-        loss = None
-        if labels is not None and self.task == "audio-classification":
-            if self.config.problem_type is None:
-                if self.num_labels == 1:
-                    self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-                    self.config.problem_type = "single_label_classification"
-                else:
-                    self.config.problem_type = "multi_label_classification"
-            
-            if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
-                loss = loss_fct(logits.view(-1, self.num_labels), labels)
-            elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss() #[64, 45], 64 is batchsize, 45 is number of labels' 
-                # loss = loss_fct(logits.view(-1, self.num_labels), torch.argmax(labels.view(-1, self.num_labels), axis=1))
-                loss = loss_fct(logits.view(-1, self.num_labels), labels.view(-1))
-            elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
-                loss = loss_fct(logits, labels)
-        elif labels is not None and self.task=="audio-asr":
-            r"""
-            labels (`torch.LongTensor` of shape `(batch_size, target_length)`, *optional*):
-                Labels for connectionist temporal classification. Note that `target_length` has to be smaller or equal to
-                the sequence length of the output logits. Indices are selected in `[-100, 0, ..., config.vocab_size - 1]`.
-                All labels set to `-100` are ignored (masked), the loss is only computed for labels in `[0, ...,
-                config.vocab_size - 1]`.
-            """
-            if labels.max() >= self.config.vocab_size:
-                raise ValueError(f"Label values must be <= vocab_size: {self.config.vocab_size}")
-
-            # retrieve loss input_lengths from attention_mask
-            attention_mask = (
-                attention_mask if attention_mask is not None else torch.ones_like(input_values, dtype=torch.long)
-            )
-            input_lengths = self._get_feat_extract_output_lengths(attention_mask.sum(-1)).to(torch.long)
-
-            # assuming that padded tokens are filled with -100
-            # when not being attended to
-            labels_mask = labels >= 0
-            target_lengths = labels_mask.sum(-1)
-            flattened_targets = labels.masked_select(labels_mask)
-
-            # ctc_loss doesn't support fp16
-            log_probs = nn.functional.log_softmax(logits, dim=-1, dtype=torch.float32).transpose(0, 1)
-
-            with torch.backends.cudnn.flags(enabled=False):
-                loss = nn.functional.ctc_loss(
-                    log_probs,
-                    flattened_targets,
-                    input_lengths,
-                    target_lengths,
-                    blank=self.config.pad_token_id,
-                    reduction=self.config.ctc_loss_reduction,
-                    zero_infinity=self.config.ctc_zero_infinity,
-                )
-
-        if not return_dict:
-            _HIDDEN_STATES_START_POSITION = 2
-            output = (logits,) + outputs[_HIDDEN_STATES_START_POSITION:]
-            return ((loss,) + output) if loss is not None else output
-
-        return MyModelOutput( #TokenClassifierOutput
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
 
 #https://github.com/huggingface/transformers/tree/main/src/transformers/models/wav2vec2
-def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", id2label=None, label2id=None, vocab_path=None, pretrained="", cache_dir="", unfreezename="", freeze_feature_encoder=True, freeze_base_model=True, return_attention_mask=True):
+def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", id2label=None, label2id=None, vocab_path=None, pretrained="", cache_dir="", return_attention_mask=True):
     ignore_mismatched_sizes = custommodel #when loading model, ignore size 
     if cache_dir:
         mycache_dir = cache_dir
@@ -321,14 +160,15 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     #newtokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
     #config.vocab_size:32
 
-    #Create Processor
-    processoroption1=False
-    if processoroption1==True:
-        processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+    #Create Processor with tokenizer
+    processor = None
+    if task =="audio-classification" or vocab_path is None: #processoroption1==True:
+        #processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        processor = AutoProcessor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
         feature_extractor = processor.feature_extractor
-    else:
+    else:#task =="audio-asr" create own tokenizer
         config = AutoConfig.from_pretrained(model_checkpoint, cache_dir=mycache_dir, trust_remote_code=TrustRemoteCode)#config.model_type:'wav2vec2' config.tokenizer_class=None
-        tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2'
+        tokenizer_type = config.model_type if config.tokenizer_class is None else None #'wav2vec2' 'wav2vec2-bert'
         #config = config if config.tokenizer_class is not None else None #config.tokenizer_class = None
         tokenizer_kwargs = {
             "config": config,
@@ -383,8 +223,13 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         else:
             feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0, do_normalize=True, return_attention_mask=True)
         #processor = None
-        processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+        if 'bert' in tokenizer_type:
+            processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+        else:
+            processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    #get processor
     
+    #Start to create the model
     if task == "audio-classification":
         useconfig=False #choose different options
         if custommodel: #
@@ -460,14 +305,17 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
 
             # pretrained_model = AutoModelForCTC.from_pretrained(model_checkpoint) 
             # model.load_state_dict(pretrained_model.state_dict(), strict= False)
+        elif "bert" in model_checkpoint:
+            model = Wav2Vec2BertForCTC.from_pretrained(model_checkpoint, cache_dir = mycache_dir, vocab_size=len(processor.tokenizer), add_adapter = False)
         else:
-            config = AutoConfig.from_pretrained(model_checkpoint)
-            print("Config vocab size", config.vocab_size)
+            #config = AutoConfig.from_pretrained(model_checkpoint)
+            #print("Config vocab size", config.vocab_size)
             print(len(processor.tokenizer))
             #processor.tokenizer.add_tokens("_")
             #print(len(processor.tokenizer))
             model = AutoModelForCTC.from_pretrained(
                 model_checkpoint, 
+                cache_dir = mycache_dir,
                 #ignore_mismatched_sizes=True,
                 ctc_loss_reduction="mean", 
                 pad_token_id=processor.tokenizer.pad_token_id,
@@ -477,7 +325,8 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
                 feat_proj_dropout=0.0,
                 mask_time_prob=0.05,
                 layerdrop=0.1,
-            )#The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
+            )
+            #The tokenizer's pad_token_id must be to define the model's pad_token_id or in the case of a CTC speech model also CTC's blank token
             # model = Wav2Vec2ForCTC.from_pretrained(
             #     model_checkpoint, #"facebook/wav2vec2-xls-r-300m",
             #     cache_dir = mycache_dir,
@@ -498,18 +347,6 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
         starting_epoch = checkpoint['epoch'] +1
         model.load_state_dict(checkpoint['model_state_dict'])
 
-    model_num_parameters = model.num_parameters() / 1_000_000
-    print(f"'>>> Model number of parameters: {round(model_num_parameters)}M'")
-
-    # freeze the convolutional waveform encoder
-    if hasattr(model, "freeze_feature_extractor"):#not used
-        model.freeze_feature_extractor()
-    if freeze_feature_encoder:
-        #model.freeze_feature_extractor()
-        model.freeze_feature_encoder()
-    if freeze_base_model:
-        model.freeze_base_model()
-    modelparameters(model, unfreezename)
     return model, feature_extractor, processor, starting_epoch
 
 def multilingual_tokenizer(model_name_or_path, tokenizer_name_or_path=None, mycache_dir=None, output_dir=None, datasets=None, target_column='text', target_language="en", overwrite_lang_vocab=True, overwrite_output_dir=False):
@@ -628,9 +465,9 @@ def multilingual_tokenizer(model_name_or_path, tokenizer_name_or_path=None, myca
                 )
     return tokenizer
     
-def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_args=None, gradient_checkpointing=False):
-    if model_args is None:
-        model_args = AudioModelArguments(model_name_or_path=model_name)
+def load_featureextractor_model(model_name, tokenizer, cache_dir, config, pretrained="", use_adapter=False):
+    #if model_args is None:
+    model_args = AudioModelArguments(model_name_or_path=model_name)
 
     feature_extractor = AutoFeatureExtractor.from_pretrained(
         model_args.model_name_or_path,
@@ -653,7 +490,7 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
             "mask_time_length": model_args.mask_time_length,
             "mask_feature_prob": model_args.mask_feature_prob,
             "mask_feature_length": model_args.mask_feature_length,
-            "gradient_checkpointing": gradient_checkpointing,
+            #"gradient_checkpointing": gradient_checkpointing,
             "layerdrop": model_args.layerdrop,
             "ctc_loss_reduction": model_args.ctc_loss_reduction,
             "pad_token_id": tokenizer.pad_token_id,
@@ -681,7 +518,7 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
     # )
 
     # if attn adapter is defined, freeze all non-adapter weights
-    if False and model.config.adapter_attn_dim is not None: #16
+    if use_adapter and model.config.adapter_attn_dim is not None: #16
         model.init_adapter_layers()
         #model.load_adapter("cmn-script_simplified")
         # first we freeze the whole base model
@@ -691,10 +528,21 @@ def load_featureextractor_model(model_name, tokenizer, cache_dir, config, model_
         for param in adapter_weights.values():
             param.requires_grad = True
     
-    modelparameters(model, unfreezename="")
-    processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
-    #processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
-    return model, processor, feature_extractor
+    modelparameters(model, unfreezename="", freezename="wav2vec2_bert.encoder.layers")
+
+    #pretrained
+    starting_epoch = 0
+    if pretrained:
+        checkpoint = torch.load(pretrained, map_location='cpu')
+        print("Pretrained epoch:", checkpoint['epoch'])
+        starting_epoch = checkpoint['epoch'] +1
+        model.load_state_dict(checkpoint['model_state_dict'])
+
+    if "bert" in model_name:
+        processor = Wav2Vec2BertProcessor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    else:
+        processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
+    return model, processor, feature_extractor, starting_epoch
 
 #https://huggingface.co/docs/transformers/model_doc/speech-encoder-decoder
 def load_SpeechEncoderDecoderModel(encoder_id = "facebook/wav2vec2-base-960h", decoder_id = "bert-base-uncased", cache_dir="", outputdir="", language=None, task="", freeze_feature_encoder=False, freeze_encoder=False):
