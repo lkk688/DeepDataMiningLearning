@@ -21,6 +21,8 @@ Contents
    source/linux
    source/CondaEnv
    source/HPC2
-   source/WSL2
+   source/Windows
    source/MacML
    source/detection
+   source/container
+
