@@ -75,7 +75,10 @@ Python data apps based on streamlit: [streamlittest](dataapps/streamlittest.py)
 ## Deep Learning
 Deep learning notebooks (colab link is better)
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./notebooks/CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
-* Pytorch introduction code: [CMPE-pytorch1.ipynb](./notebooks/CMPE-pytorch1.ipynb) -- [colablink](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
+* Pytorch introduction code: [colablink-2013version](https://colab.research.google.com/drive/1KZKXqa8FkaJpruUl1XzE7vjvb4pHfMoS?usp=sharing)
+   * Pytorch Introductions, Tensors, and Autograd: [colablink2014](https://colab.research.google.com/drive/1_B7F59i51IlQoZPy_v85ux2WRucIRfWo?usp=sharing)
+   * Pytorch Regression and Logistic Regression: [colablink2014](https://colab.research.google.com/drive/17KgzFzRx6BwsEC6iATLSqOczT_EwcSlb?usp=sharing)
+   * Pytorch Simple Neural Networks: [colab2014](https://colab.research.google.com/drive/1HeZT2QphKO5c2gTtE6_TqYXfDzxcsJGc?usp=sharing)
 * Tensorflow image classification:
    * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
