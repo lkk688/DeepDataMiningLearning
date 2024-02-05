@@ -34,6 +34,8 @@ The generated html files are in the folder of "build". You can also view the doc
 
 ## Python Data Analytics
 Basic python tutorials, numpy, Pandas, data visualization and EDA
+* Colab basic features: [colabfeatures](https://colab.research.google.com/notebooks/basic_features_overview.ipynb)
+* Tutorial of Colab working with external data: [colabexternaldata](https://colab.research.google.com/notebooks/io.ipynb#scrollTo=XDg9OBaYqRMd)
 * Python tutorial code: [Python_tutorial.ipynb](./Python_tutorial.ipynb)--[colablink](https://colab.research.google.com/drive/1KpLTxgvmFzSlmr486zZwfUBUt-U4-ukT?usp=sharing)
 * Python NumPy tutorial code: [Python NumPy tutorial](./Python-Numpy.ipynb)--[colablink](https://colab.research.google.com/drive/10CtxFoyTUk5RIPX4MnOOhYYe3DGAitYW?usp=sharing)
 * Data Mining introduction code: 
