@@ -79,6 +79,7 @@ Deep learning notebooks (colab link is better)
    * Pytorch Introductions, Tensors, and Autograd: [colablink](https://colab.research.google.com/drive/1_B7F59i51IlQoZPy_v85ux2WRucIRfWo?usp=sharing)
    * Pytorch Regression and Logistic Regression: [colablink](https://colab.research.google.com/drive/17KgzFzRx6BwsEC6iATLSqOczT_EwcSlb?usp=sharing)
    * Pytorch Simple Neural Networks: [colab](https://colab.research.google.com/drive/1HeZT2QphKO5c2gTtE6_TqYXfDzxcsJGc?usp=sharing)
+   * Pytorch NN modules: [pytorch_nn.ipynb](notebooks/pytorch_nn.ipynb)
 * Tensorflow image classification:
    * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
