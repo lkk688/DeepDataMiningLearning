@@ -45,7 +45,9 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
 
 Python data apps based on streamlit:
 * Streamlit tutorial: [streamlittest](dataapps/streamlittest.py)
+* Streamlit connect to data sources: [streamlitdata](https://docs.streamlit.io/knowledge-base/tutorials/databases)
 * Streamlit connect to Google Big Query: [streamlitbigquery](https://docs.streamlit.io/knowledge-base/tutorials/databases/bigquery)
+* Deploy Streamlit to Google Cloud App Engine: [streamlitappengine](https://dev.to/whitphx/how-to-deploy-streamlit-apps-to-google-app-engine-407o)
 
 ## Cloud Data Analytics
 
