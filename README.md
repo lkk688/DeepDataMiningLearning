@@ -43,7 +43,7 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
    * [Dataintro-EDA.ipynb](./notebooks/Dataintro-EDA.ipynb) --[colablink](https://colab.research.google.com/drive/191Ak-8YzdwJVuCjhFUOJ-WnV0OaDYe2f)
    * [Dataintro-Visualization.ipynb](./notebooks/Dataintro-Visualization.ipynb) --[colablink](https://colab.research.google.com/drive/1zPfz3zma_EriCKvLMShM7jsg5aR_1Cpn)
 
-Python data apps based on streamlit
+Python data apps based on streamlit:
 * Streamlit tutorial: [streamlittest](dataapps/streamlittest.py)
 * Streamlit connect to Google Big Query: [streamlitbigquery](https://docs.streamlit.io/knowledge-base/tutorials/databases/bigquery)
 
