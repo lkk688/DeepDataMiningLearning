@@ -26,6 +26,8 @@ Activate python virtual environment, you can use 'sphinx-build' command to build
 
 ```bash
    % pip install -r requirements.txt
+   % pip install nbsphinx, nbsphinx_link  #enable jupyter notebook support for Sphinx
+   % #https://pandoc.org/installing.html
    (mypy310) kaikailiu@kaikais-mbp DeepDataMiningLearning % sphinx-build docs ./docs/build
    #check the integrity of all internal and external links:
    (mypy310) kaikailiu@kaikais-mbp DeepDataMiningLearning % sphinx-build docs -W -b linkcheck -d docs/build/doctrees docs/build/html

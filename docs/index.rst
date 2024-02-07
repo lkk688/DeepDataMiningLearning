@@ -25,4 +25,5 @@ Contents
    source/MacML
    source/detection
    source/container
+   source/jupyternbs/cmpe_pytorch1
 
