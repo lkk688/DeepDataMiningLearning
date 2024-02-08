@@ -115,6 +115,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   pip install sacrebleu
   pip install nltk
   pip install rouge_score
+  pip install tiktoken
 
 Git configure
 -------------
