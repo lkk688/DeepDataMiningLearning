@@ -117,6 +117,16 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   pip install rouge_score
   pip install tiktoken
 
+PandasAI:
+.. code-block:: console
+
+  pip install pandasai
+  Uninstalling pydantic-2.5.2
+  Uninstalling Pillow-9.4.0
+  Uninstalling pandas-2.0.2
+  Uninstalling matplotlib-3.5.2
+  Successfully installed astor-0.8.1 duckdb-0.9.2 faker-19.13.0 matplotlib-3.8.2 pandas-1.5.3 pandasai-1.5.19 pillow-10.2.0 pydantic-1.10.14 python-dotenv-1.0.1 sqlalchemy-2.0.25
+
 Git configure
 -------------
 
