@@ -6,7 +6,33 @@ from pandasai.llm import OpenAI
 import matplotlib.pyplot as plt
 import os
 
+#streamlit run dataapps/streamlit_pandasai.py
+
+#Session State is a way to share variables between reruns, for each user session. In addition to the ability to store and persist state, Streamlit also exposes the ability to manipulate state using Callbacks. 
+#https://docs.streamlit.io/library/api-reference/session-state
+
 st.title("pandas-ai streamlit interface")
+
+#test senssion state:
+# Initialization
+key = 'key'
+if key not in st.session_state:
+    st.session_state[key] = 'value'
+    #st.session_state.key = 'value' # Session State also supports attribute based syntax
+
+# Read the value of an item in Session State and display it 
+st.write(st.session_state.key)
+
+# Delete a single key-value pair
+del st.session_state[key]
+
+# Delete all the items in Session state
+for key in st.session_state.keys():
+    del st.session_state[key]
+
+#Every widget with a key is automatically added to Session State:
+st.text_input("Your name", key="name")
+st.write(st.session_state.name)
 
 st.write("A demo interface for [PandasAI](https://github.com/gventuri/pandas-ai)")
 st.write(
@@ -22,6 +48,7 @@ st.write(
 #             st.session_state.df = None
 #             st.success('Saved API key for this session.')
 st.session_state.df = None
+st.session_state.prompt_history = []
 
 #if "openai_key" in st.session_state:
 #if st.session_state.df is None:
@@ -43,6 +70,7 @@ with st.form("Question"):
             smartdf = SmartDataframe(st.session_state.df, config={"llm": llm})
             #x = pandas_ai.run(, prompt=question)
             x = df.chat(question)
+            print(x)
 
             if os.path.isfile('temp_chart.png'):
                 im = plt.imread('temp_chart.png')
