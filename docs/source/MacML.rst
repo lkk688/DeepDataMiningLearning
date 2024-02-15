@@ -116,6 +116,8 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   pip install nltk
   pip install rouge_score
   pip install tiktoken
+  pip install librosa
+  huggingface-cli login #enter token
 
 PandasAI:
 .. code-block:: console

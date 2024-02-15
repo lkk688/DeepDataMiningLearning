@@ -5,7 +5,8 @@ import torch
 valkey='test'
 TrustRemoteCode=True
 
-logger = logging.getLogger(__name__)
+#creates a logger for the current module
+#logger = logging.getLogger(__name__)
 
 def get_device(gpuid='0', useamp=False):
     if torch.cuda.is_available():
