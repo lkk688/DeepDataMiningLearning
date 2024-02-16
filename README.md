@@ -57,13 +57,22 @@ Python data apps based on streamlit:
    * Google Cloud access via Colab: [colablink](https://colab.research.google.com/drive/1fmNMY23wzoQQTGoGns1cgTrjOIuj-Qtc?usp=sharing)
       * Configure Gcloud, Google Cloud Storage, Compute Engine, Colab Terminal
    * Google BigQuery with Colab/Jupyter introduction [BigQuery-intro.ipynb](./BigQuery-intro.ipynb) -- [colablink](https://colab.research.google.com/drive/1HREJs7dUZfrJaPP2wApPNtaINpe2Rtey?usp=sharing)
-      * Natality dataset and Weather data from Google BigQuery
+      * BigQuery setup, create and check BigQuery datasets
+      * Pandas EDA and visualization based on Natality dataset from BigQuery
+      * Weather data from Google BigQuery (revised based on Google's office sample), curve fitting via scipy
    * COVID19 Data EDA and Visualization based on Google BigQuery (Fall 2022 updated): [colablink](https://colab.research.google.com/drive/1y4zQl_SxA1DEbjI5XjBuxmXQrx5xI1vE?usp=sharing)
-      * COVID NYT data, COVID-19 JHU data
+      * COVID NYT data from BigQuery: prediction of CA cases via fbprophet, states with hightest cases, cases (moving average) over time curve, Heatmap of Confirmed Cases, Statewise Mask usage habits, joint data of Population from Census data, zipcode data, and impact of mask usage. 
+      * COVID-19 JHU data: case map view, top10 states, moving average, ARIMA model, save dataframe back to BigQuery
    * Additional Google BigQuery examples: [colablink](https://colab.research.google.com/drive/1eHj3g5qwzp4uhE0j0qagCLj5SBWIbuTL?usp=sharing)
       * Chicago Crime Dataset, Austin Waste Dataset, COVID Racial Dataset (race graph)
    * BigQuery ML examples: [colablink](https://colab.research.google.com/drive/1ZX5X9ryN9fq6R1Sb7kEscPaJjRGx0ft3?usp=sharing)
       * COVID, CREDIT_CARD_FRAUD, Predict penguin weight, Natality, US Census Dataset Classification, time-series forecasting from Google Analytics data
+   * BigQuery Bigframe and ML examples (2024 update): [colablink](https://colab.research.google.com/drive/1Qv9EhSUQpQsBXZsvxFg_IyeeryepQ_hE?usp=sharing)
+      * BigQuery DataFrames: bigframes
+      * Bigquery ML for supervised and unsupervised learning with SKLearn stype API
+      * Bigquery LLM for text generation, code generation (pandas api code)
+      * Text Embedding, Kmeans for text embeddings
+      * Use PaLM2 LLM model to summarize text/complaints
 
 ## Machine Learning Algorithm
 * Machine Learning introduction: 
