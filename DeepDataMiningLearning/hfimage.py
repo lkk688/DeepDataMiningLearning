@@ -38,6 +38,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
     parser.add_argument('--traintag', type=str, default="hfimage0214",
                     help='Name the current training')
+    parser.add_argument(
+        "--model_name_or_path",
+        type=str,
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
+        default="google/vit-base-patch16-224-in21k",
+    )
     parser.add_argument('--usehpc', default=True, action='store_true',
                     help='Use HPC')
     parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
@@ -73,12 +79,6 @@ def parse_args():
         type=float,
         default=0.15,
         help="Percent to split off of train for validation",
-    )
-    parser.add_argument(
-        "--model_name_or_path",
-        type=str,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
-        default="google/vit-base-patch16-224-in21k",
     )
     parser.add_argument(
         "--per_device_train_batch_size",
@@ -320,7 +320,9 @@ def main():
 
     # Prepare label mappings.
     # We'll include these in the model's config to get human readable labels in the Inference API.
-    labels = dataset["train"].features[args.label_column_name].names
+    #By default the ClassLabel fields are encoded into integers
+    classlabel = dataset["train"].features[args.label_column_name] #ClassLabel(num_classes=x, names=[''], id=None)
+    labels = classlabel.names
     label2id = {label: str(i) for i, label in enumerate(labels)}
     id2label = {str(i): label for i, label in enumerate(labels)}
 
@@ -331,6 +333,8 @@ def main():
     # }
     print(dataset["train"][0])
     print(dataset["train"][0][args.label_column_name])
+    #The Datasets library is made for processing data very easily. We can write custom functions, 
+    #which can then be applied on an entire dataset (either using .map() or .set_transform()).
 
 
     # Load pretrained model and image processor
@@ -413,6 +417,7 @@ def main():
         eval_dataset = dataset["validation"].with_transform(preprocess_val)
 
     # DataLoaders creation:
+    #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
         labels = torch.tensor([example[args.label_column_name] for example in examples])
@@ -614,6 +619,31 @@ def main():
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump(all_results, f)
 
+from PIL import Image
+import requests
+def inference():
+    url = 'https://huggingface.co/nielsr/convnext-tiny-finetuned-eurostat/resolve/main/forest.png'
+    image = Image.open(requests.get(url, stream=True).raw)
+    #show the PIL image
+    image.show()
+    #load the model
+    model = AutoModelForImageClassification.from_pretrained("nielsr/convnext-tiny-finetuned-eurostat")
+    #load the image processor
+    processor = AutoImageProcessor.from_pretrained("nielsr/convnext-tiny-finetuned-eurostat")
+    #preprocess the image
+    inputs = processor(image.convert("RGB"), return_tensors="pt")
+    print(inputs.pixel_values.shape) #torch.Size([1, 3, 224, 224])
+    #inference
+    with torch.no_grad():
+        outputs = model(**inputs)
+    #get the prediction
+    logits = outputs.logits #torch.Size([1, 10])
+    predictions = logits.argmax(dim=-1) #torch.Size([1])
+    #print the prediction
+    print(predictions)
+    predicted_class_idx = predictions[0].item() #1
+    print("Predicted class:", model.config.id2label[predicted_class_idx])
 
 if __name__ == "__main__":
+    inference()
     main()
