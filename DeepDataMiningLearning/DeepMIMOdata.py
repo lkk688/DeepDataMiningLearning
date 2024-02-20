@@ -2171,6 +2171,15 @@ if __name__ == '__main__':
     h_freq = mygenerate_OFDMchannel(h_b, tau_b, fft_size, subcarrier_spacing=60000.0, dtype=np.complex64, normalize_channel=True)
     #h_freq : [batch size, num_rx, num_rx_ant, num_tx, num_tx_ant, num_time_steps, fft_size]
     #(64, 1, 1, 1, 16, 1, 76)
+
+    h_freq_plt = h_freq[0,0,0,0,0,0] #get the last dimension: fft_size [76]
+    plt.figure()
+    plt.plot(np.real(h_freq_plt))
+    plt.plot(np.imag(h_freq_plt))
+    plt.xlabel("Subcarrier index")
+    plt.ylabel("Channel frequency response")
+    plt.legend(["Ideal (real part)", "Ideal (imaginary part)"]);
+    plt.title("Comparison of channel frequency responses");
     
     num_streams_per_tx = num_rx ##1
     STREAM_MANAGEMENT = StreamManagement(np.ones([num_rx, 1], int), num_streams_per_tx) #RX_TX_ASSOCIATION, NUM_STREAMS_PER_TX
