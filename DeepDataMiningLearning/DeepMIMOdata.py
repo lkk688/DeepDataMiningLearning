@@ -26,8 +26,7 @@ def ebnodb2no(ebno_db, num_bits_per_symbol, coderate):
         The coderate used.
 
     resource_grid : ResourceGrid
-        An (optional) instance of :class:`~sionna.ofdm.ResourceGrid`
-        for OFDM transmissions.
+        An (optional) instance for OFDM transmissions.
 
     Output
     ------
@@ -412,16 +411,16 @@ class DeepMIMODataset(Dataset):
                          self.num_paths, 
                          self.num_time_steps) #(rx=1, rx_ant=1, tx=1, tx_ant=16, paths=10, timestesp=1)
         
-        # The required path delay shape for Sionna
+        # The required path delay shape 
         self.t_shape = (self.num_rx, self.num_tx, self.num_paths) #(rx=1,tx=1,paths=10)
     
     def __getitem__(self, index):
         ue_idx = index // self.num_samples_bs
         bs_idx = index % self.num_samples_bs
-        # Generate zero vectors for the Sionna sample
+        # Generate zero vectors
         a = np.zeros(self.ch_shape, dtype=np.csingle)
         tau = np.zeros(self.t_shape, dtype=np.single)
-        # Place the DeepMIMO dataset power and delays into the channel sample for Sionna
+        # Place the DeepMIMO dataset power and delays into the channel sample
         for i_ch in range(self.num_rx): # for each receiver in the sample
             for j_ch in range(self.num_tx): # for each transmitter in the sample
                 i_ue = self.ue_idx[ue_idx][i_ch] # UE channel sample i - channel RX i_ch
@@ -501,7 +500,6 @@ def get_deepMIMOdata(scenario='O1_60', dataset_folder=r'D:\Dataset\Communication
     # The OFDM_channels parameter allows choosing between the generation of channel impulse
     # responses (if set to 0) or frequency domain channels (if set to 1).
     # It is set to 0 for this simulation, as the channel responses in frequency domain
-    # will be generated using Sionna.
     parameters['OFDM_channels'] = 0
 
     # Generate data
@@ -811,7 +809,7 @@ class PilotPattern():
 class EmptyPilotPattern(PilotPattern):
     """Creates an empty pilot pattern.
 
-    Generates a instance of :class:`~sionna.ofdm.PilotPattern` with
+    Generates a instance of :class:`PilotPattern` with
     an empty ``mask`` and ``pilots``.
 
     Parameters
@@ -1348,7 +1346,7 @@ class SymbolSource():
     Parameters
     ----------
     constellation_type : One of ["qam", "pam", "custom"], str
-        For "custom", an instance of :class:`~sionna.mapping.Constellation`
+        For "custom", an instance of :class:`Constellation`
         must be provided.
 
     num_bits_per_symbol : int
