@@ -1,6 +1,7 @@
 #https://platform.openai.com/docs/quickstart?context=python
 #pip install --upgrade openai
-#setup API key, source ~/.zshrc
+#Mac setup API key, source ~/.zshrc export OPENAI_API_KEY='your-api-key-here'
+#Windows: setx OPENAI_API_KEY "your-api-key-here"
 
 from openai import OpenAI
 client = OpenAI()

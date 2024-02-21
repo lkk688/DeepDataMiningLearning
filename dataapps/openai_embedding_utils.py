@@ -1,4 +1,6 @@
 #https://github.com/openai/openai-cookbook/blob/main/examples/utils/embeddings_utils.py
+#pip install plotly
+#pip install -U scikit-learn
 
 import textwrap as tr
 from typing import List, Optional
