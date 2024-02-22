@@ -118,6 +118,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   pip install tiktoken
   pip install librosa
   huggingface-cli login #enter token
+  pip install -U "transformers==4.38.0" --upgrade
 
 PandasAI:
 .. code-block:: console

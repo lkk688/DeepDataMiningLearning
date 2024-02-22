@@ -65,6 +65,9 @@ Python data apps based on streamlit:
       * COVID-19 JHU data: case map view, top10 states, moving average, ARIMA model, save dataframe back to BigQuery
    * Additional Google BigQuery examples: [colablink](https://colab.research.google.com/drive/1eHj3g5qwzp4uhE0j0qagCLj5SBWIbuTL?usp=sharing)
       * Chicago Crime Dataset, Austin Waste Dataset, COVID Racial Dataset (race graph)
+   * Student Samples
+      * [SFTheft dataset](https://colab.research.google.com/drive/1FC7GoFHuAClmw8GTm2bq_yxKA4qOuWbi?usp=sharing)
+      * [AirBnB dataset](https://colab.research.google.com/drive/1xiXWBFsxw2v86ACGGCLx-aB5M6B0Zb-r?usp=sharing)
    * BigQuery ML examples: [colablink](https://colab.research.google.com/drive/1ZX5X9ryN9fq6R1Sb7kEscPaJjRGx0ft3?usp=sharing)
       * COVID, CREDIT_CARD_FRAUD, Predict penguin weight, Natality, US Census Dataset Classification, time-series forecasting from Google Analytics data
    * BigQuery Bigframe and ML examples (2024 update): [colablink](https://colab.research.google.com/drive/1Qv9EhSUQpQsBXZsvxFg_IyeeryepQ_hE?usp=sharing)
