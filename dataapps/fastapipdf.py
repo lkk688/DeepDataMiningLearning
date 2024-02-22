@@ -72,9 +72,9 @@ class Chatbot():
             blob_text = ""
             processed_text = []
 
-            for t in page_text:
+            for t in page_text: #for each line
                 if t["fontsize"] == blob_font_size:
-                    blob_text += f" {t['text']}"
+                    blob_text += f" {t['text']}" #attached the second line if font is the same
                     if len(blob_text) >= 200:
                         processed_text.append({"fontsize": blob_font_size, "text": blob_text, "page": i})
                         blob_font_size = None
@@ -84,7 +84,7 @@ class Chatbot():
                         processed_text.append({"fontsize": blob_font_size, "text": blob_text, "page": i})
                     blob_font_size = t["fontsize"]
                     blob_text = t["text"]
-            paper_text += processed_text
+            paper_text += processed_text #list of dicts
         print("Done parsing paper")
         return paper_text
 
@@ -193,7 +193,8 @@ async def process_pdf(request: Request):
     chatbot = Chatbot()
     paper_text = chatbot.extract_pdf(pdf)
     df = chatbot.create_df(paper_text)
-    df = chatbot.embeddings(df)
+    #df = chatbot.embeddings(df)
+    print(df.head())
 
     # if db.get(key) is None:
     #     db.set(key, df.to_json())
@@ -236,17 +237,19 @@ async def download_pdf(url: str):
 #     print(response)
 #     return JSONResponse(content=response, status_code=200)
 
+
+#uvicorn fastapipdf:app --reload
+#DeepDataMiningLearning\dataapps> uvicorn fastapipdf:app --reload
 if __name__ == "__main__":
     # Use this for debugging purposes only
     #pdf = PdfReader(BytesIO(file))
     #use PdfReader to open a local pdf file and pass it to the extract_pdf function
-    pdf = PdfReader(r"C:/Users/lkk68/Downloads/Final%20Research%20Paper-V1.pdf")
-
-
-    chatbot = Chatbot()
-    paper_text = chatbot.extract_pdf(pdf)
-    df = chatbot.create_df(paper_text)
-    df = chatbot.embeddings(df)
+    # pdf = PdfReader(r"C:/Users/lkk68/Downloads/1706.03762.pdf")
+    # chatbot = Chatbot()
+    # paper_text = chatbot.extract_pdf(pdf)
+    # print(len(paper_text))
+    # df = chatbot.create_df(paper_text)
+    # df = chatbot.embeddings(df)
 
     import uvicorn
 
