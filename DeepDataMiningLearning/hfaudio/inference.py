@@ -15,7 +15,28 @@ def settarget_lang(model, processor, target_lang='eng'):
     processor.tokenizer.set_target_lang(target_lang) #"cmn-script_simplified"
     model.load_adapter(target_lang)
 
+#"audio-asr" "audio-classification"
+class MyAudioInference():
+    def __init__(self, model_name, task="audio-asr", device='cuda', cache_dir="./output") -> None:
+        if isinstance(model_name, str):
+            self.model, self.feature_extractor, self.tokenizer, self.processor = loaddefaultmodel_fromname(modelname=model_name, task=task, cache_dir=cache_dir)
+            self.device = device
+            self.task = task
+            self.model_name = model_name
 
+    def __call__(self, audiopath) -> torch.Any:
+        self.model=self.model.to(self.device)
+        if self.task == "audio-asr":
+            samplerate = self.feature_extractor.sampling_rate
+            transcription = asrinference_path(audiopath, self.model, samplerate=samplerate, processor=self.processor, device=self.device)
+            if isinstance(transcription, list):
+                output = ""
+                for text in transcription:
+                    output += text + " "
+            else:
+                output = transcription
+            return output
+        
 def asrinference_path(datasample, model, samplerate=16_000, processor=None, device='cuda'):
     if isinstance(datasample, str):#batch["path"] get numpyarray
         datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
@@ -27,18 +48,19 @@ def asrinference_path(datasample, model, samplerate=16_000, processor=None, devi
             datasamples.append(onespeech)
         batchdecode=True
     
+    ## Tokenize the audio
     inputs = processor(datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
     print("Input:", type(inputs))
 
-    model=model.to(device)
+    #model=model.to(device)
     inputs=inputs.to(device)
 
     with torch.no_grad():
-        outputs = model(**inputs).logits
+        outputs = model(**inputs).logits #inputs key=input_values
 
-    print("Output logits shape:", outputs.shape)
+    print("Output logits shape:", outputs.shape) #[3, 499, 32]
     if batchdecode:
-        predicted_ids = torch.argmax(outputs, dim=-1)
+        predicted_ids = torch.argmax(outputs, dim=-1) #[3, 499]
         transcription = processor.batch_decode(predicted_ids)
     else:
         ids = torch.argmax(outputs, dim=-1)[0]
@@ -245,21 +267,7 @@ def wave2vec2seq_inference(model_name, dataset, device="cuda:0", cache_dir="", t
     transcription = processor.batch_decode(generated_ids)
     print(transcription)
 
-
-if __name__ == "__main__":
-    from hfdata import gettestdata
-    from datasets import DatasetDict
-    from hfutil import deviceenv_set
-
-    USE_HPC = True
-    if USE_HPC:
-        mycache_dir = deviceenv_set(True, data_path='/data/cmpe249-fa23/Huggingfacecache')
-    else:
-        mycache_dir = "/DATA10T/Cache"
-
-    #model_name = "facebook/wav2vec2-xls-r-300m"
-    output_dir = './output'
-
+def testmain(mycache_dir, output_dir):
     dataset_name = "mozilla-foundation/common_voice_11_0"
     language = 'en'
     dataset_test = gettestdata(dataset_name, language=language, split="test", sampling_rate=16000, mycache_dir=mycache_dir, streaming=False, samples = 100, task_column="audio", target_column="sentence")
@@ -273,6 +281,45 @@ if __name__ == "__main__":
     wave2vec2seq_inference(model_name, dataset_test, cache_dir=mycache_dir, target_language='de')
 
     seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=dataset_test, device="cuda:0", cache_dir=mycache_dir, target_language='eng')
+
+from hfdata import gettestdata
+from datasets import DatasetDict
+from hfutil import deviceenv_set, download_youtube, clip_video
+import os
+# from huggingface_hub import login
+# login()
+if __name__ == "__main__":
+    
+
+    USE_HPC = False
+    USE_Windows = True
+    # if USE_HPC:
+    #     mycache_dir = deviceenv_set(True, data_path='/data/cmpe249-fa23/Huggingfacecache')
+    # elif USE_Windows:
+    #     data_path=r"D:\Cache\huggingface"
+    #     mycache_dir = deviceenv_set(True, data_path=data_path)
+    # else:
+    #     mycache_dir = "/DATA10T/Cache"
+    
+    mycache_dir= r"D:\Cache\huggingface"
+    os.environ['HF_HOME'] = mycache_dir
+    print("mycache_dir:", mycache_dir)
+
+    model_name = "facebook/wav2vec2-base-960h" #"facebook/wav2vec2-xls-r-300m"
+    output_dir = './output'
+    #testmain(mycache_dir, output_dir)
+
+    outputfolder = "data/audio"
+    clip_url = "https://www.youtube.com/watch?v=7Ood-IE7sx4"
+    filepath = os.path.join("data", "clip.mp4")
+    #filepath = download_youtube(clip_url, outputfolder=outputfolder)
+    clip_paths = clip_video(filepath=filepath, start=0, end=15, step=5, outputfolder=outputfolder)
+    print(clip_paths)
+
+    inferencemodel = MyAudioInference(model_name, task="audio-asr", device='cuda', cache_dir=mycache_dir)
+    transcript = inferencemodel(clip_paths)
+    print(transcript)
+    
 
     
 

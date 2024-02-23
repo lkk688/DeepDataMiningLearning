@@ -266,6 +266,9 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
     pip install --upgrade tqdm
     pip install --upgrade requests
     pip install --upgrade jinja2
+    pip install moviepy
+    pip install -U "transformers==4.38.1" --upgrade
+
 
 Install langchain
 
