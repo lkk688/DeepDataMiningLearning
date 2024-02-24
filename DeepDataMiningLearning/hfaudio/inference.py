@@ -17,6 +17,17 @@ def settarget_lang(model, processor, target_lang='eng'):
     processor.tokenizer.set_target_lang(target_lang) #"cmn-script_simplified"
     model.load_adapter(target_lang)
 
+def saveaudioarr2file(audioarr, filename="audio_out.wav", sample_rate=16000):
+    scipy.io.wavfile.write(filename, rate=sample_rate, data=audioarr) # audio_array_from_audio
+
+def downsamping(audio, orig_freq, new_freq):
+    # you need to convert the audio from a numpy array to a torch tensor first
+    audio = torch.tensor(audio)
+    if orig_freq != new_freq:
+        audio = torchaudio.functional.resample(audio, orig_freq=orig_freq, new_freq=new_freq)
+    return audio
+    #new_freq=model.config.sampling_rate
+
 #"audio-asr" "audio-classification"
 class MyAudioInference():
     def __init__(self, model_name, task="audio-asr", target_language='eng', device='cuda', cache_dir="./output", combineoutput=False, generative=False) -> None:
@@ -74,6 +85,7 @@ def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, targe
     
     ## Tokenize the audio
     inputs = processor(audios=datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
+    #['input_features' [1, 431, 160], 'attention_mask']
     #print("Input:", type(inputs))
 
     #model=model.to(device)
@@ -92,13 +104,19 @@ def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, targe
     else:
         #audio to text
         output_tokens = model.generate(**inputs, tgt_lang=target_language, generate_speech=False)
+        #output_tokens.keys()
+        #['sequences', 'scores', 'encoder_hidden_states', 'decoder_hidden_states', 'past_key_values']
+        print(f"Output tokens shape: {output_tokens[0].shape}")#just the 'sequences'
+        #torch.Size([1, 27])
         if batchdecode:
-            transcription = processor.batch_decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
+            #batch_decode requires a [batch_size, len] as the input, output a list
+            transcription = processor.batch_decode(output_tokens[0], skip_special_tokens=True)
         else:
+            #output_tokens[0].squeeze() is equivalent to output_tokens[0].tolist()[0]
+            ##decode requires vector as the input, string text output
             transcription = processor.decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
         print(f"Translation from audio: {transcription}")
 
-    
     return transcription
 
 from transformers import pipeline
@@ -409,7 +427,8 @@ def test_oneYoutube(model_name, mycache_dir):
     clip_paths = clip_video(filepath=filepath, start=0, end=15, step=5, outputfolder=outputfolder)
     print(clip_paths)
 
-    inferencemodel = MyAudioInference(model_name, task="audio-asr", target_language='eng', device='cuda', cache_dir=mycache_dir)
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    inferencemodel = MyAudioInference(model_name, task="audio-asr", target_language='eng', device=device, cache_dir=mycache_dir)
     transcript = inferencemodel(clip_paths, orig_sr=44100)
     print(transcript)    
 
