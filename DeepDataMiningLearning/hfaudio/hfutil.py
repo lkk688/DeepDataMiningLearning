@@ -67,7 +67,7 @@ def deviceenv_set(USE_HPC, data_path=""):
 
 #pip install moviepy
 #pip install youtube_dl
-#pip install yt-dlp
+#pip install yt-dlp #https://cheat.sh/yt-dlp
 import os
 import moviepy.editor as mp 
 def download_youtube(clip_url, outputfolder='./output'):
@@ -130,6 +130,14 @@ def save_json(json_formatted, name, outputfolder='./output'):
         json.dump(json_formatted, outfile)
     return filepath
 
+#write a python to load a json file into dictionary from json file
+def load_json(filepath):
+    #filepath = name #os.path.join(folder, name)
+    with open(filepath, 'r') as json_file:
+        json_data = json.load(json_file)
+    return json_data
+
+
 import pandas as pd 
 def download_youtube_transcript(video_id, languagecodelist=['zh-CN', 'en'], outputfolder='./output'):
     # retrieve the available transcripts
@@ -168,15 +176,30 @@ def download_youtube_transcript(video_id, languagecodelist=['zh-CN', 'en'], outp
     #         print(df.head())
     #         df.to_csv(filename, index=False)
     
+def video2audio(filepath="clip.mp4", start=1, end=20, outputfolder='./output', audiofilename='audio.mp3'):
+    clip = mp.VideoFileClip(filepath)
+    print("clip duration:", clip.duration)
+    if end > 0:
+        end = min(clip.duration, end)
+    else:
+        end = clip.duration
+    sub_clip = clip.subclip(start,end)
+    audio_clip = sub_clip.audio
+    audio_clip.write_audiofile(os.path.join(outputfolder, audiofilename))
+    audio_clip.close()
+    clip.close()
+
 
 
 def clip_video(filepath="clip.mp4", start=1, end=20, step=5, outputfolder='./output'):
     clip = mp.VideoFileClip(filepath)
     print("clip duration:", clip.duration)
-    end = min(clip.duration, end)
-    # Save the paths for later
-    clip_paths = []
+    if end > 0:
+        end = min(clip.duration, end)
+    else:
+        end = clip.duration
 
+    clip_paths = []
     # Extract Audio-only from mp4
     for i in range(start, int(end), step):
         sub_end = min(i+10, end)
@@ -186,6 +209,8 @@ def clip_video(filepath="clip.mp4", start=1, end=20, step=5, outputfolder='./out
         clip_paths.append(audiopath)
     return clip_paths
 
+
+
 if __name__ == "__main__":
     clip_url = "https://youtu.be/Sk1y1auK1xc" #"https://www.youtube.com/watch?v=yzm4gpAKrBk"
     video_id = "Sk1y1auK1xc"
@@ -193,6 +218,8 @@ if __name__ == "__main__":
     os.makedirs(outputfolder, exist_ok = True)
     outputfolder = os.path.join(outputfolder, video_id)
     os.makedirs(outputfolder, exist_ok = True)
+
+    video2audio(filepath=os.path.join(outputfolder, "clip.mp4"), start=0, end=-1, outputfolder=outputfolder, audiofilename='audio.mp3')
 
     #test_youtube_transcript(video_id, outputfolder=outputfolder)
     download_youtube_transcript(video_id, languagecodelist=['zh-CN', 'en'], outputfolder=outputfolder)

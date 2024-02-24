@@ -17,19 +17,23 @@ def settarget_lang(model, processor, target_lang='eng'):
 
 #"audio-asr" "audio-classification"
 class MyAudioInference():
-    def __init__(self, model_name, task="audio-asr", device='cuda', cache_dir="./output") -> None:
+    def __init__(self, model_name, task="audio-asr", device='cuda', cache_dir="./output", combineoutput=False) -> None:
         if isinstance(model_name, str):
             self.model, self.feature_extractor, self.tokenizer, self.processor = loaddefaultmodel_fromname(modelname=model_name, task=task, cache_dir=cache_dir)
             self.device = device
             self.task = task
             self.model_name = model_name
+        else:
+            self.model = model_name
+        self.model=self.model.to(device)
+        self.combineoutput = combineoutput
 
     def __call__(self, audiopath) -> torch.Any:
         self.model=self.model.to(self.device)
         if self.task == "audio-asr":
             samplerate = self.feature_extractor.sampling_rate
             transcription = asrinference_path(audiopath, self.model, samplerate=samplerate, processor=self.processor, device=self.device)
-            if isinstance(transcription, list):
+            if self.combineoutput and isinstance(transcription, list):
                 output = ""
                 for text in transcription:
                     output += text + " "
@@ -37,20 +41,31 @@ class MyAudioInference():
                 output = transcription
             return output
         
-def asrinference_path(datasample, model, samplerate=16_000, processor=None, device='cuda'):
+def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, processor=None, device='cuda'):
     if isinstance(datasample, str):#batch["path"] get numpyarray
         datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
+        onespeech = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
+        batchdecode=False
+    elif isinstance(datasample, np.ndarray):
+        datasamples = datasample
         batchdecode=False
     elif isinstance(datasample, list):
-        datasamples=[]
-        for sample in datasample:
-            onespeech, sampling_rate = librosa.load(sample, sr=samplerate)
-            datasamples.append(onespeech)
+        if len(datasample)> 0 and isinstance(datasample[0], np.ndarray):
+            datasamples=[]
+            for sample in datasample:
+                onespeech = librosa.resample(sample, orig_sr=orig_sr, target_sr=samplerate)
+                datasamples.append(onespeech)
+        else:
+            datasamples=[]
+            for sample in datasample:
+                onespeech, sampling_rate = librosa.load(sample, sr=samplerate)
+                onespeech = librosa.resample(onespeech, orig_sr=orig_sr, target_sr=samplerate)
+                datasamples.append(onespeech)
         batchdecode=True
     
     ## Tokenize the audio
     inputs = processor(datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
-    print("Input:", type(inputs))
+    #print("Input:", type(inputs))
 
     #model=model.to(device)
     inputs=inputs.to(device)
@@ -58,7 +73,7 @@ def asrinference_path(datasample, model, samplerate=16_000, processor=None, devi
     with torch.no_grad():
         outputs = model(**inputs).logits #inputs key=input_values
 
-    print("Output logits shape:", outputs.shape) #[3, 499, 32]
+    #print("Output logits shape:", outputs.shape) #[3, 499, 32]
     if batchdecode:
         predicted_ids = torch.argmax(outputs, dim=-1) #[3, 499]
         transcription = processor.batch_decode(predicted_ids)
@@ -284,10 +299,98 @@ def testmain(mycache_dir, output_dir):
 
 from hfdata import gettestdata
 from datasets import DatasetDict
-from hfutil import deviceenv_set, download_youtube, clip_video
+from hfutil import deviceenv_set, download_youtube, clip_video, load_json
 import os
 # from huggingface_hub import login
 # login()
+import pandas as pd
+import moviepy.editor as mp 
+def Youtube_ASR(model_name, task, device='cuda', filefolder="", language_id='en', mycache_dir='./data', Batch_size = 16, use_video=False, use_tmpfile=True):
+    #get the file list in a folder with filename ends with ".json" 
+    file_list = [f for f in os.listdir(filefolder) if (f.endswith(".json") and f.startswith(language_id))]
+    print(file_list)
+    #load the first json file
+    infofile = file_list[0] #"./output/video_info.json"
+    info_dict =load_json(os.path.join(filefolder,infofile))
+    csvpath = info_dict['csvpath']
+    df = pd.read_csv(csvpath)
+    print(df.head())
+
+    inferencemodel = MyAudioInference(model_name, task=task, device=device, cache_dir=mycache_dir)
+
+    if use_video:
+        filepath = os.path.join(filefolder, "clip.mp4")
+        clip = mp.VideoFileClip(filepath).audio
+    else:
+        filepath = os.path.join(filefolder, "audio.mp3")
+        clip = mp.AudioFileClip(filepath)
+    print("clip duration:", clip.duration)
+    audio_array_list = []
+    #for loop over each row of df and extract audio from video
+    for i, row in df.iterrows():
+        audio_obj = {}
+        start = min(row['start'], clip.duration)
+        end = min(start+ row['duration'], clip.duration)
+        print(start, end)
+        audio_obj['index'] = i
+        audio_obj['start'] = start
+        audio_obj['end'] = end
+        sub_clip = clip.subclip(start,end)
+        #convert audio in sub_clip.audio to numpy array
+        if sub_clip.duration < 0.1:
+            print(sub_clip.duration)
+            print(sub_clip.fps) #44100
+            print("Finished the clip")
+        fps=sub_clip.fps
+        if use_tmpfile == False:
+            tt = np.arange(0, sub_clip.duration, 1.0/fps)
+            print(tt.max() - tt.min(), tt.min(), tt.max())
+            audio_array = sub_clip.to_soundarray(tt=tt, buffersize=fps*15) #https://zulko.github.io/moviepy/_modules/moviepy/audio/AudioClip.html
+            print(audio_array.shape) #(455112, 2)
+            audio_array = np.transpose(audio_array) #=>(2,n)
+            #get numpy array first dimension size
+            if audio_array.shape[0]>1 and audio_array.ndim > 1:
+                audio_obj['audio_array'] = librosa.to_mono(audio_array)
+                print(audio_obj['audio_array'].shape)
+        else:
+            sub_clip.write_audiofile(os.path.join(filefolder, 'tmp.mp3'))
+            #sub_clip.close()
+            audio_obj['audio_array'] = librosa.load(os.path.join(filefolder, 'tmp.mp3'), sr=fps)[0]
+            print(audio_obj['audio_array'].shape)
+
+        #print(audio_array.dtype)
+        #print(audio_array.max())
+        #print(audio_array.min())
+        #print(audio_array.mean())
+        #print(audio_array.std())
+        audio_array_list.append(audio_obj)
+        if len(audio_array_list)>= Batch_size:
+            #run inference
+            #for loop over audio_array_list, get each audio_obj, put all the audio_obj['audio_array'] into one new list and run inference
+            audio_arrays = [audio_obj['audio_array'] for audio_obj in audio_array_list]
+            transcripts = inferencemodel(audio_arrays)
+            #write the transcripts to df
+            for j, transcript in enumerate(transcripts):
+                df_index = audio_array_list[j]['index']
+                df.loc[df_index, model_name] = transcript.lower()
+            #clear the audio_array_list
+            audio_array_list = []
+    #save df back to csv file inside of the folder of filefolder
+    df.to_csv(csvpath, index=False)
+    return df
+
+def test_oneYoutube(model_name, mycache_dir):
+    outputfolder = "data/audio"
+    clip_url = "https://www.youtube.com/watch?v=7Ood-IE7sx4"
+    filepath = os.path.join("data", "clip.mp4")
+    #filepath = download_youtube(clip_url, outputfolder=outputfolder)
+    clip_paths = clip_video(filepath=filepath, start=0, end=15, step=5, outputfolder=outputfolder)
+    print(clip_paths)
+
+    inferencemodel = MyAudioInference(model_name, task="audio-asr", device='cuda', cache_dir=mycache_dir)
+    transcript = inferencemodel(clip_paths)
+    print(transcript)    
+
 if __name__ == "__main__":
     
 
@@ -305,20 +408,16 @@ if __name__ == "__main__":
     os.environ['HF_HOME'] = mycache_dir
     print("mycache_dir:", mycache_dir)
 
-    model_name = "facebook/wav2vec2-base-960h" #"facebook/wav2vec2-xls-r-300m"
+    model_name = "facebook/wav2vec2-large-robust-ft-libri-960h" #"facebook/wav2vec2-base-960h" #"facebook/wav2vec2-xls-r-300m"
     output_dir = './output'
     #testmain(mycache_dir, output_dir)
 
-    outputfolder = "data/audio"
-    clip_url = "https://www.youtube.com/watch?v=7Ood-IE7sx4"
-    filepath = os.path.join("data", "clip.mp4")
-    #filepath = download_youtube(clip_url, outputfolder=outputfolder)
-    clip_paths = clip_video(filepath=filepath, start=0, end=15, step=5, outputfolder=outputfolder)
-    print(clip_paths)
+    video_id = "Sk1y1auK1xc"
+    filefolder = os.path.join("data", "audio", video_id)#"data\audio\Sk1y1auK1xc"
+    df = Youtube_ASR(model_name, task="audio-asr", device='cuda', filefolder=filefolder, language_id='en', mycache_dir=mycache_dir, Batch_size = 16)
+    print(df.head())
 
-    inferencemodel = MyAudioInference(model_name, task="audio-asr", device='cuda', cache_dir=mycache_dir)
-    transcript = inferencemodel(clip_paths)
-    print(transcript)
+    
     
 
     
