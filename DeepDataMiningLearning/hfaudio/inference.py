@@ -10,6 +10,8 @@ import random
 
 from DeepDataMiningLearning.hfaudio.hfdata import saveaudio_tofile
 from DeepDataMiningLearning.hfaudio.hfmodels import loaddefaultmodel_fromname
+from transformers import AutoProcessor, SeamlessM4Tv2Model
+import scipy
 
 def settarget_lang(model, processor, target_lang='eng'):
     processor.tokenizer.set_target_lang(target_lang) #"cmn-script_simplified"
@@ -17,22 +19,29 @@ def settarget_lang(model, processor, target_lang='eng'):
 
 #"audio-asr" "audio-classification"
 class MyAudioInference():
-    def __init__(self, model_name, task="audio-asr", device='cuda', cache_dir="./output", combineoutput=False) -> None:
-        if isinstance(model_name, str):
+    def __init__(self, model_name, task="audio-asr", target_language='eng', device='cuda', cache_dir="./output", combineoutput=False, generative=False) -> None:
+        self.target_language = target_language #"cmn"
+        self.cache_dir = cache_dir
+        self.device = device
+        self.task = task
+        self.model_name = model_name
+        if isinstance(model_name, str) and "wav2vec2" in model_name.lower():
             self.model, self.feature_extractor, self.tokenizer, self.processor = loaddefaultmodel_fromname(modelname=model_name, task=task, cache_dir=cache_dir)
-            self.device = device
-            self.task = task
-            self.model_name = model_name
-        else:
-            self.model = model_name
+            self.generative = False
+        elif isinstance(model_name, torch.nn.Module):
+            self.generative = generative
+        elif "seamless" in model_name.lower():
+            self.model = SeamlessM4Tv2Model.from_pretrained(model_name, cache_dir=cache_dir)
+            self.processor = AutoProcessor.from_pretrained(model_name, cache_dir=cache_dir, use_fast = False)
+            self.generative = True
         self.model=self.model.to(device)
         self.combineoutput = combineoutput
 
-    def __call__(self, audiopath) -> torch.Any:
+    def __call__(self, audiopath, orig_sr=44100) -> torch.Any:
         self.model=self.model.to(self.device)
         if self.task == "audio-asr":
-            samplerate = self.feature_extractor.sampling_rate
-            transcription = asrinference_path(audiopath, self.model, samplerate=samplerate, processor=self.processor, device=self.device)
+            samplerate = self.processor.feature_extractor.sampling_rate
+            transcription = asrinference_path(audiopath, self.model, samplerate=samplerate, processor=self.processor, orig_sr=orig_sr, target_language=self.target_language, device=self.device, generative=self.generative)
             if self.combineoutput and isinstance(transcription, list):
                 output = ""
                 for text in transcription:
@@ -41,13 +50,13 @@ class MyAudioInference():
                 output = transcription
             return output
         
-def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, processor=None, device='cuda'):
+def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, target_language='eng', processor=None, device='cuda', generative=False):
     if isinstance(datasample, str):#batch["path"] get numpyarray
         datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
-        onespeech = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
+        # datasamples = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
         batchdecode=False
     elif isinstance(datasample, np.ndarray):
-        datasamples = datasample
+        datasamples = librosa.resample(datasample, orig_sr=orig_sr, target_sr=samplerate)
         batchdecode=False
     elif isinstance(datasample, list):
         if len(datasample)> 0 and isinstance(datasample[0], np.ndarray):
@@ -59,27 +68,37 @@ def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, proce
             datasamples=[]
             for sample in datasample:
                 onespeech, sampling_rate = librosa.load(sample, sr=samplerate)
-                onespeech = librosa.resample(onespeech, orig_sr=orig_sr, target_sr=samplerate)
+                # onespeech = librosa.resample(onespeech, orig_sr=orig_sr, target_sr=samplerate)
                 datasamples.append(onespeech)
         batchdecode=True
     
     ## Tokenize the audio
-    inputs = processor(datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
+    inputs = processor(audios=datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
     #print("Input:", type(inputs))
 
     #model=model.to(device)
     inputs=inputs.to(device)
 
-    with torch.no_grad():
-        outputs = model(**inputs).logits #inputs key=input_values
-
-    #print("Output logits shape:", outputs.shape) #[3, 499, 32]
-    if batchdecode:
-        predicted_ids = torch.argmax(outputs, dim=-1) #[3, 499]
-        transcription = processor.batch_decode(predicted_ids)
+    if generative is False:
+        with torch.no_grad():
+            outputs = model(**inputs).logits #inputs key=input_values
+        #print("Output logits shape:", outputs.shape) #[3, 499, 32]
+        if batchdecode:
+            predicted_ids = torch.argmax(outputs, dim=-1) #[3, 499]
+            transcription = processor.batch_decode(predicted_ids)
+        else:
+            ids = torch.argmax(outputs, dim=-1)[0]
+            transcription = processor.decode(ids)
     else:
-        ids = torch.argmax(outputs, dim=-1)[0]
-        transcription = processor.decode(ids)
+        #audio to text
+        output_tokens = model.generate(**inputs, tgt_lang=target_language, generate_speech=False)
+        if batchdecode:
+            transcription = processor.batch_decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
+        else:
+            transcription = processor.decode(output_tokens[0].tolist()[0], skip_special_tokens=True)
+        print(f"Translation from audio: {transcription}")
+
+    
     return transcription
 
 from transformers import pipeline
@@ -192,20 +211,21 @@ def inferenceaudiopath(data_path, task, model, usepipeline=True, feature_extract
 #https://huggingface.co/facebook/seamless-m4t-v2-large
 #eng	English
 #cmn	Mandarin Chinese
-def seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=None, device="cuda:0", cache_dir="", target_language='eng'):
+def seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=None, audio_np=None, sr_sampling_rate=16000, device="cuda:0", cache_dir="", target_language='eng'):
     #model_name="facebook/seamless-m4t-v2-large"
-    from transformers import AutoProcessor, SeamlessM4Tv2Model
-    import scipy
+    
 
     
     model = SeamlessM4Tv2Model.from_pretrained(model_name, cache_dir=cache_dir)
     processor = AutoProcessor.from_pretrained(model_name, cache_dir=cache_dir, use_fast = False)
 
     model = model.to(device)
-    sample_rate = dataset[0]["audio"]["sampling_rate"]
-    audio = dataset[0]["audio"]["array"]
-
-    inputs = processor(audios=audio, sampling_rate=sample_rate, return_tensors="pt").to(device) #torch.Size([1, 314, 160])
+    if audio_np is not None:
+        inputs = processor(audios=audio_np, sampling_rate=sr_sampling_rate, return_tensors="pt").to(device) 
+    else:
+        sample_rate = dataset[0]["audio"]["sampling_rate"]
+        audio = dataset[0]["audio"]["array"]
+        inputs = processor(audios=audio, sampling_rate=sample_rate, return_tensors="pt").to(device) #torch.Size([1, 314, 160])
 
     #audio to audio
     audio_array_from_audio = model.generate(**inputs, tgt_lang=target_language)[0].cpu().numpy().squeeze()
@@ -297,9 +317,11 @@ def testmain(mycache_dir, output_dir):
 
     seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=dataset_test, device="cuda:0", cache_dir=mycache_dir, target_language='eng')
 
-from hfdata import gettestdata
+    
+
+from DeepDataMiningLearning.hfaudio.hfdata import gettestdata
 from datasets import DatasetDict
-from hfutil import deviceenv_set, download_youtube, clip_video, load_json
+from DeepDataMiningLearning.hfaudio.hfutil import deviceenv_set, download_youtube, clip_video, load_json
 import os
 # from huggingface_hub import login
 # login()
@@ -387,8 +409,8 @@ def test_oneYoutube(model_name, mycache_dir):
     clip_paths = clip_video(filepath=filepath, start=0, end=15, step=5, outputfolder=outputfolder)
     print(clip_paths)
 
-    inferencemodel = MyAudioInference(model_name, task="audio-asr", device='cuda', cache_dir=mycache_dir)
-    transcript = inferencemodel(clip_paths)
+    inferencemodel = MyAudioInference(model_name, task="audio-asr", target_language='eng', device='cuda', cache_dir=mycache_dir)
+    transcript = inferencemodel(clip_paths, orig_sr=44100)
     print(transcript)    
 
 if __name__ == "__main__":
@@ -407,6 +429,10 @@ if __name__ == "__main__":
     mycache_dir= r"D:\Cache\huggingface"
     os.environ['HF_HOME'] = mycache_dir
     print("mycache_dir:", mycache_dir)
+    model_name = "facebook/seamless-m4t-v2-large"
+    test_oneYoutube(model_name, mycache_dir)
+
+    
 
     model_name = "facebook/wav2vec2-large-robust-ft-libri-960h" #"facebook/wav2vec2-base-960h" #"facebook/wav2vec2-xls-r-300m"
     output_dir = './output'

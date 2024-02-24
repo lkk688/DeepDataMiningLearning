@@ -268,6 +268,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
     pip install --upgrade jinja2
     pip install moviepy
     pip install -U "transformers==4.38.1" --upgrade
+    pip install sentencepiece
 
 
 Install langchain
@@ -284,3 +285,9 @@ Install langchain
     pip install pdf2image
     pip install pdfminer
     pip install pdfminer.six
+
+Windows CMD command line:
+
+.. code-block:: console
+
+    tar -xf archive.zip #unzip a file
