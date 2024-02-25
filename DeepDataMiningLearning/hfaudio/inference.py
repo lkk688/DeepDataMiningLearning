@@ -13,6 +13,15 @@ from DeepDataMiningLearning.hfaudio.hfmodels import loaddefaultmodel_fromname
 from transformers import AutoProcessor, SeamlessM4Tv2Model
 import scipy
 
+from DeepDataMiningLearning.hfaudio.hfdata import gettestdata
+from datasets import DatasetDict
+from DeepDataMiningLearning.hfaudio.hfutil import deviceenv_set, download_youtube, clip_video, load_json, get_device
+import os
+# from huggingface_hub import login
+# login()
+import pandas as pd
+import moviepy.editor as mp 
+
 def settarget_lang(model, processor, target_lang='eng'):
     processor.tokenizer.set_target_lang(target_lang) #"cmn-script_simplified"
     model.load_adapter(target_lang)
@@ -30,10 +39,11 @@ def downsamping(audio, orig_freq, new_freq):
 
 #"audio-asr" "audio-classification"
 class MyAudioInference():
-    def __init__(self, model_name, task="audio-asr", target_language='eng', device='cuda', cache_dir="./output", combineoutput=False, generative=False) -> None:
+    def __init__(self, model_name, task="audio-asr", target_language='eng', cache_dir="./output", gpuid='0', combineoutput=False, generative=False) -> None:
         self.target_language = target_language #"cmn"
         self.cache_dir = cache_dir
-        self.device = device
+        #self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device, useamp = get_device(gpuid=gpuid, useamp=False)
         self.task = task
         self.model_name = model_name
         if isinstance(model_name, str) and "wav2vec2" in model_name.lower():
@@ -45,14 +55,21 @@ class MyAudioInference():
             self.model = SeamlessM4Tv2Model.from_pretrained(model_name, cache_dir=cache_dir)
             self.processor = AutoProcessor.from_pretrained(model_name, cache_dir=cache_dir, use_fast = False)
             self.generative = True
-        self.model=self.model.to(device)
+        self.model=self.model.to(self.device)
         self.combineoutput = combineoutput
+        self.languagedicts = {"English": "eng", "Chinese": "cmn", "Japanese": "jpn", "Korean": "kor", "French": "fra", "German": "deu", "Spanish": "spa", "Italian": "ita", "Portuguese": "por", "Russian": "rus", "Vietnamese": "vie", "Cantonese": "yue", "Tagalog": "tgl"}
+        self.lanaguage_list = list(self.languagedicts.keys())
+
+    def settarget_lang(self, target_lang='English'):
+        self.target_language = self.languagedicts[target_lang] #"
+        print("Updated target language:", self.target_language)
 
     def __call__(self, audiopath, orig_sr=44100) -> torch.Any:
         self.model=self.model.to(self.device)
+
         if self.task == "audio-asr":
             samplerate = self.processor.feature_extractor.sampling_rate
-            transcription = asrinference_path(audiopath, self.model, samplerate=samplerate, processor=self.processor, orig_sr=orig_sr, target_language=self.target_language, device=self.device, generative=self.generative)
+            transcription = asrinference_path(audiopath, self.model, samplerate=samplerate, processor=self.processor, orig_sr=orig_sr, src_lang=None, tgt_lang=self.target_language, device=self.device, generative=self.generative)
             if self.combineoutput and isinstance(transcription, list):
                 output = ""
                 for text in transcription:
@@ -61,7 +78,7 @@ class MyAudioInference():
                 output = transcription
             return output
         
-def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, target_language='eng', processor=None, device='cuda', generative=False):
+def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, src_lang=None, tgt_lang='eng', processor=None, device='cuda', generative=False):
     if isinstance(datasample, str):#batch["path"] get numpyarray
         datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
         # datasamples = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
@@ -84,7 +101,15 @@ def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, targe
         batchdecode=True
     
     ## Tokenize the audio
-    inputs = processor(audios=datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
+    if generative is False:
+        #https://github.com/huggingface/transformers/blob/main/src/transformers/models/wav2vec2/processing_wav2vec2.py 
+        #(audio->feature_extractor, text->tokenizer)
+        inputs = processor(audio=datasamples, sampling_rate=samplerate, return_tensors="pt", padding=True)
+    else: #Seamless
+        #https://github.com/huggingface/transformers/blob/main/src/transformers/models/seamless_m4t/processing_seamless_m4t.py
+        #audios->feature_extractor
+        #text->tokenizer (tgt_lang, src_lang)
+        inputs = processor(audios=datasamples, src_lang=src_lang, tgt_lang=tgt_lang, sampling_rate=samplerate, return_tensors="pt", padding=True)
     #['input_features' [1, 431, 160], 'attention_mask']
     #print("Input:", type(inputs))
 
@@ -101,9 +126,9 @@ def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, targe
         else:
             ids = torch.argmax(outputs, dim=-1)[0]
             transcription = processor.decode(ids)
-    else:
+    else: #Seamless model
         #audio to text
-        output_tokens = model.generate(**inputs, tgt_lang=target_language, generate_speech=False)
+        output_tokens = model.generate(**inputs, tgt_lang=tgt_lang, generate_speech=False)
         #output_tokens.keys()
         #['sequences', 'scores', 'encoder_hidden_states', 'decoder_hidden_states', 'past_key_values']
         print(f"Output tokens shape: {output_tokens[0].shape}")#just the 'sequences'
@@ -336,15 +361,6 @@ def testmain(mycache_dir, output_dir):
     seamlessm4t_inference(model_name="facebook/seamless-m4t-v2-large", dataset=dataset_test, device="cuda:0", cache_dir=mycache_dir, target_language='eng')
 
     
-
-from DeepDataMiningLearning.hfaudio.hfdata import gettestdata
-from datasets import DatasetDict
-from DeepDataMiningLearning.hfaudio.hfutil import deviceenv_set, download_youtube, clip_video, load_json
-import os
-# from huggingface_hub import login
-# login()
-import pandas as pd
-import moviepy.editor as mp 
 def Youtube_ASR(model_name, task, device='cuda', filefolder="", language_id='en', mycache_dir='./data', Batch_size = 16, use_video=False, use_tmpfile=True):
     #get the file list in a folder with filename ends with ".json" 
     file_list = [f for f in os.listdir(filefolder) if (f.endswith(".json") and f.startswith(language_id))]
