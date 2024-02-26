@@ -37,6 +37,41 @@ def downsamping(audio, orig_freq, new_freq):
     return audio
     #new_freq=model.config.sampling_rate
 
+def preprocess_audio(datasample, samplerate=16_000, orig_sr=44100, maxseconds=10):
+    if isinstance(datasample, str):#batch["path"] get numpyarray
+        datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
+        # datasamples = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
+        batchdecode=False
+    elif isinstance(datasample, np.ndarray):
+        if datasample.ndim>1: #stereo
+            #print(datasample.shape) 
+            #(455112, 2)
+            if datasample.shape[0]>2 and datasample.shape[0]>datasample.shape[1]:
+                datasample = np.transpose(datasample) #=>(2,n)
+            audio_array = librosa.to_mono(datasample)
+        else:
+            audio_array = datasample
+        datasamples = librosa.resample(audio_array, orig_sr=orig_sr, target_sr=samplerate)
+        batchdecode=False
+    elif isinstance(datasample, list):
+        if len(datasample)> 0 and isinstance(datasample[0], np.ndarray):
+            datasamples=[]
+            for sample in datasample:
+                onespeech = librosa.resample(sample, orig_sr=orig_sr, target_sr=samplerate)
+                datasamples.append(onespeech)
+        else:
+            datasamples=[]
+            for sample in datasample:
+                onespeech, sampling_rate = librosa.load(sample, sr=samplerate)
+                # onespeech = librosa.resample(onespeech, orig_sr=orig_sr, target_sr=samplerate)
+                datasamples.append(onespeech)
+        batchdecode=True
+    #cut the numpy array based on maximum allowable length
+    if len(datasamples) > maxseconds * samplerate:
+        datasamples = datasamples[:maxseconds * samplerate]
+    datasamples = torch.tensor(datasamples)
+    return datasamples, sampling_rate, batchdecode
+
 #"audio-asr" "audio-classification"
 class MyAudioInference():
     def __init__(self, model_name, task="audio-asr", target_language='eng', cache_dir="./output", gpuid='0', combineoutput=False, generative=False) -> None:
@@ -79,26 +114,7 @@ class MyAudioInference():
             return output
         
 def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, src_lang=None, tgt_lang='eng', processor=None, device='cuda', generative=False):
-    if isinstance(datasample, str):#batch["path"] get numpyarray
-        datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
-        # datasamples = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
-        batchdecode=False
-    elif isinstance(datasample, np.ndarray):
-        datasamples = librosa.resample(datasample, orig_sr=orig_sr, target_sr=samplerate)
-        batchdecode=False
-    elif isinstance(datasample, list):
-        if len(datasample)> 0 and isinstance(datasample[0], np.ndarray):
-            datasamples=[]
-            for sample in datasample:
-                onespeech = librosa.resample(sample, orig_sr=orig_sr, target_sr=samplerate)
-                datasamples.append(onespeech)
-        else:
-            datasamples=[]
-            for sample in datasample:
-                onespeech, sampling_rate = librosa.load(sample, sr=samplerate)
-                # onespeech = librosa.resample(onespeech, orig_sr=orig_sr, target_sr=samplerate)
-                datasamples.append(onespeech)
-        batchdecode=True
+    preprocess_audio(datasample, samplerate=samplerate, orig_sr=orig_sr, maxseconds=10)
     
     ## Tokenize the audio
     if generative is False:
