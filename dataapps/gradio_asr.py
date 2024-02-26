@@ -21,6 +21,7 @@ lanaguage_list=inferencemodel.lanaguage_list
 #The transcribe function takes a single parameter, audio, which is a numpy array of the audio the user recorded. 
 #The pipeline object expects this in float32 format, so we convert it first to float32, and then extract the transcribed text.
 def transcribe(audio):
+    print(audio)
     sr, y = audio
     print("Sampling rate:",sr)
     y = y.astype(np.float32)
@@ -37,7 +38,8 @@ def update(name, options, radio):
     print(options)
     print(radio)
     target_language = options
-    inferencemodel.target_language = options
+    #inferencemodel.target_language = options
+    inferencemodel.settarget_lang(options)
     return f"Welcome {name}, you have chosen task {radio} and target language {options}!"
 
 with gr.Blocks() as demo:
@@ -83,4 +85,5 @@ with gr.Blocks() as demo:
 if __name__ == "__main__":
     demo.launch()
 #demo.launch()
+#share=True
 #demo.launch(server_name="localhost")
