@@ -699,7 +699,7 @@ def save_adapterweights(model, target_language, output_dir):
 
 def load_hfcheckpoint(checkpoint_dir, overwrite_output_dir=False):
     last_checkpoint = None
-    if os.path.isdir(checkpoint_dir) and not overwrite_output_dir:
+    if checkpoint_dir is not None and os.path.isdir(checkpoint_dir) and not overwrite_output_dir:
         last_checkpoint = get_last_checkpoint(checkpoint_dir)
         if last_checkpoint is None and len(os.listdir(checkpoint_dir)) > 0:
             raise ValueError(

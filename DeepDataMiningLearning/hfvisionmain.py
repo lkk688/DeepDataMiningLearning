@@ -5,14 +5,14 @@ import logging
 import math
 import os
 from pathlib import Path
-
+import datetime
 import datasets
 import evaluate
 import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
-from datasets import load_dataset
+from datasets import load_dataset, DatasetDict
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from torchvision.transforms import (
@@ -26,51 +26,137 @@ from torchvision.transforms import (
     ToTensor,
 )
 from tqdm.auto import tqdm
-
-import transformers
+import numpy as np
+from sklearn.metrics import classification_report
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, SchedulerType, get_scheduler
-
+from transformers import DefaultDataCollator, Trainer, TrainingArguments
 from DeepDataMiningLearning.hfaudio.hfutil import deviceenv_set, get_device
 
 logger = get_logger(__name__)
 
+#The PYTORCH_USE_CUDA_DSA environment variable is used to enable the use of the CUDA Direct Storage API (DSA) in PyTorch. DSA is a new API that allows PyTorch to directly access data on the GPU without having to copy it to the CPU first.
+os.environ["PYTORCH_USE_CUDA_DSA"] = "1"
+
+class myEvaluator:
+    def __init__(self, task, useHFevaluator=False, dualevaluator=False, labels=None, processor=None, mycache_dir=None):
+        print("useHFevaluator:", useHFevaluator)
+        print("dualevaluator:", dualevaluator)
+        self.useHFevaluator = useHFevaluator
+        self.dualevaluator = dualevaluator
+        self.task = task
+        self.preds = []
+        self.refs = []
+        self.labels = labels
+        self.processor = processor
+        self.HFmetric = None
+        if self.task == "image-classification":
+            self.metricname = "accuracy" #"mse" "wer"
+        else:
+            self.metricname = "accuracy"
+        self.LOmetric = None
+        if self.useHFevaluator:
+            # Load the accuracy metric from the datasets package
+            self.HFmetric = evaluate.load(self.metricname, cache_dir=mycache_dir) #evaluate.load("mse")
+
+    # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
+    # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
+    #eval_pred is EvalPrediction type
+    def compute_metrics(self, eval_pred): #: EvalPrediction):
+        #preds = eval_pred.predictions[0] if isinstance(eval_pred.predictions, tuple) else eval_pred.predictions #(1000, 593, 46)
+        preds, labels = eval_pred
+        if self.metricname == "accuracy":
+            """Computes accuracy on a batch of predictions"""
+            preds = np.argmax(preds, axis=1)
+            #return self.HFmetric.compute(predictions=predictions, references=labels)
+        elif self.metricname == "mse":
+            preds = np.squeeze(preds)
+            #return self.HFmetric.compute(predictions=preds, references=label_ids)
+        return self.compute(predictions=preds, references=labels)
+
+    def mycompute(self, predictions=None, references=None):
+        predictions = np.array(predictions)
+        references = np.array(references)
+        if self.metricname == "accuracy":
+            eval_result = (predictions == references).astype(np.float32).mean().item()
+            # if self.labels:
+            #     print("Classification report", classification_report(references, predictions, target_names=self.labels))
+        elif self.metricname == "mse": #mse
+            eval_result = ((predictions - references) ** 2).mean().item()
+        results = {self.metricname: eval_result}
+        return results
+    
+    def compute(self, predictions=None, references=None):
+        results = {}
+        if predictions is not None and references is not None:
+            if self.useHFevaluator:
+                results = self.HFmetric.compute(predictions=predictions, references=references)
+            else: 
+                results = self.mycompute(predictions=predictions, references=references)
+            #print("HF evaluator:", results)
+            if not isinstance(results, dict):
+                #output is float, convert to dict
+                results = {self.metricname: results}
+        else: #evaluate the whole dataset
+            if self.useHFevaluator:
+                results = self.HFmetric.compute()
+                print("HF evaluator result1:", results)
+                results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
+                print("HF evaluator result2:", results2)
+                if not isinstance(results, dict):
+                    #wer output is float, convert to dict
+                    results = {self.metricname: results}
+            else:
+                results = self.mycompute(predictions=self.preds, references=self.refs)
+            self.preds.clear()
+            self.refs.clear()
+        return results
+    
+    def add_batch(self, predictions, references):
+        if self.useHFevaluator == True:
+            self.HFmetric.add_batch(predictions=predictions, references=references)
+        #self.preds.append(predictions)
+        self.refs.extend(references)
+        self.preds.extend(predictions)
+        #references: list of list
+        # for ref in references:
+        #     self.refs.append(ref[0])
+        #print(len(self.refs))
+
+# from huggingface_hub import login
+# login()
+#huggingface-cli login
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
-    parser.add_argument('--traintag', type=str, default="hfimage0214",
+    parser.add_argument('--traintag', type=str, default="hfimage0226",
                     help='Name the current training')
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    #vocab_path
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        help="Path to pretrained model or model identifier from huggingface.co/models.",
         default="google/vit-base-patch16-224-in21k",
+        help="Path to pretrained model or model identifier from huggingface.co/models: google/vit-base-patch16-224-in21k, ",
     )
     parser.add_argument('--usehpc', default=True, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--data_name', type=str, default="beans",
-                    help='data name: ')
-    parser.add_argument('--dataconfig', type=str, default='en',
-                    help='dataset_config_name, e.g., common_voice subset en, zh-CN')
+    parser.add_argument('--task', type=str, default="image-classification",
+                    help='tasks: image-classification')
+    parser.add_argument('--data_name', type=str, default="food101",
+                    help='data name: food101, beans')
+    parser.add_argument('--datasplit', type=str, default='train',
+                    help='dataset split name in huggingface dataset')
     parser.add_argument("--train_dir", type=str, default=None, help="A folder containing the training data.")
     parser.add_argument("--validation_dir", type=str, default=None, help="A folder containing the validation data.")
     parser.add_argument(
         "--max_train_samples",
         type=int,
-        default=None,
+        default=2000,
         help=(
             "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        ),
-    )
-    parser.add_argument(
-        "--max_eval_samples",
-        type=int,
-        default=None,
-        help=(
-            "For debugging purposes or quicker training, truncate the number of evaluation examples to this "
             "value if set."
         ),
     )
@@ -83,13 +169,13 @@ def parse_args():
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=8,
+        default=16,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument(
         "--per_device_eval_batch_size",
         type=int,
-        default=8,
+        default=16,
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(
@@ -99,7 +185,7 @@ def parse_args():
         help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--num_train_epochs", type=int, default=3, help="Total number of training epochs to perform.")
+    parser.add_argument("--num_train_epochs", type=int, default=20, help="Total number of training epochs to perform.")
     parser.add_argument(
         "--max_train_steps",
         type=int,
@@ -223,6 +309,135 @@ def pushtohub(hub_model_id, output_dir, hub_token):
         if "epoch_*" not in gitignore:
             gitignore.write("epoch_*\n")
 
+valkey='test' #"validation"
+#data_name list: food101, 
+def load_visiondataset(data_name=None, split="train", train_dir=None, validation_dir=None, max_train_samples = 2000, train_val_split=0.15, \
+                       image_column_name='image', label_column_name='labels', mycache_dir=None):
+    if data_name is not None:
+        if max_train_samples and split is not None:
+            data_split=f"{split}[:{max_train_samples}]" #"train+validation"
+        elif split is not None:
+            data_split=f"{split}"
+        else:
+            data_split=None
+        # Downloading and loading a dataset from the hub.
+        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir)
+        # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
+        # https://huggingface.co/docs/datasets/loading_datasets.html.)
+    else:
+        data_files = {}
+        if train_dir is not None:
+            data_files["train"] = os.path.join(train_dir, "**")
+        if validation_dir is not None:
+            data_files[valkey] = os.path.join(validation_dir, "**")
+        raw_datasets = load_dataset(
+            "imagefolder",
+            data_files=data_files,
+        )
+        # See more about loading custom images at
+        # https://huggingface.co/docs/datasets/v2.0.0/en/image_process#imagefolder.
+    #splits=raw_datasets.split
+    # print(raw_datasets.columns)
+    # If we don't have a validation split, split off a percentage of train as validation.
+    #args.train_val_split = None if "validation" in dataset.keys() else args.train_val_split
+    split_datasets = DatasetDict()
+    if isinstance(raw_datasets.column_names, dict):#'train' 'test' key
+        print("All keys in raw datasets:", raw_datasets['train']) #
+        if valkey not in raw_datasets.keys():
+            split = raw_datasets["train"].train_test_split(test_size=train_val_split, seed=20)
+            split_datasets["train"] = split["train"]
+            split_datasets[valkey] = split["test"]
+        else:
+            split_datasets = raw_datasets
+    else: #no train/test split
+        split_datasets["train"] = raw_datasets
+        split_datasets = split_datasets["train"].train_test_split(test_size=train_val_split, seed=20) #get splits
+        if valkey!="test":
+            # rename the "test" key to "validation" 
+            split_datasets[valkey] = split_datasets.pop("test")
+
+    #limit the dataset size
+    if len(split_datasets['train'])>max_train_samples:
+        split_datasets['train'] = split_datasets['train'].select([i for i in list(range(max_train_samples))])
+        Val_SAMPLES = int(max_train_samples*train_val_split)
+        split_datasets[valkey] = split_datasets[valkey].select([i for i in list(range(Val_SAMPLES))])
+    
+    dataset_column_names = split_datasets["train"].column_names if "train" in split_datasets else split_datasets[valkey].column_names
+    #'image': PIL image object, 'labels': int, 'image_file_path': path
+    #some datset the labels name is different
+    if data_name == "food101": #https://huggingface.co/datasets/food101
+        image_column_name = "image"
+        label_column_name = "label"
+
+    if image_column_name not in dataset_column_names:
+        raise ValueError(
+            f"--image_column_name {image_column_name} not found in dataset '{data_name}'. "
+            "Make sure to set `--image_column_name` to the correct audio column - one of "
+            f"{', '.join(dataset_column_names)}."
+        )
+    if label_column_name not in dataset_column_names:
+        raise ValueError(
+            f"--label_column_name {label_column_name} not found in dataset '{data_name}'. "
+            "Make sure to set `--label_column_name` to the correct text column - one of "
+            f"{', '.join(dataset_column_names)}."
+        )
+    
+    # Prepare label mappings.
+    # We'll include these in the model's config to get human readable labels in the Inference API.
+    #By default the ClassLabel fields are encoded into integers
+    classlabel = split_datasets["train"].features[label_column_name] #ClassLabel(num_classes=x, names=[''], id=None)
+    labels = classlabel.names
+    label2id = {label: str(i) for i, label in enumerate(labels)}
+    id2label = {str(i): label for i, label in enumerate(labels)}
+
+    #add testing code to fetch one sample data from dataset and print the shape of data
+    # {
+    #     "image": "train/cat/00000.png",
+    #     "label": 0
+    # }
+    #print(split_datasets["train"][0])
+    print(split_datasets["train"][0][label_column_name])
+    #The Datasets library is made for processing data very easily. We can write custom functions, 
+    #which can then be applied on an entire dataset (either using .map() or .set_transform()).
+    return split_datasets, labels, image_column_name, label_column_name
+
+
+def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
+    if load_only:#only load the model
+        ignore_mismatched_sizes = False
+        config = None
+    elif labels is not None: #Create a new model
+        ignore_mismatched_sizes = True
+        label2id, id2label = dict(), dict()
+        for i, label in enumerate(labels):
+            label2id[label] = str(i)
+            id2label[str(i)] = label
+        #test convert the label id to a label name:
+        print(id2label[str(7)])
+        config = AutoConfig.from_pretrained(
+            model_name_or_path,
+            num_labels=len(labels),
+            i2label=id2label,
+            label2id=label2id,
+            cache_dir=mycache_dir,  
+            finetuning_task=task, #"image-classification",
+            trust_remote_code=trust_remote_code,
+        )
+
+    image_processor = AutoImageProcessor.from_pretrained(
+        model_name_or_path,
+        cache_dir=mycache_dir,
+        trust_remote_code=trust_remote_code,
+    )
+    model = AutoModelForImageClassification.from_pretrained(
+        model_name_or_path,
+        config=config,
+        cache_dir=mycache_dir,
+        ignore_mismatched_sizes=ignore_mismatched_sizes,
+        trust_remote_code=trust_remote_code,
+    )
+    return model, image_processor
+
 from DeepDataMiningLearning.hfaudio.hfdata import savedict2file
 def saveargs2file(args, trainoutput):
     args_dict={}
@@ -236,193 +451,7 @@ def saveargs2file(args, trainoutput):
 import requests
 
 
-def main():
-    args = parse_args()
-    requests.get("https://huggingface.co", timeout=5)
-    #dataset = load_dataset("lhoestq/demo1")
-
-    # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
-    # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
-    # in the environment
-    accelerator_log_kwargs = {}
-
-    if args.with_tracking:
-        accelerator_log_kwargs["log_with"] = args.report_to
-        accelerator_log_kwargs["project_dir"] = args.output_dir
-
-    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
-
-    # Make one log on every process with the configuration for debugging.
-    logging.basicConfig(
-        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", #The format of the log message: 2024/02/14 16:30:00 - INFO - main
-        datefmt="%m/%d/%Y %H:%M:%S", #The format of the date and time in the log message.
-        level=logging.INFO, #The minimum severity level that will be logged.
-    )
-    #logs the current state of the accelerator to the console
-    logger.info(accelerator.state, main_process_only=False)
-
-    if accelerator.is_main_process:
-        if args.data_path:
-            mycache_dir = deviceenv_set(args.usehpc, args.data_path)
-        else:
-            mycache_dir = '~/.cache/huggingface/'
-       
-        trainoutput=os.path.join(args.output_dir, args.data_name+'_'+args.traintag)
-        os.makedirs(trainoutput, exist_ok=True)
-        args.output_dir = trainoutput
-        print("Trainoutput folder:", trainoutput)
-
-        device, args.useamp = get_device(gpuid=args.gpuid, useamp=args.useamp)
-        saveargs2file(args, trainoutput)
-    
-    #waits for all processes to finish before continuing
-    accelerator.wait_for_everyone()
-
-    # In distributed training, the load_dataset function guarantees that only one local process can concurrently
-    # download the dataset.
-    if args.data_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(args.data_name)
-    else:
-        data_files = {}
-        if args.train_dir is not None:
-            data_files["train"] = os.path.join(args.train_dir, "**")
-        if args.validation_dir is not None:
-            data_files["validation"] = os.path.join(args.validation_dir, "**")
-        dataset = load_dataset(
-            "imagefolder",
-            data_files=data_files,
-        )
-        # See more about loading custom images at
-        # https://huggingface.co/docs/datasets/v2.0.0/en/image_process#imagefolder.
-
-    dataset_column_names = dataset["train"].column_names if "train" in dataset else dataset["validation"].column_names
-    #'image': PIL image object, 'labels': int, 'image_file_path': path
-    if args.image_column_name not in dataset_column_names:
-        raise ValueError(
-            f"--image_column_name {args.image_column_name} not found in dataset '{args.data_name}'. "
-            "Make sure to set `--image_column_name` to the correct audio column - one of "
-            f"{', '.join(dataset_column_names)}."
-        )
-    if args.label_column_name not in dataset_column_names:
-        raise ValueError(
-            f"--label_column_name {args.label_column_name} not found in dataset '{args.data_name}'. "
-            "Make sure to set `--label_column_name` to the correct text column - one of "
-            f"{', '.join(dataset_column_names)}."
-        )
-
-    # If we don't have a validation split, split off a percentage of train as validation.
-    args.train_val_split = None if "validation" in dataset.keys() else args.train_val_split
-    if isinstance(args.train_val_split, float) and args.train_val_split > 0.0:
-        split = dataset["train"].train_test_split(args.train_val_split)
-        dataset["train"] = split["train"]
-        dataset["validation"] = split["test"]
-
-    # Prepare label mappings.
-    # We'll include these in the model's config to get human readable labels in the Inference API.
-    #By default the ClassLabel fields are encoded into integers
-    classlabel = dataset["train"].features[args.label_column_name] #ClassLabel(num_classes=x, names=[''], id=None)
-    labels = classlabel.names
-    label2id = {label: str(i) for i, label in enumerate(labels)}
-    id2label = {str(i): label for i, label in enumerate(labels)}
-
-    #add testing code to fetch one sample data from dataset and print the shape of data
-    # {
-    #     "image": "train/cat/00000.png",
-    #     "label": 0
-    # }
-    print(dataset["train"][0])
-    print(dataset["train"][0][args.label_column_name])
-    #The Datasets library is made for processing data very easily. We can write custom functions, 
-    #which can then be applied on an entire dataset (either using .map() or .set_transform()).
-
-
-    # Load pretrained model and image processor
-    #
-    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
-    config = AutoConfig.from_pretrained(
-        args.model_name_or_path,
-        num_labels=len(labels),
-        i2label=id2label,
-        label2id=label2id,
-        #cache_dir=mycache_dir,  
-        finetuning_task="image-classification",
-        trust_remote_code=args.trust_remote_code,
-    )
-    image_processor = AutoImageProcessor.from_pretrained(
-        args.model_name_or_path,
-        #cache_dir=mycache_dir,
-        trust_remote_code=args.trust_remote_code,
-    )
-    model = AutoModelForImageClassification.from_pretrained(
-        args.model_name_or_path,
-        config=config,
-        #cache_dir=mycache_dir,
-        ignore_mismatched_sizes=args.ignore_mismatched_sizes,
-        trust_remote_code=args.trust_remote_code,
-    )
-
-    # Preprocessing the datasets
-    # Define torchvision transforms to be applied to each image.
-    if "shortest_edge" in image_processor.size:
-        size = image_processor.size["shortest_edge"]
-    else:
-        size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
-    
-    normalize = (
-        Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
-        if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
-        else Lambda(lambda x: x)
-    )
-    train_transforms = Compose(
-        [
-            RandomResizedCrop(size),
-            RandomHorizontalFlip(),
-            ToTensor(),
-            normalize,
-        ]
-    )
-    val_transforms = Compose(
-        [
-            Resize(size),
-            CenterCrop(size),
-            ToTensor(),
-            normalize,
-        ]
-    )
-
-    def preprocess_train(example_batch):
-        """Apply _train_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            train_transforms(image.convert("RGB")) for image in example_batch[args.image_column_name]
-        ]
-        return example_batch
-
-    def preprocess_val(example_batch):
-        """Apply _val_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            val_transforms(image.convert("RGB")) for image in example_batch[args.image_column_name]
-        ]
-        return example_batch
-
-    with accelerator.main_process_first():
-        if args.max_train_samples is not None:
-            dataset["train"] = dataset["train"].shuffle(seed=args.seed).select(range(args.max_train_samples))
-        # Set the training transforms
-        train_dataset = dataset["train"].with_transform(preprocess_train)
-        if args.max_eval_samples is not None:
-            dataset["validation"] = dataset["validation"].shuffle(seed=args.seed).select(range(args.max_eval_samples))
-        # Set the validation transforms
-        eval_dataset = dataset["validation"].with_transform(preprocess_val)
-
-    # DataLoaders creation:
-    #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
-    def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        labels = torch.tensor([example[args.label_column_name] for example in examples])
-        return {"pixel_values": pixel_values, "labels": labels}
-
+def custom_train(args, model, image_processor, train_dataset, eval_dataset, collate_fn, metriceval, accelerator=None):
     train_dataloader = DataLoader(
         train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=args.per_device_train_batch_size
     )
@@ -485,7 +514,7 @@ def main():
         accelerator.init_trackers("image_classification_no_trainer", experiment_config)
 
     # Get the metric function
-    metric = evaluate.load("accuracy")
+    #metric = evaluate.load("accuracy") #replaced with metriceval
 
     # Train!
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -568,12 +597,12 @@ def main():
                 outputs = model(**batch)
             predictions = outputs.logits.argmax(dim=-1)
             predictions, references = accelerator.gather_for_metrics((predictions, batch["labels"]))
-            metric.add_batch(
+            metriceval.add_batch(
                 predictions=predictions,
                 references=references,
             )
 
-        eval_metric = metric.compute()
+        eval_metric = metriceval.compute()#metric.compute()
         logger.info(f"epoch {epoch}: {eval_metric}")
 
         if args.with_tracking:
@@ -619,6 +648,185 @@ def main():
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump(all_results, f)
 
+def main():
+    args = parse_args()
+    requests.get("https://huggingface.co", timeout=5)
+    #dataset = load_dataset("lhoestq/demo1")
+
+    trainoutput=os.path.join(args.output_dir, args.data_name+'_'+args.traintag)
+    os.makedirs(trainoutput, exist_ok=True)
+    args.output_dir = trainoutput
+    print("Trainoutput folder:", trainoutput)
+
+    # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
+    # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
+    # in the environment
+    accelerator_log_kwargs = {}
+
+    if args.with_tracking:
+        accelerator_log_kwargs["log_with"] = args.report_to
+        accelerator_log_kwargs["project_dir"] = args.output_dir
+
+    #accelerate launch --gpu_ids 6 myscript.py
+    #https://huggingface.co/docs/accelerate/en/package_reference/accelerator
+    accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
+    print("Accelerator device:", accelerator.device)
+
+    # Make one log on every process with the configuration for debugging.
+    logging.basicConfig(
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s", #The format of the log message: 2024/02/14 16:30:00 - INFO - main
+        datefmt="%m/%d/%Y %H:%M:%S", #The format of the date and time in the log message.
+        level=logging.INFO, #The minimum severity level that will be logged.
+    )
+    #logs the current state of the accelerator to the console
+    logger.info(accelerator.state, main_process_only=False)
+
+    if accelerator.is_main_process:
+        if args.data_path:
+            #mycache_dir = deviceenv_set(args.usehpc, args.data_path)
+            os.environ['HF_HOME'] = args.data_path
+            mycache_dir = args.data_path
+        else:
+            mycache_dir = '~/.cache/huggingface/'
+
+        device, args.useamp = get_device(gpuid=args.gpuid, useamp=args.useamp)
+        saveargs2file(args, trainoutput)
+    
+    #waits for all processes to finish before continuing
+    accelerator.wait_for_everyone()
+
+    #load dataset
+    with accelerator.main_process_first():
+        dataset, labels, args.image_column_name, args.label_column_name = load_visiondataset(data_name=args.data_name, \
+                                    split=args.datasplit, train_dir=args.train_dir, validation_dir=args.validation_dir, \
+                                    max_train_samples = args.max_train_samples, train_val_split=args.train_val_split, \
+                                    image_column_name=args.image_column_name, label_column_name=args.label_column_name, mycache_dir=mycache_dir)
+
+    # Load pretrained model and image processor
+    #
+    # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
+    # download model & vocab.
+    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
+
+    # Preprocessing the datasets
+    # Define torchvision transforms to be applied to each image.
+    if "shortest_edge" in image_processor.size:
+        size = image_processor.size["shortest_edge"]
+    else:
+        size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
+    
+    normalize = (
+        Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
+        if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
+        else Lambda(lambda x: x)
+    )
+    train_transforms = Compose(
+        [
+            RandomResizedCrop(size),
+            RandomHorizontalFlip(),
+            ToTensor(),
+            normalize,
+        ]
+    )
+    val_transforms = Compose(
+        [
+            Resize(size),
+            CenterCrop(size),
+            ToTensor(),
+            normalize,
+        ]
+    )
+
+    def preprocess_train(example_batch):
+        """Apply _train_transforms across a batch."""
+        #PIL image to RGB
+        example_batch["pixel_values"] = [
+            train_transforms(image.convert("RGB")) for image in example_batch[args.image_column_name]
+        ]
+        del example_batch[args.image_column_name]
+        return example_batch
+
+    def preprocess_val(example_batch):
+        """Apply _val_transforms across a batch."""
+        example_batch["pixel_values"] = [
+            val_transforms(image.convert("RGB")) for image in example_batch[args.image_column_name]
+        ]
+        del example_batch[args.image_column_name]
+        return example_batch
+
+    with accelerator.main_process_first():
+        #The transforms are applied on the fly when you load an element of the dataset:
+        train_dataset = dataset["train"].with_transform(preprocess_train)
+        eval_dataset = dataset[valkey].with_transform(preprocess_val)
+
+        #train_dataset = dataset["train"].map(preprocess_train)
+        #eval_dataset = dataset[valkey].map(preprocess_val)
+
+    # DataLoaders creation:
+    #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
+    def collate_fn(examples):
+        pixel_values = torch.stack([example["pixel_values"] for example in examples])
+        labels = torch.tensor([example[args.label_column_name] for example in examples])
+        return {"pixel_values": pixel_values, "labels": labels}
+    #similar to 
+    #collate_fn = DefaultDataCollator()
+
+    metriceval = myEvaluator(task=args.task, useHFevaluator=True, dualevaluator=False, \
+                            labels=labels, processor=image_processor, mycache_dir=mycache_dir)
+
+ 
+    # using now() to get current time
+    starting_time = datetime.datetime.now()
+    #['HFTrainer','CustomTrain', 'NoTrain']
+    if args.trainmode == 'HFTrainer':
+        training_args = TrainingArguments(
+            output_dir=args.output_dir,
+            remove_unused_columns=False,
+            evaluation_strategy="epoch",
+            save_strategy="epoch",
+            learning_rate=5e-5,
+            per_device_train_batch_size=args.per_device_train_batch_size, #16,
+            gradient_accumulation_steps=args.gradient_accumulation_steps, #4,
+            per_device_eval_batch_size=args.per_device_eval_batch_size, #16,
+            num_train_epochs=args.num_train_epochs, #3,
+            #warmup_ratio=args.warmup_ratio, #0.1,
+            warmup_steps=args.num_warmup_steps, #500,
+            logging_steps=100,
+            load_best_model_at_end=True,
+            #metric_for_best_model="accuracy",
+            #fp16=args.use_fp16,
+            push_to_hub=False,
+        )
+        # Initialize our trainer
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            compute_metrics=metriceval.compute_metrics,
+            tokenizer=image_processor,
+            data_collator=collate_fn,
+        )
+        from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
+        checkpoint = load_hfcheckpoint(args.resume_from_checkpoint)
+        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        trainer.save_model()
+        trainer.log_metrics("train", train_result.metrics)
+        trainer.save_metrics("train", train_result.metrics)
+        trainer.save_state()
+        #trainer.push_to_hub()
+    elif args.trainmode == 'CustomTrain':
+        custom_train(args, model, image_processor, train_dataset, eval_dataset, collate_fn, metriceval, accelerator)
+
+    # using now() to get current time
+    current_time = datetime.datetime.now()
+    # Printing value of now.
+    print("Starting is:", starting_time)
+    print("Time now is:", current_time)
+    time_difference = current_time - starting_time
+    print("Time difference:", time_difference)
+    print("Finished")
+
 from PIL import Image
 import requests
 def inference():
@@ -647,3 +855,10 @@ def inference():
 if __name__ == "__main__":
     inference()
     main()
+
+r"""
+References: 
+https://huggingface.co/docs/transformers/main/en/tasks/image_classification
+https://github.com/huggingface/transformers/tree/main/examples/pytorch/image-classification
+
+"""

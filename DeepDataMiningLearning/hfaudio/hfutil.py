@@ -40,18 +40,18 @@ def deviceenv_set(USE_HPC, data_path=""):
         if os.path.exists(data_path):
             mycache_dir=data_path
             os.environ['HF_HOME'] = mycache_dir
-            os.environ['HF_DATASETS_CACHE'] = mycache_dir
+            #os.environ['HF_DATASETS_CACHE'] = mycache_dir
         elif os.environ.get('HF_HOME') is not None:
             mycache_dir=os.environ['HF_HOME']
-            os.environ['HF_DATASETS_CACHE'] = mycache_dir
+            #os.environ['HF_DATASETS_CACHE'] = mycache_dir
         else:
             mycache_dir="./data/"
             os.environ['HF_HOME'] = mycache_dir
-            os.environ['HF_DATASETS_CACHE'] = mycache_dir
+            #os.environ['HF_DATASETS_CACHE'] = mycache_dir
         # mycache_dir=os.path.join('D:',os.sep, 'Cache','huggingface')
         
         print("HF_HOME:", os.environ['HF_HOME'])
-        print("HF_DATASETS_CACHE:", os.environ['HF_DATASETS_CACHE'])
+        #print("HF_DATASETS_CACHE:", os.environ['HF_DATASETS_CACHE'])
         # os.environ['HF_DATASETS_CACHE'] = mycache_dir
         # if os.environ.get('HF_HOME') is None:
         #     mycache_dir=args.data_path
