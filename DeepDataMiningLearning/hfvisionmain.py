@@ -917,8 +917,7 @@ class MyVisionInference():
         print(f"predmax_idx: {predmax_idx}, predmax_label: {predmax_label}, predmax_confidence: {predmax_confidence}")
         return confidences
 
-def vision_inference(model_name_or_path, task="image-classification", mycache_dir=None):
-    os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+def vision_inferencetest(model_name_or_path, task="image-classification", mycache_dir=None):
 
     url = 'https://huggingface.co/nielsr/convnext-tiny-finetuned-eurostat/resolve/main/forest.png'
     image = Image.open(requests.get(url, stream=True).raw)
@@ -960,12 +959,56 @@ def vision_inference(model_name_or_path, task="image-classification", mycache_di
     print("Predicted class:", id2label[predicted_class_idx])
     return confidences
 
+#https://huggingface.co/docs/transformers/main/en/tasks/zero_shot_image_classification
+from transformers import AutoProcessor, AutoModelForZeroShotImageClassification
+def clip_test(mycache_dir=None):
+    #url = "https://unsplash.com/photos/g8oS8-82DxI/download?ixid=MnwxMjA3fDB8MXx0b3BpY3x8SnBnNktpZGwtSGt8fHx8fDJ8fDE2NzgxMDYwODc&force=true&w=640"
+    #candidate_labels = ["fox", "bear", "seagull", "owl"]
+    
+    url = "https://unsplash.com/photos/xBRQfR2bqNI/download?ixid=MnwxMjA3fDB8MXxhbGx8fHx8fHx8fHwxNjc4Mzg4ODEx&force=true&w=640" #car
+    candidate_labels = ["tree", "car", "bike", "cat"]
+    image = Image.open(requests.get(url, stream=True).raw)
+    checkpoint = "openai/clip-vit-large-patch14"
+    model = AutoModelForZeroShotImageClassification.from_pretrained(checkpoint, cache_dir=mycache_dir)
+    processor = AutoProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
+
+    
+    inputs = processor(images=image, text=candidate_labels, return_tensors="pt", padding=True) 
+    #'input_ids'[4, 3], 'pixel_values'[1, 3, 224, 224], 'attention_mask'[4, 3]
+
+    with torch.no_grad():
+        outputs = model(**inputs) #CLIPOutput(loss=None, logits_per_image[1,4], logits_per_text[4,1]
+
+    logits = outputs.logits_per_image[0] #[4]
+    probs = logits.softmax(dim=-1).numpy()
+    scores = probs.tolist()
+
+    result = [
+        {"score": score, "label": candidate_label}
+        for score, candidate_label in sorted(zip(probs, candidate_labels), key=lambda x: -x[0])
+    ]
+
+    print(result)
+
+#https://huggingface.co/docs/transformers/main/en/tasks/monocular_depth_estimation
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+def depth_test(mycache_dir=None):
+    url = "https://unsplash.com/photos/HwBAsSbPBDU/download?ixid=MnwxMjA3fDB8MXxzZWFyY2h8MzR8fGNhciUyMGluJTIwdGhlJTIwc3RyZWV0fGVufDB8MHx8fDE2Nzg5MDEwODg&force=true&w=640"
+    image = Image.open(requests.get(url, stream=True).raw)
+
+    checkpoint = "vinvino02/glpn-nyu"
+    image_processor = AutoImageProcessor.from_pretrained(checkpoint)
+    model = AutoModelForDepthEstimation.from_pretrained(checkpoint)
+
+
 if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
     #"microsoft/resnet-50"
     mycache_dir=r"D:\Cache\huggingface"
-    confidences = vision_inference(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
+    os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+    clip_test(mycache_dir=mycache_dir)
+    confidences = vision_inferencetest(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
     trainmain()
 
 r"""
