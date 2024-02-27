@@ -25,6 +25,8 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
+import requests
+from PIL import Image
 from tqdm.auto import tqdm
 import numpy as np
 from sklearn.metrics import classification_report
@@ -129,7 +131,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
     parser.add_argument('--traintag', type=str, default="hfimage0226",
                     help='Name the current training')
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
         "--model_name_or_path",
@@ -436,6 +438,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         ignore_mismatched_sizes=ignore_mismatched_sizes,
         trust_remote_code=trust_remote_code,
     )
+    #model.config.id2label
     return model, image_processor
 
 from DeepDataMiningLearning.hfaudio.hfdata import savedict2file
@@ -648,7 +651,7 @@ def custom_train(args, model, image_processor, train_dataset, eval_dataset, coll
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump(all_results, f)
 
-def main():
+def trainmain():
     args = parse_args()
     requests.get("https://huggingface.co", timeout=5)
     #dataset = load_dataset("lhoestq/demo1")
@@ -827,34 +830,124 @@ def main():
     print("Time difference:", time_difference)
     print("Finished")
 
-from PIL import Image
-import requests
-def inference():
+
+
+
+def save_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):#https://github.com/pytorch/vision/blob/main/references/classification/utils.py
+    # Download human-readable labels for ImageNet.
+    response = requests.get("https://git.io/JJkYN")
+    labels = response.text.split("\n")
+    #save python lists to txt file
+    with open(filepath, 'w') as f:
+        for label in labels:
+            f.write(label + '\n')
+#save_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
+#write a function to load labels.txt file into a python list
+def load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):
+    with open(filepath, 'r') as f:
+        labels = f.readlines()
+        labels = [label.strip() for label in labels]#trim string of labels
+    return labels
+#labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
+
+from torchvision import transforms
+class MyVisionInference():
+    def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
+        self.cache_dir = cache_dir
+        self.model_name = model_name
+        self.model_type = model_type
+        #self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device, useamp = get_device(gpuid=gpuid, useamp=False)
+        self.task = task
+        self.model_name = model_name
+        if isinstance(model_name, str) and model_type=="huggingface":
+            os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+            self.model, self.image_processor = load_visionmodel(model_name, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
+            self.id2label = self.model.config.id2label
+        # elif isinstance(model_name, torch.nn.Module):
+        #     self.model = model_name
+        else:#torch model
+            self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True).eval() #'resnet18'
+            #self.image_processor = mypreprocess
+            labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
+            self.id2label = {str(i): label for i, label in enumerate(labels)}
+
+        self.model=self.model.to(self.device)
+    
+    def mypreprocess(inp):
+        inp = transforms.ToTensor()(inp).unsqueeze(0)
+        return inp
+
+    def __call__(self, image):
+        if isinstance(image, str):
+            image = Image.open(image)
+        if self.model_type=="huggingface":
+            inputs = self.image_processor(image.convert("RGB"), return_tensors="pt").pixel_values
+            print(inputs.shape) #torch.Size([1, 3, 224, 224])
+        else:
+            inputs = self.mypreprocess(image)
+        inputs = inputs.to(self.device)
+        with torch.no_grad():
+            outputs = self.model(inputs)
+        if self.model_type=="huggingface":
+            logits = outputs.logits #torch.Size([1, 1000])
+        else:
+            logits = outputs
+        predictions = torch.nn.functional.softmax(logits[0], dim=0) #[1000]
+        #print(predictions.shape) #torch.Size([1000])
+        predictions = predictions.cpu().numpy()
+        confidences = {self.id2label[i]: float(predictions[i]) for i in range(len(self.id2label))} #len=999
+
+        predmax_idx = np.argmax(predictions, axis=-1)
+        predmax_label = self.id2label[str(predmax_idx)]
+        predmax_confidence = float(predictions[predmax_idx])
+        print(f"predmax_idx: {predmax_idx}, predmax_label: {predmax_label}, predmax_confidence: {predmax_confidence}")
+        return confidences
+
+def vision_inference(model_name_or_path, task="image-classification", mycache_dir=None):
+    os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+
     url = 'https://huggingface.co/nielsr/convnext-tiny-finetuned-eurostat/resolve/main/forest.png'
     image = Image.open(requests.get(url, stream=True).raw)
     #show the PIL image
-    image.show()
+    #image.show()
     #load the model
-    model = AutoModelForImageClassification.from_pretrained("nielsr/convnext-tiny-finetuned-eurostat")
+    myinference = MyVisionInference(model_name=model_name_or_path, task=task, model_type="huggingface", cache_dir=mycache_dir)
+    confidences = myinference(image)
+    print(confidences)
+
+    #model_name_or_path = "nielsr/convnext-tiny-finetuned-eurostat"
+    #task = "image-classification"
+    model, image_processor = load_visionmodel(model_name_or_path, task=task, load_only=True, labels=None, mycache_dir=mycache_dir, trust_remote_code=True)
+    id2label = model.config.id2label
+    #model = AutoModelForImageClassification.from_pretrained("nielsr/convnext-tiny-finetuned-eurostat")
     #load the image processor
-    processor = AutoImageProcessor.from_pretrained("nielsr/convnext-tiny-finetuned-eurostat")
-    #preprocess the image
-    inputs = processor(image.convert("RGB"), return_tensors="pt")
+    #image_processor = AutoImageProcessor.from_pretrained("nielsr/convnext-tiny-finetuned-eurostat")
+    #preprocess the image (PIL)
+    inputs = image_processor(image.convert("RGB"), return_tensors="pt")
     print(inputs.pixel_values.shape) #torch.Size([1, 3, 224, 224])
     #inference
     with torch.no_grad():
-        outputs = model(**inputs)
+        outputs = model(**inputs) #key="logits", "loss"
     #get the prediction
-    logits = outputs.logits #torch.Size([1, 10])
-    predictions = logits.argmax(dim=-1) #torch.Size([1])
+    logits = outputs.logits #torch.Size([1, 1000])
+
+    predictions = torch.nn.functional.softmax(logits[0], dim=0) #[1000]
+    confidences = {id2label[i]: float(predictions[i]) for i in range(len(id2label))} #len=999
+
+    pred = logits.argmax(dim=-1) #torch.Size([1])
     #print the prediction
-    print(predictions)
-    predicted_class_idx = predictions[0].item() #1
-    print("Predicted class:", model.config.id2label[predicted_class_idx])
+    print(pred[0]) #tensor(646)
+    predicted_class_idx = pred[0].item() #1
+    print("Predicted class:", id2label[predicted_class_idx])
+    return confidences
 
 if __name__ == "__main__":
-    inference()
-    main()
+    #"nielsr/convnext-tiny-finetuned-eurostat"
+    #"google/bit-50"
+    mycache_dir=r"D:\Cache\huggingface"
+    confidences = vision_inference(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
+    trainmain()
 
 r"""
 References: 
