@@ -861,7 +861,7 @@ class MyVisionInference():
         self.task = task
         self.model_name = model_name
         if isinstance(model_name, str) and model_type=="huggingface":
-            os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+            os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
             self.model, self.image_processor = load_visionmodel(model_name, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
             self.id2label = self.model.config.id2label
         # elif isinstance(model_name, torch.nn.Module):
@@ -879,8 +879,21 @@ class MyVisionInference():
         return inp
 
     def __call__(self, image):
-        if isinstance(image, str):
+        #detect if image is url
+        if isinstance(image, Image.Image):
+            pass
+        elif isinstance(image, str) and image.startwith('http'):
+            image = Image.open(requests.get(image, stream=True).raw)
+        elif isinstance(image, str) and image.endswith('.jpg') or image.endswith('.png'):
             image = Image.open(image)
+        elif isinstance(image, str) and image.endswith('.npy'):
+            image = np.load(image)
+            image = Image.fromarray(image)
+        elif isinstance(image, np.array):
+            image = Image.fromarray(image)
+        else:
+            raise ValueError(f"image type {type(image)} is not supported")
+        
         if self.model_type=="huggingface":
             inputs = self.image_processor(image.convert("RGB"), return_tensors="pt").pixel_values
             print(inputs.shape) #torch.Size([1, 3, 224, 224])
@@ -899,7 +912,7 @@ class MyVisionInference():
         confidences = {self.id2label[i]: float(predictions[i]) for i in range(len(self.id2label))} #len=999
 
         predmax_idx = np.argmax(predictions, axis=-1)
-        predmax_label = self.id2label[str(predmax_idx)]
+        predmax_label = self.id2label[predmax_idx]
         predmax_confidence = float(predictions[predmax_idx])
         print(f"predmax_idx: {predmax_idx}, predmax_label: {predmax_label}, predmax_confidence: {predmax_confidence}")
         return confidences
@@ -912,6 +925,11 @@ def vision_inference(model_name_or_path, task="image-classification", mycache_di
     #show the PIL image
     #image.show()
     #load the model
+    dataset = load_dataset("huggingface/cats-image", cache_dir=mycache_dir)
+    image = dataset["test"]["image"][0]
+    print(len(dataset["test"]["image"]))
+    im1 = image.save("test.jpg") 
+
     myinference = MyVisionInference(model_name=model_name_or_path, task=task, model_type="huggingface", cache_dir=mycache_dir)
     confidences = myinference(image)
     print(confidences)
@@ -945,6 +963,7 @@ def vision_inference(model_name_or_path, task="image-classification", mycache_di
 if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
+    #"microsoft/resnet-50"
     mycache_dir=r"D:\Cache\huggingface"
     confidences = vision_inference(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
     trainmain()

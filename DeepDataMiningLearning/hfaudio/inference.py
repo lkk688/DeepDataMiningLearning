@@ -38,6 +38,7 @@ def downsamping(audio, orig_freq, new_freq):
     #new_freq=model.config.sampling_rate
 
 def preprocess_audio(datasample, samplerate=16_000, orig_sr=44100, maxseconds=10):
+    sampling_rate = samplerate
     if isinstance(datasample, str):#batch["path"] get numpyarray
         datasamples, sampling_rate = librosa.load(datasample, sr=samplerate)
         # datasamples = librosa.resample(datasamples, orig_sr=orig_sr, target_sr=samplerate)
@@ -114,7 +115,7 @@ class MyAudioInference():
             return output
         
 def asrinference_path(datasample, model, samplerate=16_000, orig_sr=44100, src_lang=None, tgt_lang='eng', processor=None, device='cuda', generative=False):
-    preprocess_audio(datasample, samplerate=samplerate, orig_sr=orig_sr, maxseconds=10)
+    datasamples, samplerate, batchdecode = preprocess_audio(datasample, samplerate=samplerate, orig_sr=orig_sr, maxseconds=10)
     
     ## Tokenize the audio
     if generative is False:
