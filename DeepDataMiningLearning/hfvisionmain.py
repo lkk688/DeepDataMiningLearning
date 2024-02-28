@@ -33,6 +33,7 @@ from sklearn.metrics import classification_report
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, SchedulerType, get_scheduler
 from transformers import DefaultDataCollator, Trainer, TrainingArguments
 from DeepDataMiningLearning.hfaudio.hfutil import deviceenv_set, get_device
+from time import perf_counter
 
 logger = get_logger(__name__)
 
@@ -403,7 +404,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, image_column_name, label_column_name
 
-
+#tasks: "image-depth", "image-classification"
 def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
     if load_only:#only load the model
         ignore_mismatched_sizes = False
@@ -431,13 +432,22 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         cache_dir=mycache_dir,
         trust_remote_code=trust_remote_code,
     )
-    model = AutoModelForImageClassification.from_pretrained(
-        model_name_or_path,
-        config=config,
-        cache_dir=mycache_dir,
-        ignore_mismatched_sizes=ignore_mismatched_sizes,
-        trust_remote_code=trust_remote_code,
-    )
+    if task == "image-classification":
+        model = AutoModelForImageClassification.from_pretrained(
+            model_name_or_path,
+            config=config,
+            cache_dir=mycache_dir,
+            ignore_mismatched_sizes=ignore_mismatched_sizes,
+            trust_remote_code=trust_remote_code,
+        )
+    elif task == "image-depth":
+        model = AutoModelForDepthEstimation.from_pretrained(
+            model_name_or_path, 
+            config=config,
+            cache_dir=mycache_dir,
+            ignore_mismatched_sizes=ignore_mismatched_sizes,
+            trust_remote_code=trust_remote_code,
+        )
     #model.config.id2label
     return model, image_processor
 
@@ -851,6 +861,8 @@ def load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):
 #labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
 
 from torchvision import transforms
+import cv2 #pip install opencv-python
+#tasks: "image-depth", "image-classification"
 class MyVisionInference():
     def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
         self.cache_dir = cache_dir
@@ -860,19 +872,33 @@ class MyVisionInference():
         self.device, useamp = get_device(gpuid=gpuid, useamp=False)
         self.task = task
         self.model_name = model_name
+        self.model = None
+        self.image_processor = None
         if isinstance(model_name, str) and model_type=="huggingface":
             os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
             self.model, self.image_processor = load_visionmodel(model_name, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
-            self.id2label = self.model.config.id2label
         # elif isinstance(model_name, torch.nn.Module):
         #     self.model = model_name
-        else:#torch model
-            self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True).eval() #'resnet18'
-            #self.image_processor = mypreprocess
+        elif isinstance(model_name, str) and task=="image-classification":#torch model
+            self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True) #'resnet18'
+        elif isinstance(model_name, str) and task=="image-depth":#torch model
+            #model_names: "MiDaS_small", "DPT_Hybrid", "DPT_Large"
+            self.model = torch.hub.load('intel-isl/MiDaS', model_name, pretrained=True)
+            transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
+            self.image_processor = transforms.dpt_transform #.small_transform
+
+        if task=="image-classification" and model_type=="huggingface":
+            self.id2label = self.model.config.id2label
+        elif task=="image-classification":
             labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
             self.id2label = {str(i): label for i, label in enumerate(labels)}
+        elif task=="image-depth":
+            pass
+        if self.image_processor is None:
+            self.image_processor = self.mypreprocess
 
         self.model=self.model.to(self.device)
+        self.model.eval()
     
     def mypreprocess(inp):
         inp = transforms.ToTensor()(inp).unsqueeze(0)
@@ -893,15 +919,56 @@ class MyVisionInference():
             image = Image.fromarray(image)
         else:
             raise ValueError(f"image type {type(image)} is not supported")
+        self.image = image
         
         if self.model_type=="huggingface":
             inputs = self.image_processor(image.convert("RGB"), return_tensors="pt").pixel_values
             print(inputs.shape) #torch.Size([1, 3, 224, 224])
         else:
-            inputs = self.mypreprocess(image)
+            inputs = self.image_processor(image.convert("RGB"))
         inputs = inputs.to(self.device)
+        start_time = perf_counter()
         with torch.no_grad():
             outputs = self.model(inputs)
+        end_time = perf_counter()
+        print(f'Elapsed inference time: {end_time-start_time:.3f}s')
+        
+        results = None
+        if self.task=="image-classification":
+            results = self.classification_postprocessing(outputs) #return confidence dicts
+        elif self.task=="image-depth":
+            results = self.depth_postprocessing(outputs) #return PIL image
+        return results
+    
+    def depth_postprocessing(self, outputs, recolor=True):
+        if self.model_type=="huggingface":
+            predicted_depth = outputs.predicted_depth #[1, 416, 640], [1, 384, 384]
+        else:
+            predicted_depth  = outputs
+        # interpolate to original size
+        #The input dimensions are interpreted in the form: mini-batch x channels x [optional depth] x [optional height] x width.
+        predicted_depth_input = predicted_depth.unsqueeze(1) #[1, 1, 384, 384]
+        target_size = self.image.size[::-1]#(width, height) (W=640, H=427)->(H=427, W=640)
+        
+        prediction = torch.nn.functional.interpolate(
+            predicted_depth_input,
+            size=target_size,#(H=427, W=640)
+            mode="bicubic", #uses a bicubic interpolation algorithm to compute the values of the new tensor
+            align_corners=False,
+        )
+        output = prediction.squeeze().cpu().numpy() #[427, 640]
+        formatted = (output * 255 / np.max(output)).astype("uint8")
+        if recolor:
+            #Recolor the depth map from grayscale to colored
+            #normalized_image = image.astype(np.uint8)
+            formatted = cv2.applyColorMap(formatted, cv2.COLORMAP_HOT)
+    
+        depth = Image.fromarray(formatted)
+        #depth.show()
+        depth.save("data/depth_testresult.jpg") 
+        return depth
+
+    def classification_postprocessing(self, outputs):
         if self.model_type=="huggingface":
             logits = outputs.logits #torch.Size([1, 1000])
         else:
@@ -995,10 +1062,39 @@ from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 def depth_test(mycache_dir=None):
     url = "https://unsplash.com/photos/HwBAsSbPBDU/download?ixid=MnwxMjA3fDB8MXxzZWFyY2h8MzR8fGNhciUyMGluJTIwdGhlJTIwc3RyZWV0fGVufDB8MHx8fDE2Nzg5MDEwODg&force=true&w=640"
     image = Image.open(requests.get(url, stream=True).raw)
+    #image.size()#The size attribute returns a (width, height) tuple
+    image.save("data/depth_test.jpg") 
 
-    checkpoint = "vinvino02/glpn-nyu"
-    image_processor = AutoImageProcessor.from_pretrained(checkpoint)
-    model = AutoModelForDepthEstimation.from_pretrained(checkpoint)
+    #checkpoint = "Intel/dpt-large" #"vinvino02/glpn-nyu"
+    #depthinference = MyVisionInference(model_name=checkpoint, model_type="huggingface", task="image-depth", cache_dir=mycache_dir)
+    checkpoint = "DPT_Large" #pip install timm
+    depthinference = MyVisionInference(model_name=checkpoint, model_type="torch", task="image-depth", cache_dir=mycache_dir)
+    results = depthinference(image=image)
+    
+    
+    image_processor = AutoImageProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
+    model = AutoModelForDepthEstimation.from_pretrained(checkpoint, cache_dir=mycache_dir)
+
+    pixel_values = image_processor(image, return_tensors="pt").pixel_values
+    with torch.no_grad():
+        outputs = model(pixel_values) #only predicted_depth key
+        predicted_depth = outputs.predicted_depth #[1, 416, 640], [1, 384, 384]
+    
+    # interpolate to original size
+    #The input dimensions are interpreted in the form: mini-batch x channels x [optional depth] x [optional height] x width.
+    predicted_depth_input = predicted_depth.unsqueeze(1) #[1, 1, 384, 384]
+    target_size = image.size[::-1]#(width, height) (W=640, H=427)->(H=427, W=640)
+    prediction = torch.nn.functional.interpolate(
+        predicted_depth_input,
+        size=target_size,#(H=427, W=640)
+        mode="bicubic", #uses a bicubic interpolation algorithm to compute the values of the new tensor
+        align_corners=False,
+    )
+    output = prediction.squeeze().numpy() #[427, 640]
+    formatted = (output * 255 / np.max(output)).astype("uint8")
+    depth = Image.fromarray(formatted)
+    #depth.show()
+    depth.save("data/depth_testresult.jpg") 
 
 
 if __name__ == "__main__":
@@ -1007,6 +1103,7 @@ if __name__ == "__main__":
     #"microsoft/resnet-50"
     mycache_dir=r"D:\Cache\huggingface"
     os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+    depth_test(mycache_dir=mycache_dir)
     clip_test(mycache_dir=mycache_dir)
     confidences = vision_inferencetest(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
     trainmain()
