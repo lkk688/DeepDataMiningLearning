@@ -22,7 +22,7 @@ from timm.models import create_model
 from timm.utils import AverageMeter, setup_default_logging, set_jit_fuser#, ParseKwargs
 
 os.environ['TORCH_HOME'] = '/data/cmpe249-fa22/torchhome/' #setting the environment variable
-os.environ['CUDA_VISIBLE_DEVICES'] = "1,2,3" #"0,1"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0" #"1,2,3" #"0,1"
 
 try:
     from apex import amp

@@ -110,6 +110,7 @@ Deep learning notebooks (colab link is better)
    * Pytorch ImageNet classification example: [imagenet](DeepDataMiningLearning/imagenet.py)
    * Pytorch inference example for top-k class: [inference.py](DeepDataMiningLearning/inference.py)
    * TIMM models: [testtimm.ipynb](DeepDataMiningLearning/testtimm.ipynb)
+   * Huggingface Transformers for Image: [hfvisionmain.py](DeepDataMiningLearning/hfvisionmain.py)
 * Advanced Multi-Modal Image Classification: [githubrepo](https://github.com/lkk688/MultiModalClassifier)
    * General purpose framework for all-in-one image classification for Tensorflow and Pytorch
    * Support for multiple datasets: imagenet_blurred, tiny-imagenet-200, hymenoptera_data, CIFAR10, MNIST, flower_photos
