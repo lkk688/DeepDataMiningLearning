@@ -860,8 +860,67 @@ def load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):
     return labels
 #labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
 
-from torchvision import transforms
 import cv2 #pip install opencv-python
+import matplotlib.pyplot as plt
+from torchvision.io import read_image
+#%matplotlib inline
+#output_format="numpy", "pil" in HWC format
+def read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False):
+    if isinstance(image, Image.Image):
+        if output_format == 'numpy':
+            image = np.array(image)
+        elif output_format == 'pil':
+            image = image
+    if isinstance(image, str):
+        if image.startwith('http'):
+            filename = requests.get(image, stream=True).raw
+        elif image.endswith('.jpg') or image.endswith('.png'):
+            filename = image
+        #Read the image to numpy HWC format uint8
+        if use_pil:
+            #https://pillow.readthedocs.io/en/stable/reference/Image.html
+            image = Image.open(filename)
+            image = image.convert('RGB')
+            if output_format == 'numpy':
+                image = np.array(image) ##convert PIL image to numpy, HWC format (height, width, color channels)
+            elif output_format == 'pil':
+                image = image
+            size = image.size #size in pixels, as a 2-tuple: (width, height)
+            #img.height, img.width
+            #image = image.astype(np.float32) / 255.0
+        elif use_cv2:
+            img = cv2.imread(filename) #row (height) x column (width) x color (3) 'numpy.ndarray'
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) #HWC
+            #print(img.dtype) # uint8
+            if output_format == 'numpy':
+                image = img
+            elif output_format == 'pil':
+                image = Image.fromarray(img)
+        else:
+            #torch read_image get format CHW (color channels, height, width) in tensor
+            img = read_image(str(filename)) #3, 900, 900
+            img = img.numpy().transpose((1, 2, 0)) #CHW (color channels, height, width) to numpy/matplotlib's HWC
+            if output_format == 'numpy':
+                image = img
+            elif output_format == 'pil':
+                image = Image.fromarray(img)
+    if plotfig:
+        if output_format== 'numpy':
+            #image = image.astype(np.float32) / 255.0
+            # Plot the image, matplotlib also uses HWC format
+            plt.figure(figsize=(10, 7))
+            plt.imshow(image) #need HWC
+            plt.axis("off")
+            #plt.title(image_class, fontsize=14)
+        elif output_format== 'pil':
+            image.show()
+        else:
+            # Display the image
+            cv2.imshow("Image", image)
+    return image #HWC in numpy or PIL
+
+from torchvision import transforms
+
 #tasks: "image-depth", "image-classification"
 class MyVisionInference():
     def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
@@ -874,6 +933,7 @@ class MyVisionInference():
         self.model_name = model_name
         self.model = None
         self.image_processor = None
+        self.transforms = None
         if isinstance(model_name, str) and model_type=="huggingface":
             os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
             self.model, self.image_processor = load_visionmodel(model_name, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
@@ -882,11 +942,13 @@ class MyVisionInference():
         elif isinstance(model_name, str) and task=="image-classification":#torch model
             self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True) #'resnet18'
         elif isinstance(model_name, str) and task=="image-depth":#torch model
+            #https://pytorch.org/hub/intelisl_midas_v2/
             #model_names: "MiDaS_small", "DPT_Hybrid", "DPT_Large"
             self.model = torch.hub.load('intel-isl/MiDaS', model_name, pretrained=True)
             transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
-            self.image_processor = transforms.dpt_transform #.small_transform
+            self.transforms = transforms.dpt_transform #.small_transform resize(384,) Normalized
 
+        #get labels for classification
         if task=="image-classification" and model_type=="huggingface":
             self.id2label = self.model.config.id2label
         elif task=="image-classification":
@@ -894,39 +956,38 @@ class MyVisionInference():
             self.id2label = {str(i): label for i, label in enumerate(labels)}
         elif task=="image-depth":
             pass
-        if self.image_processor is None:
-            self.image_processor = self.mypreprocess
 
         self.model=self.model.to(self.device)
         self.model.eval()
     
-    def mypreprocess(inp):
-        inp = transforms.ToTensor()(inp).unsqueeze(0)
+    def mypreprocess(self,inp):
+        #https://pytorch.org/vision/stable/transforms.html
+        #transforms.ToTensor()
+        #Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
+        manual_transforms = transforms.Compose([
+            #transforms.Resize((224, 224)), # 1. Reshape all images to 224x224 (though some models may require different sizes)
+            transforms.ToTensor(), # 2. changes the input arrays from HWC to CHW, Turn image values to between 0 & 1 
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], # 3. A mean of [0.485, 0.456, 0.406] (across each colour channel)
+                                std=[0.229, 0.224, 0.225]) # 4. A standard deviation of [0.229, 0.224, 0.225] (across each colour channel),
+        ])
+        if self.transforms is not None:
+            inp = self.transforms(inp)#.unsqueeze(0) already added one dimension
+        else:
+            #inp = transforms.ToTensor()(inp).unsqueeze(0)
+            inp = manual_transforms(inp).unsqueeze(0)
         return inp
 
     def __call__(self, image):
-        #detect if image is url
-        if isinstance(image, Image.Image):
-            pass
-        elif isinstance(image, str) and image.startwith('http'):
-            image = Image.open(requests.get(image, stream=True).raw)
-        elif isinstance(image, str) and image.endswith('.jpg') or image.endswith('.png'):
-            image = Image.open(image)
-        elif isinstance(image, str) and image.endswith('.npy'):
-            image = np.load(image)
-            image = Image.fromarray(image)
-        elif isinstance(image, np.array):
-            image = Image.fromarray(image)
-        else:
-            raise ValueError(f"image type {type(image)} is not supported")
-        self.image = image
-        
+        self.image = read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False)
+        #HWC numpy (427, 640, 3)
         if self.model_type=="huggingface":
-            inputs = self.image_processor(image.convert("RGB"), return_tensors="pt").pixel_values
+            inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
             print(inputs.shape) #torch.Size([1, 3, 224, 224])
         else:
-            inputs = self.image_processor(image.convert("RGB"))
+            inputs = self.mypreprocess(self.image)
+            print(inputs.shape) #torch.Size([1, 3, 384, 576])
         inputs = inputs.to(self.device)
+
         start_time = perf_counter()
         with torch.no_grad():
             outputs = self.model(inputs)
@@ -937,7 +998,7 @@ class MyVisionInference():
         if self.task=="image-classification":
             results = self.classification_postprocessing(outputs) #return confidence dicts
         elif self.task=="image-depth":
-            results = self.depth_postprocessing(outputs) #return PIL image
+            results = self.depth_postprocessing(outputs, recolor=False) #return PIL image
         return results
     
     def depth_postprocessing(self, outputs, recolor=True):
@@ -947,9 +1008,19 @@ class MyVisionInference():
             predicted_depth  = outputs
         # interpolate to original size
         #The input dimensions are interpreted in the form: mini-batch x channels x [optional depth] x [optional height] x width.
-        predicted_depth_input = predicted_depth.unsqueeze(1) #[1, 1, 384, 384]
-        target_size = self.image.size[::-1]#(width, height) (W=640, H=427)->(H=427, W=640)
+        predicted_depth_input = predicted_depth.unsqueeze(1) #[1, 1, 384, 576]
+
+        #read the height/width from image's shape
+        if isinstance(self.image, Image.Image):
+            self.height = self.image.height
+            self.width = self.image.width
+            target_size = self.image.size[::-1]#(width, height) (W=640, H=427)->(H=427, W=640)
+        elif isinstance(self.image, np.ndarray): #HWC format
+            self.height = self.image.shape[0]
+            self.width = self.image.shape[1]
+            target_size = (self.height, self.width) #(427, 640)
         
+        #The input dimensions are interpreted in the form: mini-batch x channels x [optional depth] x [optional height] x width.
         prediction = torch.nn.functional.interpolate(
             predicted_depth_input,
             size=target_size,#(H=427, W=640)
@@ -958,10 +1029,12 @@ class MyVisionInference():
         )
         output = prediction.squeeze().cpu().numpy() #[427, 640]
         formatted = (output * 255 / np.max(output)).astype("uint8")
+        print(formatted.shape) #(427, 640)
         if recolor:
             #Recolor the depth map from grayscale to colored
             #normalized_image = image.astype(np.uint8)
             formatted = cv2.applyColorMap(formatted, cv2.COLORMAP_HOT)
+            print(formatted.shape) #(427, 640, 3)
     
         depth = Image.fromarray(formatted)
         #depth.show()
@@ -1065,10 +1138,10 @@ def depth_test(mycache_dir=None):
     #image.size()#The size attribute returns a (width, height) tuple
     image.save("data/depth_test.jpg") 
 
-    #checkpoint = "Intel/dpt-large" #"vinvino02/glpn-nyu"
-    #depthinference = MyVisionInference(model_name=checkpoint, model_type="huggingface", task="image-depth", cache_dir=mycache_dir)
-    checkpoint = "DPT_Large" #pip install timm
-    depthinference = MyVisionInference(model_name=checkpoint, model_type="torch", task="image-depth", cache_dir=mycache_dir)
+    checkpoint = "Intel/dpt-large" #"vinvino02/glpn-nyu"
+    depthinference = MyVisionInference(model_name=checkpoint, model_type="huggingface", task="image-depth", cache_dir=mycache_dir)
+    #checkpoint = "DPT_Large" #pip install timm
+    #depthinference = MyVisionInference(model_name=checkpoint, model_type="torch", task="image-depth", cache_dir=mycache_dir)
     results = depthinference(image=image)
     
     
