@@ -15,6 +15,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset, DatasetDict
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
+from torchvision import transforms
 from torchvision.transforms import (
     CenterCrop,
     Compose,
@@ -32,8 +33,9 @@ import numpy as np
 from sklearn.metrics import classification_report
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, SchedulerType, get_scheduler
 from transformers import DefaultDataCollator, Trainer, TrainingArguments
-from DeepDataMiningLearning.hfaudio.hfutil import deviceenv_set, get_device
 from time import perf_counter
+from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
+import requests
 
 logger = get_logger(__name__)
 
@@ -451,18 +453,6 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
     #model.config.id2label
     return model, image_processor
 
-from DeepDataMiningLearning.hfaudio.hfdata import savedict2file
-def saveargs2file(args, trainoutput):
-    args_dict={}
-    args_str=' '
-    for k, v in vars(args).items():
-        args_dict[k]=v
-        args_str.join(f'{k}={v}, ')
-    print(args_str)
-    savedict2file(data_dict=args_dict, filename=os.path.join(trainoutput,'args.json'))
-
-import requests
-
 
 def custom_train(args, model, image_processor, train_dataset, eval_dataset, collate_fn, metriceval, accelerator=None):
     train_dataloader = DataLoader(
@@ -840,86 +830,6 @@ def trainmain():
     print("Time difference:", time_difference)
     print("Finished")
 
-
-
-
-def save_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):#https://github.com/pytorch/vision/blob/main/references/classification/utils.py
-    # Download human-readable labels for ImageNet.
-    response = requests.get("https://git.io/JJkYN")
-    labels = response.text.split("\n")
-    #save python lists to txt file
-    with open(filepath, 'w') as f:
-        for label in labels:
-            f.write(label + '\n')
-#save_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
-#write a function to load labels.txt file into a python list
-def load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):
-    with open(filepath, 'r') as f:
-        labels = f.readlines()
-        labels = [label.strip() for label in labels]#trim string of labels
-    return labels
-#labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
-
-import cv2 #pip install opencv-python
-import matplotlib.pyplot as plt
-from torchvision.io import read_image
-#%matplotlib inline
-#output_format="numpy", "pil" in HWC format
-def read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False):
-    if isinstance(image, Image.Image):
-        if output_format == 'numpy':
-            image = np.array(image)
-        elif output_format == 'pil':
-            image = image
-    if isinstance(image, str):
-        if image.startwith('http'):
-            filename = requests.get(image, stream=True).raw
-        elif image.endswith('.jpg') or image.endswith('.png'):
-            filename = image
-        #Read the image to numpy HWC format uint8
-        if use_pil:
-            #https://pillow.readthedocs.io/en/stable/reference/Image.html
-            image = Image.open(filename)
-            image = image.convert('RGB')
-            if output_format == 'numpy':
-                image = np.array(image) ##convert PIL image to numpy, HWC format (height, width, color channels)
-            elif output_format == 'pil':
-                image = image
-            size = image.size #size in pixels, as a 2-tuple: (width, height)
-            #img.height, img.width
-            #image = image.astype(np.float32) / 255.0
-        elif use_cv2:
-            img = cv2.imread(filename) #row (height) x column (width) x color (3) 'numpy.ndarray'
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) #HWC
-            #print(img.dtype) # uint8
-            if output_format == 'numpy':
-                image = img
-            elif output_format == 'pil':
-                image = Image.fromarray(img)
-        else:
-            #torch read_image get format CHW (color channels, height, width) in tensor
-            img = read_image(str(filename)) #3, 900, 900
-            img = img.numpy().transpose((1, 2, 0)) #CHW (color channels, height, width) to numpy/matplotlib's HWC
-            if output_format == 'numpy':
-                image = img
-            elif output_format == 'pil':
-                image = Image.fromarray(img)
-    if plotfig:
-        if output_format== 'numpy':
-            #image = image.astype(np.float32) / 255.0
-            # Plot the image, matplotlib also uses HWC format
-            plt.figure(figsize=(10, 7))
-            plt.imshow(image) #need HWC
-            plt.axis("off")
-            #plt.title(image_class, fontsize=14)
-        elif output_format== 'pil':
-            image.show()
-        else:
-            # Display the image
-            cv2.imshow("Image", image)
-    return image #HWC in numpy or PIL
-
-from torchvision import transforms
 
 #tasks: "image-depth", "image-classification"
 class MyVisionInference():

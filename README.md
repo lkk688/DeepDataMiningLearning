@@ -8,12 +8,14 @@ Data mining, machine learning, and deep learning sample codes for SJSU CMPE255 D
 Install this python package (optional) via
 
 ```bash
-% python3 -m pip install flit
+% pip install flit
 % flit install --symlink
 ```
 You will see the package "DeepDataMiningLearning" is install in your python virionment, you can "import DeepDataMiningLearning" as a package.
 
-ref "docs/python.rst" for detailed python package description
+If you face issues of "OSError: [WinError 1314] A required privilege is not held by the client" in Windows, you can try to activate developer mode on Windows settings (Settings -> System -> For developers (turn on)).
+
+ref "docs/python.rst" for detailed python package description.
 
 Open the Jupyter notebook in local machine:
 ```bash

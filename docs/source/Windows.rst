@@ -243,6 +243,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
     accelerate configuration saved at /home/lkk/.cache/huggingface/accelerate/default_config.yaml
     % accelerate env
     % conda install -c huggingface transformers
+    % conda install -c huggingface -c conda-forge datasets #pip install datasets
     % pip install evaluate
     % pip install cchardet
     % conda install -c conda-forge umap-learn #pip install umap-learn
