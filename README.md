@@ -82,6 +82,8 @@ Python data apps based on streamlit:
 ## Machine Learning Algorithm
 * Machine Learning introduction: 
    * MLIntro-Regression -- [colablink](https://colab.research.google.com/drive/1atrY6rpfPKs5K1VxddfEOWR5QRarxHiG?usp=sharing)
+      * Linear Regression via Normal Equation and own SGD implementation
+      * Diamond dataset from Kaggle, EDA, and predict the price of diamond via normal equation, numpy.linalg
    * MLIntro-RegressionSKLearn -- [colablink](https://colab.research.google.com/drive/1XUzW9vSqyNM02v9F5ueaLMtFb0VorOA3?usp=sharing)
    * [MLIntro2-classification.ipynb](./MLIntro2-classification.ipynb) --[colablink](https://colab.research.google.com/drive/1znfskFZFo-m7VjnI5vgcxdaPWHvLLG9H?usp=sharing)
       * Breast Cancer Dataset, iris Dataset, BigQuery US Census Income Dataset, multiple classifiers. 
