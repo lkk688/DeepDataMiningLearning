@@ -36,6 +36,7 @@ from transformers import DefaultDataCollator, Trainer, TrainingArguments
 from time import perf_counter
 from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
 import requests
+import cv2
 
 logger = get_logger(__name__)
 
@@ -406,7 +407,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, image_column_name, label_column_name
 
-#tasks: "image-depth", "image-classification"
+#tasks: "depth-estimation", "image-classification"
 def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
     if load_only:#only load the model
         ignore_mismatched_sizes = False
@@ -442,7 +443,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             ignore_mismatched_sizes=ignore_mismatched_sizes,
             trust_remote_code=trust_remote_code,
         )
-    elif task == "image-depth":
+    elif task == "depth-estimation":
         model = AutoModelForDepthEstimation.from_pretrained(
             model_name_or_path, 
             config=config,
@@ -831,7 +832,7 @@ def trainmain():
     print("Finished")
 
 
-#tasks: "image-depth", "image-classification"
+#tasks: "depth-estimation", "image-classification"
 class MyVisionInference():
     def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
         self.cache_dir = cache_dir
@@ -851,7 +852,7 @@ class MyVisionInference():
         #     self.model = model_name
         elif isinstance(model_name, str) and task=="image-classification":#torch model
             self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True) #'resnet18'
-        elif isinstance(model_name, str) and task=="image-depth":#torch model
+        elif isinstance(model_name, str) and task=="depth-estimation":#torch model
             #https://pytorch.org/hub/intelisl_midas_v2/
             #model_names: "MiDaS_small", "DPT_Hybrid", "DPT_Large"
             self.model = torch.hub.load('intel-isl/MiDaS', model_name, pretrained=True)
@@ -864,7 +865,7 @@ class MyVisionInference():
         elif task=="image-classification":
             labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
             self.id2label = {str(i): label for i, label in enumerate(labels)}
-        elif task=="image-depth":
+        elif task=="depth-estimation":
             pass
 
         self.model=self.model.to(self.device)
@@ -892,7 +893,7 @@ class MyVisionInference():
         #HWC numpy (427, 640, 3)
         if self.model_type=="huggingface":
             inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
-            print(inputs.shape) #torch.Size([1, 3, 224, 224])
+            print(inputs.shape) #torch.Size([1, 3, 224, 224]) [1, 3, 350, 518]
         else:
             inputs = self.mypreprocess(self.image)
             print(inputs.shape) #torch.Size([1, 3, 384, 576])
@@ -907,8 +908,8 @@ class MyVisionInference():
         results = None
         if self.task=="image-classification":
             results = self.classification_postprocessing(outputs) #return confidence dicts
-        elif self.task=="image-depth":
-            results = self.depth_postprocessing(outputs, recolor=False) #return PIL image
+        elif self.task=="depth-estimation":
+            results = self.depth_postprocessing(outputs, recolor=True) #return PIL image
         return results
     
     def depth_postprocessing(self, outputs, recolor=True):
@@ -934,16 +935,18 @@ class MyVisionInference():
         prediction = torch.nn.functional.interpolate(
             predicted_depth_input,
             size=target_size,#(H=427, W=640)
-            mode="bicubic", #uses a bicubic interpolation algorithm to compute the values of the new tensor
+            mode="bicubic", #'bilinear', uses a bicubic interpolation algorithm to compute the values of the new tensor
             align_corners=False,
-        )
-        output = prediction.squeeze().cpu().numpy() #[427, 640]
-        formatted = (output * 255 / np.max(output)).astype("uint8")
+        ) #[1, 1, 427, 640]
+        #output = prediction.squeeze().cpu().numpy() #[427, 640]
+        #formatted = (output * 255 / np.max(output)).astype("uint8")
+        depth = (prediction - prediction.min()) / (prediction.max() - prediction.min()) * 255.0
+        formatted = depth.squeeze().cpu().numpy().astype(np.uint8)
         print(formatted.shape) #(427, 640)
         if recolor:
             #Recolor the depth map from grayscale to colored
             #normalized_image = image.astype(np.uint8)
-            formatted = cv2.applyColorMap(formatted, cv2.COLORMAP_HOT)
+            formatted = cv2.applyColorMap(formatted, cv2.COLORMAP_HOT)[:, :, ::-1]
             print(formatted.shape) #(427, 640, 3)
     
         depth = Image.fromarray(formatted)
@@ -1048,10 +1051,10 @@ def depth_test(mycache_dir=None):
     #image.size()#The size attribute returns a (width, height) tuple
     image.save("data/depth_test.jpg") 
 
-    checkpoint = "Intel/dpt-large" #"vinvino02/glpn-nyu"
-    depthinference = MyVisionInference(model_name=checkpoint, model_type="huggingface", task="image-depth", cache_dir=mycache_dir)
+    checkpoint = "LiheYoung/depth-anything-base-hf" #"Intel/dpt-large" #"vinvino02/glpn-nyu"
+    depthinference = MyVisionInference(model_name=checkpoint, model_type="huggingface", task="depth-estimation", cache_dir=mycache_dir)
     #checkpoint = "DPT_Large" #pip install timm
-    #depthinference = MyVisionInference(model_name=checkpoint, model_type="torch", task="image-depth", cache_dir=mycache_dir)
+    #depthinference = MyVisionInference(model_name=checkpoint, model_type="torch", task="depth-estimation", cache_dir=mycache_dir)
     results = depthinference(image=image)
     
     
