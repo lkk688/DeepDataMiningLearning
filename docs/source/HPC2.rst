@@ -23,6 +23,13 @@ If you have provided your SJSU ID to your instructor, you can access the HPC usi
 
 Ref our previous HPC tutorial: https://docs.google.com/document/d/1bNOUUqkeb9ItTsGHAXHLvFsLR6fA0MeZcBRVMCnvtms/edit?usp=sharing
 
+Setup cache folder location for torch and huggingface:
+
+.. code-block:: console
+
+   export HF_HOME=/data/rnd-liu/.cache/huggingface
+   export TORCH_HOME=/data/rnd-liu/.cache/torch
+
 Remote access
 -------------
 
@@ -110,23 +117,12 @@ GPU node internet access
 .. code-block:: console
 
    [010796032@g9 ~]$ export http_proxy=http://172.16.1.2:3128
-   [010796032@g9 ~]$ export https_proxy=https://172.16.1.2:3128
-   curl --proxy https://172.16.1.2:3128 "https://www.sjsu.edu"
+   [010796032@g9 ~]$ export https_proxy=http://172.16.1.2:3128
+   #you can also put these into ~/.bashrc
+   curl --proxy http://172.16.1.2:3128 "https://www.sjsu.edu"
    # git works
-   172.16.1.1 is hpc1 headnode IP
-   172.16.1.2 is hpc2 headnode IP
-   import urllib3
-   proxy = urllib3.ProxyManager('http://172.16.1.2:3128') #https does not work
-   proxy.request("GET", "https://www.sjsu.edu")
-
-   import requests
-   r = requests.get('https://httpbin.org/basic-auth/user/pass', auth=('user', 'pass')) #does not work
-   proxies = {"http": "http://172.16.1.2:3128", "https": "https://172.16.1.2:3128"}
-   r = requests.get("https://www.sjsu.edu/", proxies=proxies, verify=False)
-   #https://www.th3r3p0.com/random/python-requests-and-burp-suite.html
-   #requests.exceptions.ProxyError: HTTPSConnectionPool(host='www.sjsu.edu', port=443): Max retries exceeded with url: / (Caused by ProxyError('Your proxy appears to only use HTTP and not HTTPS, try changing your proxy URL to be HTTP. See: https://urllib3.readthedocs.io/en/1.26.x/advanced-usage.html#https-proxy-error-http-proxy', SSLError(SSLError(1, '[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1007)'))))
-
-
+   curl "https://www.sjsu.edu" #also works
+  
 
 
 X11 Window forwarding

@@ -271,6 +271,9 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
     pip install -U "transformers==4.38.1" --upgrade
     pip install sentencepiece
 
+Install MMdetection3D:
+
+.. code-block:: console
 
 Install langchain
 
