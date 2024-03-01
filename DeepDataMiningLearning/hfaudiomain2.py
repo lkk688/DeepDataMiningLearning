@@ -50,7 +50,9 @@ def trainmain(args):
     elif args.task == "audio-asr":
         if args.use_vocabpath:
             vocab_path = trainoutput #"./signalAI/"
-            raw_datasets = vocab_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path)
+            if args.dataconfig != "en":
+                a2z_only = False
+            raw_datasets = vocab_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path, a2z_only=a2z_only)
             
         #tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
         
@@ -137,7 +139,7 @@ def trainmain(args):
         metrics = trainer.evaluate()
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
-        save_adapterweights(model, args.target_language, trainoutput)
+        #save_adapterweights(model, args.target_language, trainoutput)
 
     elif args.trainmode == 'CustomTrain':
         
