@@ -78,7 +78,7 @@ def main():
 
     # build the model from a config file and a checkpoint file
     #model = init_detector(args.config, args.checkpoint, device=args.device)
-    model = init_model(args.config, args.checkpoint, device=args.device)
+    model = init_model(args.config, args.checkpoint, device=args.device) ##https://github.com/open-mmlab/mmdetection3d/blob/main/mmdet3d/apis/inference.py
 
     # test a single image
     #https://github.com/open-mmlab/mmdetection3d/blob/main/mmdet3d/apis/inference.py
