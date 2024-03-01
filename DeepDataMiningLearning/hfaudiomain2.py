@@ -26,7 +26,9 @@ def saveargs2file(args, trainoutput):
 
 def trainmain(args):
     
-    mycache_dir = deviceenv_set(args.usehpc, args.data_path)
+    #mycache_dir = deviceenv_set(args.usehpc, args.data_path)
+    if os.environ.get('HF_HOME') is not None:
+        mycache_dir=os.environ['HF_HOME']
     trainoutput=os.path.join(args.outputdir, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
@@ -241,7 +243,7 @@ if __name__ == "__main__":
                     help='data type name: huggingface, custom')
     parser.add_argument('--data_name', type=str, default="common_voice",
                     help='data name: common_voice, librispeech_asr, aesdd(local path), timit, common_language, superb, google/fleurs, minds14, marsyas/gtzan')
-    parser.add_argument('--dataconfig', type=str, default='en',
+    parser.add_argument('--dataconfig', type=str, default='zh-CN',
                     help='dataset_config_name, e.g., common_voice subset en, zh-CN')
     parser.add_argument('--target_language', type=str, default='en',
                     help='target_language: en')
@@ -274,7 +276,7 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0126w2vbert3noadapter",
+    parser.add_argument('--traintag', type=str, default="0301w2vbertzh",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
