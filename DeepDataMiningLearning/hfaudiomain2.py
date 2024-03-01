@@ -253,8 +253,8 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_name_or_path', type=str, default="facebook/w2v-bert-2.0",
-                    help='Model checkpoint name from HF, hf-audio/wav2vec2-bert-CV16-en, facebook/w2v-bert-2.0, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    parser.add_argument('--model_name_or_path', type=str, default="ydshieh/wav2vec2-large-xlsr-53-chinese-zh-cn-gpt",
+                    help='Model checkpoint name from HF, facebook/w2v-bert-2.0, hf-audio/wav2vec2-bert-CV16-en, facebook/w2v-bert-2.0, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     #autotokenizer
     parser.add_argument('--autotokenizer', default=True, action='store_true',
                     help='If some models contains the tokenizer, autotokenizer=True means use the default buildin tokenizer')
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0301w2vbertzh",
+    parser.add_argument('--traintag', type=str, default="0301w2vzh",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
@@ -297,7 +297,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=20, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=16, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=32, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=3e-4, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",

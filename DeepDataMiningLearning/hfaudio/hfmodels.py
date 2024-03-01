@@ -316,7 +316,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             model = AutoModelForCTC.from_pretrained(
                 model_checkpoint, 
                 cache_dir = mycache_dir,
-                #ignore_mismatched_sizes=True,
+                ignore_mismatched_sizes=True,
                 ctc_loss_reduction="mean", 
                 pad_token_id=processor.tokenizer.pad_token_id,
                 vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,

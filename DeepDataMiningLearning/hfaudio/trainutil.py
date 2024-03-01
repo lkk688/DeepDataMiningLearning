@@ -43,7 +43,7 @@ class MyDataCollatorWithPadding:
 
     processor: Wav2Vec2Processor
     padding: Union[bool, str] = "longest" #= True
-    inputvaluekey: str = "input_values"
+    #inputvaluekey: str = "input_values"
     task: Optional[str] = None
     max_length: Optional[int] = None
     max_length_labels: Optional[int] = None
@@ -52,8 +52,14 @@ class MyDataCollatorWithPadding:
 
     def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
         #input_features = [{"input_values": feature["input_values"]} for feature in features]
-
-        input_features = [{"input_features": feature["input_features"]} for feature in features]
+        #input_features = [{"input_features": feature["input_features"]} for feature in features]
+        
+        onefeature=features[0]
+        if "input_values" in onefeature.keys():
+            inputvaluekey = "input_values"
+        elif "input_features" in onefeature.keys():
+            inputvaluekey = "input_features"
+        input_features = [{inputvaluekey: feature[inputvaluekey]} for feature in features]
 
         batch = self.processor.pad(
             input_features,
