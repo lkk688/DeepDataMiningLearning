@@ -385,6 +385,21 @@ New conda environment based on Python3.10: mycondapy310
    pip install sentencepiece
    pip install protobuf
 
+Install MMdetection3d:
+
+.. code-block:: console
+
+   pip install -U openmim
+   mim install mmengine
+   mim install 'mmcv>=2.0.0rc4'
+   mim install 'mmdet>=3.0.0'
+   (mycondapy310) [010796032@cs001 MyRepo]$ git clone https://github.com/open-mmlab/mmdetection3d.git
+   (mycondapy310) [010796032@cs001 MyRepo]$ cd mmdetection3d/
+   nano requirements/runtime.txt #remove open3d in the list
+   (mycondapy310) [010796032@cs001 mmdetection3d]$ pip install -v -e .
+   pip install cumm-cu118
+   pip install spconv-cu118
+
 Test code:
 
 .. code-block:: console
