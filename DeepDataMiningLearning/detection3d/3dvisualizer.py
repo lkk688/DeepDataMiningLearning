@@ -12,12 +12,15 @@ from mmdet3d.visualization import Det3DLocalVisualizer
 
 det3d_local_visualizer = Det3DLocalVisualizer()
 
-image = np.random.randint(0, 256, size=(10, 12, 3)).astype('uint8')
+image = np.random.randint(0, 256, size=(10, 12, 3)).astype('uint8') #HWC
 points = np.random.rand(1000, 3)
 gt_instances_3d = InstanceData()
-gt_instances_3d.bboxes_3d = DepthInstance3DBoxes(torch.rand((5, 7)))
-gt_instances_3d.labels_3d = torch.randint(0, 2, (5,))
+gt_instances_3d.bboxes_3d = DepthInstance3DBoxes(torch.rand((5, 7))) #[5, 7]
+gt_instances_3d.labels_3d = torch.randint(0, 2, (5,)) #(5,)
 gt_det3d_data_sample = Det3DDataSample()
 gt_det3d_data_sample.gt_instances_3d = gt_instances_3d
 data_input = dict(img=image, points=points)
 det3d_local_visualizer.add_datasample('3D Scene', data_input, gt_det3d_data_sample)
+det3d_local_visualizer.show()
+
+#input_meta['depth2img']

@@ -275,6 +275,16 @@ Install MMdetection3D:
 
 .. code-block:: console
 
+    pip install -U openmim
+    mim install mmengine
+    mim install 'mmcv>=2.0.0rc4'
+    mim install 'mmdet>=3.0.0'
+    (mycondapy310) PS D:\Developer> git clone https://github.com/open-mmlab/mmdetection3d.git
+    cd mmdetection3d/
+    pip install -v -e .
+    pip install cumm-cu118
+    pip install spconv-cu118
+
 Install langchain
 
 .. code-block:: console
