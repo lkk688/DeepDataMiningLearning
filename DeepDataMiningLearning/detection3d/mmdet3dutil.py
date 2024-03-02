@@ -262,7 +262,7 @@ class myInference():
         visualize_kwargs = {'show': True, 'no_save_vis': False, 'img_out_dir': 'output/', 'cam_type_dir': 'CAM2'}
         postprocess_kwargs = {'no_save_pred': False, 'pred_out_dir': 'output/'}
 
-        ori_inputs = self._inputs_to_list(inputs, cam_type=cam_type)
+        ori_inputs = self._inputs_to_list(inputs, cam_type=cam_type)#list of item dict, each dict has 'points' 'img' 'cam2img' 'lidar2cam' 'lidar2img'
 
         inputs = self.preprocess(
             ori_inputs, batch_size=batch_size)
@@ -604,6 +604,7 @@ class myInference():
         results = []
 
         for single_input, pred in zip(inputs, preds):
+            #pred:
             points_input = single_input['points'] #.bin file
             if isinstance(points_input, str):
                 pts_bytes = mmengine.fileio.get(points_input)
@@ -662,7 +663,7 @@ class myInference():
 
         return results
 
-from mmdet3d.apis import MultiModalityDet3DInferencer
+#from mmdet3d.apis import MultiModalityDet3DInferencer
 def test_MultiModalityDet3DInferencer(args):
     call_args = vars(args)
     init_kws = ['model', 'weights', 'device']
@@ -678,22 +679,34 @@ def test_MultiModalityDet3DInferencer(args):
     #inferencer = MultiModalityDet3DInferencer(**init_args)
     inferencer = myInference(**init_args)
 
-    call_args['inputs'] = dict(
+    # call_args['inputs'] = dict(
+    #     points=call_args.pop('pcd'),
+    #     img=call_args.pop('img'),
+    #     infos=call_args.pop('infos'))
+    # call_args['no_save_vis'] = False
+    # call_args['no_save_pred']= False
+    # call_args['out_dir'] = 'output/'
+    # call_args['show'] = True
+    # call_args.pop('expname')
+    # call_args.pop('mode')
+    # call_args.pop('basefolder')
+    # call_args.pop('snapshot')
+    # call_args.pop('score_thr')
+    
+
+    input_args={}
+    input_args['inputs']=dict(
         points=call_args.pop('pcd'),
         img=call_args.pop('img'),
         infos=call_args.pop('infos'))
-    call_args['no_save_vis'] = False
-    call_args['no_save_pred']= False
-    call_args['out_dir'] = 'output/'
-    call_args['show'] = True
-    call_args.pop('expname')
-    call_args.pop('mode')
-    call_args.pop('basefolder')
-    call_args.pop('snapshot')
-    call_args.pop('score_thr')
-    print(call_args)
+    input_args['no_save_vis'] = False
+    input_args['no_save_pred']= False
+    input_args['out_dir'] = 'output/'
+    input_args['show'] = True
+    input_args['cam_type'] = 'CAM2'
+    print(input_args)
     #{'cam_type': 'CAM2', 'out_dir': 'output/', 'show': True, 'inputs': {'points': 'D:\\Developer\\mmdetection3d\\demo/data/kitti/000008.bin', 'img': 'D:\\Developer\\mmdetection3d\\demo/data/kitti/000008.png', 'infos': 'D:\\Developer\\mmdetection3d\\demo/data/kitti/000008.pkl'}, 'no_save_vis': False, 'no_save_pred': False}
-    inferencer(**call_args)#__call__ in Base3DInferencer(BaseInferencer)
+    inferencer(**input_args)#__call__ in Base3DInferencer(BaseInferencer)
 
 
 def test_inference2(args, device='cuda:0'):
