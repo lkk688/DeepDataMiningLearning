@@ -258,7 +258,7 @@ if __name__ == "__main__":
     #autotokenizer
     parser.add_argument('--autotokenizer', default=True, action='store_true',
                     help='If some models contains the tokenizer, autotokenizer=True means use the default buildin tokenizer')
-    parser.add_argument('--use_vocabpath', default=True, action='store_true', help='Use new vocab file')
+    parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use new vocab file')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
     parser.add_argument('--pretrained', type=str, default="",
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0301w2vzh",
+    parser.add_argument('--traintag', type=str, default="0301w2vzh_nonewvocal",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
