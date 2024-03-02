@@ -164,7 +164,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
     processor = None
     if task =="audio-classification" or vocab_path is None: #processoroption1==True:
         #processor = Wav2Vec2Processor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
-        processor = AutoProcessor.from_pretrained(model_checkpoint, cache_dir=mycache_dir,return_attention_mask=return_attention_mask)
+        processor = AutoProcessor.from_pretrained(model_checkpoint, cache_dir=mycache_dir, return_attention_mask=return_attention_mask)
         feature_extractor = processor.feature_extractor
     else:#task =="audio-asr" create own tokenizer
         config = AutoConfig.from_pretrained(model_checkpoint, cache_dir=mycache_dir, trust_remote_code=TrustRemoteCode)#config.model_type:'wav2vec2' config.tokenizer_class=None

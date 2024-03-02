@@ -253,8 +253,8 @@ if __name__ == "__main__":
                     help='0 means all dataset')
     parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_name_or_path', type=str, default="ydshieh/wav2vec2-large-xlsr-53-chinese-zh-cn-gpt",
-                    help='Model checkpoint name from HF, facebook/w2v-bert-2.0, hf-audio/wav2vec2-bert-CV16-en, facebook/w2v-bert-2.0, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    parser.add_argument('--model_name_or_path', type=str, default="jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn",
+                    help='Model checkpoint name from HF, ydshieh/wav2vec2-large-xlsr-53-chinese-zh-cn-gpt, facebook/w2v-bert-2.0, hf-audio/wav2vec2-bert-CV16-en, facebook/w2v-bert-2.0, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     #autotokenizer
     parser.add_argument('--autotokenizer', default=True, action='store_true',
                     help='If some models contains the tokenizer, autotokenizer=True means use the default buildin tokenizer')
