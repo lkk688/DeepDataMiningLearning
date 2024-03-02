@@ -261,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use new vocab file')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--pretrained', type=str, default="",
+    parser.add_argument('--pretrained', type=str, default="/data/rnd-liu/output/common_voice_0301w2vzh_nonewvocal/epoch11_savedmodel.pth",
                     help='Pretrained model path')
     parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-asr",
@@ -274,8 +274,8 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate and localevaluate')
     parser.add_argument('--unfreezename', type=str, default="adapter",
                     help='Unfreezename in models')
-    parser.add_argument('--freeze_feature_encoder', default=True, action='store_true', help='Freeze the featureencoder')
-    parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
+    parser.add_argument('--freeze_feature_encoder', default=False, action='store_true', help='Freeze the featureencoder')
+    parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
     parser.add_argument('--traintag', type=str, default="0301w2vzh_nonewvocal",
