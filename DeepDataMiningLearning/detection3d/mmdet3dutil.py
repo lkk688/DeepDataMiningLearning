@@ -91,7 +91,8 @@ from mmengine.runner import load_checkpoint
 import mmcv
 import mmengine
 #https://github.com/open-mmlab/mmdetection3d/blob/main/mmdet3d/visualization/local_visualizer.py
-from mmdet3d.visualization.local_visualizer import Det3DLocalVisualizer
+#from mmdet3d.visualization.local_visualizer import Det3DLocalVisualizer
+from local_visualizer import Det3DLocalVisualizer
 def test_inference2(args, device='cuda:0'):
     # build the model from a config file and a checkpoint file
     #model = init_detector(args.config, args.checkpoint, device=args.device)
@@ -111,18 +112,21 @@ def test_inference2(args, device='cuda:0'):
     model = MODELS.build(config.model)
 
     checkpoint = args.checkpoint
+    has_dataset_meta = False
     if checkpoint is not None:
         checkpoint = load_checkpoint(model, checkpoint, map_location='cpu')
         # save the dataset_meta in the model for convenience
         if 'dataset_meta' in checkpoint.get('meta', {}):
             # mmdet3d 1.x
             model.dataset_meta = checkpoint['meta']['dataset_meta'] #contain 'classes'
+            has_dataset_meta = True
+   
         test_dataset_cfg = deepcopy(config.test_dataloader.dataset)
         # lazy init. We only need the metainfo.
         test_dataset_cfg['lazy_init'] = True
         metainfo = DATASETS.build(test_dataset_cfg).metainfo
         cfg_palette = metainfo.get('palette', None) ##contain 'classes'
-        if cfg_palette is not None:
+        if cfg_palette is not None and has_dataset_meta:
             model.dataset_meta['palette'] = cfg_palette
     
     model.cfg = config  # save the config in the model for convenience
@@ -142,7 +146,8 @@ def test_inference2(args, device='cuda:0'):
     # _init_pipeline(cfg)
     #visualizer=VISUALIZERS.build(config.visualizer) #Det3DLocalVisualizer
     visualizer= Det3DLocalVisualizer()
-    visualizer.dataset_meta = model.dataset_meta
+    if has_dataset_meta:
+        visualizer.dataset_meta = model.dataset_meta
 
     # _inputs_to_list
     result = {}
@@ -166,20 +171,25 @@ def test_inference2(args, device='cuda:0'):
 
     result['points'] = points
     np.save(os.path.join(args.out_dir, args.expname+'_vis.npy'), result)
-
+    #vis_task='mono_det', 'multi-view_det', 'lidar_det', 'lidar_seg', 'multi-modality_det'
+    if args.mode == "multi":
+        vis_task = 'multi-modality_det'
+    else:
+        vis_task = 'lidar_det'
     visualizer.add_datasample(
         pc_name,
         data_input,
-        pred,
-        show=False,
+        data_sample,
+        show=True,
         draw_gt=False,
         # wait_time=wait_time,
         # draw_pred=draw_pred,
         # pred_score_thr=pred_score_thr,
         # o3d_save_path=o3d_save_path,
         # out_file=out_file,
-        vis_task='multi-modality_det',
+        vis_task=vis_task,
     )
+    visualizer.show()
 
 from mmdet3d.apis import MultiModalityDet3DInferencer
 def test_MultiModalityDet3DInferencer(args):
@@ -190,13 +200,13 @@ def test_MultiModalityDet3DInferencer(args):
 #demo/data/kitti/000008.png
 #demo/data/kitti/000008.pkl #anno
 
-#pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py'
+#configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py'
 #hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth'
 
-#pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py
+#configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py
 #hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth
 
-#hv_pointpillars_fpn_sbn-all_4x8_2x_nus-3d_20210826_104936-fca299c1.pth
+#configs/pointpillars/hv_pointpillars_fpn_sbn-all_4x8_2x_nus-3d_20210826_104936-fca299c1.pth
 #pointpillars_hv_fpn_sbn-all_8xb2-amp-2x_nus-3d.py
 
 #demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin
@@ -209,15 +219,21 @@ def test_MultiModalityDet3DInferencer(args):
 #demo/data/kitti/000008.pkl #anno
 #configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py
 #mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth
+    
+#scp -r 010796032@coe-hpc2.sjsu.edu:/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/ .
+        
+#python demo/pcd_demo.py demo/data/kitti/000008.bin configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py modelzoo_mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth --show
+
 def main():
     parser = ArgumentParser()
-    parser.add_argument('--expname',  type=str, default='bevfusion')
-    parser.add_argument('--mode',  type=str, default='multi')
-    parser.add_argument('--pcd',  type=str, default='/data/rnd-liu/MyRepo/mmdetection3d/demo/data/kitti/000008.bin', help='Point cloud file')#
-    parser.add_argument('--config', type=str, default='/data/rnd-liu/MyRepo/mmdetection3d/configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
-    parser.add_argument('--checkpoint', type=str, default='/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
-    parser.add_argument('--img', type=str, default='/data/rnd-liu/MyRepo/mmdetection3d/demo/data/kitti/000008.png')
-    parser.add_argument('--ann', type=str, default='/data/rnd-liu/MyRepo/mmdetection3d/demo/data/kitti/000008.pkl')
+    parser.add_argument('--expname',  type=str, default='test')
+    parser.add_argument('--mode',  type=str, default='lidar') #multi
+    parser.add_argument('--basefolder', type=str, default=r'D:\Developer') #'/data/rnd-liu/MyRepo/mmdetection3d/'
+    parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
+    parser.add_argument('--config', type=str, default='configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py', help='Config file')
+    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth', help='Checkpoint file')
+    parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
+    parser.add_argument('--ann', type=str, default='demo/data/kitti/000008.pkl')
     parser.add_argument(
         '--device', default='cuda:1', help='Device used for inference')
     parser.add_argument(
@@ -238,6 +254,12 @@ def main():
         action='store_true',
         help='whether to save online visualization results')
     args = parser.parse_args()
+
+    args.pcd = os.path.join(args.basefolder, 'mmdetection3d', args.pcd)
+    args.config = os.path.join(args.basefolder, 'mmdetection3d', args.config)
+    args.checkpoint = os.path.join(args.basefolder, 'mmdetection3d', args.checkpoint)
+    args.img = os.path.join(args.basefolder, 'mmdetection3d', args.img)
+    args.ann = os.path.join(args.basefolder, 'mmdetection3d', args.ann)
 
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
