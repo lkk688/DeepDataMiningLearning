@@ -117,8 +117,8 @@ def freezemodel(model, unfreezename="", freezename="", freeze_feature_encoder=Tr
             param.requires_grad = True
     else:
         # freeze the convolutional waveform encoder
-        if hasattr(model, "freeze_feature_extractor"):#not used
-            model.freeze_feature_extractor()
+        # if hasattr(model, "freeze_feature_extractor"):
+        #     model.freeze_feature_extractor()
         if freeze_feature_encoder and hasattr(model, "freeze_feature_encoder"):
             #model.freeze_feature_extractor()
             model.freeze_feature_encoder()
