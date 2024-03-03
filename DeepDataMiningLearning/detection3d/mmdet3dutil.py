@@ -979,23 +979,23 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--expname',  type=str, default='test')
     parser.add_argument('--mode',  type=str, default='multi') #multi, lidar
-    parser.add_argument('--basefolder', type=str, default='/home/lkk/Developer/') # r'D:\Developer' '/data/rnd-liu/MyRepo/mmdetection3d/'
-    # parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
-    # parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
-    # parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
-    # parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
-    # parser.add_argument('--infos', type=str, default='demo/data/kitti/000008.pkl')
-    parser.add_argument('--pcd',  type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin', help='Point cloud file')#
-    parser.add_argument('--config', type=str, default='projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py', help='Config file')
-    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-2628f933.pth', help='Checkpoint file')
-    parser.add_argument('--img', type=str, default='demo/data/nuscenes/')
-    parser.add_argument('--infos', type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl')
+    parser.add_argument('--basefolder', type=str, default=r'D:\Developer') # '/home/lkk/Developer/' '/data/rnd-liu/MyRepo/mmdetection3d/'
+    parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
+    parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
+    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
+    parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
+    parser.add_argument('--infos', type=str, default='demo/data/kitti/000008.pkl')
+    # parser.add_argument('--pcd',  type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin', help='Point cloud file')#
+    # parser.add_argument('--config', type=str, default='projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py', help='Config file')
+    # parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/bevfusion_converted.pth', help='Checkpoint file')
+    # parser.add_argument('--img', type=str, default='demo/data/nuscenes/')
+    # parser.add_argument('--infos', type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl')
     parser.add_argument(
         '--device', default='cuda:0', help='Device used for inference')
     parser.add_argument(
         '--cam-type',
         type=str,
-        default='all', #'CAM2', #'CAM_FRONT',
+        default='CAM2', #'all' 'CAM2', #'CAM_FRONT',
         help='choose camera type to inference')
     parser.add_argument(
         '--score-thr', type=float, default=0.3, help='bbox score threshold')
@@ -1020,7 +1020,7 @@ def main():
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
     
-    #test_MultiModalityDet3DInferencer(args)
+    test_MultiModalityDet3DInferencer(args)
 
     test_inference2(args, device='cuda:0')
 

@@ -10,7 +10,7 @@ from tqdm.auto import tqdm
 import datetime
 
 from DeepDataMiningLearning.hfaudio.hfutil import valkey, deviceenv_set, get_device
-from DeepDataMiningLearning.hfaudio.hfdata import savedict2file, load_audiodataset, getlabels_classifier, getlabels_asr, dataset_removecharacters, dataset_castsamplingrate, dataset_preprocessing, filter_datasetlength
+from DeepDataMiningLearning.hfaudio.hfdata import savedict2file, load_audiodataset, getlabels_classifier, dataset_removecharacters, dataset_castsamplingrate, dataset_preprocessing, filter_datasetlength
 from DeepDataMiningLearning.hfaudio.hfmodels import loadmodel, multilingual_tokenizer, load_featureextractor_model, savemodels, load_hfcheckpoint, save_adapterweights, load_featureextractor_seqmodel
 from DeepDataMiningLearning.hfaudio.evaluateutil import myEvaluator, evaluate_dataset
 from DeepDataMiningLearning.hfaudio.trainutil import get_datacollator, DataCollatorSpeechSeq2SeqWithPadding, get_myoptimizer
@@ -26,7 +26,9 @@ def saveargs2file(args, trainoutput):
 
 def trainmain(args):
     
-    mycache_dir = deviceenv_set(args.usehpc, args.data_path)
+    #mycache_dir = deviceenv_set(args.usehpc, args.data_path)
+    if os.environ.get('HF_HOME') is not None:
+        mycache_dir=os.environ['HF_HOME']
     trainoutput=os.path.join(args.outputdir, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
     print("Trainoutput folder:", trainoutput)
@@ -248,13 +250,13 @@ if __name__ == "__main__":
                     help='target_language: en')
     parser.add_argument('--subset', type=float, default=0,
                     help='0 means all dataset')
-    parser.add_argument('--data_path', type=str, default="/data/cmpe249-fa23/Huggingfacecache", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     #model related arguments
-    parser.add_argument('--model_name_or_path', type=str, default="facebook/w2v-bert-2.0",
-                    help='Model checkpoint name from HF, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
+    parser.add_argument('--model_name_or_path', type=str, default="hf-audio/wav2vec2-bert-CV16-en",
+                    help='Model checkpoint name from HF, facebook/w2v-bert-2.0, jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn, facebook/mms-1b-all, jonatasgrosman/wav2vec2-large-xlsr-53-english, TencentGameMate/chinese-wav2vec2-base, facebook/wav2vec2-xls-r-300m, facebook/wav2vec2-large-xlsr-53, anton-l/xtreme_s_xlsr_300m_minds14, facebook/wav2vec2-base-960h, "facebook/wav2vec2-base", ntu-spml/distilhubert')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--pretrained', type=str, default="/data/rnd-liu/output/common_voice_0125seq/epoch19_savedmodel.pth",
+    parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
     parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-asr",
@@ -271,7 +273,7 @@ if __name__ == "__main__":
     parser.add_argument('--freeze_basemodel', default=True, action='store_true', help='Freeze the basemodel')
     #training related arguments
     parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path') #r"E:\output" "./output" "/DATA10T/output/"
-    parser.add_argument('--traintag', type=str, default="0125seq",
+    parser.add_argument('--traintag', type=str, default="0302audioseq",
                     help='Name the current training')
     # parser.add_argument('--training', default=True, action='store_true',
     #                 help='Perform training')
