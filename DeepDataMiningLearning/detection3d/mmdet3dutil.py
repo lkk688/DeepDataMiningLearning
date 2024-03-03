@@ -297,19 +297,19 @@ class myInference():
                 return_vis: bool = True,
                 no_save_vis: bool = False,
                 img_out_dir: str = 'output/',
-                cam_type_dir: str = 'CAM2',
+                cam_type_dir: str = 'CAM2',#used in visualization
                 wait_time: int =-1, #block program, enable interaction of the figure
                 no_save_pred: bool = False,
                 pred_out_dir: str = 'output/',
                 **kwargs) -> Optional[dict]:
-        cam_type='CAM2'
+        #cam_type='CAM2'
         visualize_kwargs = {'show': show, 'no_save_vis': no_save_vis, 'img_out_dir': img_out_dir, 'cam_type_dir': cam_type_dir, 'wait_time': wait_time, 'return_vis': return_vis}
         postprocess_kwargs = {'no_save_pred': no_save_pred, 'pred_out_dir': pred_out_dir}
 
         if self.mode == "lidar":
             ori_inputs = self.lidar_inputs_to_list(inputs)
         else:
-            ori_inputs = self.multi_inputs_to_list(inputs, cam_type=cam_type)
+            ori_inputs = self.multi_inputs_to_list(inputs, cam_type=cam_type_dir) #cam_type='CAM2'
             #list of item dict, each dict has 'points' 'img' 'cam2img' 'lidar2cam' 'lidar2img'
         inputs = self.preprocess(
             ori_inputs, batch_size=batch_size)
@@ -916,6 +916,7 @@ def test_inference2(args, device='cuda:0'):
         vis_task=vis_task,
     )
     #visualizer.show()
+    # set bev image in visualizer
 
     # _inputs_to_list
     result_dict = {}
@@ -929,7 +930,13 @@ def test_inference2(args, device='cuda:0'):
         }
     #pred = result['bboxes_3d']
     result_dict['points'] = points
-    np.save(os.path.join(args.out_dir, args.expname+'_vis.npy'), result_dict)
+    #np.save(os.path.join(args.out_dir, args.expname+'_vis.npy'), result_dict)
+
+    visualizer.set_bev_image()
+    # draw bev bboxes
+    gt_bboxes_3d = CameraInstance3DBoxes(result_dict['bboxes_3d'])
+    visualizer.draw_bev_bboxes(gt_bboxes_3d, edge_colors='orange')
+    visualizer.show()
 
 #'/data/cmpe249-fa22/WaymoKitti/4c_train5678/training/velodyne/008118.bin'
 #demo/data/kitti/000008.bin
@@ -975,27 +982,49 @@ def test_inference2(args, device='cuda:0'):
 #    demo/data/nuscenes/ demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py \
 #    modelzoo_mmdetection3d/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-2628f933.pth --cam-type all --score-thr 0.2 --show
 
+import numpy as np
+from mmengine import load
+
+#from mmdet3d.visualization import Det3DLocalVisualizer
+from mmdet3d.structures import CameraInstance3DBoxes
+def test_BEV(args):
+    info_file = os.path.join(args.basefolder, 'mmdetection3d', args.infos)
+    info_file = load(info_file) #('demo/data/kitti/000008.pkl')
+    bboxes_3d = []
+    for instance in info_file['data_list'][0]['instances']:
+        bboxes_3d.append(instance['bbox_3d'])
+    gt_bboxes_3d = np.array(bboxes_3d, dtype=np.float32)
+    gt_bboxes_3d = CameraInstance3DBoxes(gt_bboxes_3d)
+
+    visualizer = Det3DLocalVisualizer()
+    # set bev image in visualizer
+    visualizer.set_bev_image()
+    # draw bev bboxes
+    visualizer.draw_bev_bboxes(gt_bboxes_3d, edge_colors='orange')
+    visualizer.show()
+
+
 def main():
     parser = ArgumentParser()
     parser.add_argument('--expname',  type=str, default='test')
     parser.add_argument('--mode',  type=str, default='multi') #multi, lidar
-    parser.add_argument('--basefolder', type=str, default=r'D:\Developer') # '/home/lkk/Developer/' '/data/rnd-liu/MyRepo/mmdetection3d/'
-    parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
-    parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
-    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
-    parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
-    parser.add_argument('--infos', type=str, default='demo/data/kitti/000008.pkl')
-    # parser.add_argument('--pcd',  type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin', help='Point cloud file')#
-    # parser.add_argument('--config', type=str, default='projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py', help='Config file')
-    # parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/bevfusion_converted.pth', help='Checkpoint file')
-    # parser.add_argument('--img', type=str, default='demo/data/nuscenes/')
-    # parser.add_argument('--infos', type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl')
+    parser.add_argument('--basefolder', type=str, default='/home/lkk/Developer/') # r'D:\Developer' '/data/rnd-liu/MyRepo/mmdetection3d/'
+    # parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
+    # parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
+    # parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
+    # parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
+    # parser.add_argument('--infos', type=str, default='demo/data/kitti/000008.pkl')
+    parser.add_argument('--pcd',  type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin', help='Point cloud file')#
+    parser.add_argument('--config', type=str, default='projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py', help='Config file')
+    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.pth', help='Checkpoint file')
+    parser.add_argument('--img', type=str, default='demo/data/nuscenes/')
+    parser.add_argument('--infos', type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl')
     parser.add_argument(
         '--device', default='cuda:0', help='Device used for inference')
     parser.add_argument(
         '--cam-type',
         type=str,
-        default='CAM2', #'all' 'CAM2', #'CAM_FRONT',
+        default='all', #'all' 'CAM2', #'CAM_FRONT',
         help='choose camera type to inference')
     parser.add_argument(
         '--score-thr', type=float, default=0.3, help='bbox score threshold')
@@ -1020,9 +1049,11 @@ def main():
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
     
-    #test_MultiModalityDet3DInferencer(args)
+    #test_BEV(args)
 
-    test_inference2(args, device='cuda:0')
+    #test_MultiModalityDet3DInferencer(args) #BEVFusion has pipeline problem
+
+    test_inference2(args, device=args.device) #BEVFusion works
 
     test_inference(args)
 
