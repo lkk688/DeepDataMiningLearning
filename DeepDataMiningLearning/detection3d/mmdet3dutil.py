@@ -309,20 +309,20 @@ class myInference():
         if self.mode == "lidar":
             ori_inputs = self.lidar_inputs_to_list(inputs)
         else:
-            ori_inputs = self.multi_inputs_to_list(inputs, cam_type=cam_type)#list of item dict, each dict has 'points' 'img' 'cam2img' 'lidar2cam' 'lidar2img'
-
+            ori_inputs = self.multi_inputs_to_list(inputs, cam_type=cam_type)
+            #list of item dict, each dict has 'points' 'img' 'cam2img' 'lidar2cam' 'lidar2img'
         inputs = self.preprocess(
             ori_inputs, batch_size=batch_size)
         
         preds = []
         results_dict = {'predictions': [], 'visualization': []}
         for data in inputs:
-        #'data_samples': [<Det3DDataSample
-        #'inputs'->'points' 'img'
+        #'data_samples': [<Det3DDataSample] each contains 'cam2img' 'lidar2cam' 'lidar2img'
+        #'inputs'->'points'(list of n,4) 'img' (lists of [CHW])
             with torch.no_grad():
                 result = self.model.test_step(data)
             #preds.append(result)
-            preds.extend(result) #Det3DDataSample
+            preds.extend(result) #[Det3DDataSample] each contains 'pred_instances_3d' 'cam2img' 'lidar2cam' 'lidar2img'
             visualization = self.visualize(ori_inputs, preds,
                                            **visualize_kwargs)
             results = self.postprocess(preds, visualization,
@@ -571,7 +571,7 @@ class myInference():
         if not return_datasample:
             results = []
             for pred in preds:
-                result = self.pred2dict(pred, pred_out_dir)
+                result = self.pred2dict(pred, pred_out_dir)#<Det3DDataSample->dict['bboxes_3d']
                 results.append(result)
         elif pred_out_dir != '':
             print("not support")
@@ -1020,7 +1020,7 @@ def main():
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
     
-    test_MultiModalityDet3DInferencer(args)
+    #test_MultiModalityDet3DInferencer(args)
 
     test_inference2(args, device='cuda:0')
 
