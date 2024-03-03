@@ -122,14 +122,20 @@ class myInference():
                  weights: Optional[str] = None,
                  device: Optional[str] = None,
                  scope: str = 'mmdet3d',
+                 mode: str = 'lidar', 
                  palette: str = 'none') -> None:
         # A global counter tracking the number of frames processed, for
         # naming of the output results
+        self.mode = mode #newly added to differentiate different mode
+
         self.num_visualized_frames = 0
         self.scope = scope
         self.palette = palette
         self.model = self.initmodel(configfile=model, checkpoint=weights, device=device)
-        self.pipeline = self.init_pipeline(self.model.cfg)
+        if self.mode == "lidar":
+            self.pipeline = self.lidar_init_pipeline(self.model.cfg)
+        else:
+            self.pipeline = self.multi_init_pipeline(self.model.cfg)
         self.collate_fn = pseudo_collate
             #visualizer=VISUALIZERS.build(config.visualizer) #Det3DLocalVisualizer
         self.visualizer= Det3DLocalVisualizer()
@@ -207,7 +213,26 @@ class myInference():
                 return i
         return -1
 
-    def init_pipeline(self, cfg: ConfigType) -> Compose:
+    def lidar_init_pipeline(self, cfg: ConfigType) -> Compose:
+        """Initialize the test pipeline."""
+        pipeline_cfg = cfg.test_dataloader.dataset.pipeline
+
+        load_point_idx = self._get_transform_idx(pipeline_cfg,
+                                                 'LoadPointsFromFile') #0
+        if load_point_idx == -1:
+            raise ValueError(
+                'LoadPointsFromFile is not found in the test pipeline')
+
+        load_cfg = pipeline_cfg[load_point_idx]
+        self.coord_type, self.load_dim = load_cfg['coord_type'], load_cfg[
+            'load_dim'] #LIDAR, 4
+        self.use_dim = list(range(load_cfg['use_dim'])) if isinstance(
+            load_cfg['use_dim'], int) else load_cfg['use_dim'] #[0,1,2,3]
+
+        pipeline_cfg[load_point_idx]['type'] = 'LidarDet3DInferencerLoader'
+        return Compose(pipeline_cfg)
+    
+    def multi_init_pipeline(self, cfg: ConfigType) -> Compose:
         """Initialize the test pipeline."""
         pipeline_cfg = cfg.test_dataloader.dataset.pipeline
 
@@ -253,16 +278,38 @@ class myInference():
 
         return Compose(pipeline_cfg) #self.pipeline
     
+    """
+    preprocess_kwargs: set = {'cam_type'}
+    forward_kwargs: set = set()
+    visualize_kwargs: set = {
+        'return_vis', 'show', 'wait_time', 'draw_pred', 'pred_score_thr',
+        'img_out_dir', 'no_save_vis', 'cam_type_dir'
+    }
+    postprocess_kwargs: set = {
+        'print_result', 'pred_out_dir', 'return_datasample', 'no_save_pred'
+    }
+    """
     def __call__(self,
-                 inputs: InputsType,
-                 batch_size: int = 1,
-                 return_datasamples: bool = False,
-                 **kwargs) -> Optional[dict]:
+                inputs: InputsType,
+                batch_size: int = 1,
+                return_datasamples: bool = False,
+                show: bool = True, #NEW ADD
+                return_vis: bool = True,
+                no_save_vis: bool = False,
+                img_out_dir: str = 'output/',
+                cam_type_dir: str = 'CAM2',
+                wait_time: int =-1, #block program, enable interaction of the figure
+                no_save_pred: bool = False,
+                pred_out_dir: str = 'output/',
+                **kwargs) -> Optional[dict]:
         cam_type='CAM2'
-        visualize_kwargs = {'show': True, 'no_save_vis': False, 'img_out_dir': 'output/', 'cam_type_dir': 'CAM2'}
-        postprocess_kwargs = {'no_save_pred': False, 'pred_out_dir': 'output/'}
+        visualize_kwargs = {'show': show, 'no_save_vis': no_save_vis, 'img_out_dir': img_out_dir, 'cam_type_dir': cam_type_dir, 'wait_time': wait_time, 'return_vis': return_vis}
+        postprocess_kwargs = {'no_save_pred': no_save_pred, 'pred_out_dir': pred_out_dir}
 
-        ori_inputs = self._inputs_to_list(inputs, cam_type=cam_type)#list of item dict, each dict has 'points' 'img' 'cam2img' 'lidar2cam' 'lidar2img'
+        if self.mode == "lidar":
+            ori_inputs = self.lidar_inputs_to_list(inputs)
+        else:
+            ori_inputs = self.multi_inputs_to_list(inputs, cam_type=cam_type)#list of item dict, each dict has 'points' 'img' 'cam2img' 'lidar2cam' 'lidar2img'
 
         inputs = self.preprocess(
             ori_inputs, batch_size=batch_size)
@@ -281,12 +328,47 @@ class myInference():
             results = self.postprocess(preds, visualization,
                                        return_datasamples,
                                        **postprocess_kwargs)
-            results_dict['predictions'].extend(results['predictions'])
+            results_dict['predictions'].extend(results['predictions']) # add to list
             if results['visualization'] is not None:
                 results_dict['visualization'].extend(results['visualization'])
         return results_dict
     
-    def _inputs_to_list(self,
+    def lidar_inputs_to_list(self, inputs: Union[dict, list], **kwargs) -> list:
+        """Preprocess the inputs to a list.
+        Preprocess inputs to a list according to its type:
+
+        - list or tuple: return inputs
+        - dict: the value with key 'points' is
+            - Directory path: return all files in the directory
+            - other cases: return a list containing the string. The string
+              could be a path to file, a url or other types of string according
+              to the task.
+
+        Args:
+            inputs (Union[dict, list]): Inputs for the inferencer.
+
+        Returns:
+            list:
+              List of input for the :meth:`preprocess`.
+        """
+        if isinstance(inputs, dict) and isinstance(inputs['points'], str):
+            pcd = inputs['points']
+            backend = get_file_backend(pcd)
+            if hasattr(backend, 'isdir') and isdir(pcd):
+                # Backends like HttpsBackend do not implement `isdir`, so
+                # only those backends that implement `isdir` could accept
+                # the inputs as a directory
+                filename_list = list_dir_or_file(pcd, list_dir=False)
+                inputs = [{
+                    'points': join_path(pcd, filename)
+                } for filename in filename_list]
+
+        if not isinstance(inputs, (list, tuple)):
+            inputs = [inputs]
+
+        return list(inputs)
+
+    def multi_inputs_to_list(self,
                         inputs: Union[dict, list],
                         cam_type: str = 'CAM2',
                         **kwargs) -> list:
@@ -563,7 +645,7 @@ class myInference():
                   preds: PredType,
                   return_vis: bool = False,
                   show: bool = False,
-                  wait_time: int = 0,
+                  wait_time: int = -1, #0,
                   draw_pred: bool = True,
                   pred_score_thr: float = 0.3,
                   no_save_vis: bool = False,
@@ -627,24 +709,32 @@ class myInference():
             else:
                 o3d_save_path = None
 
-            img_input = single_input['img']
-            if isinstance(single_input['img'], str):
-                img_bytes = mmengine.fileio.get(img_input)
-                img = mmcv.imfrombytes(img_bytes)
-                img = img[:, :, ::-1]
-                img_name = osp.basename(img_input)
-            elif isinstance(img_input, np.ndarray):
-                img = img_input.copy()
-                img_num = str(self.num_visualized_frames).zfill(8)
-                img_name = f'{img_num}.jpg'
+            if self.mode == "multi": #adding image
+                img_input = single_input['img']
+                if isinstance(single_input['img'], str):
+                    img_bytes = mmengine.fileio.get(img_input)
+                    img = mmcv.imfrombytes(img_bytes)
+                    img = img[:, :, ::-1]
+                    img_name = osp.basename(img_input)
+                elif isinstance(img_input, np.ndarray):
+                    img = img_input.copy()
+                    img_num = str(self.num_visualized_frames).zfill(8)
+                    img_name = f'{img_num}.jpg'
+                else:
+                    raise ValueError('Unsupported input type: '
+                                    f'{type(img_input)}')
+
+                out_file = osp.join(img_out_dir, 'vis_camera', cam_type_dir,
+                                    img_name) if img_out_dir != '' else None
+
+                data_input = dict(points=points, img=img)
+                vis_task = "multi-modality_det"
             else:
-                raise ValueError('Unsupported input type: '
-                                 f'{type(img_input)}')
+                data_input = dict(points=points)
+                out_file = o3d_save_path
+                vis_task = "lidar_det"
 
-            out_file = osp.join(img_out_dir, 'vis_camera', cam_type_dir,
-                                img_name) if img_out_dir != '' else None
-
-            data_input = dict(points=points, img=img)
+            ##vis_task='mono_det', 'multi-view_det', 'lidar_det', 'lidar_seg', 'multi-modality_det'
             self.visualizer.add_datasample(
                 pc_name,
                 data_input,
@@ -656,7 +746,7 @@ class myInference():
                 pred_score_thr=pred_score_thr,
                 o3d_save_path=o3d_save_path,
                 out_file=out_file,
-                vis_task='multi-modality_det',
+                vis_task=vis_task,
             )
             results.append(points)
             self.num_visualized_frames += 1
@@ -664,13 +754,18 @@ class myInference():
         return results
 
 #from mmdet3d.apis import MultiModalityDet3DInferencer
+#from mmdet3d.apis import LidarDet3DInferencer
 def test_MultiModalityDet3DInferencer(args):
     call_args = vars(args)
+    mode = call_args.pop('mode')
     init_kws = ['model', 'weights', 'device']
     init_args = {}
     init_args['model'] = call_args.pop('config')
     init_args['weights'] = call_args.pop('checkpoint')
     init_args['device'] = call_args.pop('device')
+    init_args['scope'] = 'mmdet3d'
+    init_args['mode'] = mode
+
     # for init_kw in init_kws:
     #     init_args[init_kw] = in_args.pop(init_kw)
     #inferencer = MultiModalityDet3DInferencer(model=args.config, weights=args.checkpoint, device='cuda:0')
@@ -678,6 +773,7 @@ def test_MultiModalityDet3DInferencer(args):
     #{'model': 'D:\\Developer\\mmdetection3d\\configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', 'weights': 'D:\\Developer\\mmdetection3d\\modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', 'device': 'cuda:0'}
     #inferencer = MultiModalityDet3DInferencer(**init_args)
     inferencer = myInference(**init_args)
+    #inferencer = LidarDet3DInferencer(**init_args)
 
     # call_args['inputs'] = dict(
     #     points=call_args.pop('pcd'),
@@ -695,18 +791,24 @@ def test_MultiModalityDet3DInferencer(args):
     
 
     input_args={}
-    input_args['inputs']=dict(
-        points=call_args.pop('pcd'),
-        img=call_args.pop('img'),
-        infos=call_args.pop('infos'))
+    if mode=="multi":
+        input_args['inputs']=dict(
+            points=call_args.pop('pcd'),
+            img=call_args.pop('img'),
+            infos=call_args.pop('infos'))
+        input_args['cam_type'] = 'CAM2'
+    elif mode=='lidar':
+        input_args['inputs'] = dict(points=call_args.pop('pcd'))
+    input_args['pred_score_thr'] = 0.3
     input_args['no_save_vis'] = False
     input_args['no_save_pred']= False
     input_args['out_dir'] = 'output/'
     input_args['show'] = True
-    input_args['cam_type'] = 'CAM2'
+    input_args['wait_time'] = -1
     print(input_args)
     #{'cam_type': 'CAM2', 'out_dir': 'output/', 'show': True, 'inputs': {'points': 'D:\\Developer\\mmdetection3d\\demo/data/kitti/000008.bin', 'img': 'D:\\Developer\\mmdetection3d\\demo/data/kitti/000008.png', 'infos': 'D:\\Developer\\mmdetection3d\\demo/data/kitti/000008.pkl'}, 'no_save_vis': False, 'no_save_pred': False}
-    inferencer(**input_args)#__call__ in Base3DInferencer(BaseInferencer)
+    result_dict = inferencer(**input_args)#__call__ in Base3DInferencer(BaseInferencer)
+    return result_dict
 
 
 def test_inference2(args, device='cuda:0'):
@@ -743,7 +845,7 @@ def test_inference2(args, device='cuda:0'):
                 model.dataset_meta['palette'] = checkpoint['meta']['PALETTE']
         else:
             # < mmdet3d 1.x
-            model.dataset_meta = {'classes': cfg.class_names}
+            model.dataset_meta = {'classes': config.class_names}
 
             if 'PALETTE' in checkpoint.get('meta', {}):  # 3D Segmentor
                 model.dataset_meta['palette'] = checkpoint['meta']['PALETTE']
@@ -768,58 +870,66 @@ def test_inference2(args, device='cuda:0'):
 
     #https://github.com/open-mmlab/mmdetection3d/blob/main/mmdet3d/apis/inference.py
     if args.mode == "multi":
-        data_sample, data = inference_multi_modality_detector(model, args.pcd, args.img,
+        result, data = inference_multi_modality_detector(model, args.pcd, args.img,
                                                      args.infos, args.cam_type)
     else:
-        data_sample, data = inference_detector(model, args.pcd)
+        result, data = inference_detector(model, args.pcd)
 
     
     #visualizer=VISUALIZERS.build(config.visualizer) #Det3DLocalVisualizer
     visualizer= Det3DLocalVisualizer()
-    if has_dataset_meta:
-        visualizer.dataset_meta = model.dataset_meta
+    visualizer.dataset_meta = model.dataset_meta
 
-    # _inputs_to_list
-    result = {}
-    if 'pred_instances_3d' in data_sample:
-        pred_instances_3d = data_sample.pred_instances_3d.numpy() #InstanceData
-        #three keys: 'boxes_3d', 'scores_3d', 'labels_3d'
-        result = {
-            'labels_3d': pred_instances_3d.labels_3d.tolist(), #11
-            'scores_3d': pred_instances_3d.scores_3d.tolist(), #11
-            'bboxes_3d': pred_instances_3d.bboxes_3d.tensor.cpu().numpy() #tolist() #11 len list, each 7 points
-        }
     points = data['inputs']['points'].cpu().numpy() #[59187, 4]
-    pc_name = "000000.png"
+    if isinstance(result.img_path, list):
+        img = []
+        for img_path in result.img_path:#6 images
+            single_img = mmcv.imread(img_path)
+            single_img = mmcv.imconvert(single_img, 'bgr', 'rgb')
+            img.append(single_img)
+    else:
+        img = mmcv.imread(result.img_path)
+        img = mmcv.imconvert(img, 'bgr', 'rgb')
+    # if isinstance(args.img, str):
+    #     img_bytes = mmengine.fileio.get(args.img)
+    #     img = mmcv.imfrombytes(img_bytes) #(375, 1242, 3)
+    #     img = img[:, :, ::-1] #(375, 1242, 3) bgr to rgb
 
-    if isinstance(args.img, str):
-        img_bytes = mmengine.fileio.get(args.img)
-        img = mmcv.imfrombytes(img_bytes) #(375, 1242, 3)
-        img = img[:, :, ::-1] #(375, 1242, 3) bgr to rgb
     data_input = dict(points=points, img=img)
-    pred = result['bboxes_3d']
 
-    result['points'] = points
-    np.save(os.path.join(args.out_dir, args.expname+'_vis.npy'), result)
     #vis_task='mono_det', 'multi-view_det', 'lidar_det', 'lidar_seg', 'multi-modality_det'
     if args.mode == "multi":
         vis_task = 'multi-modality_det'
     else:
         vis_task = 'lidar_det'
     visualizer.add_datasample(
-        pc_name,
+        'result',
         data_input,
-        data_sample,
+        data_sample=result,
         show=True,
         draw_gt=False,
-        # wait_time=wait_time,
+        wait_time=-1,
         # draw_pred=draw_pred,
-        # pred_score_thr=pred_score_thr,
+        pred_score_thr=args.score_thr,
         # o3d_save_path=o3d_save_path,
-        # out_file=out_file,
+        out_file=args.out_dir,
         vis_task=vis_task,
     )
-    visualizer.show()
+    #visualizer.show()
+
+    # _inputs_to_list
+    result_dict = {}
+    if 'pred_instances_3d' in result:
+        pred_instances_3d = result.pred_instances_3d.numpy() #InstanceData
+        #three keys: 'boxes_3d', 'scores_3d', 'labels_3d'
+        result_dict = {
+            'labels_3d': pred_instances_3d.labels_3d.tolist(), #11
+            'scores_3d': pred_instances_3d.scores_3d.tolist(), #11
+            'bboxes_3d': pred_instances_3d.bboxes_3d.tensor.cpu().numpy() #tolist() #11 len list, each 7 points
+        }
+    #pred = result['bboxes_3d']
+    result_dict['points'] = points
+    np.save(os.path.join(args.out_dir, args.expname+'_vis.npy'), result_dict)
 
 #'/data/cmpe249-fa22/WaymoKitti/4c_train5678/training/velodyne/008118.bin'
 #demo/data/kitti/000008.bin
@@ -848,27 +958,47 @@ def test_inference2(args, device='cuda:0'):
     
 #scp -r 010796032@coe-hpc2.sjsu.edu:/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/ .
         
-#python demo/pcd_demo.py demo/data/kitti/000008.bin configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py modelzoo_mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-3class_20220301_150306-37dc2420.pth --show
+#https://mmdetection3d.readthedocs.io/en/latest/model_zoo.html
+#https://github.com/open-mmlab/mmdetection3d/tree/main/configs/pointpillars
+#python demo/pcd_demo.py demo/data/kitti/000008.bin configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py modelzoo_mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth --show
+
+#python demo/multi_modality_demo.py demo/data/kitti/000008.bin demo/data/kitti/000008.png demo/data/kitti/000008.pkl configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth --cam-type CAM2 --show
+
+#https://github.com/open-mmlab/mmdetection3d/tree/main/projects/BEVFusion
+#python projects/BEVFusion/demo/multi_modality_demo.py demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin demo/data/nuscenes/ demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py modelzoo_mmdetection3d/bevfusion_converted.pth --cam-type all --score-thr 0.2 --show
+    
+#https://github.com/open-mmlab/mmdetection3d/blob/main/projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py
+#https://github.com/open-mmlab/mmdetection3d/blob/main/projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py
+
+#python projects/BEVFusion/demo/multi_modality_demo.py \
+#    demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin 
+#    demo/data/nuscenes/ demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py \
+#    modelzoo_mmdetection3d/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-2628f933.pth --cam-type all --score-thr 0.2 --show
 
 def main():
     parser = ArgumentParser()
     parser.add_argument('--expname',  type=str, default='test')
-    parser.add_argument('--mode',  type=str, default='lidar') #multi
-    parser.add_argument('--basefolder', type=str, default=r'D:\Developer') #'/data/rnd-liu/MyRepo/mmdetection3d/'
-    parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
-    parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
-    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
-    parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
-    parser.add_argument('--infos', type=str, default='demo/data/kitti/000008.pkl')
+    parser.add_argument('--mode',  type=str, default='multi') #multi, lidar
+    parser.add_argument('--basefolder', type=str, default='/home/lkk/Developer/') # r'D:\Developer' '/data/rnd-liu/MyRepo/mmdetection3d/'
+    # parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
+    # parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
+    # parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
+    # parser.add_argument('--img', type=str, default='demo/data/kitti/000008.png')
+    # parser.add_argument('--infos', type=str, default='demo/data/kitti/000008.pkl')
+    parser.add_argument('--pcd',  type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800__LIDAR_TOP__1532402927647951.pcd.bin', help='Point cloud file')#
+    parser.add_argument('--config', type=str, default='projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py', help='Config file')
+    parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-2628f933.pth', help='Checkpoint file')
+    parser.add_argument('--img', type=str, default='demo/data/nuscenes/')
+    parser.add_argument('--infos', type=str, default='demo/data/nuscenes/n015-2018-07-24-11-22-45+0800.pkl')
     parser.add_argument(
         '--device', default='cuda:0', help='Device used for inference')
     parser.add_argument(
         '--cam-type',
         type=str,
-        default='CAM2', #'CAM_FRONT',
+        default='all', #'CAM2', #'CAM_FRONT',
         help='choose camera type to inference')
     parser.add_argument(
-        '--score-thr', type=float, default=0.6, help='bbox score threshold')
+        '--score-thr', type=float, default=0.3, help='bbox score threshold')
     parser.add_argument(
         '--out_dir', type=str, default='output', help='dir to save results')
     parser.add_argument(
@@ -890,7 +1020,7 @@ def main():
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
     
-    test_MultiModalityDet3DInferencer(args)
+    #test_MultiModalityDet3DInferencer(args)
 
     test_inference2(args, device='cuda:0')
 

@@ -133,6 +133,11 @@ def proj_lidar_bbox3d_to_img(bboxes_3d: LiDARInstance3DBoxes,
     pts_4d = np.concatenate(
         [corners_3d.reshape(-1, 3),
          np.ones((num_bbox * 8, 1))], axis=-1)
+    # if 'lidar2cam' in input_meta.keys():#newly added
+    #     lidar2img = np.asarray(copy.deepcopy(input_meta['lidar2cam'])).reshape(4, 4)
+    # else:
+    #     lidar2img = copy.deepcopy(input_meta['lidar2img']).reshape(4, 4)
+    
     lidar2img = copy.deepcopy(input_meta['lidar2img']).reshape(4, 4)
     if isinstance(lidar2img, torch.Tensor):
         lidar2img = lidar2img.cpu().numpy()
@@ -1232,7 +1237,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
             elif gt_data_3d is not None:
                 drawn_img_3d = gt_data_3d['img']
             elif pred_data_3d is not None:
-                drawn_img_3d = pred_data_3d['img']
+                drawn_img_3d = pred_data_3d['img'] #get image data (375, 1242, 3)
             else:  # both instances of gt and pred are empty
                 drawn_img_3d = None
         else:
