@@ -443,13 +443,193 @@ def gen_radar_bev(data_root, OUT_PATH = 'radar_bev_filter', multi_thread = False
                 gen_radar_bev_worker(info, nusc, data_root, OUT_PATH)
     print('Finished')
 
-def main():
-    nuscenes_base="/data/cmpe249-fa23/nuScenes/v1.0-trainval"
+
+MIN_DISTANCE = 0.1
+MAX_DISTANCE = 100.
+
+IMG_SHAPE = (900, 1600)
+
+lidar_key = 'LIDAR_TOP'
+cam_keys = [
+    'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT',
+    'CAM_BACK_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT'
+]
+# https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/nuscenes.py#L834
+def map_pointcloud_to_image(
+    pc,
+    features,
+    img_shape,
+    cam_calibrated_sensor,
+    cam_ego_pose,
+):
+    pc = LidarPointCloud(pc)
+
+    # Third step: transform from global into the ego vehicle
+    # frame for the timestamp of the image.
+    pc.translate(-np.array(cam_ego_pose['translation']))
+    pc.rotate(Quaternion(cam_ego_pose['rotation']).rotation_matrix.T)
+
+    # Fourth step: transform from ego into the camera.
+    pc.translate(-np.array(cam_calibrated_sensor['translation']))
+    pc.rotate(Quaternion(cam_calibrated_sensor['rotation']).rotation_matrix.T)
+
+    # Fifth step: actually take a "picture" of the point cloud.
+    # Grab the depths (camera frame z axis points away from the camera).
+    depths = pc.points[2, :]
+    features = np.concatenate((depths[:, None], features), axis=1)
+
+    # Take the actual picture (matrix multiplication with camera-matrix
+    # + renormalization).
+    points = view_points(pc.points[:3, :],
+                         np.array(cam_calibrated_sensor['camera_intrinsic']),
+                         normalize=True)
+
+    # Remove points that are either outside or behind the camera.
+    # Leave a margin of 1 pixel for aesthetic reasons. Also make
+    # sure points are at least 1m in front of the camera to avoid
+    # seeing the lidar points on the camera casing for non-keyframes
+    # which are slightly out of sync.
+    mask = np.ones(depths.shape[0], dtype=bool)
+    mask = np.logical_and(mask, depths > MIN_DISTANCE)
+    mask = np.logical_and(mask, depths < MAX_DISTANCE)
+    mask = np.logical_and(mask, points[0, :] > 1)
+    mask = np.logical_and(mask, points[0, :] < img_shape[1] - 1)
+    mask = np.logical_and(mask, points[1, :] > 1)
+    mask = np.logical_and(mask, points[1, :] < img_shape[0] - 1)
+    points = points[:, mask]
+    features = features[mask]
+
+    return points, features
+
+def gen_radar_pv_worker(info, DATA_PATH, RADAR_SPLIT, OUT_PATH):
+    radar_file_name = os.path.split(info['lidar_infos']['LIDAR_TOP']['filename'])[-1]
+    print("Radar filename:", radar_file_name)
+    points = np.fromfile(os.path.join(DATA_PATH, RADAR_SPLIT, radar_file_name),
+                         dtype=np.float32,
+                         count=-1).reshape(-1, 7)
+
+    lidar_calibrated_sensor = info['lidar_infos'][lidar_key][
+        'calibrated_sensor']
+    lidar_ego_pose = info['lidar_infos'][lidar_key]['ego_pose']
+
+    # Points live in the point sensor frame. So they need to be
+    # transformed via global to the image plane.
+    # First step: transform the pointcloud to the ego vehicle
+    # frame for the timestamp of the sweep.
+    pc = LidarPointCloud(points[:, :4].T)  # use 4 dims for code compatibility
+    features = points[:, 3:]
+
+    pc.rotate(Quaternion(lidar_calibrated_sensor['rotation']).rotation_matrix)
+    pc.translate(np.array(lidar_calibrated_sensor['translation']))
+
+    # Second step: transform from ego to the global frame.
+    pc.rotate(Quaternion(lidar_ego_pose['rotation']).rotation_matrix)
+    pc.translate(np.array(lidar_ego_pose['translation']))
+
+    for i, cam_key in enumerate(cam_keys):
+        cam_calibrated_sensor = info['cam_infos'][cam_key]['calibrated_sensor']
+        cam_ego_pose = info['cam_infos'][cam_key]['ego_pose']
+        pts_img, features_img = map_pointcloud_to_image(
+            pc.points.copy(), features.copy(), IMG_SHAPE, cam_calibrated_sensor, cam_ego_pose)
+
+        file_name = os.path.split(info['cam_infos'][cam_key]['filename'])[-1]
+        np.concatenate([pts_img[:2, :].T, features_img],
+                       axis=1).astype(np.float32).flatten().tofile(
+                           os.path.join(DATA_PATH, OUT_PATH,
+                                        f'{file_name}.bin'))
+    # plt.savefig(f"{sample_idx}")
+
+
+def gen_radar_pv(data_root, FROM_RADAR_BEV = 'radar_bev_filter', OUT_PATH = 'radar_pv_filter'):
+    #SPLIT = 'v1.0-trainval'
+    #nusc = NuScenes(version=SPLIT, dataroot=data_root, verbose=True)
+    mmengine.mkdir_or_exist(os.path.join(data_root, OUT_PATH))
+    
+    for info_path in INFO_PATHS:
+        info_path = os.path.join(data_root, info_path)
+        infos = mmengine.load(info_path)
+        for info in tqdm(infos):
+            gen_radar_pv_worker(info, data_root, FROM_RADAR_BEV, OUT_PATH)
+    print('Finished')
+#ln -s [nuscenes root] ./data/nuScenes/
+def generate_data(nuscenes_base):
+    
+    #Step1: Create annotation file. This will generate nuscenes_infos_{train,val}.pkl.
     #gen_infos(nuscenes_base)##generate infos_val.pkl in /data/cmpe249-fa23/nuScenes/v1.0-trainval
+    
+    #Step2: Generate ground truth depth.
     #gen_depth_gt(nuscenes_base)#generate jpg.bin in /data/cmpe249-fa23/nuScenes/v1.0-trainval/depth_gt/
 
-    gen_radar_bev(nuscenes_base, OUT_PATH = 'radar_bev_filter')
+    #Step3: accumulate sweeps and transform to LiDAR coords
+    #gen_radar_bev(nuscenes_base, OUT_PATH = 'radar_bev_filter')
+
+    #Step4: generate radar point cloud in perspective view
+    gen_radar_pv(nuscenes_base)
+
+#data_root = "/data/cmpe249-fa23/nuScenes/v1.0-trainval" #'data/nuScenes'
+# INFO_PATHS = ['nuscenes_infos_train.pkl',
+#               'nuscenes_infos_val.pkl']
+# lidar_key = 'LIDAR_TOP'
+# cam_keys = [
+#     'CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_RIGHT',
+#     'CAM_BACK', 'CAM_BACK_LEFT'
+# ]
+def check_data(nuscenes_base, gt_folder='depth_gt', radar_bev='radar_bev_filter', radar_pv='radar_pv_filter'):
+    info_path="nuscenes_infos_val.pkl"
+    info_path = os.path.join(nuscenes_base, info_path)
+    infos = mmengine.load(info_path)
+    #get one info
+    info = infos[10]
+
+    #depth_gt folder
+    dir_path = os.path.join(nuscenes_base, gt_folder)
+    #allfiles_gt = [entry for entry in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, entry))]
+    #print("total number of files:", len(allfiles_gt))#204894 each camera jpg.bin
+
+    #test_depth_gt
+    lidar_path = info['lidar_infos'][lidar_key]['filename']#starts with 'samples/LIDAR_TOP/n015-xx.bin
+    points = np.fromfile(os.path.join(nuscenes_base, lidar_path),
+                         dtype=np.float32,
+                         count=-1).reshape(-1, 5)[..., :4] #(34720, 4)
+    cam_key = 'CAM_FRONT'
+    file_name = os.path.split(info['cam_infos'][cam_key]['filename'])[-1]
+    depthnpfile_name = os.path.join(nuscenes_base, gt_folder, f'{file_name}.bin')
+    depthgt_one = np.fromfile(depthnpfile_name) #(4471,)
+
+    #test radar bev
+    dir_path = os.path.join(nuscenes_base, radar_bev)
+    allfiles_radarbev = [entry for entry in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, entry))]
+    print("total number of files:", len(allfiles_radarbev)) #34149 each Lidar
+
+    radar_file_name = os.path.split(lidar_path)[-1]
+    print("Radar filename:", radar_file_name)
+    radar_bev_file = os.path.join(nuscenes_base, radar_bev, radar_file_name)
+    radar_bev_points = np.fromfile(radar_bev_file,
+                         dtype=np.float32,
+                         count=-1).reshape(-1, 7) #(2847,7)
+
+    #test radar pv
+    dir_path = os.path.join(nuscenes_base, radar_pv)
+    #allfiles_radarpv = [entry for entry in os.listdir(dir_path) if os.path.isfile(os.path.join(dir_path, entry))]
+    #print("total number of files:", len(allfiles_radarpv))#204894 for each camera.jpg.bin
+
+    file_name = os.path.split(info['cam_infos'][cam_key]['filename'])[-1]
+    radar_pv_file = os.path.join(nuscenes_base, radar_pv, f'{file_name}.bin')
+    radar_pv_points = np.fromfile(radar_pv_file) #(2632,)
+    print(radar_pv_points.shape)
+
+    alldata={}
+    alldata['lidarpoints'] = points #(n,4)
+    alldata['depthgt'] = depthgt_one
+    alldata['radar_bev_points'] = radar_bev_points #(n,7)
+    alldata['radar_pv_points'] = radar_pv_points
+    np.save(os.path.join('data', 'nusradar.npy'), alldata)
+
+
 
 
 if __name__ == '__main__':
-    main()
+    nuscenes_base="/data/cmpe249-fa23/nuScenes/v1.0-trainval"
+    #generate_data(nuscenes_base)
+
+    check_data(nuscenes_base)
