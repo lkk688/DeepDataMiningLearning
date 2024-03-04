@@ -169,7 +169,7 @@ def trainmain(args):
             )
         
         #recalculate our number of training epochs
-        num_train_epochs = math.ceil(max_train_steps /  num_update_steps_per_epoch)
+        num_train_epochs = math.ceil(max_train_steps /  num_update_steps_per_epoch) + starting_epoch
         total_batch_size = args.batch_size * args.gradient_accumulation_steps
 
         progress_bar = tqdm(range(max_train_steps))
