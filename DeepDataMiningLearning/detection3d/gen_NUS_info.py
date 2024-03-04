@@ -188,7 +188,7 @@ def map_pointcloud_to_image(
     cam_ego_pose,
     min_dist: float = 0.0,
 ):
-    pc = LidarPointCloud(pc)
+    pc = LidarPointCloud(pc)#pc.points (4, n)
 
     # Third step: transform from global into the ego vehicle
     # frame for the timestamp of the image.
@@ -201,14 +201,14 @@ def map_pointcloud_to_image(
 
     # Fifth step: actually take a "picture" of the point cloud.
     # Grab the depths (camera frame z axis points away from the camera).
-    depths = pc.points[2, :]
+    depths = pc.points[2, :] #pc.points (4,n), take z (n,)
     coloring = depths
 
     # Take the actual picture (matrix multiplication with camera-matrix
-    # + renormalization).
+    # + renormalization). perspective projection
     points = view_points(pc.points[:3, :],
                          np.array(cam_calibrated_sensor['camera_intrinsic']),
-                         normalize=True)
+                         normalize=True) #(3,34720), do normalize, 3 is the height
 
     # Remove points that are either outside or behind the camera.
     # Leave a margin of 1 pixel for aesthetic reasons. Also make
@@ -221,8 +221,8 @@ def map_pointcloud_to_image(
     mask = np.logical_and(mask, points[0, :] < im.shape[1] - 1)
     mask = np.logical_and(mask, points[1, :] > 1)
     mask = np.logical_and(mask, points[1, :] < im.shape[0] - 1)
-    points = points[:, mask]
-    coloring = coloring[mask]
+    points = points[:, mask] #(3, 3257)
+    coloring = coloring[mask] #(3257,)
 
     return points, coloring
 
@@ -239,20 +239,20 @@ cam_keys = [
 
 
 def gen_depth_gt_worker(info, data_root):
-    lidar_path = info['lidar_infos'][lidar_key]['filename']
+    lidar_path = info['lidar_infos'][lidar_key]['filename'] #'samples/LIDAR_TOP/n015-2018-07-18-11-07-57+0800__LIDAR_TOP__1531883530449377.pcd.bin'
     points = np.fromfile(os.path.join(data_root, lidar_path),
                          dtype=np.float32,
                          count=-1).reshape(-1, 5)[..., :4]
     lidar_calibrated_sensor = info['lidar_infos'][lidar_key][
-        'calibrated_sensor']
-    lidar_ego_pose = info['lidar_infos'][lidar_key]['ego_pose']
+        'calibrated_sensor'] #translation, rotation
+    lidar_ego_pose = info['lidar_infos'][lidar_key]['ego_pose']#translation, rotation
 
     # Points live in the point sensor frame. So they need to be
     # transformed via global to the image plane.
     # First step: transform the pointcloud to the ego vehicle
     # frame for the timestamp of the sweep.
 
-    pc = LidarPointCloud(points.T)
+    pc = LidarPointCloud(points.T) #pc.data (4,n)
     pc.rotate(Quaternion(lidar_calibrated_sensor['rotation']).rotation_matrix)
     pc.translate(np.array(lidar_calibrated_sensor['translation']))
 
@@ -261,21 +261,21 @@ def gen_depth_gt_worker(info, data_root):
     pc.translate(np.array(lidar_ego_pose['translation']))
 
     for i, cam_key in enumerate(cam_keys):
-        cam_calibrated_sensor = info['cam_infos'][cam_key]['calibrated_sensor']
-        cam_ego_pose = info['cam_infos'][cam_key]['ego_pose']
+        cam_calibrated_sensor = info['cam_infos'][cam_key]['calibrated_sensor']#translation, rotation, camera_intrinsic
+        cam_ego_pose = info['cam_infos'][cam_key]['ego_pose']#rotation, translation
         img = mmcv.imread(
-            os.path.join(data_root, info['cam_infos'][cam_key]['filename']))
+            os.path.join(data_root, info['cam_infos'][cam_key]['filename']))#image file, HWC
         pts_img, depth = map_pointcloud_to_image(
-            pc.points.copy(), img, cam_calibrated_sensor, cam_ego_pose)
+            pc.points.copy(), img, cam_calibrated_sensor, cam_ego_pose) #(3, 3257), (3257,)
         file_name = os.path.split(info['cam_infos'][cam_key]['filename'])[-1]
         np.concatenate([pts_img[:2, :].T, depth[:, None]],
                        axis=1).astype(np.float32).flatten().tofile(
                            os.path.join(data_root, 'depth_gt',
-                                        f'{file_name}.bin'))
+                                        f'{file_name}.bin'))#take xy,add depth (n,3)
     # plt.savefig(f"{sample_idx}")
 
 
-def gen_depth_gt(data_root, multi_thread=True):
+def gen_depth_gt(data_root, multi_thread=False):
     # po = Pool(24)
     # mmcv.mkdir_or_exist(os.path.join(data_root, 'depth_gt'))
     # for info_path in INFO_PATHS:
@@ -455,7 +455,7 @@ cam_keys = [
     'CAM_BACK_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT'
 ]
 # https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/nuscenes.py#L834
-def map_pointcloud_to_image(
+def map_pointcloud_to_image2(
     pc,
     features,
     img_shape,
@@ -529,7 +529,7 @@ def gen_radar_pv_worker(info, DATA_PATH, RADAR_SPLIT, OUT_PATH):
     for i, cam_key in enumerate(cam_keys):
         cam_calibrated_sensor = info['cam_infos'][cam_key]['calibrated_sensor']
         cam_ego_pose = info['cam_infos'][cam_key]['ego_pose']
-        pts_img, features_img = map_pointcloud_to_image(
+        pts_img, features_img = map_pointcloud_to_image2(
             pc.points.copy(), features.copy(), IMG_SHAPE, cam_calibrated_sensor, cam_ego_pose)
 
         file_name = os.path.split(info['cam_infos'][cam_key]['filename'])[-1]
@@ -558,7 +558,7 @@ def generate_data(nuscenes_base):
     #gen_infos(nuscenes_base)##generate infos_val.pkl in /data/cmpe249-fa23/nuScenes/v1.0-trainval
     
     #Step2: Generate ground truth depth.
-    #gen_depth_gt(nuscenes_base)#generate jpg.bin in /data/cmpe249-fa23/nuScenes/v1.0-trainval/depth_gt/
+    gen_depth_gt(nuscenes_base)#generate jpg.bin in /data/cmpe249-fa23/nuScenes/v1.0-trainval/depth_gt/
 
     #Step3: accumulate sweeps and transform to LiDAR coords
     #gen_radar_bev(nuscenes_base, OUT_PATH = 'radar_bev_filter')
@@ -630,6 +630,6 @@ def check_data(nuscenes_base, gt_folder='depth_gt', radar_bev='radar_bev_filter'
 
 if __name__ == '__main__':
     nuscenes_base="/data/cmpe249-fa23/nuScenes/v1.0-trainval"
-    #generate_data(nuscenes_base)
+    generate_data(nuscenes_base)
 
     check_data(nuscenes_base)
