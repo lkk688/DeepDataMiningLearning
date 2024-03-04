@@ -932,11 +932,14 @@ def test_inference2(args, device='cuda:0'):
     result_dict['points'] = points
     #np.save(os.path.join(args.out_dir, args.expname+'_vis.npy'), result_dict)
 
-    visualizer.set_bev_image()
+    visualizer.set_bev_image(bev_shape=100)
     # draw bev bboxes
-    gt_bboxes_3d = CameraInstance3DBoxes(result_dict['bboxes_3d'])
-    visualizer.draw_bev_bboxes(gt_bboxes_3d, edge_colors='orange')
+    #gt_bboxes_3d = CameraInstance3DBoxes(result_dict['bboxes_3d'])
+    gt_bboxes_3d = BaseInstance3DBoxes(result_dict['bboxes_3d'])
+    visualizer.draw_bev_bboxes(gt_bboxes_3d, scale=1, edge_colors='orange')
     visualizer.show()
+
+    print("end of test")
 
 #'/data/cmpe249-fa22/WaymoKitti/4c_train5678/training/velodyne/008118.bin'
 #demo/data/kitti/000008.bin
@@ -986,21 +989,23 @@ import numpy as np
 from mmengine import load
 
 #from mmdet3d.visualization import Det3DLocalVisualizer
-from mmdet3d.structures import CameraInstance3DBoxes
+from mmdet3d.structures import CameraInstance3DBoxes, BaseInstance3DBoxes
 def test_BEV(args):
     info_file = os.path.join(args.basefolder, 'mmdetection3d', args.infos)
     info_file = load(info_file) #('demo/data/kitti/000008.pkl')
     bboxes_3d = []
     for instance in info_file['data_list'][0]['instances']:
         bboxes_3d.append(instance['bbox_3d'])
-    gt_bboxes_3d = np.array(bboxes_3d, dtype=np.float32)
-    gt_bboxes_3d = CameraInstance3DBoxes(gt_bboxes_3d)
+    gt_bboxes_3d = np.array(bboxes_3d, dtype=np.float32) #list to np array (10,7)
+    #gt_bboxes_3d = CameraInstance3DBoxes(gt_bboxes_3d)
+    gt_bboxes_3d = BaseInstance3DBoxes(gt_bboxes_3d)
+    
 
     visualizer = Det3DLocalVisualizer()
     # set bev image in visualizer
-    visualizer.set_bev_image()
+    visualizer.set_bev_image(bev_shape=100)
     # draw bev bboxes
-    visualizer.draw_bev_bboxes(gt_bboxes_3d, edge_colors='orange')
+    visualizer.draw_bev_bboxes(gt_bboxes_3d, scale=1, edge_colors='orange')
     visualizer.show()
 
 
@@ -1008,7 +1013,7 @@ def main():
     parser = ArgumentParser()
     parser.add_argument('--expname',  type=str, default='test')
     parser.add_argument('--mode',  type=str, default='multi') #multi, lidar
-    parser.add_argument('--basefolder', type=str, default=r'D:\Developer') #  '/home/lkk/Developer/' '/data/rnd-liu/MyRepo/mmdetection3d/'
+    parser.add_argument('--basefolder', type=str, default='/home/lkk/Developer/') # r'D:\Developer'  '/data/rnd-liu/MyRepo/mmdetection3d/'
     parser.add_argument('--pcd',  type=str, default='demo/data/kitti/000008.bin', help='Point cloud file')#
     parser.add_argument('--config', type=str, default='configs/mvxnet/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class.py', help='Config file')
     parser.add_argument('--checkpoint', type=str, default='modelzoo_mmdetection3d/mvxnet_fpn_dv_second_secfpn_8xb2-80e_kitti-3d-3class-8963258a.pth', help='Checkpoint file')
@@ -1049,7 +1054,7 @@ def main():
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
     
-    #test_BEV(args)
+    test_BEV(args)
 
     #test_MultiModalityDet3DInferencer(args) #BEVFusion has pipeline problem
 

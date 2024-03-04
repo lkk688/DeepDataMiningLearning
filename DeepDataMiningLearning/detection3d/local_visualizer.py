@@ -515,7 +515,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
             bev_shape (int): The bev image shape. Defaults to 900.
         """
         if bev_image is None:
-            bev_image = np.zeros((bev_shape, bev_shape, 3), np.uint8)
+            bev_image = np.zeros((bev_shape, bev_shape, 3), np.uint8) #900, 900, 3
 
         self._image = bev_image
         self.width, self.height = bev_image.shape[1], bev_image.shape[0]
@@ -591,7 +591,7 @@ class Det3DLocalVisualizer(DetLocalVisualizer):
         """
 
         check_type('bboxes', bboxes_3d, BaseInstance3DBoxes)
-        bev_bboxes = tensor2ndarray(bboxes_3d.bev)
+        bev_bboxes = tensor2ndarray(bboxes_3d.bev) #10,5
         # scale the bev bboxes for better visualization
         bev_bboxes[:, :4] *= scale
         ctr, w, h, theta = np.split(bev_bboxes, [2, 3, 4], axis=-1)
