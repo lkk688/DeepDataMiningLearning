@@ -1008,6 +1008,53 @@ def test_BEV(args):
     visualizer.draw_bev_bboxes(gt_bboxes_3d, scale=1, edge_colors='orange')
     visualizer.show()
 
+import pickle
+def check_annofile(args):
+    with open(args.infos, 'rb') as f:
+        data = pickle.load(f)
+        print(data[0].keys())
+
+def getindividualpkl_frominfospkl(infos_pklfile, save_path, use_num=50):
+    with open(infos_pklfile, 'rb') as f:
+        data = pickle.load(f)
+    print("Data len:", len(data))
+    print(data[0]['image']['image_path'].split('/')[-1].split('.')[0])#get filename
+    for i in range(0, use_num, 1):
+        list=[]
+        list.append(data[i])
+        cur_data = list
+        file_name = data[i]['image']['image_path'].split('/')[-1].split('.')[0]
+        with open(save_path+file_name+'_infos.pkl', 'wb') as f:
+            pickle.dump(cur_data, f)
+
+from mmdet3d.datasets import build_dataset
+from mmdet3d.core.visualizer import show_multi_modality_result
+def test_dataset(args, model, pkl_dir, out_dir):
+    if isinstance(args.config, (str, Path)):
+        config = Config.fromfile(args.config)
+    
+    test_dataset_cfg = deepcopy(config.test_dataloader.dataset)
+    dataset =DATASETS.build(test_dataset_cfg)
+
+    dataset2 = [build_dataset(config.data.train)]
+    print(dataset2[0][0].keys())
+
+    num = 50
+    for i in range(0, num, 1):
+        cur_data = dataset[0][i]
+        img_metas = cur_data.get('img_metas').data
+        pts_file = img_metas.get('pts_filename')
+        img = cur_data.get('img').data
+        img_file_path = img_metas.get('filename')
+        name = img_file_path.split('/')[-1] .split('.')[0]
+        ann_file = pkl_dir + name + '_infos.pkl'
+        project_mat =img_metas.get('lidar2img')#get projection matrix
+        result, data = inference_multi_modality_detector(model, pts_file, img_file_path, ann_file)
+        bboxes_data = result[0]['pts_bbox']['boxes_3d']
+        show_multi_modality_result(img=img, box_mode='lidar', gt_bboxes=None, img_metas=img_metas, \
+                                   pred_bboxes=bboxes_data, proj_mat=project_mat, out_dir=out_dir, filename=name, show=True)
+
+
 
 def main():
     parser = ArgumentParser()
