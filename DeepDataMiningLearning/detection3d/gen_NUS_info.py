@@ -322,6 +322,9 @@ DISABLE_FILTER = False
 # https://github.com/nutonomy/nuscenes-devkit/blob/master/python-sdk/nuscenes/utils/data_classes.py#L315
 # FIELDS: x y z dyn_prop id rcs vx vy vx_comp vy_comp is_quality_valid ambig_state 
 #         x_rms y_rms invalid_state pdh0 vx_rms vy_rms
+#x is front, y is left
+#vx, vy are the velocities in m/s.
+#vx_comp, vy_comp are the velocities in m/s compensated by the ego motion. We recommend using the compensated velocities.
 SAVE_FIELDS = [0, 1, 2, 5, 8, 9, -1]  # x, y, z, rcs, vx_comp, vy_comp, (dummy field for sweep info)
 if DISABLE_FILTER:
     # use all point
@@ -625,11 +628,51 @@ def check_data(nuscenes_base, gt_folder='depth_gt', radar_bev='radar_bev_filter'
     alldata['radar_pv_points'] = radar_pv_points
     np.save(os.path.join('data', 'nusradar.npy'), alldata)
 
+import matplotlib.pyplot as plt
+from nuscenes.utils.data_classes import LidarPointCloud
+from local_visualizer import Det3DLocalVisualizer
+from mmdet3d.structures import PointData
+def plot_data(npyfile='data/nusradar.npy'):
+    alldata = np.load(npyfile, allow_pickle=True).item()
+    lidar_points = alldata['lidarpoints'] #(n,4)
+    depthgt_points = alldata['depthgt']#.reshape(-1, 3)
+    radar_bev_points = alldata['radar_bev_points'] #(n,7) # x, y, z, rcs, vx_comp, vy_comp
+    radar_pv_points = alldata['radar_pv_points'].reshape(-1, 7)
+
+    
+    data_input = lidar_points[:,0:3]
+    det3d_local_visualizer = Det3DLocalVisualizer(points=data_input)
+    det3d_local_visualizer.show()
+
+    #all_pc = RadarPointCloud(depthgt_points.T)
+    fig, ax = plt.subplots(figsize=(12, 12))
+    points = radar_bev_points.T[:3,:] #xyz all_pc.points[:3, :]
+
+    velocities = radar_bev_points.T[4:7] # all_pc.points[8:11, :]
+    velocities[2, :] = np.zeros(radar_bev_points.shape[0])
+    viewpoint = np.eye(4)
+    points_vel = view_points(points + velocities, viewpoint, normalize=False)#(3, 2847)
+    deltas_vel = points_vel - points
+    deltas_vel = 6 * deltas_vel  # Arbitrary scaling
+    max_delta = 20
+    deltas_vel = np.clip(deltas_vel, -max_delta, max_delta)  # Arbitrary clipping
+    for i in range(points.shape[1]):
+        ax.arrow(points[0, i], points[1, i], deltas_vel[0, i], deltas_vel[1, i])
+
+    ax.scatter(radar_bev_points[:,0], radar_bev_points[:,1], c='red', s=2) #x,y points
+    #ax.plot(lidar.points[0, :], lidar.points[1, :], ',')
+    plt.xlim([-60, 60])
+    plt.ylim([-60, 60])
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.show()
+
 
 
 
 if __name__ == '__main__':
-    nuscenes_base="/data/cmpe249-fa23/nuScenes/v1.0-trainval"
-    generate_data(nuscenes_base)
 
-    check_data(nuscenes_base)
+    plot_data()
+    nuscenes_base="/data/cmpe249-fa23/nuScenes/v1.0-trainval"
+    #generate_data(nuscenes_base)
+
+    #check_data(nuscenes_base)
