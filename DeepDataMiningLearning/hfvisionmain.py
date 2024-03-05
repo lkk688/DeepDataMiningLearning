@@ -1051,7 +1051,7 @@ def depth_test(mycache_dir=None):
     #image.size()#The size attribute returns a (width, height) tuple
     image.save("data/depth_test.jpg") 
 
-    checkpoint = "LiheYoung/depth-anything-base-hf" #"Intel/dpt-large" #"vinvino02/glpn-nyu"
+    checkpoint = "Intel/dpt-large" #"LiheYoung/depth-anything-base-hf" #"Intel/dpt-large" #"vinvino02/glpn-nyu"
     depthinference = MyVisionInference(model_name=checkpoint, model_type="huggingface", task="depth-estimation", cache_dir=mycache_dir)
     #checkpoint = "DPT_Large" #pip install timm
     #depthinference = MyVisionInference(model_name=checkpoint, model_type="torch", task="depth-estimation", cache_dir=mycache_dir)
@@ -1087,7 +1087,7 @@ if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
     #"microsoft/resnet-50"
-    mycache_dir=r"D:\Cache\huggingface"
+    mycache_dir="/home/lkk/Developer/"#r"D:\Cache\huggingface"
     os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
     depth_test(mycache_dir=mycache_dir)
     clip_test(mycache_dir=mycache_dir)
