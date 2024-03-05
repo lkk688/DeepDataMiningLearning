@@ -147,8 +147,11 @@ def modelparameters(model, unfreezename="", freezename="", unfreezehead=True):
 
 
 #https://github.com/huggingface/transformers/tree/main/src/transformers/models/wav2vec2
-def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", id2label=None, label2id=None, vocab_path=None, pretrained="", cache_dir="", return_attention_mask=True):
+def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", id2label=None, label2id=None, vocab_path=None, 
+              pretrained="", cache_dir="", use_adapter=False, return_attention_mask=True):
     ignore_mismatched_sizes = custommodel #when loading model, ignore size 
+    if vocab_path is not None:
+        ignore_mismatched_sizes = True
     if cache_dir:
         mycache_dir = cache_dir
     elif os.environ.get('HF_HOME') is not None:
@@ -306,7 +309,11 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             # pretrained_model = AutoModelForCTC.from_pretrained(model_checkpoint) 
             # model.load_state_dict(pretrained_model.state_dict(), strict= False)
         elif "bert" in model_checkpoint:
-            model = Wav2Vec2BertForCTC.from_pretrained(model_checkpoint, cache_dir = mycache_dir, vocab_size=len(processor.tokenizer), add_adapter = False)
+            model = Wav2Vec2BertForCTC.from_pretrained(model_checkpoint, 
+                                                       cache_dir = mycache_dir, 
+                                                       vocab_size=len(processor.tokenizer), 
+                                                       ignore_mismatched_sizes = ignore_mismatched_sizes,
+                                                       add_adapter = use_adapter)
         else:
             #config = AutoConfig.from_pretrained(model_checkpoint)
             #print("Config vocab size", config.vocab_size)
@@ -316,7 +323,7 @@ def loadmodel(model_checkpoint, custommodel=False, task="audio-classification", 
             model = AutoModelForCTC.from_pretrained(
                 model_checkpoint, 
                 cache_dir = mycache_dir,
-                ignore_mismatched_sizes=True,
+                ignore_mismatched_sizes=ignore_mismatched_sizes,
                 ctc_loss_reduction="mean", 
                 pad_token_id=processor.tokenizer.pad_token_id,
                 vocab_size=len(processor.tokenizer), #processor.tokenizer.vocab_size,

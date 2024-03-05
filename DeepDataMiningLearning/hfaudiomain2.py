@@ -63,9 +63,12 @@ def trainmain(args):
     loadmodel(args.model_name_or_path, custommodel=args.custommodel, \
                 task=args.task, id2label=id2label, label2id=label2id, \
                 vocab_path=vocab_path, pretrained=args.pretrained, \
+                use_adapter = args.use_adapter,
                 return_attention_mask=True)
 
-    model = freezemodel(model, unfreezename=args.unfreezename, freezename="", freeze_feature_encoder=args.freeze_feature_encoder, freeze_base_model=args.freeze_basemodel, use_adapter =False)
+    model = freezemodel(model, unfreezename=args.unfreezename, freezename="", 
+                        freeze_feature_encoder=args.freeze_feature_encoder, 
+                        freeze_base_model=args.freeze_basemodel, use_adapter =args.use_adapter)
     
     model_input_name = feature_extractor.model_input_names[0]
     print("model_input_name:", model_input_name) #input_values, input_features
@@ -259,9 +262,10 @@ if __name__ == "__main__":
     parser.add_argument('--autotokenizer', default=True, action='store_true',
                     help='If some models contains the tokenizer, autotokenizer=True means use the default buildin tokenizer')
     parser.add_argument('--use_vocabpath', default=False, action='store_true', help='Use new vocab file')
+    parser.add_argument('--use_adapter', default=False, action='store_true', help='Add adapter')
     parser.add_argument('--checkpointfolder', type=str, default="",
                     help='Model training checkpoint to resume')
-    parser.add_argument('--pretrained', type=str, default="/data/rnd-liu/output/common_voice_0301w2vzh_nonewvocal/savedmodel.pth",
+    parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
     parser.add_argument('--custommodel', default=False, action='store_true', help='Change model') 
     parser.add_argument('--task', type=str, default="audio-asr",
