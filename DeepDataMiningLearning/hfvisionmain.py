@@ -145,13 +145,13 @@ def parse_args():
     )
     parser.add_argument('--usehpc', default=True, action='store_true',
                     help='Use HPC')
-    parser.add_argument('--data_path', type=str, default=r"D:\Cache\huggingface", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--task', type=str, default="image-classification",
                     help='tasks: image-classification')
-    parser.add_argument('--data_name', type=str, default="food101",
+    parser.add_argument('--data_name', type=str, default="pyronear/openfire",
                     help='data name: food101, beans')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
@@ -374,6 +374,9 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     if data_name == "food101": #https://huggingface.co/datasets/food101
         image_column_name = "image"
         label_column_name = "label"
+    elif 'openfire' in data_name:
+        image_column_name='image_url'
+        label_column_name='is_wildfire'
 
     if image_column_name not in dataset_column_names:
         raise ValueError(
@@ -686,13 +689,15 @@ def trainmain():
     logger.info(accelerator.state, main_process_only=False)
 
     if accelerator.is_main_process:
-        if args.data_path:
+        if os.environ['HF_HOME']:
+            mycache_dir = os.environ['HF_HOME']
+        elif args.data_path:
             #mycache_dir = deviceenv_set(args.usehpc, args.data_path)
             os.environ['HF_HOME'] = args.data_path
             mycache_dir = args.data_path
         else:
             mycache_dir = '~/.cache/huggingface/'
-
+        print("Cache dir:", mycache_dir)
         device, args.useamp = get_device(gpuid=args.gpuid, useamp=args.useamp)
         saveargs2file(args, trainoutput)
     
@@ -1082,16 +1087,18 @@ def depth_test(mycache_dir=None):
     #depth.show()
     depth.save("data/depth_testresult.jpg") 
 
+def inference():
+    mycache_dir="/home/lkk/Developer/"#r"D:\Cache\huggingface"
+    #os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
+    mycache_dir = os.environ['HF_HOME']
+    depth_test(mycache_dir=mycache_dir)
+    clip_test(mycache_dir=mycache_dir)
+    confidences = vision_inferencetest(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
 
 if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
     #"microsoft/resnet-50"
-    mycache_dir="/home/lkk/Developer/"#r"D:\Cache\huggingface"
-    os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
-    depth_test(mycache_dir=mycache_dir)
-    clip_test(mycache_dir=mycache_dir)
-    confidences = vision_inferencetest(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
     trainmain()
 
 r"""
