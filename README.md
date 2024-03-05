@@ -85,6 +85,11 @@ Python data apps based on streamlit:
       * Linear Regression via Normal Equation and own SGD implementation
       * Diamond dataset from Kaggle, EDA, and predict the price of diamond via normal equation, numpy.linalg
    * MLIntro-RegressionSKLearn -- [colablink](https://colab.research.google.com/drive/1XUzW9vSqyNM02v9F5ueaLMtFb0VorOA3?usp=sharing)
+      * Simulation data: linear regression, polynomial regression, Ridge and Lasso regression
+      * Diamond dataset: Categorical Feature Encoding, Linear Regression and other regressors
+      * Boston housing dataset: Regression Model for All the variables, Ridge and Lasso Regression
+      * Diabetes Dataset: Linear regression, Ridge and Lasso Regression
+      * AUTO MPG Dataset
    * [MLIntro2-classification.ipynb](./MLIntro2-classification.ipynb) --[colablink](https://colab.research.google.com/drive/1znfskFZFo-m7VjnI5vgcxdaPWHvLLG9H?usp=sharing)
       * Breast Cancer Dataset, iris Dataset, BigQuery US Census Income Dataset, multiple classifiers. 
    * DecisionTree -- [colablink](https://colab.research.google.com/drive/15N_qxOY74batHHjTvkh6zoQ0_85bfdDQ?usp=sharing)
