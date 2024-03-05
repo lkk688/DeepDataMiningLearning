@@ -151,7 +151,7 @@ def parse_args():
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--task', type=str, default="image-classification",
                     help='tasks: image-classification')
-    parser.add_argument('--data_name', type=str, default="pyronear/openfire",
+    parser.add_argument('--data_name', type=str, default="cats_vs_dogs",
                     help='data name: food101, beans')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
@@ -160,7 +160,7 @@ def parse_args():
     parser.add_argument(
         "--max_train_samples",
         type=int,
-        default=2000,
+        default=-1, #means all data 2000,
         help=(
             "For debugging purposes or quicker training, truncate the number of training examples to this "
             "value if set."
@@ -320,14 +320,14 @@ valkey='test' #"validation"
 def load_visiondataset(data_name=None, split="train", train_dir=None, validation_dir=None, max_train_samples = 2000, train_val_split=0.15, \
                        image_column_name='image', label_column_name='labels', mycache_dir=None):
     if data_name is not None:
-        if max_train_samples and split is not None:
+        if max_train_samples and max_train_samples>0 and split is not None:
             data_split=f"{split}[:{max_train_samples}]" #"train+validation"
         elif split is not None:
             data_split=f"{split}"
         else:
             data_split=None
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir)
+        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir, ignore_verifications=True, trust_remote_code=True)
         # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
         # https://huggingface.co/docs/datasets/loading_datasets.html.)
     else:
@@ -363,7 +363,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
             split_datasets[valkey] = split_datasets.pop("test")
 
     #limit the dataset size
-    if len(split_datasets['train'])>max_train_samples:
+    if max_train_samples>0 and len(split_datasets['train'])>max_train_samples:
         split_datasets['train'] = split_datasets['train'].select([i for i in list(range(max_train_samples))])
         Val_SAMPLES = int(max_train_samples*train_val_split)
         split_datasets[valkey] = split_datasets[valkey].select([i for i in list(range(Val_SAMPLES))])
@@ -374,6 +374,9 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     if data_name == "food101": #https://huggingface.co/datasets/food101
         image_column_name = "image"
         label_column_name = "label"
+    elif 'cats_vs_dogs' in data_name:
+        image_column_name = "image"
+        label_column_name = "labels"
     elif 'openfire' in data_name:
         image_column_name='image_url'
         label_column_name='is_wildfire'
@@ -422,7 +425,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             label2id[label] = str(i)
             id2label[str(i)] = label
         #test convert the label id to a label name:
-        print(id2label[str(7)])
+        #print(id2label[str(7)])
         config = AutoConfig.from_pretrained(
             model_name_or_path,
             num_labels=len(labels),
