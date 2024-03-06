@@ -52,6 +52,8 @@ def trainmain(args):
             vocab_path = trainoutput #"./signalAI/"
             if args.dataconfig != "en":
                 a2z_only = False
+            else:
+                a2z_only = True
             raw_datasets = vocab_asr(raw_datasets, task_column=task_column, target_column=target_column, vocabpath=vocab_path, a2z_only=a2z_only)
             
         #tokenizer = multilingual_tokenizer(args.model_name_or_path, tokenizer_name_or_path=vocab_path, mycache_dir=mycache_dir, output_dir=trainoutput, datasets=raw_datasets, target_column=target_column, target_language=args.target_language, overwrite_lang_vocab=True, overwrite_output_dir=True)
@@ -81,7 +83,11 @@ def trainmain(args):
     raw_datasets = dataset_castsamplingrate(raw_datasets, sampling_rate=feature_extractor.sampling_rate, audio_column_name=task_column)
 
     forward_attention_mask = False
-    vectorized_datasets = dataset_preprocessing(raw_datasets, tokenizer, processor, task_column=task_column, target_column=target_column, max_length_seconds=args.max_length_seconds, model_input_name=model_input_name, labels=labels, data_type = args.data_type, task=args.task, forward_attention_mask=forward_attention_mask)
+    vectorized_datasets = dataset_preprocessing(raw_datasets, tokenizer, processor, task_column=task_column, \
+                                                target_column=target_column, max_length_seconds=args.max_length_seconds, \
+                                                model_input_name=model_input_name, labels=labels, \
+                                                data_type = args.data_type, task=args.task, \
+                                                forward_attention_mask=forward_attention_mask)
 
     #vectorized_datasets = filter_datasetlength(vectorized_datasets, args.min_length_seconds, args.max_length_seconds, sampling_rate=feature_extractor.sampling_rate)
 
@@ -89,7 +95,8 @@ def trainmain(args):
 
     print(f"Data preprocessing finished. Files cached at {vectorized_datasets.cache_files}")
 
-    metriceval = myEvaluator(args.task, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate, labels=labels, processor=processor)
+    metriceval = myEvaluator(args.task, useHFevaluator=args.hfevaluate, dualevaluator=args.dualevaluate,\
+                              labels=labels, processor=processor, mycache_dir=mycache_dir, output_path=trainoutput)
 
     data_collator = get_datacollator(processor, args.task, padding=True)
     # data_collator = DataCollatorSpeechSeq2SeqWithPadding(

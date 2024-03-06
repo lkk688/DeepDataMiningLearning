@@ -6,13 +6,16 @@ import numpy as np
 from sklearn.metrics import classification_report
 from transformers import EvalPrediction
 from tqdm.auto import tqdm
+import pandas as pd
+from pathlib import Path
 
 class myEvaluator:
-    def __init__(self, task, useHFevaluator=False, dualevaluator=False, labels=None, processor=None, mycache_dir=None):
+    def __init__(self, task, useHFevaluator=False, dualevaluator=False, labels=None, processor=None, mycache_dir=None, output_path=None):
         print("useHFevaluator:", useHFevaluator)
         print("dualevaluator:", dualevaluator)
         self.useHFevaluator = useHFevaluator
         self.dualevaluator = dualevaluator
+        self.output_path = output_path
         self.task = task
         self.preds = []
         self.refs = []
@@ -76,6 +79,7 @@ class myEvaluator:
             else: 
                 results = self.mycompute(predictions=predictions, references=references)
             #print("HF evaluator:", results)
+            self.create_df(predictions, references, display=True)
             if not isinstance(results, dict):
                 #wer output is float, convert to dict
                 results = {self.metricname: results}
@@ -90,10 +94,27 @@ class myEvaluator:
                     results = {self.metricname: results}
             else:
                 results = self.mycompute(predictions=self.preds, references=self.refs)
+            self.create_df(self.preds, self.refs, display=True)
             self.preds.clear()
             self.refs.clear()
         return results
     
+    def create_df(self, predictions, references, display=True):
+        # dictionary of lists 
+        resultdict = {'predictions': predictions, 'references': references} 
+        df = pd.DataFrame(resultdict)
+        if display:
+            print(df.head())
+        if self.output_path:
+            filepath = Path(os.path.join(self.output_path, 'evaluationresult.csv'))  
+            if filepath.exists():
+                df.to_csv(filepath, mode='a', header=False) #append to existing csv file
+            else:#create a new csv file:
+                filepath.parent.mkdir(parents=True, exist_ok=True)  
+                #df.to_csv(filepath)
+                df.to_csv(filepath, mode='a', header=True)
+            print("Evaluation dataframe saved to:", str(filepath))
+
     def add_batch(self, predictions, references):
         if self.useHFevaluator == True:
             self.HFmetric.add_batch(predictions=predictions, references=references)
