@@ -313,7 +313,8 @@ def object_detection(mycache_dir=None):
 def inference():
     mycache_dir="/home/lkk/Developer/"#r"D:\Cache\huggingface"
     #os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
-    mycache_dir = os.environ['HF_HOME']
+    if os.environ.get('HF_HOME') is not None:
+        mycache_dir = os.environ['HF_HOME']
     object_detection(mycache_dir=mycache_dir)
     depth_test(mycache_dir=mycache_dir)
     clip_test(mycache_dir=mycache_dir)

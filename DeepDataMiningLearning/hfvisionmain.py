@@ -692,7 +692,7 @@ def trainmain():
     logger.info(accelerator.state, main_process_only=False)
 
     if accelerator.is_main_process:
-        if os.environ['HF_HOME']:
+        if os.environ.get('HF_HOME') is not None:
             mycache_dir = os.environ['HF_HOME']
         elif args.data_path:
             #mycache_dir = deviceenv_set(args.usehpc, args.data_path)
