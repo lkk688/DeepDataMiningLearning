@@ -270,6 +270,8 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
     pip install moviepy
     pip install -U "transformers==4.38.1" --upgrade
     pip install sentencepiece
+    pip install timm
+    pip install albumentations
 
 Install MMdetection3D:
 

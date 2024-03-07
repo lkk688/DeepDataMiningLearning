@@ -23,6 +23,7 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
+import albumentations
 from time import perf_counter
 
 #tasks: "depth-estimation", "image-classification"
@@ -286,17 +287,19 @@ def object_detection(mycache_dir=None):
     image = Image.open(requests.get(url, stream=True).raw)
 
     checkpoint = "facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5"
+    #https://huggingface.co/docs/transformers/main/en/model_doc/auto#transformers.AutoImageProcessor
     image_processor = AutoImageProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
     model = AutoModelForObjectDetection.from_pretrained(checkpoint, cache_dir=mycache_dir)
 
     with torch.no_grad():
-        inputs = image_processor(images=image, return_tensors="pt")
-        outputs = model(**inputs)
-        target_sizes = torch.tensor([image.size[::-1]]) #[[427, 640]]
-        results = image_processor.post_process_object_detection(outputs, threshold=0.5, target_sizes=target_sizes)[0]
+        #create pixel_values, pixel_mask, and labels
+        inputs = image_processor(images=image, return_tensors="pt")#pixel_values[1, 3, 800, 1199], pixel_mask[1, 800, 1199]
+        outputs = model(**inputs) #DetrObjectDetectionOutput ['logits'], ['pred_boxes'](center_x, center_y, width, height)
+        target_sizes = torch.tensor([image.size[::-1]]) #(640, 427)=> [[427, 640]]
+        results = image_processor.post_process_object_detection(outputs, threshold=0.5, target_sizes=target_sizes)[0] #'scores'[30], 'labels', 'boxes'[30,4]
 
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        box = [round(i, 2) for i in box.tolist()]
+        box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
         print(
             f"Detected {model.config.id2label[label.item()]} with confidence "
             f"{round(score.item(), 3)} at location {box}"
@@ -306,15 +309,249 @@ def object_detection(mycache_dir=None):
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
         box = [round(i, 2) for i in box.tolist()]
         x, y, x2, y2 = tuple(box)
-        draw.rectangle((x, y, x2, y2), outline="red", width=1)
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
         draw.text((x, y), model.config.id2label[label.item()], fill="white")
     image.save("output/ImageDraw.png")
 
+from datasets import load_dataset
+import json
+import torchvision
+# Save images and annotations into the files torchvision.datasets.CocoDetection expects
+def save_coco_annotation_file_images(dataset, id2label, path_output):
+    output_json = {}
+
+    if not os.path.exists(path_output):
+        os.makedirs(path_output)
+
+    path_anno = os.path.join(path_output, "cppe5_ann.json")
+    categories_json = [{"supercategory": "none", "id": id, "name": id2label[id]} for id in id2label]
+    output_json["images"] = []
+    output_json["annotations"] = []
+    for example in dataset:
+        ann = val_formatted_anns(example["image_id"], example["objects"])
+        output_json["images"].append(
+            {
+                "id": example["image_id"],
+                "width": example["image"].width,
+                "height": example["image"].height,
+                "file_name": f"{example['image_id']}.png",
+            }
+        )
+        output_json["annotations"].extend(ann)
+    output_json["categories"] = categories_json
+
+    with open(path_anno, "w") as file:
+        json.dump(output_json, file, ensure_ascii=False, indent=4)
+
+    for im, img_id in zip(dataset["image"], dataset["image_id"]):
+        path_img = os.path.join(path_output, f"{img_id}.png")
+        im.save(path_img)
+
+    return path_output, path_anno
+
+class CocoDetection(torchvision.datasets.CocoDetection):
+    def __init__(self, img_folder, feature_extractor, ann_file):
+        super().__init__(img_folder, ann_file)
+        self.feature_extractor = feature_extractor
+
+    def __getitem__(self, idx):
+        # read in PIL image and target in COCO format
+        img, target = super(CocoDetection, self).__getitem__(idx)
+
+        # preprocess image and target: converting target to DETR format,
+        # resizing + normalization of both image and target)
+        image_id = self.ids[idx]
+        target = {"image_id": image_id, "annotations": target}
+        encoding = self.feature_extractor(images=img, annotations=target, return_tensors="pt")#[1, 3, 693, 1333]
+        pixel_values = encoding["pixel_values"].squeeze()  # remove batch dimension [3, 693, 1333]
+        target = encoding["labels"][0]  # remove batch dimension, dict, boxes (n,4)
+
+        return {"pixel_values": pixel_values, "labels": target}
+    
+def formatted_anns(image_id, category, area, bbox):#category/area/bbox list input
+    annotations = []
+    for i in range(0, len(category)):
+        new_ann = {
+            "image_id": image_id,
+            "category_id": category[i],
+            "isCrowd": 0,
+            "area": area[i],
+            "bbox": list(bbox[i]),
+        }
+        annotations.append(new_ann)
+
+    return annotations #list of dicts
+
+# format annotations the same as for training, no need for data augmentation
+def val_formatted_anns(image_id, objects):
+    annotations = []
+    for i in range(0, len(objects["id"])):
+        new_ann = {
+            "id": objects["id"][i],
+            "category_id": objects["category"][i],
+            "iscrowd": 0,
+            "image_id": image_id,
+            "area": objects["area"][i],
+            "bbox": objects["bbox"][i],
+        }
+        annotations.append(new_ann)
+
+    return annotations
+
+def test_dataset(mycache_dir):
+    dataset = load_dataset("cppe-5")
+
+    remove_idx = [590, 821, 822, 875, 876, 878, 879]
+    keep = [i for i in range(len(dataset["train"])) if i not in remove_idx]
+    dataset["train"] = dataset["train"].select(keep)
+
+    image = dataset["train"][0]["image"]#PIL image in RGB mode 
+    annotations = dataset["train"][0]["objects"] 
+    #['id'] ['area'] ['bbox'](4,4)list ['category']
+    #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
+    #bounding box in [x_min, y_min, width, height]
+    
+    categories = dataset["train"].features["objects"].feature["category"].names #list of str names
+
+    id2label = {index: x for index, x in enumerate(categories, start=0)}
+    label2id = {v: k for k, v in id2label.items()}
+
+    draw = ImageDraw.Draw(image)
+    for i in range(len(annotations["id"])):
+        box = annotations["bbox"][i - 1]
+        class_idx = annotations["category"][i - 1]
+        x, y, w, h = tuple(box) #[x_min, y_min, width, height]
+        draw.rectangle((x, y, x + w, y + h), outline="red", width=1)
+        draw.text((x, y), id2label[class_idx], fill="white")
+    image.save("output/ImageDraw.png")
+
+    checkpoint = "facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5" #"facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5"
+    #https://huggingface.co/docs/transformers/main/en/model_doc/auto#transformers.AutoImageProcessor
+    #im_processor = AutoImageProcessor.from_pretrained("MariaK/detr-resnet-50_finetuned_cppe5")
+    image_processor = AutoImageProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
+    model = AutoModelForObjectDetection.from_pretrained(checkpoint, cache_dir=mycache_dir)
+
+    transform = albumentations.Compose(
+        [
+            albumentations.Resize(480, 480),
+            albumentations.HorizontalFlip(p=1.0),
+            albumentations.RandomBrightnessContrast(p=1.0),
+        ],
+        bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
+    )
+
+    #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
+    #where each dictionary is a COCO object annotation.
+    # transforming a batch
+    def transform_aug_ann(examples):#can handle batch
+        image_ids = examples["image_id"]
+        images, bboxes, area, categories = [], [], [], []
+        for image, objects in zip(examples["image"], examples["objects"]):
+            image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
+            out = transform(image=image, bboxes=objects["bbox"], category=objects["category"])#bbox size changed
+
+            area.append(objects["area"])
+            images.append(out["image"]) #(480, 480, 3)
+            bboxes.append(out["bboxes"])#resized [x_min, y_min, width, height]
+            categories.append(out["category"])#category become integer list [4]
+
+        targets = [
+            {"image_id": id_, "annotations": formatted_anns(id_, cat_, ar_, box_)}
+            for id_, cat_, ar_, box_ in zip(image_ids, categories, area, bboxes)
+        ]#list of dict 'image_id'=756, 'annotations': list of dicts with 'area' 'bbox' 'category_id'
+
+        #https://huggingface.co/docs/transformers/main/en/model_doc/detr#transformers.DetrImageProcessor
+        return image_processor(images=images, annotations=targets, return_tensors="pt")
+        #do_convert_annotations: Converts the bounding boxes from the format (top_left_x, top_left_y, width, height) to (center_x, center_y, width, height) and in relative coordinates.
+        #input_data_format: "channels_first" CHW, "channels_last" HWC
+        #If unset, the channel dimension format is inferred from the input image.
+    
+    dataset["train"] = dataset["train"].with_transform(transform_aug_ann)
+    #dataset["train"] = dataset["train"].map(transform_aug_ann, batched=True, batch_size=16, num_proc=1)
+    #dataset["train"].set_transform(transform_aug_ann)
+    oneexample = dataset["train"][15]
+    print(oneexample.keys()) #get process output 'pixel_values' 'pixel_mask' 'labels'[4] ('image_id' 'class_labels' 'boxes'[n,4]list 'area' 'iscrowd' 'orig_size' [480, 480])
+
+    # batch images together. Pad images (which are now pixel_values) to the largest image in a batch, 
+    #and create a corresponding pixel_mask to indicate which pixels are real (1) and which are padding (0).
+    def collate_fn(batch):
+        pixel_values = [item["pixel_values"] for item in batch] #list of [3,800,800]
+        #'DetrImageProcessor' object has no attribute 'pad_and_create_pixel_mask'
+        #encoding = image_processor.pad_and_create_pixel_mask(pixel_values, return_tensors="pt")
+        encoding = image_processor.pad(pixel_values, return_tensors="pt")
+        labels = [item["labels"] for item in batch]#pixel_values [8,3,800,800]
+        batch = {}
+        batch["pixel_values"] = encoding["pixel_values"]
+        batch["pixel_mask"] = encoding["pixel_mask"] #[8,800,800]
+        batch["labels"] = labels #8 dict items
+        return batch
+    
+    dataloader = torch.utils.data.DataLoader(dataset["train"], batch_size=8, collate_fn=collate_fn)
+    test_data = next(iter(dataloader))
+    print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels']
+    print(test_data["pixel_values"].shape) #[8, 3, 800, 800]
+    print(test_data["pixel_mask"].shape) #[8, 800, 800]
+
+    path_output, path_anno = save_coco_annotation_file_images(dataset["test"], id2label=id2label, path_output="./output/coco/")
+    test_ds_coco_format = CocoDetection(path_output, image_processor, path_anno)
+    test_coco= test_ds_coco_format[0] #[3, 693, 1333]
+    print(len(test_ds_coco_format))
+    image_ids = test_ds_coco_format.coco.getImgIds()
+    # let's pick a random image
+    image_id = image_ids[np.random.randint(0, len(image_ids))]
+    print('Image n°{}'.format(image_id))
+    image = test_ds_coco_format.coco.loadImgs(image_id)[0] #dict with image info
+    image = Image.open(os.path.join('output/coco/', image['file_name']))
+
+    annotations = test_ds_coco_format.coco.imgToAnns[image_id]#list of dicts
+    draw = ImageDraw.Draw(image, "RGBA")
+    cats = test_ds_coco_format.coco.cats
+    id2label = {k: v['name'] for k,v in cats.items()}
+
+    for annotation in annotations:
+        box = annotation['bbox']
+        class_idx = annotation['category_id']
+        x,y,w,h = tuple(box)
+        draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
+        draw.text((x, y), id2label[class_idx], fill='white')
+    image.save("output/ImageDrawcoco.png")
+
+    module = evaluate.load("ybelkada/cocoevaluate", coco=test_ds_coco_format.coco)
+    val_dataloader = torch.utils.data.DataLoader(
+        test_ds_coco_format, batch_size=8, shuffle=False, num_workers=1, collate_fn=collate_fn)
+    test_data = next(iter(val_dataloader))
+    print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels']
+    print(test_data["pixel_values"].shape) #[8, 3, 800, 800]
+    print(test_data["pixel_mask"].shape) #[8, 800, 800]
+
+    with torch.no_grad():
+        for idx, batch in enumerate(tqdm(val_dataloader)):
+            pixel_values = batch["pixel_values"]
+            pixel_mask = batch["pixel_mask"]
+
+            labels = [
+                {k: v for k, v in t.items()} for t in batch["labels"]
+            ]  # these are in DETR format, resized + normalized
+
+            # forward pass
+            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask)
+
+            orig_target_sizes = torch.stack([target["orig_size"] for target in labels], dim=0)
+            results = image_processor.post_process(outputs, orig_target_sizes)  # convert outputs of model to COCO api
+
+            module.add(prediction=results, reference=labels)
+            del batch
+
+    results = module.compute()
+    print(results)
+
+
 def inference():
-    mycache_dir="/home/lkk/Developer/"#r"D:\Cache\huggingface"
+    mycache_dir=r"D:\Cache\huggingface" #"/home/lkk/Developer/"#
     #os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
     if os.environ.get('HF_HOME') is not None:
         mycache_dir = os.environ['HF_HOME']
+    test_dataset(mycache_dir)
     object_detection(mycache_dir=mycache_dir)
     depth_test(mycache_dir=mycache_dir)
     clip_test(mycache_dir=mycache_dir)

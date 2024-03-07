@@ -17,6 +17,10 @@ import DeepDataMiningLearning.detection.transforms as reference_transforms
 
 WrapNewDict = False
 
+#download coco
+#wget http://images.cocodataset.org/zips/val2017.zip && unzip val2017.zip
+#wget http://images.cocodataset.org/annotations/annotations_trainval2017.zip && unzip annotations_trainval2017.zip
+
 COCO_INSTANCE_CATEGORY_NAMES = [
     '__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
     'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'N/A', 'stop sign',
