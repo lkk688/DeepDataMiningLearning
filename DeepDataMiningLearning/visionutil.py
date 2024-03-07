@@ -93,6 +93,15 @@ def read_image(image, use_pil=True, use_cv2=False, rgb=True, output_format='nump
                 image = img
             elif output_format == 'pil':
                 image = Image.fromarray(img)
+    #read the height/width from image's shape
+    if isinstance(image, Image.Image):
+        height = image.height
+        width = image.width
+        org_sizeHW = image.size[::-1]#(width, height) (W=640, H=427)->(H=427, W=640)
+    elif isinstance(image, np.ndarray): #HWC format
+        height = image.shape[0]
+        width = image.shape[1]
+        org_sizeHW = (height, width) #(427, 640)
     if plotfig:
         if output_format== 'numpy':
             #image = image.astype(np.float32) / 255.0
@@ -106,4 +115,4 @@ def read_image(image, use_pil=True, use_cv2=False, rgb=True, output_format='nump
         else:
             # Display the image
             cv2.imshow("Image", image)
-    return image #HWC in numpy or PIL
+    return image, org_sizeHW #HWC in numpy or PIL

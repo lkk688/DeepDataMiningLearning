@@ -27,16 +27,18 @@ from torchvision.transforms import (
     ToTensor,
 )
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw
 from tqdm.auto import tqdm
 import numpy as np
 from sklearn.metrics import classification_report
-from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, SchedulerType, get_scheduler
+from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, \
+    AutoModelForDepthEstimation, AutoModelForObjectDetection, SchedulerType, get_scheduler
 from transformers import DefaultDataCollator, Trainer, TrainingArguments
 from time import perf_counter
 from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
 import requests
 import cv2
+import albumentations#pip install albumentations
 
 logger = get_logger(__name__)
 
@@ -317,7 +319,7 @@ def pushtohub(hub_model_id, output_dir, hub_token):
 
 valkey='test' #"validation"
 #data_name list: food101, 
-def load_visiondataset(data_name=None, split="train", train_dir=None, validation_dir=None, max_train_samples = 2000, train_val_split=0.15, \
+def load_visiondataset(data_name=None, split="train", train_dir=None, validation_dir=None, task="image-classification", max_train_samples = 2000, train_val_split=0.15, \
                        image_column_name='image', label_column_name='labels', mycache_dir=None):
     if data_name is not None:
         if max_train_samples and max_train_samples>0 and split is not None:
@@ -370,16 +372,18 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     
     dataset_column_names = split_datasets["train"].column_names if "train" in split_datasets else split_datasets[valkey].column_names
     #'image': PIL image object, 'labels': int, 'image_file_path': path
-    #some datset the labels name is different
-    if data_name == "food101": #https://huggingface.co/datasets/food101
+    
+    if task == "object-detection":
         image_column_name = "image"
-        label_column_name = "label"
-    elif 'cats_vs_dogs' in data_name:
-        image_column_name = "image"
-        label_column_name = "labels"
-    elif 'openfire' in data_name:
-        image_column_name='image_url'
-        label_column_name='is_wildfire'
+        label_column_name = "objects" #for object detection
+    elif task == "image-classification":
+        #some datset the labels name is different
+        if data_name == "food101": #https://huggingface.co/datasets/food101
+            image_column_name = "image"
+            label_column_name = "label"
+        elif 'cats_vs_dogs' in data_name:
+            image_column_name = "image"
+            label_column_name = "labels"
 
     if image_column_name not in dataset_column_names:
         raise ValueError(
@@ -397,23 +401,181 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     # Prepare label mappings.
     # We'll include these in the model's config to get human readable labels in the Inference API.
     #By default the ClassLabel fields are encoded into integers
-    classlabel = split_datasets["train"].features[label_column_name] #ClassLabel(num_classes=x, names=[''], id=None)
-    labels = classlabel.names
-    label2id = {label: str(i) for i, label in enumerate(labels)}
-    id2label = {str(i): label for i, label in enumerate(labels)}
+    if task == "image-classification":
+        classlabel = split_datasets["train"].features[label_column_name] #ClassLabel(num_classes=x, names=[''], id=None)
+        labels = classlabel.names
+        label2id = {label: str(i) for i, label in enumerate(labels)}
+        id2label = {str(i): label for i, label in enumerate(labels)}
+            #add testing code to fetch one sample data from dataset and print the shape of data
+        # {
+        #     "image": "train/cat/00000.png",
+        #     "label": 0
+        # }
+        #print(split_datasets["train"][0])
+        print("Classification dataset 0:", split_datasets["train"][0][label_column_name])
+    elif task=="object-detection":
+        classlabel = split_datasets["train"].features[label_column_name]
+        labels = classlabel.feature["category"].names #list of str names
+        id2label = {index: x for index, x in enumerate(labels, start=0)}
+        label2id = {v: k for k, v in id2label.items()}
+        dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, \
+                                       image_column_name=image_column_name, label_column_name=label_column_name, output_folder="output/")
 
-    #add testing code to fetch one sample data from dataset and print the shape of data
-    # {
-    #     "image": "train/cat/00000.png",
-    #     "label": 0
-    # }
-    #print(split_datasets["train"][0])
-    print(split_datasets["train"][0][label_column_name])
+
     #The Datasets library is made for processing data very easily. We can write custom functions, 
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, image_column_name, label_column_name
 
-#tasks: "depth-estimation", "image-classification"
+def dataset_objectdetection_select(dataset, data_index, id2label, image_column_name='image', label_column_name='objects', output_folder="output/"):
+    image = dataset[data_index][image_column_name]#PIL image in RGB mode 
+    annotations = dataset[data_index][label_column_name] 
+    #['id'] ['area'] ['bbox'](4,4)list ['category']
+    #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
+    #bounding box in [x_min, y_min, width, height]
+    draw = ImageDraw.Draw(image)
+    for i in range(len(annotations["id"])):
+        box = annotations["bbox"][i - 1]
+        class_idx = annotations["category"][i - 1]
+        x, y, w, h = tuple(box) #[x_min, y_min, width, height]
+        draw.rectangle((x, y, x + w, y + h), outline="red", width=1)
+        draw.text((x, y), id2label[class_idx], fill="white")
+    filepath = os.path.join(output_folder, "dataset_objectdetection_select.png")
+    print(f"Test image id:{data_index} saved in {filepath}")
+    image.save(filepath)#"output/ImageDraw.png")
+
+def formatted_anns(image_id, category, area, bbox):#category/area/bbox list input
+    annotations = []
+    for i in range(0, len(category)):
+        new_ann = {
+            "image_id": image_id,
+            "category_id": category[i],
+            "isCrowd": 0,
+            "area": area[i],
+            "bbox": list(bbox[i]),
+        }
+        annotations.append(new_ann)
+
+    return annotations #list of dicts
+
+# format annotations the same as for training, no need for data augmentation
+def val_formatted_anns(image_id, objects):
+    annotations = []
+    for i in range(0, len(objects["id"])):
+        new_ann = {
+            "id": objects["id"][i],
+            "category_id": objects["category"][i],
+            "iscrowd": 0,
+            "image_id": image_id,
+            "area": objects["area"][i],
+            "bbox": objects["bbox"][i],
+        }
+        annotations.append(new_ann)
+
+    return annotations
+
+def dataset_preprocessing(image_processor, task, size, image_column_name='image', label_column_name='labels'):
+    if task =="image-classification":
+        normalize = (
+            Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
+            if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
+            else Lambda(lambda x: x)
+        )
+        train_transforms = Compose(
+            [
+                RandomResizedCrop(size),
+                RandomHorizontalFlip(),
+                ToTensor(),
+                normalize,
+            ]
+        )
+        val_transforms = Compose(
+            [
+                Resize(size),
+                CenterCrop(size),
+                ToTensor(),
+                normalize,
+            ]
+        )
+        def preprocess_train(example_batch):
+            """Apply _train_transforms across a batch."""
+            #PIL image to RGB
+            example_batch["pixel_values"] = [
+                train_transforms(image.convert("RGB")) for image in example_batch[image_column_name]
+            ]
+            del example_batch[image_column_name]
+            return example_batch
+
+        def preprocess_val(example_batch):
+            """Apply _val_transforms across a batch."""
+            example_batch["pixel_values"] = [
+                val_transforms(image.convert("RGB")) for image in example_batch[image_column_name]
+            ]
+            del example_batch[image_column_name]
+            return example_batch
+    
+    elif task =="object-detection":
+        train_transforms = albumentations.Compose(
+            [
+                albumentations.Resize(size), #(480, 480),
+                albumentations.HorizontalFlip(p=1.0),
+                albumentations.RandomBrightnessContrast(p=1.0),
+            ],
+            bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
+        )
+        val_transforms = albumentations.Compose(
+            [
+                albumentations.Resize(size), #(480, 480),
+            ],
+            bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
+        )
+        #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
+        #where each dictionary is a COCO object annotation.
+        # transforming a batch
+        def preprocess_train(examples):#can handle batch
+            image_ids = examples["image_id"]
+            images, bboxes, area, categories = [], [], [], []
+            for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
+                image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
+                out = train_transforms(image=image, bboxes=objects["bbox"], category=objects["category"])#bbox size changed
+
+                area.append(objects["area"])
+                images.append(out[image_column_name]) #(480, 480, 3)
+                bboxes.append(out["bboxes"])#resized [x_min, y_min, width, height]
+                categories.append(out["category"])#category become integer list [4]
+
+            targets = [
+                {"image_id": id_, "annotations": formatted_anns(id_, cat_, ar_, box_)}
+                for id_, cat_, ar_, box_ in zip(image_ids, categories, area, bboxes)
+            ]#list of dict 'image_id'=756, 'annotations': list of dicts with 'area' 'bbox' 'category_id'
+
+            #https://huggingface.co/docs/transformers/main/en/model_doc/detr#transformers.DetrImageProcessor
+            return image_processor(images=images, annotations=targets, return_tensors="pt")
+            #do_convert_annotations: Converts the bounding boxes from the format (top_left_x, top_left_y, width, height) to (center_x, center_y, width, height) and in relative coordinates.
+            #input_data_format: "channels_first" CHW, "channels_last" HWC
+            #If unset, the channel dimension format is inferred from the input image.
+        
+        def preprocess_val(examples):#can handle batch
+            image_ids = examples["image_id"]
+            images, bboxes, area, categories = [], [], [], []
+            for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
+                image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
+                out = val_transforms(image=image, bboxes=objects["bbox"], category=objects["category"])#bbox size changed
+
+                area.append(objects["area"])
+                images.append(out[image_column_name]) #(480, 480, 3)
+                bboxes.append(out["bboxes"])#resized [x_min, y_min, width, height]
+                categories.append(out["category"])#category become integer list [4]
+
+            targets = [
+                {"image_id": id_, "annotations": formatted_anns(id_, cat_, ar_, box_)}
+                for id_, cat_, ar_, box_ in zip(image_ids, categories, area, bboxes)
+            ]#list of dict 'image_id'=756, 'annotations': list of dicts with 'area' 'bbox' 'category_id'
+            #https://huggingface.co/docs/transformers/main/en/model_doc/detr#transformers.DetrImageProcessor
+            return image_processor(images=images, annotations=targets, return_tensors="pt")
+        
+    return preprocess_train, preprocess_val
+
+#tasks: "depth-estimation", "image-classification", "object-detection"
 def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
     if load_only:#only load the model
         ignore_mismatched_sizes = False
@@ -451,6 +613,14 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         )
     elif task == "depth-estimation":
         model = AutoModelForDepthEstimation.from_pretrained(
+            model_name_or_path, 
+            config=config,
+            cache_dir=mycache_dir,
+            ignore_mismatched_sizes=ignore_mismatched_sizes,
+            trust_remote_code=trust_remote_code,
+        )
+    elif task == "object-detection":
+        model = AutoModelForObjectDetection.from_pretrained(
             model_name_or_path, 
             config=config,
             cache_dir=mycache_dir,
@@ -727,45 +897,8 @@ def trainmain():
     else:
         size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
     
-    normalize = (
-        Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
-        if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
-        else Lambda(lambda x: x)
-    )
-    train_transforms = Compose(
-        [
-            RandomResizedCrop(size),
-            RandomHorizontalFlip(),
-            ToTensor(),
-            normalize,
-        ]
-    )
-    val_transforms = Compose(
-        [
-            Resize(size),
-            CenterCrop(size),
-            ToTensor(),
-            normalize,
-        ]
-    )
-
-    def preprocess_train(example_batch):
-        """Apply _train_transforms across a batch."""
-        #PIL image to RGB
-        example_batch["pixel_values"] = [
-            train_transforms(image.convert("RGB")) for image in example_batch[args.image_column_name]
-        ]
-        del example_batch[args.image_column_name]
-        return example_batch
-
-    def preprocess_val(example_batch):
-        """Apply _val_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            val_transforms(image.convert("RGB")) for image in example_batch[args.image_column_name]
-        ]
-        del example_batch[args.image_column_name]
-        return example_batch
-
+    preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
+    
     with accelerator.main_process_first():
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)

@@ -23,10 +23,10 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
-import albumentations
+import albumentations#pip install albumentations
 from time import perf_counter
 
-#tasks: "depth-estimation", "image-classification"
+#tasks: "depth-estimation", "image-classification", "object-detection"
 class MyVisionInference():
     def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
         self.cache_dir = cache_dir
@@ -56,6 +56,8 @@ class MyVisionInference():
         #get labels for classification
         if task=="image-classification" and model_type=="huggingface":
             self.id2label = self.model.config.id2label
+        if task=="object-detection" and model_type=="huggingface":
+            self.id2label = self.model.config.id2label
         elif task=="image-classification":
             labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
             self.id2label = {str(i): label for i, label in enumerate(labels)}
@@ -83,7 +85,7 @@ class MyVisionInference():
         return inp
 
     def __call__(self, image):
-        self.image = read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False)
+        self.image, self.org_sizeHW = read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False)
         #HWC numpy (427, 640, 3)
         if self.model_type=="huggingface":
             inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
@@ -104,8 +106,30 @@ class MyVisionInference():
             results = self.classification_postprocessing(outputs) #return confidence dicts
         elif self.task=="depth-estimation":
             results = self.depth_postprocessing(outputs, recolor=True) #return PIL image
+        elif self.task=="object-detection":
+            results = self.objectdetection_postprocessing(outputs) #return PIL image
         return results
     
+    def objectdetection_postprocessing(self, outputs, threshold=0.3):
+        target_sizes = torch.tensor([self.org_sizeHW]) #(640, 427)=> [[427, 640]]
+        results = self.image_processor.post_process_object_detection(outputs, threshold=threshold, target_sizes=target_sizes)[0] #'scores'[30], 'labels', 'boxes'[30,4]
+
+        for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+            box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
+            print(
+                f"Detected {self.id2label[label.item()]} with confidence "
+                f"{round(score.item(), 3)} at location {box}"
+            )
+        pilimage=Image.fromarray(self.image)
+        draw = ImageDraw.Draw(pilimage)
+        for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+            box = [round(i, 2) for i in box.tolist()]
+            x, y, x2, y2 = tuple(box)
+            draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+            draw.text((x, y), self.id2label[label.item()], fill="white")
+        pilimage.save("output/ImageDraw.png")
+        return pilimage
+
     def depth_postprocessing(self, outputs, recolor=True):
         if self.model_type=="huggingface":
             predicted_depth = outputs.predicted_depth #[1, 416, 640], [1, 384, 384]
@@ -116,14 +140,7 @@ class MyVisionInference():
         predicted_depth_input = predicted_depth.unsqueeze(1) #[1, 1, 384, 576]
 
         #read the height/width from image's shape
-        if isinstance(self.image, Image.Image):
-            self.height = self.image.height
-            self.width = self.image.width
-            target_size = self.image.size[::-1]#(width, height) (W=640, H=427)->(H=427, W=640)
-        elif isinstance(self.image, np.ndarray): #HWC format
-            self.height = self.image.shape[0]
-            self.width = self.image.shape[1]
-            target_size = (self.height, self.width) #(427, 640)
+        target_size = self.org_sizeHW
         
         #The input dimensions are interpreted in the form: mini-batch x channels x [optional depth] x [optional height] x width.
         prediction = torch.nn.functional.interpolate(
@@ -287,6 +304,9 @@ def object_detection(mycache_dir=None):
     image = Image.open(requests.get(url, stream=True).raw)
 
     checkpoint = "facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5"
+    myinference = MyVisionInference(model_name=checkpoint, task="object-detection", model_type="huggingface", cache_dir=mycache_dir)
+    results = myinference(image)
+
     #https://huggingface.co/docs/transformers/main/en/model_doc/auto#transformers.AutoImageProcessor
     image_processor = AutoImageProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
     model = AutoModelForObjectDetection.from_pretrained(checkpoint, cache_dir=mycache_dir)
@@ -398,7 +418,7 @@ def val_formatted_anns(image_id, objects):
 
     return annotations
 
-def test_dataset(mycache_dir):
+def test_dataset_objectdetection(mycache_dir):
     dataset = load_dataset("cppe-5")
 
     remove_idx = [590, 821, 822, 875, 876, 878, 879]
@@ -425,7 +445,7 @@ def test_dataset(mycache_dir):
         draw.text((x, y), id2label[class_idx], fill="white")
     image.save("output/ImageDraw.png")
 
-    checkpoint = "facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5" #"facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5"
+    checkpoint = "devonho/detr-resnet-50_finetuned_cppe5" #"facebook/detr-resnet-50" #"devonho/detr-resnet-50_finetuned_cppe5"
     #https://huggingface.co/docs/transformers/main/en/model_doc/auto#transformers.AutoImageProcessor
     #im_processor = AutoImageProcessor.from_pretrained("MariaK/detr-resnet-50_finetuned_cppe5")
     image_processor = AutoImageProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
@@ -521,38 +541,39 @@ def test_dataset(mycache_dir):
         test_ds_coco_format, batch_size=8, shuffle=False, num_workers=1, collate_fn=collate_fn)
     test_data = next(iter(val_dataloader))
     print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels']
-    print(test_data["pixel_values"].shape) #[8, 3, 800, 800]
-    print(test_data["pixel_mask"].shape) #[8, 800, 800]
+    print(test_data["pixel_values"].shape) #[8, 3, 840, 1333]
+    print(test_data["pixel_mask"].shape) #[8, 840, 1333]
 
     with torch.no_grad():
         for idx, batch in enumerate(tqdm(val_dataloader)):
-            pixel_values = batch["pixel_values"]
-            pixel_mask = batch["pixel_mask"]
+            pixel_values = batch["pixel_values"]#[8, 3, 840, 1333]
+            pixel_mask = batch["pixel_mask"]#[8, 840, 1333]
 
             labels = [
                 {k: v for k, v in t.items()} for t in batch["labels"]
-            ]  # these are in DETR format, resized + normalized
+            ]  # these are in DETR format, resized + normalized, list of dicts
 
             # forward pass
-            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask)
+            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask) #DetrObjectDetectionOutput
 
-            orig_target_sizes = torch.stack([target["orig_size"] for target in labels], dim=0)
-            results = image_processor.post_process(outputs, orig_target_sizes)  # convert outputs of model to COCO api
-
+            orig_target_sizes = torch.stack([target["orig_size"] for target in labels], dim=0) #[8,2] shape
+            results = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes)  # convert outputs of model to COCO api, list of dicts
             module.add(prediction=results, reference=labels)
             del batch
 
-    results = module.compute()
+    results = module.compute() #iou_bbox key
     print(results)
 
 
-def inference():
+def test_inference():
     mycache_dir=r"D:\Cache\huggingface" #"/home/lkk/Developer/"#
     #os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
     if os.environ.get('HF_HOME') is not None:
         mycache_dir = os.environ['HF_HOME']
-    test_dataset(mycache_dir)
     object_detection(mycache_dir=mycache_dir)
+
+    test_dataset_objectdetection(mycache_dir)
+    
     depth_test(mycache_dir=mycache_dir)
     clip_test(mycache_dir=mycache_dir)
     confidences = vision_inferencetest(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
@@ -561,4 +582,4 @@ if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
     #"microsoft/resnet-50"
-    inference()
+    test_inference()
