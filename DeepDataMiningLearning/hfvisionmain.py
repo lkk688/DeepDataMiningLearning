@@ -135,14 +135,14 @@ class myEvaluator:
 #huggingface-cli login
 def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
-    parser.add_argument('--traintag', type=str, default="hfimage0226",
+    parser.add_argument('--traintag', type=str, default="hfimage0306",
                     help='Name the current training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="google/vit-base-patch16-224-in21k",
+        default="facebook/detr-resnet-50",
         help="Path to pretrained model or model identifier from huggingface.co/models: google/vit-base-patch16-224-in21k, ",
     )
     parser.add_argument('--usehpc', default=True, action='store_true',
@@ -151,10 +151,10 @@ def parse_args():
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--task', type=str, default="image-classification",
-                    help='tasks: image-classification')
-    parser.add_argument('--data_name', type=str, default="cats_vs_dogs",
-                    help='data name: food101, beans')
+    parser.add_argument('--task', type=str, default="object-detection",
+                    help='tasks: image-classification, object-detection')
+    parser.add_argument('--data_name', type=str, default="cppe-5",
+                    help='data name: food101, beans, cats_vs_dogs')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
     parser.add_argument("--train_dir", type=str, default=None, help="A folder containing the training data.")
@@ -329,7 +329,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         else:
             data_split=None
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir, ignore_verifications=True, trust_remote_code=True)
+        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir, verification_mode='no_checks', trust_remote_code=True) #ignore_verifications=True
         # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
         # https://huggingface.co/docs/datasets/loading_datasets.html.)
     else:
@@ -376,6 +376,9 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     if task == "object-detection":
         image_column_name = "image"
         label_column_name = "objects" #for object detection
+        remove_idx = [590, 821, 822, 875, 876, 878, 879]
+        keep = [i for i in range(len(split_datasets["train"])) if i not in remove_idx]
+        split_datasets["train"] = split_datasets["train"].select(keep)
     elif task == "image-classification":
         #some datset the labels name is different
         if data_name == "food101": #https://huggingface.co/datasets/food101
@@ -414,7 +417,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         #print(split_datasets["train"][0])
         print("Classification dataset 0:", split_datasets["train"][0][label_column_name])
     elif task=="object-detection":
-        classlabel = split_datasets["train"].features[label_column_name]
+        classlabel = split_datasets["train"].features[label_column_name]#Sequence type, feature['category','area','box','category'], id
         labels = classlabel.feature["category"].names #list of str names
         id2label = {index: x for index, x in enumerate(labels, start=0)}
         label2id = {v: k for k, v in id2label.items()}
@@ -474,12 +477,14 @@ def val_formatted_anns(image_id, objects):
     return annotations
 
 def dataset_preprocessing(image_processor, task, size, image_column_name='image', label_column_name='labels'):
-    if task =="image-classification":
-        normalize = (
+    image_mean = [0.485, 0.456, 0.406 ]
+    image_std = [0.229, 0.224, 0.225]
+    normalize = (
             Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
             if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
-            else Lambda(lambda x: x)
+            else Normalize(mean=image_mean, std=image_std) #Lambda(lambda x: x)
         )
+    if task =="image-classification":
         train_transforms = Compose(
             [
                 RandomResizedCrop(size),
@@ -514,9 +519,11 @@ def dataset_preprocessing(image_processor, task, size, image_column_name='image'
             return example_batch
     
     elif task =="object-detection":
+        if not isinstance(size, tuple):
+            size = (size, size)
         train_transforms = albumentations.Compose(
             [
-                albumentations.Resize(size), #(480, 480),
+                albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
                 albumentations.HorizontalFlip(p=1.0),
                 albumentations.RandomBrightnessContrast(p=1.0),
             ],
@@ -524,7 +531,7 @@ def dataset_preprocessing(image_processor, task, size, image_column_name='image'
         )
         val_transforms = albumentations.Compose(
             [
-                albumentations.Resize(size), #(480, 480),
+                albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
             ],
             bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
         )
@@ -574,6 +581,34 @@ def dataset_preprocessing(image_processor, task, size, image_column_name='image'
             return image_processor(images=images, annotations=targets, return_tensors="pt")
         
     return preprocess_train, preprocess_val
+
+
+def get_collate_fn(task, image_processor, label_column_name=None):
+    if task == "image-classification":
+        # DataLoaders creation:
+        #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
+        def collate_fn(examples):
+            pixel_values = torch.stack([example["pixel_values"] for example in examples])
+            labels = torch.tensor([example[label_column_name] for example in examples])
+            return {"pixel_values": pixel_values, "labels": labels}
+        #similar to 
+        #collate_fn = DefaultDataCollator()
+        return collate_fn
+    elif task == "object-detection":
+        # batch images together. Pad images (which are now pixel_values) to the largest image in a batch, 
+        #and create a corresponding pixel_mask to indicate which pixels are real (1) and which are padding (0).
+        def object_detection_collate_fn(batch):
+            pixel_values = [item["pixel_values"] for item in batch] #list of [3,800,800]
+            #'DetrImageProcessor' object has no attribute 'pad_and_create_pixel_mask'
+            #encoding = image_processor.pad_and_create_pixel_mask(pixel_values, return_tensors="pt")
+            encoding = image_processor.pad(pixel_values, return_tensors="pt")
+            labels = [item["labels"] for item in batch]#pixel_values [8,3,800,800]
+            batch = {}
+            batch["pixel_values"] = encoding["pixel_values"]
+            batch["pixel_mask"] = encoding["pixel_mask"] #[8,800,800]
+            batch["labels"] = labels #8 dict items
+            return batch
+        return object_detection_collate_fn
 
 #tasks: "depth-estimation", "image-classification", "object-detection"
 def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
@@ -881,7 +916,7 @@ def trainmain():
     with accelerator.main_process_first():
         dataset, labels, args.image_column_name, args.label_column_name = load_visiondataset(data_name=args.data_name, \
                                     split=args.datasplit, train_dir=args.train_dir, validation_dir=args.validation_dir, \
-                                    max_train_samples = args.max_train_samples, train_val_split=args.train_val_split, \
+                                    task=args.task, max_train_samples = args.max_train_samples, train_val_split=args.train_val_split, \
                                     image_column_name=args.image_column_name, label_column_name=args.label_column_name, mycache_dir=mycache_dir)
 
     # Load pretrained model and image processor
@@ -897,24 +932,15 @@ def trainmain():
     else:
         size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
     
-    preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
-    
     with accelerator.main_process_first():
+        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)
         eval_dataset = dataset[valkey].with_transform(preprocess_val)
-
         #train_dataset = dataset["train"].map(preprocess_train)
         #eval_dataset = dataset[valkey].map(preprocess_val)
 
-    # DataLoaders creation:
-    #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
-    def collate_fn(examples):
-        pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        labels = torch.tensor([example[args.label_column_name] for example in examples])
-        return {"pixel_values": pixel_values, "labels": labels}
-    #similar to 
-    #collate_fn = DefaultDataCollator()
+    collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
 
     metriceval = myEvaluator(task=args.task, useHFevaluator=True, dualevaluator=False, \
                             labels=labels, processor=image_processor, mycache_dir=mycache_dir)
@@ -942,16 +968,25 @@ def trainmain():
             #fp16=args.use_fp16,
             push_to_hub=False,
         )
-        # Initialize our trainer
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=train_dataset,
-            eval_dataset=eval_dataset,
-            compute_metrics=metriceval.compute_metrics,
-            tokenizer=image_processor,
-            data_collator=collate_fn,
-        )
+        if args.task == "object-detection":
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                data_collator=collate_fn,
+                train_dataset=train_dataset,
+                tokenizer=image_processor,
+            )
+        else:
+            # Initialize our trainer
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
+                compute_metrics=metriceval.compute_metrics,
+                tokenizer=image_processor,
+                data_collator=collate_fn,
+            )
         from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
         checkpoint = load_hfcheckpoint(args.resume_from_checkpoint)
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
