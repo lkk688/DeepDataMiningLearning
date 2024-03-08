@@ -153,7 +153,7 @@ def parse_args():
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--task', type=str, default="object-detection",
                     help='tasks: image-classification, object-detection')
-    parser.add_argument('--data_name', type=str, default="cppe-5",
+    parser.add_argument('--data_name', type=str, default="detection-datasets/coco",
                     help='data name: food101, beans, cats_vs_dogs')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
@@ -523,7 +523,7 @@ def dataset_preprocessing(image_processor, task, size, image_column_name='image'
             size = (size, size)
         train_transforms = albumentations.Compose(
             [
-                albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
+                albumentations.Resize(480,480), #(height=size[0], width=size[1]), #(480, 480),
                 albumentations.HorizontalFlip(p=1.0),
                 albumentations.RandomBrightnessContrast(p=1.0),
             ],
