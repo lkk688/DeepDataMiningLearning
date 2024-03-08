@@ -89,7 +89,7 @@ Python data apps based on streamlit:
       * Diamond dataset: Categorical Feature Encoding, Linear Regression and other regressors
       * Boston housing dataset: Regression Model for All the variables, Ridge and Lasso Regression
       * Diabetes Dataset: Linear regression, Ridge and Lasso Regression
-      * AUTO MPG Dataset
+      * AUTO MPG Dataset: 1) Linear regression; 2) Polynomial Regression via SKlearn PolynomialFeatures; 3) Multiple Linear Regression; 4) SKLearn Pipelines combine feature engineering stages and the model into a single "model"; 5) ColumnTransformer and FunctionTransformer; 6) Cross Validation
    * [MLIntro2-classification.ipynb](./MLIntro2-classification.ipynb) --[colablink](https://colab.research.google.com/drive/1znfskFZFo-m7VjnI5vgcxdaPWHvLLG9H?usp=sharing)
       * Breast Cancer Dataset, iris Dataset, BigQuery US Census Income Dataset, multiple classifiers. 
    * DecisionTree -- [colablink](https://colab.research.google.com/drive/15N_qxOY74batHHjTvkh6zoQ0_85bfdDQ?usp=sharing)
