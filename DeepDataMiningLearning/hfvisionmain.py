@@ -16,6 +16,9 @@ from datasets import load_dataset, DatasetDict
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
 from torchvision import transforms
+from torchvision.ops import box_convert
+from torchvision.utils import draw_bounding_boxes
+from torchvision.transforms.functional import pil_to_tensor, to_pil_image
 from torchvision.transforms import (
     CenterCrop,
     Compose,
@@ -418,10 +421,11 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         print("Classification dataset 0:", split_datasets["train"][0][label_column_name])
     elif task=="object-detection":
         classlabel = split_datasets["train"].features[label_column_name]#Sequence type, feature['category','area','box','category'], id
-        labels = classlabel.feature["category"].names #list of str names
+        categories = classlabel.feature["category"]
+        labels = categories.names #list of str names
         id2label = {index: x for index, x in enumerate(labels, start=0)}
         label2id = {v: k for k, v in id2label.items()}
-        dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, \
+        dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, categories=categories,\
                                        image_column_name=image_column_name, label_column_name=label_column_name, output_folder="output/")
 
 
@@ -429,22 +433,71 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, image_column_name, label_column_name
 
-def dataset_objectdetection_select(dataset, data_index, id2label, image_column_name='image', label_column_name='objects', output_folder="output/"):
+def draw2pil(image, bbox, category, categories, filepath=None):
+    boxes_xywh = torch.tensor(bbox) #annotations['bbox']
+    boxes_xyxy = box_convert(boxes_xywh, 'xywh', 'xyxy')
+    labels = [categories.int2str(x) for x in category] #annotations['category']
+    image_annoted=to_pil_image(
+        draw_bounding_boxes(
+            pil_to_tensor(image),
+            boxes_xyxy,
+            colors="red",
+            labels=labels,
+        )
+    )
+    if filepath:
+        image_annoted.save(filepath)
+    return image_annoted
+
+def dataset_objectdetection_select(dataset, data_index, id2label, categories, image_column_name='image', label_column_name='objects', output_folder="output/"):
     image = dataset[data_index][image_column_name]#PIL image in RGB mode 
     annotations = dataset[data_index][label_column_name] 
     #['id'] ['area'] ['bbox'](4,4)list ['category']
     #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
     #bounding box in [x_min, y_min, width, height]
+    filepath = os.path.join(output_folder, "dataset_objectdetection_select.png")
+    image_annoted = draw2pil(image, annotations['bbox'], annotations['category'], categories, filepath)
+    print(f"Test image id:{data_index} saved in {filepath}")
+
+    transform = albumentations.Compose([
+        albumentations.Resize(480, 480),
+        albumentations.HorizontalFlip(p=1.0),
+        albumentations.RandomBrightnessContrast(p=1.0),
+    ], bbox_params=albumentations.BboxParams(format='coco',  label_fields=['category']))
+    image_np = np.array(image) #HWC
+    out = transform(
+        image=image_np,
+        bboxes=annotations['bbox'],
+        category=annotations['category'],
+    )
+    print(out.keys())
+
+    image = torch.tensor(out['image']).permute(2, 0, 1) #HWC->CHW
+    boxes_xywh = torch.stack([torch.tensor(x) for x in out['bboxes']])
+    image_annoted = draw2pil(image, boxes_xywh, out['category'], categories, filepath)
+    # boxes_xyxy = box_convert(boxes_xywh, 'xywh', 'xyxy')
+    # labels = [categories.int2str(x) for x in out['category']]
+    # to_pil_image(
+    #     draw_bounding_boxes(
+    #         image,
+    #         boxes_xyxy,
+    #         colors='red',
+    #         labels=labels
+    #     )
+    # )
+    
+
     draw = ImageDraw.Draw(image)
-    for i in range(len(annotations["id"])):
+    box_len=len(annotations["bbox"])
+    for i in range(box_len):
         box = annotations["bbox"][i - 1]
         class_idx = annotations["category"][i - 1]
         x, y, w, h = tuple(box) #[x_min, y_min, width, height]
         draw.rectangle((x, y, x + w, y + h), outline="red", width=1)
         draw.text((x, y), id2label[class_idx], fill="white")
-    filepath = os.path.join(output_folder, "dataset_objectdetection_select.png")
-    print(f"Test image id:{data_index} saved in {filepath}")
     image.save(filepath)#"output/ImageDraw.png")
+
+    
 
 def formatted_anns(image_id, category, area, bbox):#category/area/bbox list input
     annotations = []
@@ -939,6 +992,8 @@ def trainmain():
         eval_dataset = dataset[valkey].with_transform(preprocess_val)
         #train_dataset = dataset["train"].map(preprocess_train)
         #eval_dataset = dataset[valkey].map(preprocess_val)
+        oneexample = train_dataset[15]
+        print(oneexample.keys())
 
     collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
 

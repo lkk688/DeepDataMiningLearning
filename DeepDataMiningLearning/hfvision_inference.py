@@ -419,7 +419,7 @@ def val_formatted_anns(image_id, objects):
     return annotations
 
 def test_dataset_objectdetection(mycache_dir):
-    dataset = load_dataset("cppe-5")
+    dataset = load_dataset("detection-datasets/coco", cache_dir=mycache_dir)#"cppe-5")
 
     remove_idx = [590, 821, 822, 875, 876, 878, 879]
     keep = [i for i in range(len(dataset["train"])) if i not in remove_idx]
@@ -437,7 +437,8 @@ def test_dataset_objectdetection(mycache_dir):
     label2id = {v: k for k, v in id2label.items()}
 
     draw = ImageDraw.Draw(image)
-    for i in range(len(annotations["id"])):
+    len_anns=len(annotations["bbox"])
+    for i in range(len_anns):
         box = annotations["bbox"][i - 1]
         class_idx = annotations["category"][i - 1]
         x, y, w, h = tuple(box) #[x_min, y_min, width, height]
@@ -459,6 +460,12 @@ def test_dataset_objectdetection(mycache_dir):
         ],
         bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
     )
+    image_np = np.array(image) #HWC
+    out = transform(
+        image=image_np,
+        bboxes=[annotations['bbox'][0]],
+        category=[annotations['category'][0]],
+    )#error
 
     #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
     #where each dictionary is a COCO object annotation.
@@ -570,7 +577,7 @@ def test_inference():
     #os.environ['HF_HOME'] = mycache_dir #'~/.cache/huggingface/'
     if os.environ.get('HF_HOME') is not None:
         mycache_dir = os.environ['HF_HOME']
-    object_detection(mycache_dir=mycache_dir)
+    #object_detection(mycache_dir=mycache_dir)
 
     test_dataset_objectdetection(mycache_dir)
     
