@@ -160,6 +160,13 @@ def parse_args():
                     help='data name: food101, beans, cats_vs_dogs')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
+    #format #"coco": [x_min, y_min, width, height] in pixels 
+    #pascal_voc: [x_min, y_min, x_max, y_max] in pixels
+    #albumentations  [x_min, y_min, x_max, y_max] normalized
+    #yolo: [x_center, y_center, width, height] normalized
+    #torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
+    parser.add_argument('--format', type=str, default='pascal_voc',
+                    help='dataset bbox format')
     parser.add_argument("--train_dir", type=str, default=None, help="A folder containing the training data.")
     parser.add_argument("--validation_dir", type=str, default=None, help="A folder containing the validation data.")
     parser.add_argument(
@@ -180,13 +187,13 @@ def parse_args():
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=16,
+        default=4,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument(
         "--per_device_eval_batch_size",
         type=int,
-        default=16,
+        default=4,
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(
@@ -425,7 +432,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         labels = categories.names #list of str names
         id2label = {index: x for index, x in enumerate(labels, start=0)}
         label2id = {v: k for k, v in id2label.items()}
-        dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, categories=categories,\
+        dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, categories=categories, format='pascal_voc', \
                                        image_column_name=image_column_name, label_column_name=label_column_name, output_folder="output/")
 
 
@@ -433,14 +440,46 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, image_column_name, label_column_name
 
-def draw2pil(image, bbox, category, categories, filepath=None):
-    boxes_xywh = torch.tensor(bbox) #annotations['bbox']
-    boxes_xyxy = box_convert(boxes_xywh, 'xywh', 'xyxy')
+#from DeepDataMiningLearning.detection.modules.utils import xyxy2xywh
+def convert_bbbox2coco(bbox, source_format='pascal_voc', height=None, width=None):
+    if source_format=='pascal_voc': #[x_min, y_min, x_max, y_max] in pixels
+        boxes_xyxy = torch.stack([torch.tensor(x) for x in bbox])
+        bbox_new = box_convert(boxes_xyxy, 'xyxy', 'xywh') #['xyxy', 'xywh', 'cxcywh']
+        #bbox_new = xyxy2xywh(bbox)
+    elif source_format=='yolo' and height and width:
+        bbox_new=[]
+        for box in bbox:
+            (x_min, y_min, x_max, y_max) = box[:4]
+            x_min, x_max = x_min * width, x_max * width #cols
+            y_min, y_max = y_min * height, y_max * height #hrows
+            bbox_new.append([x_min, y_min, x_max, y_max])
+        bbox_new = torch.stack(bbox_new)
+        bbox_new = box_convert(bbox_new, 'xyxy', 'xywh')
+        #bbox_new = xyxy2xywh(bbox)
+    return bbox_new #[x_min, y_min, width, height] in pixels 
+
+#https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation
+#"coco": [x_min, y_min, width, height] in pixels 
+#pascal_voc: [x_min, y_min, x_max, y_max] in pixels
+#albumentations  [x_min, y_min, x_max, y_max] normalized
+#yolo: [x_center, y_center, width, height] normalized
+#torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
+def draw2pil(image, bbox, category, categories, bbox_format='coco', filepath=None):
+    if not torch.is_tensor(image):
+        image = pil_to_tensor(image)
+    if not torch.is_tensor(bbox):
+        boxes_in = torch.tensor(bbox) #annotations['bbox']
+    else:
+        boxes_in = bbox
+    if bbox_format=='coco': #'xywh':
+        boxes_new = box_convert(boxes_in, 'xywh', 'xyxy') #['xyxy', 'xywh', 'cxcywh']
+    elif bbox_format=='pascal_voc':
+        boxes_new = boxes_in
     labels = [categories.int2str(x) for x in category] #annotations['category']
     image_annoted=to_pil_image(
         draw_bounding_boxes(
-            pil_to_tensor(image),
-            boxes_xyxy,
+            image,
+            boxes_new,
             colors="red",
             labels=labels,
         )
@@ -449,32 +488,35 @@ def draw2pil(image, bbox, category, categories, filepath=None):
         image_annoted.save(filepath)
     return image_annoted
 
-def dataset_objectdetection_select(dataset, data_index, id2label, categories, image_column_name='image', label_column_name='objects', output_folder="output/"):
+def dataset_objectdetection_select(dataset, data_index, id2label, categories, format='coco', image_column_name='image', label_column_name='objects', output_folder="output/"):
     image = dataset[data_index][image_column_name]#PIL image in RGB mode 
     annotations = dataset[data_index][label_column_name] 
     #['id'] ['area'] ['bbox'](4,4)list ['category']
     #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
     #bounding box in [x_min, y_min, width, height]
     filepath = os.path.join(output_folder, "dataset_objectdetection_select.png")
-    image_annoted = draw2pil(image, annotations['bbox'], annotations['category'], categories, filepath)
+    image_annoted = draw2pil(image, annotations['bbox'], annotations['category'], categories, format, filepath)
     print(f"Test image id:{data_index} saved in {filepath}")
 
     transform = albumentations.Compose([
         albumentations.Resize(480, 480),
         albumentations.HorizontalFlip(p=1.0),
         albumentations.RandomBrightnessContrast(p=1.0),
-    ], bbox_params=albumentations.BboxParams(format='coco',  label_fields=['category']))
+    ], bbox_params=albumentations.BboxParams(format=format,  label_fields=['category']))
     image_np = np.array(image) #HWC
     out = transform(
         image=image_np,
         bboxes=annotations['bbox'],
         category=annotations['category'],
     )
-    print(out.keys())
+    print(out.keys()) #['image', 'bboxes', 'category']
 
     image = torch.tensor(out['image']).permute(2, 0, 1) #HWC->CHW
     boxes_xywh = torch.stack([torch.tensor(x) for x in out['bboxes']])
-    image_annoted = draw2pil(image, boxes_xywh, out['category'], categories, filepath)
+    #pil_image=Image.fromarray(np.uint8(out['image']))
+    filepath = os.path.join(output_folder, "dataset_objectdetection_transform.png")
+    image_annoted = draw2pil(image, boxes_xywh, out['category'], categories, format, filepath)
+    print(f"Test image id:{data_index} transformed saved in {filepath}")
     # boxes_xyxy = box_convert(boxes_xywh, 'xywh', 'xyxy')
     # labels = [categories.int2str(x) for x in out['category']]
     # to_pil_image(
@@ -485,17 +527,6 @@ def dataset_objectdetection_select(dataset, data_index, id2label, categories, im
     #         labels=labels
     #     )
     # )
-    
-
-    draw = ImageDraw.Draw(image)
-    box_len=len(annotations["bbox"])
-    for i in range(box_len):
-        box = annotations["bbox"][i - 1]
-        class_idx = annotations["category"][i - 1]
-        x, y, w, h = tuple(box) #[x_min, y_min, width, height]
-        draw.rectangle((x, y, x + w, y + h), outline="red", width=1)
-        draw.text((x, y), id2label[class_idx], fill="white")
-    image.save(filepath)#"output/ImageDraw.png")
 
     
 
@@ -529,7 +560,7 @@ def val_formatted_anns(image_id, objects):
 
     return annotations
 
-def dataset_preprocessing(image_processor, task, size, image_column_name='image', label_column_name='labels'):
+def dataset_preprocessing(image_processor, task, size, format='coco', image_column_name='image', label_column_name='labels'):
     image_mean = [0.485, 0.456, 0.406 ]
     image_std = [0.229, 0.224, 0.225]
     normalize = (
@@ -576,17 +607,17 @@ def dataset_preprocessing(image_processor, task, size, image_column_name='image'
             size = (size, size)
         train_transforms = albumentations.Compose(
             [
-                albumentations.Resize(480,480), #(height=size[0], width=size[1]), #(480, 480),
+                albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
                 albumentations.HorizontalFlip(p=1.0),
                 albumentations.RandomBrightnessContrast(p=1.0),
             ],
-            bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
+            bbox_params=albumentations.BboxParams(format=format, label_fields=["category"]),
         )
         val_transforms = albumentations.Compose(
             [
                 albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
             ],
-            bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
+            bbox_params=albumentations.BboxParams(format=format, label_fields=["category"]),
         )
         #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
         #where each dictionary is a COCO object annotation.
@@ -597,10 +628,13 @@ def dataset_preprocessing(image_processor, task, size, image_column_name='image'
             for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
                 image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
                 out = train_transforms(image=image, bboxes=objects["bbox"], category=objects["category"])#bbox size changed
-
+                if format != 'coco':
+                    bbox_new = convert_bbbox2coco(out["bboxes"], source_format=format) #[x_min, y_min, width, height]
+                else:
+                    bbox_new = out["bboxes"]
                 area.append(objects["area"])
                 images.append(out[image_column_name]) #(480, 480, 3)
-                bboxes.append(out["bboxes"])#resized [x_min, y_min, width, height]
+                bboxes.append(bbox_new)#resized [x_min, y_min, width, height]
                 categories.append(out["category"])#category become integer list [4]
 
             targets = [
@@ -986,14 +1020,14 @@ def trainmain():
         size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
     
     with accelerator.main_process_first():
-        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
+        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)
         eval_dataset = dataset[valkey].with_transform(preprocess_val)
         #train_dataset = dataset["train"].map(preprocess_train)
         #eval_dataset = dataset[valkey].map(preprocess_val)
         oneexample = train_dataset[15]
-        print(oneexample.keys())
+        print(oneexample.keys()) #'pixel_values'[3, 800, 800], 'pixel_mask'[800,800], 'labels'dict of 'boxes'[2,4] (center_x, center_y, width, height) normalized
 
     collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
 

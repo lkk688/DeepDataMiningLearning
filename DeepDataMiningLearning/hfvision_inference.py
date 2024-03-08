@@ -425,8 +425,8 @@ def test_dataset_objectdetection(mycache_dir):
     keep = [i for i in range(len(dataset["train"])) if i not in remove_idx]
     dataset["train"] = dataset["train"].select(keep)
 
-    image = dataset["train"][0]["image"]#PIL image in RGB mode 
-    annotations = dataset["train"][0]["objects"] 
+    image = dataset["train"][15]["image"]#PIL image in RGB mode 
+    annotations = dataset["train"][15]["objects"] 
     #['id'] ['area'] ['bbox'](4,4)list ['category']
     #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
     #bounding box in [x_min, y_min, width, height]
@@ -452,20 +452,47 @@ def test_dataset_objectdetection(mycache_dir):
     image_processor = AutoImageProcessor.from_pretrained(checkpoint, cache_dir=mycache_dir)
     model = AutoModelForObjectDetection.from_pretrained(checkpoint, cache_dir=mycache_dir)
 
-    transform = albumentations.Compose(
-        [
-            albumentations.Resize(480, 480),
-            albumentations.HorizontalFlip(p=1.0),
-            albumentations.RandomBrightnessContrast(p=1.0),
-        ],
-        bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
-    )
+    # transform = albumentations.Compose(
+    #     [
+    #         albumentations.Resize(480, 480),
+    #         albumentations.HorizontalFlip(p=1.0),
+    #         albumentations.RandomBrightnessContrast(p=1.0),
+    #     ],
+    #     bbox_params=albumentations.BboxParams(format="coco", label_fields=["category"]),
+    # )
+    transform = albumentations.Compose([
+        albumentations.Resize(width=480, height=480),
+        albumentations.HorizontalFlip(p=0.5),
+        albumentations.RandomBrightnessContrast(p=0.2),
+    ], bbox_params=albumentations.BboxParams(format='pascal_voc', min_area=1024, min_visibility=0.1, label_fields=['category']))
+    
+    image = dataset["train"][15]["image"]#PIL image in RGB mode 
+    annotations = dataset["train"][15]["objects"] 
     image_np = np.array(image) #HWC
-    out = transform(
+    bbox=annotations['bbox'] #format is pascal_voc [x_min, y_min, x_max, y_max]
+    print(bbox)
+    annos=annotations['category']
+    transformed = transform(
         image=image_np,
-        bboxes=[annotations['bbox'][0]],
-        category=[annotations['category'][0]],
+        bboxes=bbox,
+        category=annos,
     )#error
+    transformed_image = transformed['image'] #numpy
+    print(transformed_image.shape)#HWC
+    transformed_bboxes = transformed['bboxes']
+    transformed_class_labels = transformed['category']
+    pil_image=Image.fromarray(np.uint8(transformed_image))
+    draw = ImageDraw.Draw(pil_image)
+    len_anns=len(transformed_bboxes)
+    for i in range(len_anns):
+        box = transformed_bboxes[i - 1]
+        class_idx = transformed_class_labels[i - 1]
+        #x, y, w, h = tuple(box) #[x_min, y_min, width, height]
+        x, y, xmax, ymax = tuple(box) #[x_min, y_min, width, height]
+        #draw.rectangle((x, y, x + w, y + h), outline="red", width=1)
+        draw.rectangle((x, y, xmax, ymax), outline="red", width=1)
+        draw.text((x, y), id2label[class_idx], fill="white")
+    pil_image.save("output/ImageDraw_transformed.png")
 
     #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
     #where each dictionary is a COCO object annotation.
