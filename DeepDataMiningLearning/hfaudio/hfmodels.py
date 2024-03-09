@@ -135,14 +135,14 @@ def modelparameters(model, unfreezename="", freezename="", unfreezehead=True):
             for unfreezename_one in unfreezename:
                 if unfreezename_one in name:
                     need_unfreeze = True
-        else:
+        elif unfreezename is not None:
             if unfreezename in name:
                 need_unfreeze = True
         if isinstance(freezename, list):
             for freezename_one in freezename:
                 if freezename_one in name:
                     need_freeze = True
-        else: 
+        elif freezename is not None: 
             if freezename in name:
                 need_freeze = True
         if 'head' in name and unfreezehead:

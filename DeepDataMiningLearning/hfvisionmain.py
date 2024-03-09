@@ -144,12 +144,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
     parser.add_argument('--traintag', type=str, default="hfimage0306",
                     help='Name the current training')
-    parser.add_argument('--trainmode', default="NoTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="output/cppe-5_hfimage0306/epoch_18",#"emre/detr-resnet-50_finetuned_cppe5",
+        default="facebook/detr-resnet-50", #"output/cppe-5_hfimage0306/epoch_18",#"emre/detr-resnet-50_finetuned_cppe5",
         help="Path to pretrained model or model identifier from huggingface.co/models: facebook/detr-resnet-50, google/vit-base-patch16-224-in21k, ",
     )
     parser.add_argument('--usehpc', default=True, action='store_true',
@@ -160,7 +160,7 @@ def parse_args():
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--task', type=str, default="object-detection",
                     help='tasks: image-classification, object-detection')
-    parser.add_argument('--data_name', type=str, default="cppe-5",
+    parser.add_argument('--data_name', type=str, default="detection-datasets/coco",
                     help='data name: detection-datasets/coco, food101, beans, cats_vs_dogs,cppe-5')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
@@ -171,10 +171,10 @@ def parse_args():
     #albumentations  [x_min, y_min, x_max, y_max] normalized
     #yolo: [x_center, y_center, width, height] normalized
     #torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
-    parser.add_argument('--format', type=str, default='coco',
+    parser.add_argument('--format', type=str, default='pascal_voc',
                     help='dataset bbox format: pascal_voc, coco')
     parser.add_argument("--train_dir", type=str, default=None, help="A folder containing the training data.")
-    parser.add_argument("--validation_dir", type=str, default="/data/rnd-liu/Datasets/cppe5", help="A folder containing the validation data.")
+    parser.add_argument("--validation_dir", type=str, default="/data/rnd-liu/Datasets/", help="A folder containing the validation data.")
     parser.add_argument(
         "--max_train_samples",
         type=int,
@@ -560,22 +560,30 @@ class CocoDetection(torchvision.datasets.CocoDetection):
 
         return {"pixel_values": pixel_values, "labels": target}
 
-def check_boxsize(bbox, height=None, width=None):
+def check_boxsize(bbox, height=None, width=None, format='coco'):
     errobox=False
     newbbox=[]
     for box in bbox:
-        xmin, ymin, w, h = box
+        if format=='coco':
+            xmin, ymin, w, h = box
+        else:
+            xmin, ymin, xmax, ymax = box
+            w = max(xmax-xmin, 1)
+            h = max(ymax-ymin, 1)
         if xmin+w>width:
-            w = width-xmin
+            w = max(width-xmin, 1)
             errobox = True
         if ymin+h>height:
-            h = height - ymin
+            h = max(height - ymin, 1)
             errobox = True
         if errobox:
             box=[xmin, ymin, w, h]
         if xmin > width or ymin > height:
-            box=[0, 0, 0.1, 0.1]
-        newbbox.append(box)
+            box=[0, 0, 1, 1]
+        if format=='coco':
+            newbbox.append(box)
+        else:
+            newbbox.append([xmin, ymin, xmin+w, ymin+h])
     return newbbox, errobox
 #from DeepDataMiningLearning.detection.modules.utils import xyxy2xywh
 def convert_bbbox2coco(bbox, source_format='pascal_voc', height=None, width=None, output_np=True):
@@ -778,15 +786,16 @@ def dataset_preprocessing(image_processor, task, size, format='coco', image_colu
             for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
                 image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
                 height, width, channel = image.shape
-                if format != 'coco':
-                    bbox_new = convert_bbbox2coco(objects["bbox"], source_format=format) #[x_min, y_min, width, height]
-                else:
-                    bbox_new = objects["bbox"]
+                # if format != 'coco':
+                #     bbox_new = convert_bbbox2coco(objects["bbox"], source_format=format) #[x_min, y_min, width, height]
+                # else:
+                #     bbox_new = objects["bbox"]
                 
-                newbbox, errbox = check_boxsize(bbox_new, height=height, width=width)
+                bbox_new = objects["bbox"]
+                newbbox, errbox = check_boxsize(bbox_new, height=height, width=width, format=format)
                 if errbox:
                     print(bbox_new)
-                out = train_transforms(image=image, bboxes=newbbox, category=objects["category"])#bbox size changed
+                out = train_transforms(image=image, bboxes=newbbox, category=objects["category"])#already consider format bbox size changed
                 
                 area.append(objects["area"])
                 images.append(out[image_column_name]) #(480, 480, 3)
