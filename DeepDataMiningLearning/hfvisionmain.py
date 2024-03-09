@@ -63,12 +63,18 @@ class myEvaluator:
         self.HFmetric = None
         if self.task == "image-classification":
             self.metricname = "accuracy" #"mse" "wer"
+        elif self.task == "object-detection":
+            self.metricname = "coco"
+            #prepare
         else:
             self.metricname = "accuracy"
         self.LOmetric = None
-        if self.useHFevaluator:
+        if self.useHFevaluator and self.task=="object-detection":
+            self.HFmetric = evaluate.load("ybelkada/cocoevaluate", coco=test_ds_coco_format.coco)
+        elif self.useHFevaluator:
             # Load the accuracy metric from the datasets package
             self.HFmetric = evaluate.load(self.metricname, cache_dir=mycache_dir) #evaluate.load("mse")
+            
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
     # `predictions` and `label_ids` fields) and has to return a dictionary string to float.
@@ -447,6 +453,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     return split_datasets, labels, id2label, image_column_name, label_column_name
 
 #from DeepDataMiningLearning.hfvision_inference import save_coco_annotation_file_images
+from tqdm.contrib import tzip
 def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno, format='coco', json_only=False):
     output_json = {}
 
@@ -458,7 +465,7 @@ def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno, 
     categories_json = [{"supercategory": "none", "id": id, "name": id2label[id]} for id in id2label]
     output_json["images"] = []
     output_json["annotations"] = []
-    for example in dataset:
+    for example in tqdm(dataset):
         ann = val_formatted_anns(example["image_id"], example["objects"], format)#list of dicts
         output_json["images"].append(
             {
@@ -475,11 +482,74 @@ def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno, 
         json.dump(output_json, file, ensure_ascii=False, indent=4)
 
     if json_only!=True:
-        for im, img_id in zip(dataset["image"], dataset["image_id"]):
+        #for im, img_id in zip(dataset["image"], dataset["image_id"]):
+        for im, img_id in tzip(dataset["image"], dataset["image_id"]):
             path_img = os.path.join(path_output, f"{img_id}.png")
             im.save(path_img)
 
     return path_output, path_anno
+
+class HFCOCODataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, id2label, dataset_folder, coco_anno_json=None, data_type='huggingface', format='coco', image_processor=None):
+        #Convert HF dataset to COCO format
+        if coco_anno_json is None:
+            coco_anno_json = os.path.join(dataset_folder, 'coco_anno.json')
+        if data_type == "huggingface" and not os.path.exists(coco_anno_json):
+            print("Convert HF dataset to COCO format into folder:", dataset_folder)
+            dataset_folder, coco_anno_json = save_coco_annotation_file_images(dataset, id2label=id2label, path_output=dataset_folder, path_anno=coco_anno_json, format=format, json_only=False)
+        self.dataset_folder = dataset_folder
+        #create CocoDetection dataset
+        self.ds_coco = CocoDetection(dataset_folder, image_processor, coco_anno_json)
+        #{"pixel_values": pixel_values, "labels": target} after processor
+        print(len(self.ds_coco))
+        self.image_ids = self.ds_coco.coco.getImgIds()
+        print(len(self.image_ids))
+        self.coco = self.ds_coco.coco
+        cats = self.coco.cats
+        self.id2label = {k: v['name'] for k,v in cats.items()}
+
+    def get_img(self, image_id):
+        images = self.coco.loadImgs(image_id)
+        image = images[0] #dict with image info, 'file_name'
+        image = Image.open(os.path.join(self.dataset_folder, image['file_name']))
+        return image
+    
+    def get_anno(self, image_id):
+        annotations = self.coco.imgToAnns[image_id]#list of dicts
+        return annotations
+    
+    def draw_anno2image(self, image, annotations, id2label=None, save_path="output/ImageDrawcoco.png"):
+        draw = ImageDraw.Draw(image, "RGBA")
+        for annotation in annotations:
+            box = annotation['bbox']
+            class_idx = annotation['category_id']
+            x,y,w,h = tuple(box)
+            draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
+            if id2label is not None:
+                draw.text((x, y), id2label[class_idx], fill='white')
+        if save_path:
+            image.save(save_path)
+        return image
+
+    def test_cocodataset(self, index=None):
+        test_coco= self.ds_coco[0] #pixel_values[3, 693, 1333] labels dict 
+        # let's pick a random image
+        if index is None:
+            index = np.random.randint(0, len(self.image_ids))
+        image_id = self.image_ids[index] #
+        print('Image n°{}'.format(image_id))
+        image = self.get_img(image_id)
+        annotations = self.get_anno(image_id)
+        iamge_draw = self.draw_anno2image(image, annotations, self.id2label)
+        
+    def __getitem__(self, index):
+        img, target = self.ds_coco[index]
+        return img, target
+
+    def __len__(self):
+        return len(self.ds_coco)
+    
+
 #results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
 def evaluate_dataset(model, dataset, id2label, dataset_folder, coco_anno_json, data_type, format, device, image_processor, collate_fn):
     #id2label = model.id2label

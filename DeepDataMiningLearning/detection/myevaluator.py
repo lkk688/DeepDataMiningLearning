@@ -203,7 +203,7 @@ def get_coco_api_from_dataset(dataset):
     #     return dataset.coco
      return convert_to_coco_api(dataset)
 
-def convert_to_coco_api(ds):#mykittidetectiondataset
+def convert_to_coco_api2(ds):#mykittidetectiondataset
     coco_ds = COCO()
     # annotation IDs need to start at 1, not 0, see torchvision issue #1530
     ann_id = 1
