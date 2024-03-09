@@ -283,8 +283,9 @@ if __name__ == "__main__":
                     help='perform evaluation via HFevaluate or localevaluate')
     parser.add_argument('--dualevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate and localevaluate')
-    parser.add_argument('--unfreezename', type=str, default="",
-                    help='Unfreezename in models') #adapter
+    # parser.add_argument('--unfreezename', type=str, default="",
+    #                 help='Unfreezename in models') #adapter
+    parser.add_argument('--unfreezename', nargs='+', help='Unfreezename in models, could be list', required=False)
     parser.add_argument('--freeze_feature_encoder', default=False, action='store_true', help='Freeze the featureencoder')
     parser.add_argument('--freeze_basemodel', default=False, action='store_true', help='Freeze the basemodel')
     #training related arguments

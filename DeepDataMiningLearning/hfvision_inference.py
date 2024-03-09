@@ -337,13 +337,14 @@ from datasets import load_dataset
 import json
 import torchvision
 # Save images and annotations into the files torchvision.datasets.CocoDetection expects
-def save_coco_annotation_file_images(dataset, id2label, path_output):
+def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno):
     output_json = {}
 
     if not os.path.exists(path_output):
         os.makedirs(path_output)
 
-    path_anno = os.path.join(path_output, "cppe5_ann.json")
+    if path_anno is None:
+        path_anno = os.path.join(path_output, "coco_anno.json")
     categories_json = [{"supercategory": "none", "id": id, "name": id2label[id]} for id in id2label]
     output_json["images"] = []
     output_json["annotations"] = []
@@ -546,7 +547,9 @@ def test_dataset_objectdetection(mycache_dir):
     print(test_data["pixel_values"].shape) #[8, 3, 800, 800]
     print(test_data["pixel_mask"].shape) #[8, 800, 800]
 
-    path_output, path_anno = save_coco_annotation_file_images(dataset["test"], id2label=id2label, path_output="./output/coco/")
+    #path_output, path_anno = save_coco_annotation_file_images(dataset["test"], id2label=id2label, path_output="./output/coco/")
+    path_output = 'output/coco/'
+    path_anno = 'output/coco/cppe5_ann.json'
     test_ds_coco_format = CocoDetection(path_output, image_processor, path_anno)
     test_coco= test_ds_coco_format[0] #[3, 693, 1333]
     print(len(test_ds_coco_format))
@@ -554,7 +557,7 @@ def test_dataset_objectdetection(mycache_dir):
     # let's pick a random image
     image_id = image_ids[np.random.randint(0, len(image_ids))]
     print('Image n°{}'.format(image_id))
-    image = test_ds_coco_format.coco.loadImgs(image_id)[0] #dict with image info
+    image = test_ds_coco_format.coco.loadImgs(image_id)[0] #dict with image info, 'file_name'
     image = Image.open(os.path.join('output/coco/', image['file_name']))
 
     annotations = test_ds_coco_format.coco.imgToAnns[image_id]#list of dicts
@@ -574,7 +577,7 @@ def test_dataset_objectdetection(mycache_dir):
     val_dataloader = torch.utils.data.DataLoader(
         test_ds_coco_format, batch_size=8, shuffle=False, num_workers=1, collate_fn=collate_fn)
     test_data = next(iter(val_dataloader))
-    print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels']
+    print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels'] 'labels' is list of dicts
     print(test_data["pixel_values"].shape) #[8, 3, 840, 1333]
     print(test_data["pixel_mask"].shape) #[8, 840, 1333]
 

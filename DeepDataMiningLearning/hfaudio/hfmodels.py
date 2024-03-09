@@ -128,22 +128,49 @@ def freezemodel(model, unfreezename="", freezename="", freeze_feature_encoder=Tr
     return model
 
 def modelparameters(model, unfreezename="", freezename="", unfreezehead=True):
-    if unfreezename:
-        for name, param in model.named_parameters():
-            #if name.startswith(unfreezename): # choose whatever you like here
-            if unfreezename in name:
-                param.requires_grad = True
-            elif unfreezehead and 'head' in name:
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
-    if freezename:
-        for name, param in model.named_parameters():
-            if freezename in name:
-                param.requires_grad = False
-
     for name, param in model.named_parameters():
+        need_unfreeze = False
+        need_freeze = False
+        if isinstance(unfreezename, list):
+            for unfreezename_one in unfreezename:
+                if unfreezename_one in name:
+                    need_unfreeze = True
+        else:
+            if unfreezename in name:
+                need_unfreeze = True
+        if isinstance(freezename, list):
+            for freezename_one in freezename:
+                if freezename_one in name:
+                    need_freeze = True
+        else: 
+            if freezename in name:
+                need_freeze = True
+        if 'head' in name and unfreezehead:
+            need_unfreeze = True
+
+        if need_unfreeze and not need_freeze:
+            param.requires_grad = True
+        elif need_freeze and not need_unfreeze:
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
         print(name, param.requires_grad)
+    # if unfreezename:
+    #     for name, param in model.named_parameters():
+    #         #if name.startswith(unfreezename): # choose whatever you like here
+    #         if unfreezename in name:
+    #             param.requires_grad = True
+    #         elif unfreezehead and 'head' in name:
+    #             param.requires_grad = True
+    #         else:
+    #             param.requires_grad = False
+    # if freezename:
+    #     for name, param in model.named_parameters():
+    #         if freezename in name:
+    #             param.requires_grad = False
+
+    # for name, param in model.named_parameters():
+    #     print(name, param.requires_grad)
 
 
 #https://github.com/huggingface/transformers/tree/main/src/transformers/models/wav2vec2
