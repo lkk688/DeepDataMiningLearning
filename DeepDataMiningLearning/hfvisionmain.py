@@ -43,6 +43,7 @@ from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_Im
 import requests
 import cv2
 import albumentations#pip install albumentations
+from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset
 
 logger = get_logger(__name__)
 
@@ -50,7 +51,7 @@ logger = get_logger(__name__)
 os.environ["PYTORCH_USE_CUDA_DSA"] = "1"
 
 class myEvaluator:
-    def __init__(self, task, useHFevaluator=False, dualevaluator=False, labels=None, processor=None, mycache_dir=None):
+    def __init__(self, task, useHFevaluator=False, dualevaluator=False, processor=None, coco=None, mycache_dir=None):
         print("useHFevaluator:", useHFevaluator)
         print("dualevaluator:", dualevaluator)
         self.useHFevaluator = useHFevaluator
@@ -58,7 +59,7 @@ class myEvaluator:
         self.task = task
         self.preds = []
         self.refs = []
-        self.labels = labels
+        #self.labels = labels
         self.processor = processor
         self.HFmetric = None
         if self.task == "image-classification":
@@ -70,7 +71,7 @@ class myEvaluator:
             self.metricname = "accuracy"
         self.LOmetric = None
         if self.useHFevaluator and self.task=="object-detection":
-            self.HFmetric = evaluate.load("ybelkada/cocoevaluate", coco=test_ds_coco_format.coco)
+            self.HFmetric = evaluate.load("ybelkada/cocoevaluate", coco=coco) #test_ds_coco_format.coco)
         elif self.useHFevaluator:
             # Load the accuracy metric from the datasets package
             self.HFmetric = evaluate.load(self.metricname, cache_dir=mycache_dir) #evaluate.load("mse")
@@ -143,186 +144,6 @@ class myEvaluator:
         #     self.refs.append(ref[0])
         #print(len(self.refs))
 
-# from huggingface_hub import login
-# login()
-#huggingface-cli login
-def parse_args():
-    parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
-    parser.add_argument('--traintag', type=str, default="hfimage0306",
-                    help='Name the current training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
-    #vocab_path
-    parser.add_argument(
-        "--model_name_or_path",
-        type=str,
-        default="facebook/detr-resnet-50", #"output/cppe-5_hfimage0306/epoch_18",#"emre/detr-resnet-50_finetuned_cppe5",
-        help="Path to pretrained model or model identifier from huggingface.co/models: facebook/detr-resnet-50, google/vit-base-patch16-224-in21k, ",
-    )
-    parser.add_argument('--usehpc', default=True, action='store_true',
-                    help='Use HPC')
-    parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
-    parser.add_argument('--useamp', default=True, action='store_true',
-                    help='Use pytorch amp in training')
-    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--task', type=str, default="object-detection",
-                    help='tasks: image-classification, object-detection')
-    parser.add_argument('--data_name', type=str, default="detection-datasets/coco",
-                    help='data name: detection-datasets/coco, food101, beans, cats_vs_dogs,cppe-5')
-    parser.add_argument('--datasplit', type=str, default='train',
-                    help='dataset split name in huggingface dataset')
-    parser.add_argument('--datatype', type=str, default='huggingface',
-                    help='Data type: huggingface, torch')
-    #format #"coco": [x_min, y_min, width, height] in pixels 
-    #pascal_voc: [x_min, y_min, x_max, y_max] in pixels
-    #albumentations  [x_min, y_min, x_max, y_max] normalized
-    #yolo: [x_center, y_center, width, height] normalized
-    #torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
-    parser.add_argument('--format', type=str, default='pascal_voc',
-                    help='dataset bbox format: pascal_voc, coco')
-    parser.add_argument("--train_dir", type=str, default=None, help="A folder containing the training data.")
-    parser.add_argument("--validation_dir", type=str, default="/data/rnd-liu/Datasets/", help="A folder containing the validation data.")
-    parser.add_argument(
-        "--max_train_samples",
-        type=int,
-        default=-1, #means all data 2000,
-        help=(
-            "For debugging purposes or quicker training, truncate the number of training examples to this "
-            "value if set."
-        ),
-    )
-    parser.add_argument(
-        "--train_val_split",
-        type=float,
-        default=0.15,
-        help="Percent to split off of train for validation",
-    )
-    parser.add_argument(
-        "--per_device_train_batch_size",
-        type=int,
-        default=4,
-        help="Batch size (per device) for the training dataloader.",
-    )
-    parser.add_argument(
-        "--per_device_eval_batch_size",
-        type=int,
-        default=4,
-        help="Batch size (per device) for the evaluation dataloader.",
-    )
-    parser.add_argument(
-        "--learning_rate",
-        type=float,
-        default=5e-5,
-        help="Initial learning rate (after the potential warmup period) to use.",
-    )
-    parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
-    parser.add_argument("--num_train_epochs", type=int, default=20, help="Total number of training epochs to perform.")
-    parser.add_argument(
-        "--max_train_steps",
-        type=int,
-        default=None,
-        help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
-    )
-    parser.add_argument(
-        "--gradient_accumulation_steps",
-        type=int,
-        default=1,
-        help="Number of updates steps to accumulate before performing a backward/update pass.",
-    )
-    parser.add_argument(
-        "--lr_scheduler_type",
-        type=SchedulerType,
-        default="linear",
-        help="The scheduler type to use.",
-        choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"],
-    )
-    parser.add_argument(
-        "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
-    )
-    parser.add_argument("--output_dir", type=str, default="./output", help="Where to store the final model.")
-    #parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path')
-    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
-    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
-    parser.add_argument(
-        "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
-    )
-    parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
-    parser.add_argument(
-        "--trust_remote_code",
-        type=bool,
-        default=False,
-        help=(
-            "Whether or not to allow for custom models defined on the Hub in their own modeling files. This option "
-            "should only be set to `True` for repositories you trust and in which you have read the code, as it will "
-            "execute code present on the Hub on your local machine."
-        ),
-    )
-    parser.add_argument(
-        "--checkpointing_steps",
-        type=str,
-        default='epoch',
-        help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
-    )
-    parser.add_argument(
-        "--saving_everynsteps",
-        type=int,
-        default=2,
-        help="Save everying 'epoch' for each epoch.",
-    )
-    parser.add_argument(
-        "--resume_from_checkpoint",
-        type=str,
-        default=None,
-        help="If the training should continue from a checkpoint folder.",
-    )
-    parser.add_argument(
-        "--with_tracking",
-        action="store_true",
-        help="Whether to enable experiment trackers for logging.",
-    )
-    parser.add_argument(
-        "--report_to",
-        type=str,
-        default="all",
-        help=(
-            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
-            ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. '
-            "Only applicable when `--with_tracking` is passed."
-        ),
-    )
-    parser.add_argument(
-        "--ignore_mismatched_sizes",
-        action="store_true",
-        help="Whether or not to enable to load a pretrained model whose head dimensions are different.",
-    )
-    parser.add_argument(
-        "--image_column_name",
-        type=str,
-        default="image",
-        help="The name of the dataset column containing the image data. Defaults to 'image'.",
-    )
-    parser.add_argument(
-        "--label_column_name",
-        type=str,
-        default="labels",
-        help="The name of the dataset column containing the labels. Defaults to 'label'.",
-    )
-    args = parser.parse_args()
-
-    # Sanity checks
-    if args.data_name is None and args.train_dir is None and args.validation_dir is None:
-        raise ValueError("Need either a dataset name or a training/validation folder.")
-
-    if args.push_to_hub or args.with_tracking:
-        if args.output_dir is None:
-            raise ValueError(
-                "Need an `output_dir` to create a repo when `--push_to_hub` or `with_tracking` is specified."
-            )
-
-    if args.output_dir is not None:
-        os.makedirs(args.output_dir, exist_ok=True)
-
-    return args
-
 def pushtohub(hub_model_id, output_dir, hub_token):
     # Retrieve of infer repo_name
     repo_name = hub_model_id
@@ -351,7 +172,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         else:
             data_split=None
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir, verification_mode='no_checks', trust_remote_code=True) #ignore_verifications=True
+        raw_datasets = load_dataset(data_name,split=data_split, cache_dir=mycache_dir, verification_mode='no_checks')#, trust_remote_code=True) #ignore_verifications=True
         # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
         # https://huggingface.co/docs/datasets/loading_datasets.html.)
     else:
@@ -398,9 +219,9 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     if task == "object-detection":
         image_column_name = "image"
         label_column_name = "objects" #for object detection
-        remove_idx = [590, 821, 822, 875, 876, 878, 879]
-        keep = [i for i in range(len(split_datasets["train"])) if i not in remove_idx]
-        split_datasets["train"] = split_datasets["train"].select(keep)
+        # remove_idx = [590, 821, 822, 875, 876, 878, 879]
+        # keep = [i for i in range(len(split_datasets["train"])) if i not in remove_idx]
+        # split_datasets["train"] = split_datasets["train"].select(keep)
     elif task == "image-classification":
         #some datset the labels name is different
         if data_name == "food101": #https://huggingface.co/datasets/food101
@@ -439,8 +260,8 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         #print(split_datasets["train"][0])
         print("Classification dataset 0:", split_datasets["train"][0][label_column_name])
     elif task=="object-detection":
-        classlabel = split_datasets["train"].features[label_column_name]#Sequence type, feature['category','area','box','category'], id
-        categories = classlabel.feature["category"]
+        classlabel = split_datasets["train"].features[label_column_name]#Sequence class, feature['category','area','box','category'], id
+        categories = classlabel.feature["category"]#Classlabel class
         labels = categories.names #list of str names
         id2label = {index: x for index, x in enumerate(labels, start=0)}
         label2id = {v: k for k, v in id2label.items()}
@@ -451,184 +272,6 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #The Datasets library is made for processing data very easily. We can write custom functions, 
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, id2label, image_column_name, label_column_name
-
-#from DeepDataMiningLearning.hfvision_inference import save_coco_annotation_file_images
-from tqdm.contrib import tzip
-def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno, format='coco', json_only=False):
-    output_json = {}
-
-    if not os.path.exists(path_output):
-        os.makedirs(path_output)
-
-    if path_anno is None:
-        path_anno = os.path.join(path_output, "coco_anno.json")
-    categories_json = [{"supercategory": "none", "id": id, "name": id2label[id]} for id in id2label]
-    output_json["images"] = []
-    output_json["annotations"] = []
-    for example in tqdm(dataset):
-        ann = val_formatted_anns(example["image_id"], example["objects"], format)#list of dicts
-        output_json["images"].append(
-            {
-                "id": example["image_id"],
-                "width": example["image"].width,
-                "height": example["image"].height,
-                "file_name": f"{example['image_id']}.png",
-            }
-        )
-        output_json["annotations"].extend(ann)
-    output_json["categories"] = categories_json
-
-    with open(path_anno, "w") as file:
-        json.dump(output_json, file, ensure_ascii=False, indent=4)
-
-    if json_only!=True:
-        #for im, img_id in zip(dataset["image"], dataset["image_id"]):
-        for im, img_id in tzip(dataset["image"], dataset["image_id"]):
-            path_img = os.path.join(path_output, f"{img_id}.png")
-            im.save(path_img)
-
-    return path_output, path_anno
-
-class HFCOCODataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, id2label, dataset_folder, coco_anno_json=None, data_type='huggingface', format='coco', image_processor=None):
-        #Convert HF dataset to COCO format
-        if coco_anno_json is None:
-            coco_anno_json = os.path.join(dataset_folder, 'coco_anno.json')
-        if data_type == "huggingface" and not os.path.exists(coco_anno_json):
-            print("Convert HF dataset to COCO format into folder:", dataset_folder)
-            dataset_folder, coco_anno_json = save_coco_annotation_file_images(dataset, id2label=id2label, path_output=dataset_folder, path_anno=coco_anno_json, format=format, json_only=False)
-        self.dataset_folder = dataset_folder
-        #create CocoDetection dataset
-        self.ds_coco = CocoDetection(dataset_folder, image_processor, coco_anno_json)
-        #{"pixel_values": pixel_values, "labels": target} after processor
-        print(len(self.ds_coco))
-        self.image_ids = self.ds_coco.coco.getImgIds()
-        print(len(self.image_ids))
-        self.coco = self.ds_coco.coco
-        cats = self.coco.cats
-        self.id2label = {k: v['name'] for k,v in cats.items()}
-
-    def get_img(self, image_id):
-        images = self.coco.loadImgs(image_id)
-        image = images[0] #dict with image info, 'file_name'
-        image = Image.open(os.path.join(self.dataset_folder, image['file_name']))
-        return image
-    
-    def get_anno(self, image_id):
-        annotations = self.coco.imgToAnns[image_id]#list of dicts
-        return annotations
-    
-    def draw_anno2image(self, image, annotations, id2label=None, save_path="output/ImageDrawcoco.png"):
-        draw = ImageDraw.Draw(image, "RGBA")
-        for annotation in annotations:
-            box = annotation['bbox']
-            class_idx = annotation['category_id']
-            x,y,w,h = tuple(box)
-            draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
-            if id2label is not None:
-                draw.text((x, y), id2label[class_idx], fill='white')
-        if save_path:
-            image.save(save_path)
-        return image
-
-    def test_cocodataset(self, index=None):
-        test_coco= self.ds_coco[0] #pixel_values[3, 693, 1333] labels dict 
-        # let's pick a random image
-        if index is None:
-            index = np.random.randint(0, len(self.image_ids))
-        image_id = self.image_ids[index] #
-        print('Image n°{}'.format(image_id))
-        image = self.get_img(image_id)
-        annotations = self.get_anno(image_id)
-        iamge_draw = self.draw_anno2image(image, annotations, self.id2label)
-        
-    def __getitem__(self, index):
-        img, target = self.ds_coco[index]
-        return img, target
-
-    def __len__(self):
-        return len(self.ds_coco)
-    
-
-#results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
-def evaluate_dataset(model, dataset, id2label, dataset_folder, coco_anno_json, data_type, format, device, image_processor, collate_fn):
-    #id2label = model.id2label
-    if coco_anno_json is None:
-        coco_anno_json = os.path.join(dataset_folder, 'coco_anno.json')
-    if data_type == "huggingface" and not os.path.exists(coco_anno_json):
-        dataset_folder, coco_anno_json = save_coco_annotation_file_images(dataset, id2label=id2label, path_output=dataset_folder, path_anno=coco_anno_json, format=format, json_only=False)
-    # path_output = 'output/coco/'
-    # path_anno = 'output/coco/cppe5_ann.json'
-    test_ds_coco_format = CocoDetection(dataset_folder, image_processor, coco_anno_json)
-    print(len(test_ds_coco_format))
-    image_ids = test_ds_coco_format.coco.getImgIds()
-    test_coco= test_ds_coco_format[0] #pixel_values[3, 693, 1333] labels dict 
-    # let's pick a random image
-    image_id = image_ids[15] #np.random.randint(0, len(image_ids))
-    print('Image n°{}'.format(image_id))
-    image = test_ds_coco_format.coco.loadImgs(image_id)[0] #dict with image info, 'file_name'
-    image = Image.open(os.path.join(dataset_folder, image['file_name']))
-    annotations = test_ds_coco_format.coco.imgToAnns[image_id]#list of dicts
-    draw = ImageDraw.Draw(image, "RGBA")
-    cats = test_ds_coco_format.coco.cats
-    id2label = {k: v['name'] for k,v in cats.items()}
-    for annotation in annotations:
-        box = annotation['bbox']
-        class_idx = annotation['category_id']
-        x,y,w,h = tuple(box)
-        draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
-        draw.text((x, y), id2label[class_idx], fill='white')
-    image.save("output/ImageDrawcoco.png")
-
-    module = evaluate.load("ybelkada/cocoevaluate", coco=test_ds_coco_format.coco)
-    val_dataloader = torch.utils.data.DataLoader(
-        test_ds_coco_format, batch_size=8, shuffle=False, num_workers=1, collate_fn=collate_fn)
-    test_data = next(iter(val_dataloader))
-    print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels'] 'labels' is list of dicts
-    print(test_data["pixel_values"].shape) #[8, 3, 840, 1333]
-    print(test_data["pixel_mask"].shape) #[8, 840, 1333]
-
-    model = model.eval().to(device)
-    with torch.no_grad():
-        for idx, batch in enumerate(tqdm(val_dataloader)):
-            pixel_values = batch["pixel_values"].to(device)#[8, 3, 840, 1333]
-            pixel_mask = batch["pixel_mask"].to(device)#[8, 840, 1333]
-
-            labels = [
-                {k: v for k, v in t.items()} for t in batch["labels"]
-            ]  # these are in DETR format, resized + normalized, list of dicts
-
-            # forward pass
-            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask) #DetrObjectDetectionOutput
-
-            orig_target_sizes = torch.stack([target["orig_size"] for target in labels], dim=0) #[8,2] shape
-            results = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes)  # convert outputs of model to COCO api, list of dicts
-            module.add(prediction=results, reference=labels)
-            del batch
-
-    results = module.compute() #iou_bbox key
-    print(results)
-    
-
-
-class CocoDetection(torchvision.datasets.CocoDetection):
-    def __init__(self, img_folder, feature_extractor, ann_file):
-        super().__init__(img_folder, ann_file)
-        self.feature_extractor = feature_extractor
-
-    def __getitem__(self, idx):
-        # read in PIL image and target in COCO format
-        img, target = super(CocoDetection, self).__getitem__(idx)
-
-        # preprocess image and target: converting target to DETR format,
-        # resizing + normalization of both image and target)
-        image_id = self.ids[idx]
-        target = {"image_id": image_id, "annotations": target} #target (top_left_x, top_left_y, width, height)
-        encoding = self.feature_extractor(images=img, annotations=target, return_tensors="pt")
-        pixel_values = encoding["pixel_values"].squeeze()  # remove batch dimension
-        target = encoding["labels"][0]  # remove batch dimension
-
-        return {"pixel_values": pixel_values, "labels": target}
 
 def check_boxsize(bbox, height=None, width=None, format='coco'):
     errobox=False
@@ -761,32 +404,6 @@ def formatted_anns(image_id, category, area, bbox):#category/area/bbox list inpu
 
     return annotations #list of dicts
 
-# format annotations the same as for training, no need for data augmentation
-def val_formatted_anns(image_id, objects, format='coco'):
-    annotations = []
-    boxlen = len(objects["bbox"])
-    if 'id' in objects.keys():
-        use_id = True
-    else:
-        use_id = False
-    for i in range(0, boxlen):
-        bbox = objects["bbox"][i]
-        if format!='coco' and format=='pascal_voc':
-            xmin, ymin, xmax, ymax = bbox
-            width = xmax-xmin
-            height = ymax-ymin
-            bbox = [xmin, ymin, width, height]
-        new_ann = {
-            "id": objects["id"][i] if use_id else i,
-            "category_id": objects["category"][i],
-            "iscrowd": 0,
-            "image_id": image_id,
-            "area": objects["area"][i],
-            "bbox": bbox,
-        }
-        annotations.append(new_ann)
-
-    return annotations
 
 def dataset_preprocessing(image_processor, task, size, format='coco', image_column_name='image', label_column_name='labels'):
     image_mean = [0.485, 0.456, 0.406 ]
@@ -988,12 +605,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
     return model, image_processor
 
 
-def custom_train(args, model, image_processor, train_dataset, eval_dataset, collate_fn, metriceval, device, accelerator=None, do_evaluate=False):
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=args.per_device_train_batch_size
-    )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=collate_fn, batch_size=args.per_device_eval_batch_size)
-
+def custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator=None, do_evaluate=False):
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
     no_decay = ["bias", "LayerNorm.weight"]
@@ -1057,7 +669,7 @@ def custom_train(args, model, image_processor, train_dataset, eval_dataset, coll
     total_batch_size = args.per_device_train_batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     logger.info("***** Running training *****")
-    logger.info(f"  Num examples = {len(train_dataset)}")
+    logger.info(f"  Num examples = {len(train_dataloader)}")
     logger.info(f"  Num Epochs = {args.num_train_epochs}")
     logger.info(f"  Instantaneous batch size per device = {args.per_device_train_batch_size}")
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
@@ -1268,16 +880,25 @@ def trainmain():
         preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)
-        eval_dataset = dataset[valkey].with_transform(preprocess_val)
         #train_dataset = dataset["train"].map(preprocess_train)
         #eval_dataset = dataset[valkey].map(preprocess_val)
         oneexample = train_dataset[15]
         print(oneexample.keys()) #'pixel_values'[3, 800, 800], 'pixel_mask'[800,800], 'labels'dict of 'boxes'[2,4] (center_x, center_y, width, height) normalized
+        if args.task == "image-classification":
+            eval_dataset = dataset[valkey].with_transform(preprocess_val)
+            coco = None
+        elif args.task == "object-detection":
+            coco_datafolder = os.path.join(mycache_dir, 'coco_converted', args.data_name)
+            eval_dataset = HFCOCODataset(dataset, id2label, dataset_folder=coco_datafolder, coco_anno_json=None, data_type=args.data_type, format=args.format, image_processor=image_processor)
+            coco = eval_dataset.coco
+            onehfcoco = eval_dataset[1]
+            print(onehfcoco.keys())
+
 
     collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
 
     metriceval = myEvaluator(task=args.task, useHFevaluator=True, dualevaluator=False, \
-                            labels=labels, processor=image_processor, mycache_dir=mycache_dir)
+                            labels=labels, processor=image_processor, coco=coco, mycache_dir=mycache_dir)
 
     
     # using now() to get current time
@@ -1329,11 +950,19 @@ def trainmain():
         trainer.save_metrics("train", train_result.metrics)
         trainer.save_state()
         #trainer.push_to_hub()
-    elif args.trainmode == 'CustomTrain':
-        custom_train(args, model, image_processor, train_dataset, eval_dataset, collate_fn, metriceval, device, accelerator)
     else:
-        evaluate_dataset(model, dataset[valkey], id2label, dataset_folder=args.validation_dir, coco_anno_json=None, \
-                     data_type=args.datatype, format=args.format, device=device, image_processor=image_processor, collate_fn=collate_fn)
+        train_dataloader = DataLoader(
+            train_dataset, shuffle=True, collate_fn=collate_fn, batch_size=args.per_device_train_batch_size)
+        eval_dataloader = DataLoader(eval_dataset, shuffle=False, collate_fn=collate_fn, batch_size=args.per_device_eval_batch_size)
+
+        test_data = next(iter(eval_dataloader))
+        print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels'] 'labels' is list of dicts
+        print(test_data["pixel_values"].shape) #[8, 3, 840, 1333]
+        print(test_data["pixel_mask"].shape) #[8, 840, 1333]
+        if args.trainmode == 'CustomTrain':
+            custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator, do_evaluate=False)
+        else:
+            evaluate_dataset(model, eval_dataloader, args.task, metriceval, device, image_processor=image_processor, accelerator=accelerator)
     
 
     # using now() to get current time
@@ -1344,6 +973,221 @@ def trainmain():
     time_difference = current_time - starting_time
     print("Time difference:", time_difference)
     print("Finished")
+
+
+def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_processor=None, accelerator=None):
+    
+    model = model.eval().to(device)
+    for step, batch in enumerate(tqdm(val_dataloader)):
+        batch = {k: v.to(device) for k, v in batch.items()}
+        #"pixel_values" [8, 3, 840, 1333]
+        #"pixel_mask" [8, 840, 1333]
+        # "labels" 
+        with torch.no_grad():
+            outputs = model(**batch)
+        
+        if task == "image-classification":
+            predictions = outputs.logits.argmax(dim=-1)
+            if accelerator is not None:
+                predictions, references = accelerator.gather_for_metrics((predictions, batch["labels"]))
+            else:
+                predictions, references = predictions, batch["labels"]
+        elif task == "object-detection":
+            references = [
+                {k: v for k, v in t.items()} for t in batch["labels"]
+            ]  #resized + normalized, list of dicts
+            orig_target_sizes = torch.stack([target["orig_size"] for target in references], dim=0) #[8,2] shape
+            # convert outputs of model to COCO api, list of dicts
+            predictions = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes)  
+
+        metriceval.add_batch(
+            predictions=predictions,
+            references=references,
+        )
+
+    eval_metric = metriceval.compute()#metric.compute()
+    print(eval_metric)
+
+
+# from huggingface_hub import login
+# login()
+#huggingface-cli login
+def parse_args():
+    parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
+    parser.add_argument('--traintag', type=str, default="hfimage0309",
+                    help='Name the current training')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    #vocab_path
+    parser.add_argument(
+        "--model_name_or_path",
+        type=str,
+        default="emre/detr-resnet-50_finetuned_cppe5", #"output/cppe-5_hfimage0306/epoch_18",#,
+        help="Path to pretrained model or model identifier from huggingface.co/models: facebook/detr-resnet-50, google/vit-base-patch16-224-in21k, ",
+    )
+    parser.add_argument('--usehpc', default=True, action='store_true',
+                    help='Use HPC')
+    parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
+    parser.add_argument('--useamp', default=True, action='store_true',
+                    help='Use pytorch amp in training')
+    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
+    parser.add_argument('--task', type=str, default="object-detection",
+                    help='tasks: image-classification, object-detection')
+    parser.add_argument('--data_name', type=str, default="cppe-5",
+                    help='data name: detection-datasets/coco, food101, beans, cats_vs_dogs,cppe-5')
+    parser.add_argument('--datasplit', type=str, default='train',
+                    help='dataset split name in huggingface dataset')
+    parser.add_argument('--datatype', type=str, default='huggingface',
+                    help='Data type: huggingface, torch')
+    #format #"coco": [x_min, y_min, width, height] in pixels 
+    #pascal_voc: [x_min, y_min, x_max, y_max] in pixels
+    #albumentations  [x_min, y_min, x_max, y_max] normalized
+    #yolo: [x_center, y_center, width, height] normalized
+    #torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
+    parser.add_argument('--format', type=str, default='coco',
+                    help='dataset bbox format: pascal_voc, coco')
+    parser.add_argument("--train_dir", type=str, default=None, help="A folder containing the training data.")
+    parser.add_argument("--validation_dir", type=str, default=None, help="A folder containing the validation data.")
+    parser.add_argument(
+        "--max_train_samples",
+        type=int,
+        default=-1, #means all data 2000,
+        help=(
+            "For debugging purposes or quicker training, truncate the number of training examples to this "
+            "value if set."
+        ),
+    )
+    parser.add_argument(
+        "--train_val_split",
+        type=float,
+        default=0.15,
+        help="Percent to split off of train for validation",
+    )
+    parser.add_argument(
+        "--per_device_train_batch_size",
+        type=int,
+        default=4,
+        help="Batch size (per device) for the training dataloader.",
+    )
+    parser.add_argument(
+        "--per_device_eval_batch_size",
+        type=int,
+        default=4,
+        help="Batch size (per device) for the evaluation dataloader.",
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=5e-5,
+        help="Initial learning rate (after the potential warmup period) to use.",
+    )
+    parser.add_argument("--weight_decay", type=float, default=0.0, help="Weight decay to use.")
+    parser.add_argument("--num_train_epochs", type=int, default=20, help="Total number of training epochs to perform.")
+    parser.add_argument(
+        "--max_train_steps",
+        type=int,
+        default=None,
+        help="Total number of training steps to perform. If provided, overrides num_train_epochs.",
+    )
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of updates steps to accumulate before performing a backward/update pass.",
+    )
+    parser.add_argument(
+        "--lr_scheduler_type",
+        type=SchedulerType,
+        default="linear",
+        help="The scheduler type to use.",
+        choices=["linear", "cosine", "cosine_with_restarts", "polynomial", "constant", "constant_with_warmup"],
+    )
+    parser.add_argument(
+        "--num_warmup_steps", type=int, default=0, help="Number of steps for the warmup in the lr scheduler."
+    )
+    parser.add_argument("--output_dir", type=str, default="./output", help="Where to store the final model.")
+    #parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path')
+    parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
+    parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
+    parser.add_argument(
+        "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
+    )
+    parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
+    parser.add_argument(
+        "--trust_remote_code",
+        type=bool,
+        default=False,
+        help=(
+            "Whether or not to allow for custom models defined on the Hub in their own modeling files. This option "
+            "should only be set to `True` for repositories you trust and in which you have read the code, as it will "
+            "execute code present on the Hub on your local machine."
+        ),
+    )
+    parser.add_argument(
+        "--checkpointing_steps",
+        type=str,
+        default='epoch',
+        help="Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.",
+    )
+    parser.add_argument(
+        "--saving_everynsteps",
+        type=int,
+        default=2,
+        help="Save everying 'epoch' for each epoch.",
+    )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="If the training should continue from a checkpoint folder.",
+    )
+    parser.add_argument(
+        "--with_tracking",
+        action="store_true",
+        help="Whether to enable experiment trackers for logging.",
+    )
+    parser.add_argument(
+        "--report_to",
+        type=str,
+        default="all",
+        help=(
+            'The integration to report the results and logs to. Supported platforms are `"tensorboard"`,'
+            ' `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. '
+            "Only applicable when `--with_tracking` is passed."
+        ),
+    )
+    parser.add_argument(
+        "--ignore_mismatched_sizes",
+        action="store_true",
+        help="Whether or not to enable to load a pretrained model whose head dimensions are different.",
+    )
+    parser.add_argument(
+        "--image_column_name",
+        type=str,
+        default="image",
+        help="The name of the dataset column containing the image data. Defaults to 'image'.",
+    )
+    parser.add_argument(
+        "--label_column_name",
+        type=str,
+        default="labels",
+        help="The name of the dataset column containing the labels. Defaults to 'label'.",
+    )
+    args = parser.parse_args()
+
+    # Sanity checks
+    if args.data_name is None and args.train_dir is None and args.validation_dir is None:
+        raise ValueError("Need either a dataset name or a training/validation folder.")
+
+    if args.push_to_hub or args.with_tracking:
+        if args.output_dir is None:
+            raise ValueError(
+                "Need an `output_dir` to create a repo when `--push_to_hub` or `with_tracking` is specified."
+            )
+
+    if args.output_dir is not None:
+        os.makedirs(args.output_dir, exist_ok=True)
+
+    return args
 
 if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
