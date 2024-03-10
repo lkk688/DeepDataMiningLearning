@@ -104,7 +104,9 @@ class myEvaluator:
         resultdict = {'predictions': predictions, 'references': references} 
         df = pd.DataFrame(resultdict)
         if display:
-            print(df.head())
+            #print(df.head())
+            print("Total len:", len(df))
+            print(df.sample(n=8))
         if self.output_path:
             filepath = Path(os.path.join(self.output_path, 'evaluationresult.csv'))  
             if filepath.exists():
