@@ -107,8 +107,8 @@ class HFCOCODataset(torch.utils.data.Dataset):
         print(len(self.ds_coco))
         self.image_ids = self.ds_coco.coco.getImgIds()
         print(len(self.image_ids))
-        self.coco = self.ds_coco.coco
-        cats = self.coco.cats
+        self.coco = self.ds_coco.coco #pycocotools.coco.COCO object
+        cats = self.coco.cats #dict of dict
         self.id2label = {k: v['name'] for k,v in cats.items()}
 
     def get_img(self, image_id):
@@ -146,8 +146,8 @@ class HFCOCODataset(torch.utils.data.Dataset):
         iamge_draw = self.draw_anno2image(image, annotations, self.id2label)
         
     def __getitem__(self, index):
-        img, target = self.ds_coco[index]
-        return img, target
+        datadict = self.ds_coco[index] #img, target
+        return datadict
 
     def __len__(self):
         return len(self.ds_coco)

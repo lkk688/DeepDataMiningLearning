@@ -105,9 +105,6 @@ class myEvaluator:
         return results
     
     def compute(self, predictions=None, references=None):
-        if self.task == "object-detection":
-            print("Object detection not implemented")
-            return
         results = {}
         if predictions is not None and references is not None:
             if self.useHFevaluator:
@@ -121,9 +118,9 @@ class myEvaluator:
         else: #evaluate the whole dataset
             if self.useHFevaluator:
                 results = self.HFmetric.compute()
-                print("HF evaluator result1:", results)
-                results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
-                print("HF evaluator result2:", results2)
+                print("HF evaluator result1:", results)#iou_bbox 
+                #results2 = self.HFmetric.compute(predictions=self.preds, references=self.refs) #the same results
+                #print("HF evaluator result2:", results2)
                 if not isinstance(results, dict):
                     #wer output is float, convert to dict
                     results = {self.metricname: results}
@@ -131,14 +128,20 @@ class myEvaluator:
                 results = self.mycompute(predictions=self.preds, references=self.refs)
             self.preds.clear()
             self.refs.clear()
+        if self.task == "object-detection":
+            results = results['iou_bbox']
         return results
     
     def add_batch(self, predictions, references):
         if self.useHFevaluator == True:
-            self.HFmetric.add_batch(predictions=predictions, references=references)
-        #self.preds.append(predictions)
-        self.refs.extend(references)
-        self.preds.extend(predictions)
+            if self.task=="object-detection":
+                self.HFmetric.add(prediction=predictions, reference=references)
+            else:
+                self.HFmetric.add_batch(predictions=predictions, references=references)
+        else:
+            #self.preds.append(predictions)
+            self.refs.extend(references)
+            self.preds.extend(predictions)
         #references: list of list
         # for ref in references:
         #     self.refs.append(ref[0])
@@ -749,18 +752,21 @@ def custom_train(args, model, image_processor, train_dataloader, eval_dataloader
                 break
 
         if do_evaluate:
-            model.eval()
-            for step, batch in enumerate(eval_dataloader):
-                with torch.no_grad():
-                    outputs = model(**batch)
-                predictions = outputs.logits.argmax(dim=-1)
-                predictions, references = accelerator.gather_for_metrics((predictions, batch["labels"]))
-                metriceval.add_batch(
-                    predictions=predictions,
-                    references=references,
-                )
+            eval_metric = evaluate_dataset(model, eval_dataloader, args.task, metriceval, device, image_processor=image_processor, accelerator=accelerator)
+    
+            # model.eval()
+            # for step, batch in enumerate(eval_dataloader):
+            #     with torch.no_grad():
+            #         outputs = model(**batch)
+            #     predictions = outputs.logits.argmax(dim=-1)
+            #     predictions, references = accelerator.gather_for_metrics((predictions, batch["labels"]))
+            #     metriceval.add_batch(
+            #         predictions=predictions,
+            #         references=references,
+            #     )
 
-            eval_metric = metriceval.compute()#metric.compute()
+            # eval_metric = metriceval.compute()#metric.compute()
+
             logger.info(f"epoch {epoch}: {eval_metric}")
 
         if args.with_tracking:
@@ -806,6 +812,10 @@ def custom_train(args, model, image_processor, train_dataloader, eval_dataloader
                 all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
                 with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                     json.dump(all_results, f)
+        #push to hub
+        if args.hubname:
+            unwrapped_model.push_to_hub(args.hubname)
+            image_processor.push_to_hub(args.hubname)
 
 def trainmain():
     args = parse_args()
@@ -889,16 +899,17 @@ def trainmain():
             coco = None
         elif args.task == "object-detection":
             coco_datafolder = os.path.join(mycache_dir, 'coco_converted', args.data_name)
-            eval_dataset = HFCOCODataset(dataset, id2label, dataset_folder=coco_datafolder, coco_anno_json=None, data_type=args.data_type, format=args.format, image_processor=image_processor)
+            eval_dataset = HFCOCODataset(dataset[valkey], id2label, dataset_folder=coco_datafolder, coco_anno_json=None, data_type=args.datatype, format=args.format, image_processor=image_processor)
             coco = eval_dataset.coco
-            onehfcoco = eval_dataset[1]
-            print(onehfcoco.keys())
+            eval_dataset.test_cocodataset(10)
+            onehfcoco = next(iter(eval_dataset)) #'pixel_values'[3, 800, 1066] 'labels'
+            #print(onehfcoco)
 
 
     collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
 
     metriceval = myEvaluator(task=args.task, useHFevaluator=True, dualevaluator=False, \
-                            labels=labels, processor=image_processor, coco=coco, mycache_dir=mycache_dir)
+                            processor=image_processor, coco=coco, mycache_dir=mycache_dir)
 
     
     # using now() to get current time
@@ -957,8 +968,8 @@ def trainmain():
 
         test_data = next(iter(eval_dataloader))
         print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels'] 'labels' is list of dicts
-        print(test_data["pixel_values"].shape) #[8, 3, 840, 1333]
-        print(test_data["pixel_mask"].shape) #[8, 840, 1333]
+        print(test_data["pixel_values"].shape) #[8, 3, 840, 1332]
+        print(test_data["pixel_mask"].shape) #[8, 840, 1332]
         if args.trainmode == 'CustomTrain':
             custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator, do_evaluate=False)
         else:
@@ -979,12 +990,15 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
     
     model = model.eval().to(device)
     for step, batch in enumerate(tqdm(val_dataloader)):
-        batch = {k: v.to(device) for k, v in batch.items()}
+        pixel_values = batch["pixel_values"].to(device)#[8, 3, 840, 1333]
+        pixel_mask = batch["pixel_mask"].to(device)#[8, 840, 1333]
+        #batch = {k: v.to(device) for k, v in batch.items()}
         #"pixel_values" [8, 3, 840, 1333]
         #"pixel_mask" [8, 840, 1333]
         # "labels" 
         with torch.no_grad():
-            outputs = model(**batch)
+            #outputs = model(**batch)
+            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask)
         
         if task == "image-classification":
             predictions = outputs.logits.argmax(dim=-1)
@@ -995,7 +1009,7 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
         elif task == "object-detection":
             references = [
                 {k: v for k, v in t.items()} for t in batch["labels"]
-            ]  #resized + normalized, list of dicts
+            ]  #resized + normalized, list of dicts ['size', 'image_id', 'boxes'[8,4], 'class_labels', 'area', 'orig_size'[size[2]]]
             orig_target_sizes = torch.stack([target["orig_size"] for target in references], dim=0) #[8,2] shape
             # convert outputs of model to COCO api, list of dicts
             predictions = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes)  
@@ -1006,7 +1020,10 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
         )
 
     eval_metric = metriceval.compute()#metric.compute()
-    print(eval_metric)
+    #print(eval_metric)
+    # Printing key-value pairs as tuples
+    print("Eval metric Key-Value Pairs:", list(eval_metric.items()))
+    return eval_metric
 
 
 # from huggingface_hub import login
@@ -1016,12 +1033,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
     parser.add_argument('--traintag', type=str, default="hfimage0309",
                     help='Name the current training')
-    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--hubname', type=str, default="detr-resnet-50_finetuned_coco",
+                    help='Name the share name in huggingface hub')
+    parser.add_argument('--trainmode', default="NoTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="emre/detr-resnet-50_finetuned_cppe5", #"output/cppe-5_hfimage0306/epoch_18",#,
+        default="lkk688/detr-resnet-50_finetuned_cppe5", #"emre/detr-resnet-50_finetuned_cppe5", #"output/cppe-5_hfimage0306/epoch_18",#,
         help="Path to pretrained model or model identifier from huggingface.co/models: facebook/detr-resnet-50, google/vit-base-patch16-224-in21k, ",
     )
     parser.add_argument('--usehpc', default=True, action='store_true',
@@ -1029,7 +1048,7 @@ def parse_args():
     parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
-    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
     parser.add_argument('--task', type=str, default="object-detection",
                     help='tasks: image-classification, object-detection')
     parser.add_argument('--data_name', type=str, default="cppe-5",
@@ -1065,13 +1084,13 @@ def parse_args():
     parser.add_argument(
         "--per_device_train_batch_size",
         type=int,
-        default=4,
+        default=16,
         help="Batch size (per device) for the training dataloader.",
     )
     parser.add_argument(
         "--per_device_eval_batch_size",
         type=int,
-        default=4,
+        default=16,
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(
