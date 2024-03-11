@@ -16,7 +16,7 @@ You can access our coe HPC access information from the main website: http://coe-
    * The HPC has 110 TB of home directory and data storage, which is available from all nodes via /home and /data. Additionally, the HPC has a high-throughput Lustre parallel file system with a usable space of 0.541 PB, available via /scratch. Each group will have a sub-directory in /data and /scratch that they can write to.
 
 If you have provided your SJSU ID to your instructor, you can access the HPC using your SJSU account by using the following command: "ssh SJSUID@coe-hpc1.sjsu.edu" (replace the SJSUID with your own SJSU ID number).
-   * The accessible group folders are "/data/cmpe249-fa23" and "/scratch/cmpe249-fa23," with "cmpe249-fa23" representing your class ID. Please create sub-directories within one of these group directories for your project, naming them after your name or your group. Your dataset should be placed in "/data/cmpe249-fa23."
+   * The accessible group folders are "/data/cmpe258-sp24" and "/scratch/cmpe258-sp24," with "cmpe249-fa23" representing your class ID. Please create sub-directories within one of these group directories for your project, naming them after your name or your group. Your dataset should be placed in "/data/cmpe249-fa23."
    * You will be provided access to your private home directory on the head node. However, please note that **the head node is not intended for heavy computation or extensive data storage**. Do not store datasets or trained models in your home directory. If you require substantial computation, you can request a GPU/CPU node.
    * Your requested GPU/CPU node is internally connected to your head node, and it does not have internet access when you log in. Therefore, ensure that you download data or install any necessary software on the HPC host machine, not the GPU node.
    * It's important to remember that the HPC system is provided as a courtesy, and there is no guarantee of computing resources.
@@ -27,8 +27,8 @@ Setup cache folder location for torch and huggingface:
 
 .. code-block:: console
 
-   export HF_HOME=/data/rnd-liu/.cache/huggingface
-   export TORCH_HOME=/data/rnd-liu/.cache/torch
+   export HF_HOME=/data/cmpe258-sp24/.cache/huggingface
+   export TORCH_HOME=/data/cmpe258-sp24/.cache/torch
 
 Remote access
 -------------
@@ -179,8 +179,8 @@ If you want to load the TensorRT library (optional):
 
 .. code-block:: console
 
-   [sjsuid@cs002 ~]$ conda activate mycondapy39
-   (mycondapy39) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=/data/cmpe249-fa22/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH #add tensorrt library if needed
+   [sjsuid@cs002 ~]$ conda activate mycondapy10
+   (mycondapy10) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=/data/cmpe249-fa22/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH #add tensorrt library if needed
 
 
 Jupyterlab access
