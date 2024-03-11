@@ -16,19 +16,23 @@ You can access our coe HPC access information from the main website: http://coe-
    * The HPC has 110 TB of home directory and data storage, which is available from all nodes via /home and /data. Additionally, the HPC has a high-throughput Lustre parallel file system with a usable space of 0.541 PB, available via /scratch. Each group will have a sub-directory in /data and /scratch that they can write to.
 
 If you have provided your SJSU ID to your instructor, you can access the HPC using your SJSU account by using the following command: "ssh SJSUID@coe-hpc1.sjsu.edu" (replace the SJSUID with your own SJSU ID number).
-   * The accessible group folders are "/data/cmpe258-sp24" and "/scratch/cmpe258-sp24," with "cmpe249-fa23" representing your class ID. Please create sub-directories within one of these group directories for your project, naming them after your name or your group. Your dataset should be placed in "/data/cmpe249-fa23."
-   * You will be provided access to your private home directory on the head node. However, please note that **the head node is not intended for heavy computation or extensive data storage**. Do not store datasets or trained models in your home directory. If you require substantial computation, you can request a GPU/CPU node.
-   * Your requested GPU/CPU node is internally connected to your head node, and it does not have internet access when you log in. Therefore, ensure that you download data or install any necessary software on the HPC host machine, not the GPU node.
+   * The accessible group folders are "/data/cmpe258-sp24" and "/scratch/cmpe258-sp24" with "cmpe258-sp24" representing your class ID. Please create sub-directories within one of these group directories for your project, naming them after your name or your group. Your dataset should be placed in "/data/cmpe249-fa23." Put your code, python environment, and other temporary data into "/scratch/cmpe258-sp24".
+   * You will be provided access to your private home directory on the head node. However, please note that **the head node is not intended for heavy computation or extensive data storage**. Do not store datasets, trained models, and other large files in your home directory. Our HPC admin enforces the home directory storage not exceeding 20GB. If you require substantial computation, you can request a GPU/CPU node.
+   * Your requested GPU/CPU node is internally connected to your head node, and it does not have internet access when you log in (can be connected to internet via proxy). Therefore, ensure that you download data or install any necessary software on the HPC host machine, not the GPU node.
    * It's important to remember that the HPC system is provided as a courtesy, and there is no guarantee of computing resources.
-
-Ref our previous HPC tutorial: https://docs.google.com/document/d/1bNOUUqkeb9ItTsGHAXHLvFsLR6fA0MeZcBRVMCnvtms/edit?usp=sharing
-
-Setup cache folder location for torch and huggingface:
+   * Some frameworks will download the datasets and models into their default cache directories (i.e., in your home directory). Please do the following changes to setup a different cache folder for pytorch and huggingface. Add the following lines into your "~/.bashrc" file:
 
 .. code-block:: console
 
+   nano ~/.bashrc
+   #add the following lines
    export HF_HOME=/data/cmpe258-sp24/.cache/huggingface
    export TORCH_HOME=/data/cmpe258-sp24/.cache/torch
+   source ~/.bashrc #to take effect
+
+Ref our previous HPC tutorial: https://docs.google.com/document/d/1bNOUUqkeb9ItTsGHAXHLvFsLR6fA0MeZcBRVMCnvtms/edit?usp=sharing
+
+
 
 Remote access
 -------------
@@ -142,14 +146,14 @@ Check available software via "module avail" and load the required modules in the
 .. code-block:: console
 
    $ module avail
-   $ module load python39 slurm/slurm/21.08.6 gcc/11.2.0
+   $ module load python3/3.11.5 cuda/11.8 anaconda/3.9 slurm-22-05-7-1-gcc-12.2.0-kzyx6rx
 
 You can check and activate your conda environments (check Conda installation section if your conda is not installed)
 
 .. code-block:: console
 
    $ conda info --envs #check available conda environments
-   $ conda activate mycondapy39
+   $ conda activate mycondapy311
 
 
 Use Slurm to request one CPU/GPU node
@@ -169,7 +173,7 @@ To request GPU node and get the interactive bash, we need to use srun to request
 
    [0107xxx@coe-hpc1 ~]$ srun -p gpu --gres=gpu --pty /bin/bash
    [0107xxx@g3 ~]$ nvidia-smi #check GPU info
-   [0107xxx@g3 ~]$ conda activate mycondapy39 #activate conda environment
+   [0107xxx@g3 ~]$ conda activate mycondapy311 #activate conda environment
    [0107xxx@g3 ~]$ exit # exit the GPU node if you are not used
 
 .. note::
@@ -179,14 +183,14 @@ If you want to load the TensorRT library (optional):
 
 .. code-block:: console
 
-   [sjsuid@cs002 ~]$ conda activate mycondapy10
-   (mycondapy10) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=/data/cmpe249-fa22/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH #add tensorrt library if needed
+   [sjsuid@cs002 ~]$ conda activate mycondapy311
+   (mycondapy10) [sjsuid@cs002 ~]$ export LD_LIBRARY_PATH=/data/cmpe258-sp24/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH #add tensorrt library if needed
 
 
 Jupyterlab access
 ~~~~~~~~~~~~~~~~~
 
-The GPU node does not have internet access. If you wish to access the Jupyter web interface in your local browser, you can set up a tunnel from your local computer to the HPC headnode and then create another tunnel from the HPC headnode to the GPU node (change the port number 10001 to other numbers).
+The GPU node does not have internet access. If you wish to access the Jupyter web interface in your local browser, you can set up a tunnel from your local computer to the HPC headnode and then create another tunnel from the HPC headnode to the GPU node (**change the port number 10001 to other numbers**).
 
 .. code-block:: console
 
@@ -203,7 +207,7 @@ After jupyter lab is started, you can copy paste the URL shown in the terminal i
 Conda Environment Setup Tutorial
 ---------------------------------
 
-You can install miniconda via bash or module load the available 'anaconda/3.9'. 
+You can install miniconda via bash or **module load the available 'anaconda/3.9'**. 
 
 If you want to install the latest version of miniconda, you can download Miniconda3 latest version via curl and run the install script
 
@@ -228,10 +232,10 @@ You can create a new conda virtual environment
 
 .. code-block:: console
 
-   $ conda create --name mycondapy39 python=3.9
+   $ conda create --name mycondapy311 #python=3.11 #add python means you want to install a new python inside the conda
    # To activate this environment, use
    #
-   #     $ conda activate mycondapy39
+   #     $ conda activate mycondapy311
    #
    # To deactivate an active environment, use
    #
@@ -242,55 +246,80 @@ Install jupyter lab package in conda (make sure you are HPC headnode not the GPU
 
 .. code-block:: console
 
-   [sjsuid@coe-hpc ~]$ conda activate mycondapy39
-   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c conda-forge jupyterlab
-   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install ipykernel
+   [sjsuid@coe-hpc ~]$ conda activate mycondapy311
+   [sjsuid@coe-hpc ~]$ conda install -c conda-forge jupyterlab
+   [sjsuid@coe-hpc ~]$ conda install ipykernel
    $ jupyter kernelspec list #view current jupyter kernels
-   (mycondapy39) [sjsuid@coe-hpc ~]$ ipython kernel install --user --name=mycondapy39 #add jupyter kernel
+   [sjsuid@coe-hpc ~]$ ipython kernel install --user --name=mycondapy311 #add jupyter kernel
 
-Install CUDA 11.8 under Conda
+CUDA Setup Tutorial
+---------------------------------
+There are multiple options to install cuda in HPC: 1) module load the preinstalled cuda version (recommended); 2) install one cuda version inside the conda; 3) install cuda into your user directory outside of the conda (not recommended).
+
+Option1: module load the preinstalled cuda version
+===================================================
+
+If you module load the cuda 11.8 via the follow script, you should be able to access the cuda in the GPU node. You can use "nvcc -V" to the cuda version
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c conda-forge cudatoolkit=11.8.0
+   module load python3/3.11.5 cuda/11.8
+   [@g8 cmpe258-sp24]$ nvcc -V
+   nvcc: NVIDIA (R) Cuda compiler driver
+   Copyright (c) 2005-2022 NVIDIA Corporation
+   Built on Wed_Sep_21_10:33:58_PDT_2022
+   Cuda compilation tools, release 11.8, V11.8.89
+   Build cuda_11.8.r11.8/compiler.31833905_0
+
+Option2: Install CUDA 11.8 under Conda
+======================================
+In order to install cuda under conda, you need to activate the conda virtual environment first, and install the cudatoolkit:
+
+.. code-block:: console
+
+   (mycondapy311) [sjsuid@coe-hpc ~]$ conda install -c conda-forge cudatoolkit=11.8.0
 
 Install cuda development kit, otherwise 'nvcc' is not available in GPU node (This step is optional if you do not need cuda compiler)
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit #https://anaconda.org/nvidia/cuda-toolkit
+   (mycondapy311) [sjsuid@coe-hpc ~]$ conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit #https://anaconda.org/nvidia/cuda-toolkit
    $ nvcc -V #show Cuda compilation tools in GPU node
 
-Install Pytorch2.0 cuda11.8 version (no problem if you loaded cuda12 in GPU node)
+Pytorch installation
+---------------------
+
+Install Pytorch2.x cuda11.8 version (no problem if you loaded cuda12 in GPU node)
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc ~]$ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia #if pytorch2.0 is not found, you can use the pip option
-   (mycondapy39) [sjsuid@coe-hpc ~]$ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 -U #another option of using pip install
-   (mycondapy39) [sjsuid@coe-hpc ~]$ python -m torch.utils.collect_env #check pytorch environment
+   (mycondapy311) [sjsuid@coe-hpc ~]$ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia #if pytorch2.0 is not found, you can use the pip option
+   (mycondapy311) [sjsuid@coe-hpc ~]$ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 -U #another option of using pip install
+   (mycondapy311) [sjsuid@coe-hpc ~]$ python -m torch.utils.collect_env #check pytorch environment
 
 Install cudnn (required by Tensorflow) and Tensorflow via pip: https://www.tensorflow.org/install/pip
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc ~]$ python3 -m pip install nvidia-cudnn-cu11==8.6.0.163
-   (mycondapy39) [sjsuid@coe-hpc ~]$ CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))
-   (mycondapy39) [sjsuid@coe-hpc ~]$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib
-   (mycondapy39) [sjsuid@coe-hpc ~]$ python3 -m pip install tensorflow==2.13.*
+   (mycondapy311) [sjsuid@coe-hpc ~]$ python3 -m pip install nvidia-cudnn-cu11==8.6.0.163
+   (mycondapy311) [sjsuid@coe-hpc ~]$ CUDNN_PATH=$(dirname $(python -c "import nvidia.cudnn;print(nvidia.cudnn.__file__)"))
+   (mycondapy311) [sjsuid@coe-hpc ~]$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$CONDA_PREFIX/lib/:$CUDNN_PATH/lib
+   (mycondapy311) [sjsuid@coe-hpc ~]$ python3 -m pip install tensorflow==2.13.*
 
 Request one GPU node, and check tensorflow GPU access
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@cs002 ~]$ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
+   (mycondapy311) [sjsuid@cs002 ~]$ python3 -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"
 
 If you see error like "RuntimeError: module compiled against API version 0xf but this version of numpy is 0xe", you can upgrade numpy version
 
 Install other libraries
+------------------------
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc2 ~]$ pip install opencv-python
+   (mycondapy311) [sjsuid@coe-hpc2 ~]$ pip install opencv-python
    pip install configargparse
    pip install -U albumentations
    pip install spconv-cu118
@@ -318,8 +347,8 @@ You can git clone our 3D detection framework and instal the development environm
 
 .. code-block:: console
 
-   (mycondapy39) [sjsuid@coe-hpc2 ]$ git clone https://github.com/lkk688/3DDepth.git
-   (mycondapy39) [sjsuid@coe-hpc2 3DDepth]$ python3 setup.py develop
+   (mycondapy311) [sjsuid@coe-hpc2 ]$ git clone https://github.com/lkk688/3DDepth.git
+   (mycondapy311) [sjsuid@coe-hpc2 3DDepth]$ python3 setup.py develop
    pip install kornia
    pip install pyquaternion
    pip install efficientnet_pytorch==0.7.0
@@ -328,8 +357,8 @@ Install pypcd
 
 .. code-block:: console
 
-   (mycondapy39) [010796032@coe-hpc2 3DObject]$ cd pypcd/
-   (mycondapy39) [010796032@coe-hpc2 pypcd]$ python setup.py install
+   (mycondapy311) [010796032@coe-hpc2 3DObject]$ cd pypcd/
+   (mycondapy311) [010796032@coe-hpc2 pypcd]$ python setup.py install
 
 Install Huggingface
 
