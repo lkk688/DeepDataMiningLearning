@@ -726,9 +726,12 @@ def custom_train(args, model, image_processor, train_dataloader, eval_dataloader
         for step, batch in enumerate(active_dataloader):
             with accelerator.accumulate(model):
                 if args.task == "object-detection":
+                    # pixel_values = batch["pixel_values"].to(device)
+                    # pixel_mask = batch["pixel_mask"].to(device)
+                    # labels = [{k: v.to(device) for k, v in t.items()} for t in batch["labels"]]
                     pixel_values = batch["pixel_values"]
                     pixel_mask = batch["pixel_mask"]
-                    labels = [{k: v.to(device) for k, v in t.items()} for t in batch["labels"]]
+                    labels = [{k: v for k, v in t.items()} for t in batch["labels"]]
                     outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask, labels=labels)
                     loss_dict = outputs.loss_dict
                     #print(loss_dict)
@@ -1035,6 +1038,9 @@ def parse_args():
                     help='Name the current training')
     parser.add_argument('--hubname', type=str, default="detr-resnet-50_finetuned_coco",
                     help='Name the share name in huggingface hub')
+    # parser.add_argument(
+    #     "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
+    # )
     parser.add_argument('--trainmode', default="NoTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
@@ -1127,9 +1133,6 @@ def parse_args():
     #parser.add_argument('--outputdir', type=str, default="/data/rnd-liu/output/", help='output path')
     parser.add_argument("--seed", type=int, default=None, help="A seed for reproducible training.")
     parser.add_argument("--push_to_hub", action="store_true", help="Whether or not to push the model to the Hub.")
-    parser.add_argument(
-        "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
-    )
     parser.add_argument("--hub_token", type=str, help="The token to use to push to the Model Hub.")
     parser.add_argument(
         "--trust_remote_code",
