@@ -194,7 +194,9 @@ class CustomRCNN(nn.Module):
         #RPN part
         anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
         aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+        #AnchorGenerator will output a set of sizes[i] * aspect_ratios[i] anchors per spatial location for feature map i
         rpn_anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
+        
         rpn_head = RPNHead(self.out_channels, rpn_anchor_generator.num_anchors_per_location()[0])
         rpn_pre_nms_top_n = dict(training=rpn_pre_nms_top_n_train, testing=rpn_pre_nms_top_n_test) #{'training': 2000, 'testing': 1000}
         rpn_post_nms_top_n = dict(training=rpn_post_nms_top_n_train, testing=rpn_post_nms_top_n_test) #{'training': 2000, 'testing': 1000}
@@ -388,7 +390,7 @@ def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file 
     if trainable_layers==0:
         freezemodel = True
     if modelname == 'fasterrcnn_resnet50_fpn_v2':
-        model, preprocess, weights, classes = get_torchvision_detection_models(model)
+        model, preprocess, weights, classes = get_torchvision_detection_models(modelname)
         if len(classes) != num_classes:
             model = modify_fasterrcnnheader(model, num_classes, freeze=freezemodel)
         if ckpt_file:
