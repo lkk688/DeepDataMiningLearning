@@ -15,6 +15,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset, DatasetDict
 from huggingface_hub import Repository, create_repo
 from torch.utils.data import DataLoader
+from torch import nn
 import torchvision
 from torchvision import transforms
 from torchvision.ops import box_convert
@@ -43,7 +44,7 @@ from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_Im
 import requests
 import cv2
 import albumentations#pip install albumentations
-from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset
+from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, draw_annobox2image
 
 logger = get_logger(__name__)
 
@@ -539,13 +540,13 @@ def get_collate_fn(task, image_processor, label_column_name=None):
     elif task == "object-detection":
         # batch images together. Pad images (which are now pixel_values) to the largest image in a batch, 
         #and create a corresponding pixel_mask to indicate which pixels are real (1) and which are padding (0).
-        def object_detection_collate_fn(batch):
+        def object_detection_collate_fn(batch):#batch is a list input
             pixel_values = [item["pixel_values"] for item in batch] #list of [3,800,800]
             #'DetrImageProcessor' object has no attribute 'pad_and_create_pixel_mask'
             #encoding = image_processor.pad_and_create_pixel_mask(pixel_values, return_tensors="pt")
             encoding = image_processor.pad(pixel_values, return_tensors="pt")
             labels = [item["labels"] for item in batch]#pixel_values [8,3,800,800]
-            batch = {}
+            batch = {} #keep the other keys in the batch
             batch["pixel_values"] = encoding["pixel_values"]
             batch["pixel_mask"] = encoding["pixel_mask"] #[8,800,800]
             batch["labels"] = labels #8 dict items
@@ -988,7 +989,6 @@ def trainmain():
     print("Time difference:", time_difference)
     print("Finished")
 
-
 def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_processor=None, accelerator=None):
     
     model = model.eval().to(device)
@@ -1010,17 +1010,25 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
             else:
                 predictions, references = predictions, batch["labels"]
         elif task == "object-detection":
+            id2label = model.config.id2label 
+            #print(batch["labels"][0].keys()) #['size', 'image_id', 'class_labels', 'boxes', 'area', 'iscrowd', 'orig_size']
+            image = pixel_values2img(pixel_values)
+            draw_objectdetection_predboxes(image.copy(), outputs['pred_boxes'], outputs['logits'], id2label) #DetrObjectDetectionOutput
+            #print(batch["labels"])#list of dicts
+
             references = [
                 {k: v for k, v in t.items()} for t in batch["labels"]
             ]  #resized + normalized, list of dicts ['size', 'image_id', 'boxes'[8,4], 'class_labels', 'area', 'orig_size'[size[2]]]
             orig_target_sizes = torch.stack([target["orig_size"] for target in references], dim=0) #[8,2] shape
             # convert outputs of model to COCO api, list of dicts
-            predictions = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes)  
-
+            predictions = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes) 
+            
+            draw_objectdetection_results(image, predictions[0], id2label)
         metriceval.add_batch(
             predictions=predictions,
             references=references,
         )
+        del batch
 
     eval_metric = metriceval.compute()#metric.compute()
     #print(eval_metric)
@@ -1028,6 +1036,67 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
     print("Eval metric Key-Value Pairs:", list(eval_metric.items()))
     return eval_metric
 
+def pixel_values2img(pixel_values):
+    img_np=pixel_values.cpu().squeeze(dim=0).permute(1, 2, 0).numpy() #CHW->HWC 
+    print(img_np.shape) # (800, 1066, 3)
+    img_np = (img_np-np.min(img_np))/(np.max(img_np)-np.min(img_np)) 
+    img_np=(img_np * 255).astype(np.uint8)
+    image = Image.fromarray(img_np, 'RGB') #pil image
+    return image
+
+def draw_objectdetection_predboxes(image, pred_boxes, logits, id2label, threshold=0.1, save_path="output/Imagepredplot.png"):
+    pred_boxes = pred_boxes.cpu().squeeze(dim=0).numpy()
+    # pred_boxes = box_convert(pred_boxes, 'xywh', 'xyxy')
+    # pred_boxes = pred_boxes.numpy()
+    #print(pred_boxes) #[100,4]
+
+    
+    prob = nn.functional.softmax(logits, -1) #[1, 100, 92]
+    scores, labels = prob[..., :-1].max(-1) #[1, 100] [1, 100]
+    scores = scores.cpu().squeeze(dim=0).numpy()
+    labels = labels.cpu().squeeze(dim=0).numpy()
+    #scores = scores.flatten()#[1, 100] to [100]
+    #labels = labels.flatten()
+    #boxes = center_to_corners_format(out_bbox)
+    #(center_x, center_y, width, height) =>(top_left_x, top_left_y, bottom_right_x, bottom_right_y)
+    #results.append({"scores": score, "labels": label, "boxes": box})
+    
+    width, height = image.size #1066, 800
+    draw = ImageDraw.Draw(image, "RGBA")
+    box_len = len(pred_boxes)
+    for index in range(box_len):
+        pred = pred_boxes[index]
+        score= scores[index]
+        if score < threshold:
+            continue
+        xc, yc, w, h = tuple(pred) #(center_x, center_y, width, height) normalized
+        x, y, x2, y2 = (xc-w/2)*width, (yc-h/2)*height, (xc+w/2)*width, (yc+h/2)*height
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+        # box = annotation['bbox']
+        # class_idx = annotation['category_id']
+        # x,y,w,h = tuple(box)
+        # draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
+        class_idx = labels[index]
+        draw.text((x, y), id2label[class_idx], fill='white')
+    if save_path:
+        image.save(save_path)
+
+def draw_objectdetection_results(image, results, id2label, save_path="output/Imageresultplot.png"): #model.config.id2label
+    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+        box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
+        print(
+            f"Detected {id2label[label.item()]} with confidence "
+            f"{round(score.item(), 3)} at location {box}"
+        )
+    
+    draw = ImageDraw.Draw(image)
+    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+        box = [round(i, 2) for i in box.tolist()]
+        x, y, x2, y2 = tuple(box)
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+        draw.text((x, y), id2label[label.item()], fill="white")
+    if save_path:
+        image.save(save_path)
 
 # from huggingface_hub import login
 # login()
@@ -1054,7 +1123,7 @@ def parse_args():
     parser.add_argument('--data_path', type=str, default="", help='Huggingface data cache folder') #r"D:\Cache\huggingface", "/data/cmpe249-fa23/Huggingfacecache" "/DATA10T/Cache"
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
-    parser.add_argument('--gpuid', default=3, type=int, help='GPU id')
+    parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--task', type=str, default="object-detection",
                     help='tasks: image-classification, object-detection')
     parser.add_argument('--data_name', type=str, default="cppe-5",
@@ -1096,7 +1165,7 @@ def parse_args():
     parser.add_argument(
         "--per_device_eval_batch_size",
         type=int,
-        default=16,
+        default=1,
         help="Batch size (per device) for the evaluation dataloader.",
     )
     parser.add_argument(

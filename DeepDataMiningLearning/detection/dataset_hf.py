@@ -88,9 +88,9 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         target = {"image_id": image_id, "annotations": target} #target (top_left_x, top_left_y, width, height)
         encoding = self.feature_extractor(images=img, annotations=target, return_tensors="pt")
         pixel_values = encoding["pixel_values"].squeeze()  # remove batch dimension
-        target = encoding["labels"][0]  # remove batch dimension
+        target = encoding["labels"][0]  # remove batch dimension, dict
 
-        return {"pixel_values": pixel_values, "labels": target}
+        return {"pixel_values": pixel_values, "labels": target}#, "img":img, "image_id": image_id}#adding "img" and "image_id"
     
 class HFCOCODataset(torch.utils.data.Dataset):
     def __init__(self, dataset, id2label, dataset_folder, coco_anno_json=None, data_type='huggingface', format='coco', image_processor=None):
@@ -152,6 +152,22 @@ class HFCOCODataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.ds_coco)
 
+def draw_annobox2image(image, annotations, id2label=None, save_path="output/ImageDrawcoco.png"):
+    width, height = image.size
+    draw = ImageDraw.Draw(image, "RGBA")
+    for annotation in annotations:
+        x, y, w, h = tuple(annotation) #[xmin, ymin, xmax, ymax]
+        x, y, x2, y2 = x*width, y*height, (x+w)*width, (y+h)*height
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+        # box = annotation['bbox']
+        # class_idx = annotation['category_id']
+        # x,y,w,h = tuple(box)
+        # draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
+        # if id2label is not None:
+        #     draw.text((x, y), id2label[class_idx], fill='white')
+    if save_path:
+        image.save(save_path)
+    return image
 
 #results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
 def test_evaluate_dataset(model, dataset, id2label, dataset_folder, coco_anno_json, data_type, format, device, image_processor, collate_fn):
