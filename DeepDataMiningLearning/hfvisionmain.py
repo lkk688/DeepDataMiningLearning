@@ -44,7 +44,8 @@ from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_Im
 import requests
 import cv2
 import albumentations#pip install albumentations
-from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, draw_annobox2image
+from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, check_boxsize
+from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
 
 logger = get_logger(__name__)
 
@@ -277,80 +278,6 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
     return split_datasets, labels, id2label, image_column_name, label_column_name
 
-def check_boxsize(bbox, height=None, width=None, format='coco'):
-    errobox=False
-    newbbox=[]
-    for box in bbox:
-        if format=='coco':
-            xmin, ymin, w, h = box
-        else:
-            xmin, ymin, xmax, ymax = box
-            w = max(xmax-xmin, 1)
-            h = max(ymax-ymin, 1)
-        if xmin+w>width:
-            w = max(width-xmin, 1)
-            errobox = True
-        if ymin+h>height:
-            h = max(height - ymin, 1)
-            errobox = True
-        if errobox:
-            box=[xmin, ymin, w, h]
-        if xmin > width or ymin > height:
-            box=[0, 0, 1, 1]
-        if format=='coco':
-            newbbox.append(box)
-        else:
-            newbbox.append([xmin, ymin, xmin+w, ymin+h])
-    return newbbox, errobox
-#from DeepDataMiningLearning.detection.modules.utils import xyxy2xywh
-def convert_bbbox2coco(bbox, source_format='pascal_voc', height=None, width=None, output_np=True):
-    if source_format=='pascal_voc': #[x_min, y_min, x_max, y_max] in pixels
-        boxes_xyxy = torch.stack([torch.tensor(x) for x in bbox])
-        bbox_new = box_convert(boxes_xyxy, 'xyxy', 'xywh') #['xyxy', 'xywh', 'cxcywh']
-        #bbox_new = xyxy2xywh(bbox)
-    elif source_format=='yolo' and height and width:
-        bbox_new=[]
-        for box in bbox:
-            (x_min, y_min, x_max, y_max) = box[:4]
-            x_min, x_max = x_min * width, x_max * width #cols
-            y_min, y_max = y_min * height, y_max * height #hrows
-            bbox_new.append([x_min, y_min, x_max, y_max])
-        bbox_new = torch.stack(bbox_new)
-        bbox_new = box_convert(bbox_new, 'xyxy', 'xywh')
-        #bbox_new = xyxy2xywh(bbox)
-    if output_np:
-        bbox_new = bbox_new.numpy()
-    return bbox_new #[x_min, y_min, width, height] in pixels 
-
-#https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation
-#"coco": [x_min, y_min, width, height] in pixels 
-#pascal_voc: [x_min, y_min, x_max, y_max] in pixels
-#albumentations  [x_min, y_min, x_max, y_max] normalized
-#yolo: [x_center, y_center, width, height] normalized
-#torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
-def draw2pil(image, bbox, category, categories, bbox_format='coco', filepath=None):
-    if not torch.is_tensor(image):
-        image = pil_to_tensor(image)
-    if not torch.is_tensor(bbox):
-        boxes_in = torch.tensor(bbox) #annotations['bbox']
-    else:
-        boxes_in = bbox
-    if bbox_format=='coco': #'xywh':
-        boxes_new = box_convert(boxes_in, 'xywh', 'xyxy') #['xyxy', 'xywh', 'cxcywh']
-    elif bbox_format=='pascal_voc':
-        boxes_new = boxes_in
-    labels = [categories.int2str(x) for x in category] #annotations['category']
-    image_annoted=to_pil_image(
-        draw_bounding_boxes(
-            image,
-            boxes_new, #Boxes need to be in (xmin, ymin, xmax, ymax)
-            colors="red",
-            labels=labels,
-        )
-    )
-    if filepath:
-        image_annoted.save(filepath)
-    return image_annoted
 
 def dataset_objectdetection_select(dataset, data_index, id2label, categories, format='coco', image_column_name='image', label_column_name='objects', output_folder="output/"):
     image = dataset[data_index][image_column_name]#PIL image in RGB mode 
@@ -391,8 +318,6 @@ def dataset_objectdetection_select(dataset, data_index, id2label, categories, fo
     #         labels=labels
     #     )
     # )
-
-    
 
 def formatted_anns(image_id, category, area, bbox):#category/area/bbox list input
     annotations = []
@@ -882,6 +807,7 @@ def trainmain():
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
     model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=True, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
+    model.config.id2label = id2label
 
     # Preprocessing the datasets
     # Define torchvision transforms to be applied to each image.
@@ -972,8 +898,8 @@ def trainmain():
 
         test_data = next(iter(eval_dataloader))
         print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels'] 'labels' is list of dicts
-        print(test_data["pixel_values"].shape) #[8, 3, 840, 1332]
-        print(test_data["pixel_mask"].shape) #[8, 840, 1332]
+        print(test_data["pixel_values"].shape) #[1, 3, 800, 1066]
+        print(test_data["pixel_mask"].shape) #[1, 800, 1066]
         if args.trainmode == 'CustomTrain':
             custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator, do_evaluate=False)
         else:
@@ -1001,7 +927,7 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
         # "labels" 
         with torch.no_grad():
             #outputs = model(**batch)
-            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask)
+            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask) #DetrObjectDetectionOutput
         
         if task == "image-classification":
             predictions = outputs.logits.argmax(dim=-1)
@@ -1010,19 +936,26 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
             else:
                 predictions, references = predictions, batch["labels"]
         elif task == "object-detection":
-            id2label = model.config.id2label 
-            #print(batch["labels"][0].keys()) #['size', 'image_id', 'class_labels', 'boxes', 'area', 'iscrowd', 'orig_size']
-            image = pixel_values2img(pixel_values)
-            draw_objectdetection_predboxes(image.copy(), outputs['pred_boxes'], outputs['logits'], id2label) #DetrObjectDetectionOutput
-            #print(batch["labels"])#list of dicts
-
             references = [
                 {k: v for k, v in t.items()} for t in batch["labels"]
             ]  #resized + normalized, list of dicts ['size', 'image_id', 'boxes'[8,4], 'class_labels', 'area', 'orig_size'[size[2]]]
             orig_target_sizes = torch.stack([target["orig_size"] for target in references], dim=0) #[8,2] shape
             # convert outputs of model to COCO api, list of dicts
             predictions = image_processor.post_process_object_detection(outputs,  threshold=0.0, target_sizes=orig_target_sizes) 
+            #list of dicts ['scores', 'labels'[100], 'boxes'(100,4)]
             
+            id2label = model.config.id2label 
+            #print(batch["labels"][0].keys()) #['size', 'image_id', 'class_labels', 'boxes', 'area', 'iscrowd', 'orig_size']
+            image = pixel_values2img(pixel_values)
+            pred_boxes = outputs['pred_boxes'].cpu().squeeze(dim=0).numpy() #(100,4) normalized (center_x, center_y, width, height)
+            prob = nn.functional.softmax(outputs['logits'], -1) #[1, 100, 92]
+            scores, labels = prob[..., :-1].max(-1) #[1, 100] [1, 100]
+            scores = scores.cpu().squeeze(dim=0).numpy() #(100,)
+            labels = labels.cpu().squeeze(dim=0).numpy() #(100,)
+            draw_objectdetection_predboxes(image.copy(), pred_boxes, scores, labels, id2label) #DetrObjectDetectionOutput
+            #print(batch["labels"])#list of dicts
+            
+            #the image size is the not correct
             draw_objectdetection_results(image, predictions[0], id2label)
         metriceval.add_batch(
             predictions=predictions,
@@ -1035,68 +968,6 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
     # Printing key-value pairs as tuples
     print("Eval metric Key-Value Pairs:", list(eval_metric.items()))
     return eval_metric
-
-def pixel_values2img(pixel_values):
-    img_np=pixel_values.cpu().squeeze(dim=0).permute(1, 2, 0).numpy() #CHW->HWC 
-    print(img_np.shape) # (800, 1066, 3)
-    img_np = (img_np-np.min(img_np))/(np.max(img_np)-np.min(img_np)) 
-    img_np=(img_np * 255).astype(np.uint8)
-    image = Image.fromarray(img_np, 'RGB') #pil image
-    return image
-
-def draw_objectdetection_predboxes(image, pred_boxes, logits, id2label, threshold=0.1, save_path="output/Imagepredplot.png"):
-    pred_boxes = pred_boxes.cpu().squeeze(dim=0).numpy()
-    # pred_boxes = box_convert(pred_boxes, 'xywh', 'xyxy')
-    # pred_boxes = pred_boxes.numpy()
-    #print(pred_boxes) #[100,4]
-
-    
-    prob = nn.functional.softmax(logits, -1) #[1, 100, 92]
-    scores, labels = prob[..., :-1].max(-1) #[1, 100] [1, 100]
-    scores = scores.cpu().squeeze(dim=0).numpy()
-    labels = labels.cpu().squeeze(dim=0).numpy()
-    #scores = scores.flatten()#[1, 100] to [100]
-    #labels = labels.flatten()
-    #boxes = center_to_corners_format(out_bbox)
-    #(center_x, center_y, width, height) =>(top_left_x, top_left_y, bottom_right_x, bottom_right_y)
-    #results.append({"scores": score, "labels": label, "boxes": box})
-    
-    width, height = image.size #1066, 800
-    draw = ImageDraw.Draw(image, "RGBA")
-    box_len = len(pred_boxes)
-    for index in range(box_len):
-        pred = pred_boxes[index]
-        score= scores[index]
-        if score < threshold:
-            continue
-        xc, yc, w, h = tuple(pred) #(center_x, center_y, width, height) normalized
-        x, y, x2, y2 = (xc-w/2)*width, (yc-h/2)*height, (xc+w/2)*width, (yc+h/2)*height
-        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
-        # box = annotation['bbox']
-        # class_idx = annotation['category_id']
-        # x,y,w,h = tuple(box)
-        # draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
-        class_idx = labels[index]
-        draw.text((x, y), id2label[class_idx], fill='white')
-    if save_path:
-        image.save(save_path)
-
-def draw_objectdetection_results(image, results, id2label, save_path="output/Imageresultplot.png"): #model.config.id2label
-    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
-        print(
-            f"Detected {id2label[label.item()]} with confidence "
-            f"{round(score.item(), 3)} at location {box}"
-        )
-    
-    draw = ImageDraw.Draw(image)
-    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        box = [round(i, 2) for i in box.tolist()]
-        x, y, x2, y2 = tuple(box)
-        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
-        draw.text((x, y), id2label[label.item()], fill="white")
-    if save_path:
-        image.save(save_path)
 
 # from huggingface_hub import login
 # login()

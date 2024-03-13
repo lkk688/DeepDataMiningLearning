@@ -38,6 +38,32 @@ def val_formatted_anns(image_id, objects, format='coco'):
 
     return annotations
 
+def check_boxsize(bbox, height=None, width=None, format='coco'):
+    errobox=False
+    newbbox=[]
+    for box in bbox:
+        if format=='coco':
+            xmin, ymin, w, h = box
+        else:
+            xmin, ymin, xmax, ymax = box
+            w = max(xmax-xmin, 1)
+            h = max(ymax-ymin, 1)
+        if xmin+w>width:
+            w = max(width-xmin, 1)
+            errobox = True
+        if ymin+h>height:
+            h = max(height - ymin, 1)
+            errobox = True
+        if errobox:
+            box=[xmin, ymin, w, h]
+        if xmin > width or ymin > height:
+            box=[0, 0, 1, 1]
+        if format=='coco':
+            newbbox.append(box)
+        else:
+            newbbox.append([xmin, ymin, xmin+w, ymin+h])
+    return newbbox, errobox
+
 def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno, format='coco', json_only=False):
     output_json = {}
 
@@ -80,14 +106,14 @@ class CocoDetection(torchvision.datasets.CocoDetection):
 
     def __getitem__(self, idx):
         # read in PIL image and target in COCO format
-        img, target = super(CocoDetection, self).__getitem__(idx)
+        img, target = super(CocoDetection, self).__getitem__(idx) #img: (400, 300), target: list[dicts] each dict has one box 
 
         # preprocess image and target: converting target to DETR format,
         # resizing + normalization of both image and target)
         image_id = self.ids[idx]
         target = {"image_id": image_id, "annotations": target} #target (top_left_x, top_left_y, width, height)
         encoding = self.feature_extractor(images=img, annotations=target, return_tensors="pt")
-        pixel_values = encoding["pixel_values"].squeeze()  # remove batch dimension
+        pixel_values = encoding["pixel_values"].squeeze()  # remove batch dimension [3, 800, 1066]
         target = encoding["labels"][0]  # remove batch dimension, dict
 
         return {"pixel_values": pixel_values, "labels": target}#, "img":img, "image_id": image_id}#adding "img" and "image_id"
@@ -151,23 +177,6 @@ class HFCOCODataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.ds_coco)
-
-def draw_annobox2image(image, annotations, id2label=None, save_path="output/ImageDrawcoco.png"):
-    width, height = image.size
-    draw = ImageDraw.Draw(image, "RGBA")
-    for annotation in annotations:
-        x, y, w, h = tuple(annotation) #[xmin, ymin, xmax, ymax]
-        x, y, x2, y2 = x*width, y*height, (x+w)*width, (y+h)*height
-        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
-        # box = annotation['bbox']
-        # class_idx = annotation['category_id']
-        # x,y,w,h = tuple(box)
-        # draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
-        # if id2label is not None:
-        #     draw.text((x, y), id2label[class_idx], fill='white')
-    if save_path:
-        image.save(save_path)
-    return image
 
 #results=evaluate_dataset(model, eval_dataloader, device, metriceval, processor=processor)
 def test_evaluate_dataset(model, dataset, id2label, dataset_folder, coco_anno_json, data_type, format, device, image_processor, collate_fn):

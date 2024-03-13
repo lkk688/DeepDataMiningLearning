@@ -255,3 +255,117 @@ def plot_one_box_PIL(box, img, color=None, label=None, line_thickness=None):
         draw.rectangle([box[0], box[1] - txt_height + 4, box[0] + txt_width, box[1]], fill=tuple(color))
         draw.text((box[0], box[1] - txt_height + 1), label, fill=(255, 255, 255), font=font)
     return np.asarray(img)
+
+#added for hfvisionmain
+def pixel_values2img(pixel_values):
+    img_np=pixel_values.cpu().squeeze(dim=0).permute(1, 2, 0).numpy() #CHW->HWC 
+    print(img_np.shape) # (800, 1066, 3)
+    img_np = (img_np-np.min(img_np))/(np.max(img_np)-np.min(img_np)) 
+    img_np=(img_np * 255).astype(np.uint8)
+    image = Image.fromarray(img_np, 'RGB') #pil image
+    return image
+
+def draw_objectdetection_predboxes(image, pred_boxes, scores, labels, id2label, threshold=0.1, save_path="output/Imagepredplot.png"):
+    
+    # pred_boxes = box_convert(pred_boxes, 'xywh', 'xyxy')
+    # pred_boxes = pred_boxes.numpy()
+    #print(pred_boxes) #[100,4]
+
+    filterscore = scores > threshold
+    filterlabel = labels >0
+    selectedindex =  filterscore & filterlabel
+    pred_boxes = pred_boxes[selectedindex]
+    scores = scores[selectedindex]
+    labels = labels[selectedindex]
+    #scores = scores.flatten()#[1, 100] to [100]
+    #labels = labels.flatten()
+    #boxes = center_to_corners_format(out_bbox)
+    #(center_x, center_y, width, height) =>(top_left_x, top_left_y, bottom_right_x, bottom_right_y)
+    #results.append({"scores": score, "labels": label, "boxes": box})
+    
+    width, height = image.size #1066, 800
+    draw = ImageDraw.Draw(image, "RGBA")
+    box_len = len(pred_boxes)
+    for index in range(box_len):
+        pred = pred_boxes[index]
+        score= scores[index]
+        if score < threshold:
+            continue
+        xc, yc, w, h = tuple(pred) #(center_x, center_y, width, height) normalized
+        x, y, x2, y2 = (xc-w/2)*width, (yc-h/2)*height, (xc+w/2)*width, (yc+h/2)*height
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+        # box = annotation['bbox']
+        # class_idx = annotation['category_id']
+        # x,y,w,h = tuple(box)
+        # draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
+        class_idx = labels[index]
+        draw.text((x, y), id2label[class_idx], fill='white')
+    if save_path:
+        image.save(save_path)
+
+def draw_objectdetection_results(image, results, id2label, save_path="output/Imageresultplot.png"): #model.config.id2label
+    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+        box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
+        print(
+            f"Detected {id2label[label.item()]} with confidence "
+            f"{round(score.item(), 3)} at location {box}"
+        )
+    
+    draw = ImageDraw.Draw(image)
+    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+        box = [round(i, 2) for i in box.tolist()]
+        x, y, x2, y2 = tuple(box)
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+        draw.text((x, y), id2label[label.item()], fill="white")
+    if save_path:
+        image.save(save_path)
+
+
+def draw_annobox2image(image, annotations, id2label=None, save_path="output/ImageDrawcoco.png"):
+    width, height = image.size
+    draw = ImageDraw.Draw(image, "RGBA")
+    for annotation in annotations:
+        x, y, w, h = tuple(annotation) #[xmin, ymin, xmax, ymax]
+        x, y, x2, y2 = x*width, y*height, (x+w)*width, (y+h)*height
+        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+        # box = annotation['bbox']
+        # class_idx = annotation['category_id']
+        # x,y,w,h = tuple(box)
+        # draw.rectangle((x,y,x+w,y+h), outline='red', width=1)
+        # if id2label is not None:
+        #     draw.text((x, y), id2label[class_idx], fill='white')
+    if save_path:
+        image.save(save_path)
+    return image
+
+#https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation
+#"coco": [x_min, y_min, width, height] in pixels 
+#pascal_voc: [x_min, y_min, x_max, y_max] in pixels
+#albumentations  [x_min, y_min, x_max, y_max] normalized
+#yolo: [x_center, y_center, width, height] normalized
+#torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
+from torchvision.transforms.functional import pil_to_tensor, to_pil_image
+from torchvision.ops import box_convert
+def draw2pil(image, bbox, category, categories, bbox_format='coco', filepath=None):
+    if not torch.is_tensor(image):
+        image = pil_to_tensor(image)
+    if not torch.is_tensor(bbox):
+        boxes_in = torch.tensor(bbox) #annotations['bbox']
+    else:
+        boxes_in = bbox
+    if bbox_format=='coco': #'xywh':
+        boxes_new = box_convert(boxes_in, 'xywh', 'xyxy') #['xyxy', 'xywh', 'cxcywh']
+    elif bbox_format=='pascal_voc':
+        boxes_new = boxes_in
+    labels = [categories.int2str(x) for x in category] #annotations['category']
+    image_annoted=to_pil_image(
+        draw_bounding_boxes(
+            image,
+            boxes_new, #Boxes need to be in (xmin, ymin, xmax, ymax)
+            colors="red",
+            labels=labels,
+        )
+    )
+    if filepath:
+        image_annoted.save(filepath)
+    return image_annoted

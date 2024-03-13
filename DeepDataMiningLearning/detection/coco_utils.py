@@ -234,3 +234,24 @@ def get_coco(root, image_set, transforms, mode="instances", use_v2=False, with_m
 
     return dataset
 
+#from DeepDataMiningLearning.detection.modules.utils import xyxy2xywh
+from torchvision.ops import box_convert
+def convert_bbbox2coco(bbox, source_format='pascal_voc', height=None, width=None, output_np=True):
+    if source_format=='pascal_voc': #[x_min, y_min, x_max, y_max] in pixels
+        boxes_xyxy = torch.stack([torch.tensor(x) for x in bbox])
+        bbox_new = box_convert(boxes_xyxy, 'xyxy', 'xywh') #['xyxy', 'xywh', 'cxcywh']
+        #bbox_new = xyxy2xywh(bbox)
+    elif source_format=='yolo' and height and width:
+        bbox_new=[]
+        for box in bbox:
+            (x_min, y_min, x_max, y_max) = box[:4]
+            x_min, x_max = x_min * width, x_max * width #cols
+            y_min, y_max = y_min * height, y_max * height #hrows
+            bbox_new.append([x_min, y_min, x_max, y_max])
+        bbox_new = torch.stack(bbox_new)
+        bbox_new = box_convert(bbox_new, 'xyxy', 'xywh')
+        #bbox_new = xyxy2xywh(bbox)
+    if output_np:
+        bbox_new = bbox_new.numpy()
+    return bbox_new #[x_min, y_min, width, height] in pixels 
+
