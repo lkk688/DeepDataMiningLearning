@@ -39,15 +39,15 @@ class MyBackboneWithFPN(nn.Module):
     ) -> None:
         super().__init__()
 
-        weights_enum = get_model_weights(model_name)
-        weights = weights_enum.DEFAULT #IMAGENET1K_V1
+        weights_enum = get_model_weights(model_name) #ResNet152_Weights
+        weights = weights_enum.DEFAULT #ResNet152_Weights.IMAGENET1K_V2
         #weights = ResNet50_Weights.DEFAULT
         backbone = resnet.__dict__[model_name](weights=weights, norm_layer=norm_layer)
         # weights_backbone = ResNet50_Weights.verify(weights)
         # backbone = resnet50(weights=weights_backbone, progress=True)
 
         #trainable_layers =2
-        layers_to_train = ["layer4", "layer3", "layer2", "layer1", "conv1"][:trainable_layers]
+        layers_to_train = ["layer4", "layer3", "layer2", "layer1", "conv1"][:trainable_layers] #trainable_layers=0=>layers_to_train=[]
         for name, parameter in backbone.named_parameters():
             if all([not name.startswith(layer) for layer in layers_to_train]):
                 parameter.requires_grad_(False)
@@ -57,8 +57,8 @@ class MyBackboneWithFPN(nn.Module):
         
         returned_layers = [1, 2, 3, 4]
         #return_layers (Dict[name, new_name]): a dict containing the names of the modules for which the activations will be returned as the key of the dict
-        return_layers = {f"layer{k}": str(v) for v, k in enumerate(returned_layers)}
-        in_channels_stage2 = backbone.inplanes // 8 #256
+        return_layers = {f"layer{k}": str(v) for v, k in enumerate(returned_layers)} #{'layer1': '0', 'layer2': '1', 'layer3': '2', 'layer4': '3'}
+        in_channels_stage2 = backbone.inplanes // 8 #2048//8=256
         #in_channels_list:List[int] number of channels for each feature map that is returned, in the order they are present in the OrderedDict
         in_channels_list = [in_channels_stage2 * 2 ** (i - 1) for i in returned_layers]
         #[256, 512, 1024, 2048]

@@ -189,7 +189,7 @@ class CustomRCNN(nn.Module):
         self.backbone = MyBackboneWithFPN(backbone_modulename,trainable_layers, out_channels)
         if not hasattr(self.backbone, "out_channels"):
             print("error")
-        self.out_channels = self.backbone.out_channels
+        self.out_channels = self.backbone.out_channels #256
 
         #RPN part
         anchor_sizes = ((32,), (64,), (128,), (256,), (512,))
@@ -217,8 +217,8 @@ class CustomRCNN(nn.Module):
         box_roi_pool = MultiScaleRoIAlign(featmap_names=["0", "1", "2", "3"], output_size=7, sampling_ratio=2)
         resolution = box_roi_pool.output_size[0] #7
         representation_size = 1024
-        box_head = TwoMLPHead(self.out_channels * resolution**2, representation_size)
-        box_predictor = FastRCNNPredictor(representation_size, num_classes)
+        box_head = TwoMLPHead(self.out_channels * resolution**2, representation_size) #256*7*7
+        box_predictor = FastRCNNPredictor(representation_size, num_classes) #1024, 91
         #roi_heads (nn.Module): takes the features + the proposals from the RPN and computes detections / masks from it.
         self.roi_heads = RoIHeads(
             # Box
