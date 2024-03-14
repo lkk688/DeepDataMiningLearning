@@ -214,6 +214,82 @@ def draw_boxes(boxes, classes, labels, image):
                     lineType=cv2.LINE_AA)
     return image
 
+
+from DeepDataMiningLearning.detection.models import load_checkpoint
+from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
+from torchvision.transforms.functional import pil_to_tensor, to_pil_image
+import torchvision.transforms as transforms
+from PIL import Image, ImageDraw
+import requests
+def gettensorfromurls(urls):
+    # define custom transform function
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+    pilimage_list = []
+    image_tensorlist = []
+    for url in urls:
+        image = Image.open(requests.get(url, stream=True).raw)
+        #image_tensor1 = pil_to_tensor(image)#did not normalize the image
+        # transform the pIL image to tensor image
+        image_tensor1 = transform(image)#normalize the image
+        pilimage_list.append(image)
+        image_tensorlist.append(image_tensor1)
+    return image_tensorlist, pilimage_list
+
+def test_Customrcnn():
+    model_name = 'resnet50' #["layer4", "layer3", "layer2", "layer1", "conv1"]
+    #model_name = 'resnet152' #["layer4", "layer3", "layer2", "layer1", "conv1"]
+    num_classes = 91 #Downloading: "https://download.pytorch.org/models/resnet50-11ad3fa6.pth" to /data/rnd-liu/.cache/torch/hub/checkpoints/resnet50-11ad3fa6.pth
+    myrcnn=CustomRCNN(backbone_modulename=model_name,trainable_layers=0,num_classes=num_classes,out_channels=256,min_size=800,max_size=1333)
+    # summary(model=myrcnn, 
+    #     input_size=(1, 3, 300, 400), #(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
+    #     # col_names=["input_size"], # uncomment for smaller output
+    #     col_names=["input_size", "output_size", "num_params", "trainable"],
+    #     col_width=20,
+    #     row_settings=["var_names"]
+    # ) 
+    device='cuda:3'
+    ckpt_file = "/data/cmpe249-fa23/modelzoo/fasterrcnn_resnet50_fpn_v2.pt"
+    #ckpt_file = "/data/cmpe249-fa23/trainoutput/waymococo/0923/model_40.pth" #resnet152
+    model = load_checkpoint(myrcnn, ckpt_file, fp16=False)
+    model=model.to(device)
+
+    model.eval()
+    #The input to the model is expected to be a list of tensors, each of shape [C, H, W], one for each
+    #image, and should be in 0-1 range. Different images can have different sizes.
+    #images = [torch.rand(3, 300, 400), torch.rand(3, 500, 400)]
+
+    url2 = "https://unsplash.com/photos/HwBAsSbPBDU/download?ixid=MnwxMjA3fDB8MXxzZWFyY2h8MzR8fGNhciUyMGluJTIwdGhlJTIwc3RyZWV0fGVufDB8MHx8fDE2Nzg5MDEwODg&force=true&w=640"
+    url1 = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    image_tensorlist, pilimage_list = gettensorfromurls([url1, url2])
+    image_tensorlist = [image.to(device) for image in image_tensorlist] #[3, 480, 640] [3, 427, 640]
+    predictions = model(image_tensorlist)
+    #During testing, it returns list[BoxList] contains additional fields like `scores`, `labels` and `mask` (for Mask R-CNN models).
+    print(len(predictions)) #2
+    print(predictions[0]) #'boxes' 'labels' 'scores'
+
+    images, targets = model.detcttransform(image_tensorlist, targets=None)
+    #images is ImageList, image_sizes:[(800, 1066), (800, 1199)]
+
+    features = model.backbone(images.tensors) #[2, 3, 800, 1216]
+    print([(k, v.shape) for k, v in features.items()])
+    #[('0', torch.Size([2, 256, 200, 304])), #/4
+    # ('1', torch.Size([2, 256, 100, 152])), #/8
+    # ('2', torch.Size([2, 256, 50, 76])),   #/16
+    # ('3', torch.Size([2, 256, 25, 38])),   #/32
+    # ('pool', torch.Size([2, 256, 13, 19]))]
+
+    anchors = model.rpn_anchor_generator(images, features)#return tensor list
+    for anchor in anchors:
+        print(anchor.shape)
+
+    proposals, proposal_losses = model.rpn(images, features, targets)
+    #proposals list of 2, 
+
+    detections, detector_losses = model.roi_heads(features, proposals, images.image_sizes, targets)
+    print(len(detections))
+
 # Construct the argument parser.
 parser = argparse.ArgumentParser()
 parser.add_argument('-i', '--input', default='input/video_1.mp4', 
@@ -235,4 +311,5 @@ def main(args):
     multimodel_inference(modelname, imgpath, ckpt_file, device, scale='n')
 
 if __name__ == "__main__":
-    main(args)
+    test_Customrcnn()
+    #main(args)
