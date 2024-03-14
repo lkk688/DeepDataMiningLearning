@@ -321,18 +321,19 @@ def test_defaultmodels():
     #imagelist object, tensors section is list of tensors
 
     modelname = 'fasterrcnn_resnet50_fpn_v2'
-    model, preprocess, weights, classes = get_torchvision_detection_models(modelname, box_score_thresh=0.9)
+    model, preprocess, weights, classes = get_torchvision_detection_models(modelname, box_score_thresh=0.2)
     INSTANCE_CATEGORY_NAMES = weights.meta["categories"]
     print(model.backbone.out_channels) #256
+    torch.save(model.state_dict(), "/data/cmpe249-fa23/modelzoo/fasterrcnn_resnet50_fpn_v2.pt")
 
     x=torch.rand(1,3,64,64) #image.tensors #[2, 3, 800, 1312] list of tensors x= torch.rand(1,3,64,64)
     output = model.backbone(x) 
     print([(k, v.shape) for k, v in output.items()])
-    #[('0', torch.Size([2, 256, 200, 328])), #/4
-    # ('1', torch.Size([2, 256, 100, 164])), #/8
-    # ('2', torch.Size([2, 256, 50, 82])),   #/16
-    # ('3', torch.Size([2, 256, 25, 41])),   #/32
-    # ('pool', torch.Size([2, 256, 13, 21]))]
+    #[('0', torch.Size([1, 256, 16, 16])), #/4
+    # ('1', torch.Size([1, 256, 8, 8])), #/8
+    # ('2', torch.Size([1, 256, 4, 4])),   #/16
+    # ('3', torch.Size([1, 256, 2, 2])),   #/32
+    # ('pool', torch.Size([1, 256, 1, 1]))]
 
     modulelist=list(model.named_children())
     for m in modulelist:#'transform', 'backbone', 'rpn', 'roi_heads'
@@ -424,13 +425,35 @@ def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file 
             model=model.to(device)
     return model, preprocess, classes
     
+from torchvision.transforms.functional import pil_to_tensor, to_pil_image
+import torchvision.transforms as transforms
+from PIL import Image, ImageDraw
+import requests
+def gettensorfromurls(urls):
+    # define custom transform function
+    transform = transforms.Compose([
+        transforms.ToTensor()
+    ])
+    pilimage_list = []
+    image_tensorlist = []
+    for url in urls:
+        image = Image.open(requests.get(url, stream=True).raw)
+        #image_tensor1 = pil_to_tensor(image)#did not normalize the image
+        # transform the pIL image to tensor image
+        image_tensor1 = transform(image)#normalize the image
+        pilimage_list.append(image)
+        image_tensorlist.append(image_tensor1)
+    return image_tensorlist, pilimage_list
 
 if __name__ == "__main__":
+    test_defaultmodels()
+
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
     DATAPATH='/data/cmpe249-fa23/torchvisiondata/'
-    #model_name = 'resnet50' #["layer4", "layer3", "layer2", "layer1", "conv1"]
-    model_name = 'resnet152' #["layer4", "layer3", "layer2", "layer1", "conv1"]
-    myrcnn=CustomRCNN(backbone_modulename=model_name,trainable_layers=0,num_classes=91,out_channels=256,min_size=800,max_size=1333)
+    model_name = 'resnet50' #["layer4", "layer3", "layer2", "layer1", "conv1"]
+    #model_name = 'resnet152' #["layer4", "layer3", "layer2", "layer1", "conv1"]
+    num_classes = 91
+    myrcnn=CustomRCNN(backbone_modulename=model_name,trainable_layers=0,num_classes=num_classes,out_channels=256,min_size=800,max_size=1333)
     summary(model=myrcnn, 
         input_size=(1, 3, 300, 400), #(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
         # col_names=["input_size"], # uncomment for smaller output
@@ -438,3 +461,36 @@ if __name__ == "__main__":
         col_width=20,
         row_settings=["var_names"]
     ) 
+    device='cuda:0'
+    ckpt_file = "/data/cmpe249-fa23/modelzoo/fasterrcnn_resnet50_fpn_v2.pt"
+    #ckpt_file = "/data/cmpe249-fa23/trainoutput/waymococo/0923/model_40.pth" #resnet152
+    model = load_checkpoint(myrcnn, ckpt_file, fp16=False)
+    model=model.to(device)
+
+    model.eval()
+    #The input to the model is expected to be a list of tensors, each of shape [C, H, W], one for each
+    #image, and should be in 0-1 range. Different images can have different sizes.
+    #images = [torch.rand(3, 300, 400), torch.rand(3, 500, 400)]
+
+    url2 = "https://unsplash.com/photos/HwBAsSbPBDU/download?ixid=MnwxMjA3fDB8MXxzZWFyY2h8MzR8fGNhciUyMGluJTIwdGhlJTIwc3RyZWV0fGVufDB8MHx8fDE2Nzg5MDEwODg&force=true&w=640"
+    url1 = "http://images.cocodataset.org/val2017/000000039769.jpg"
+    image_tensorlist, pilimage_list = gettensorfromurls([url1, url2])
+    image_tensorlist = [image.to(device) for image in image_tensorlist] #[3, 480, 640] [3, 427, 640]
+    predictions = model(image_tensorlist)
+    #During testing, it returns list[BoxList] contains additional fields like `scores`, `labels` and `mask` (for Mask R-CNN models).
+    print(len(predictions)) #2
+    print(predictions[0]) #'boxes' 'labels' 'scores'
+
+    images, targets = model.detcttransform(image_tensorlist, targets=None)#images is ImageList
+
+    features = model.backbone(images.tensors) #[16, 3, 800, 1344]
+
+    if isinstance(features, torch.Tensor):
+        features = OrderedDict([("0", features)])
+
+    #myrcnn.rpn_anchor_generator()
+    proposals, proposal_losses = model.rpn(images, features, targets)
+
+    detections, detector_losses = model.roi_heads(features, proposals, images.image_sizes, targets)
+
+    
