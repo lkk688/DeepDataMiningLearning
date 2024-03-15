@@ -280,15 +280,15 @@ def test_Customrcnn():
     # ('3', torch.Size([2, 256, 25, 38])),   #/32
     # ('pool', torch.Size([2, 256, 13, 19]))]
 
-    anchors = model.rpn_anchor_generator(images, features)#return tensor list
-    for anchor in anchors:
-        print(anchor.shape)
+    # anchors = model.rpn_anchor_generator(images, features)#return tensor list
+    # for anchor in anchors:
+    #     print(anchor.shape)
 
-    proposals, proposal_losses = model.rpn(images, features, targets)
-    #proposals list of 2, 
+    # proposals, proposal_losses = model.rpn(images, features, targets)
+    # #proposals list of 2, 
 
-    detections, detector_losses = model.roi_heads(features, proposals, images.image_sizes, targets)
-    print(len(detections))
+    # detections, detector_losses = model.roi_heads(features, proposals, images.image_sizes, targets)
+    # print(len(detections))
 
 # Construct the argument parser.
 parser = argparse.ArgumentParser()
