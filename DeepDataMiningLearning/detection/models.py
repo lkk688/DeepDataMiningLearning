@@ -217,7 +217,7 @@ def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file 
     
 
 if __name__ == "__main__":
-    #test_defaultmodels()
+    test_defaultmodels()
 
     os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
     DATAPATH='/data/cmpe249-fa23/torchvisiondata/'

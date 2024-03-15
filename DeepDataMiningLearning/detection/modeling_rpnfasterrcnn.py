@@ -167,10 +167,10 @@ class RPNHead(nn.Module):
     def __init__(self, in_channels: int, num_anchors: int, conv_depth=1) -> None:
         super().__init__()
         convs = []
-        for _ in range(conv_depth):
+        for _ in range(conv_depth):#1
             convs.append(Conv2dNormActivation(in_channels, in_channels, kernel_size=3, norm_layer=None))
         self.conv = nn.Sequential(*convs)
-        self.cls_logits = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1)
+        self.cls_logits = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1) #in_channels=256, num_anchors=3
         self.bbox_pred = nn.Conv2d(in_channels, num_anchors * 4, kernel_size=1, stride=1)
 
         for layer in self.modules():
@@ -497,11 +497,14 @@ class RegionProposalNetwork(torch.nn.Module):
         """
         # RPN uses all feature maps that are available
         features = list(features.values()) 
-        #list of 0-4 features
+        #list of 0-4 features: [2, 256, 200, 304], [2, 256, 100, 152]
 
-        objectness, pred_bbox_deltas = self.head(features) #RPNHead return logits, bbox_reg
+        objectness, pred_bbox_deltas = self.head(features) #RPNHead Conv2d
+        #return logits: list of 5 [2, 3, 200, 304], [2, 3, 100, 152], [2, 3, 50, 76], [2, 3, 25, 38], [2, 3, 13, 19]
+        #bbox_reg: [2, 12, 200, 304], [2, 12, 100, 152], [2, 12, 50, 76], [2, 12, 25, 38], [2, 12, 13, 19]
 
-        anchors = self.anchor_generator(images, features) #[242991, 4]
+        anchors = self.anchor_generator(images, features) 
+        #anchors list of two: [242991, 4]
 
         num_images = len(anchors) #2
         num_anchors_per_level_shape_tensors = [o[0].shape for o in objectness]
@@ -1126,7 +1129,7 @@ class CustomRCNN(nn.Module):
             image_std = [0.229, 0.224, 0.225]
         # The transformations it performs are:
         # - input normalization (mean subtraction and std division)
-        # - input / target resizing to match min_size / max_size
+        # - input / target resizing to match min_size:800 / max_size:1333
         self.detcttransform = DetectionTransform(min_size=min_size,max_size=max_size, image_mean=image_mean,image_std=image_std,size_divisible=32)
         #self.transform = GeneralizedRCNNTransform(min_size, max_size, image_mean, image_std)
         #It returns a ImageList for the inputs, and a List[Dict[Tensor]] for the targets
@@ -1144,7 +1147,7 @@ class CustomRCNN(nn.Module):
         #AnchorGenerator will output a set of sizes[i] * aspect_ratios[i] anchors per spatial location for feature map i
         self.rpn_anchor_generator = AnchorGenerator(anchor_sizes, aspect_ratios)
         
-        #RPN Head (Conv2D) with classification and regression heads
+        #RPN Head (Conv2D) with classification and regression heads, anchor_size=3
         rpn_head = RPNHead(self.out_channels, self.rpn_anchor_generator.num_anchors_per_location()[0])
 
         rpn_pre_nms_top_n = dict(training=rpn_pre_nms_top_n_train, testing=rpn_pre_nms_top_n_test) #{'training': 2000, 'testing': 1000}
@@ -1154,8 +1157,8 @@ class CustomRCNN(nn.Module):
             rpn_head,
             rpn_fg_iou_thresh, #0.7
             rpn_bg_iou_thresh, #0.3
-            rpn_batch_size_per_image,
-            rpn_positive_fraction,
+            rpn_batch_size_per_image, #256
+            rpn_positive_fraction, #0.5
             rpn_pre_nms_top_n,
             rpn_post_nms_top_n,
             rpn_nms_thresh, #NMS threshold
@@ -1236,8 +1239,8 @@ class CustomRCNN(nn.Module):
             features = OrderedDict([("0", features)])
 
         #RegionProposalNetwork: generate object proposals from feature maps.
-            #images: A list of images
-            #features: A list of feature maps
+            #images: ImageList object-> 'image_sizes' [(800, 1066), (800, 1199)], 'tensors'
+            #features: An OrderedDicts of feature maps
             #targets: A list of ground-truth boxes
         #The forward method first applies the RPN head to the feature maps to generate objectness scores and bounding box regression deltas. 
         #Then, it uses these scores and deltas to generate object proposals.

@@ -13,6 +13,11 @@ from torchvision.transforms.functional import to_pil_image
 from DeepDataMiningLearning.detection.models import create_detectionmodel, get_torchvision_detection_models, load_trained_model
 import numpy as np
 
+try:
+    from torchinfo import summary
+except:
+    print("[INFO] Couldn't find torchinfo... installing it.") #pip install -q torchinfo
+
 def myread_image(preprocess, imgpath, usecv2=True, uspil=False):
     if usecv2==True:
         im0 = cv2.imread(imgpath) #(1080, 810, 3) HWC, BGR format
@@ -242,13 +247,13 @@ def test_Customrcnn():
     #model_name = 'resnet152' #["layer4", "layer3", "layer2", "layer1", "conv1"]
     num_classes = 91 #Downloading: "https://download.pytorch.org/models/resnet50-11ad3fa6.pth" to /data/rnd-liu/.cache/torch/hub/checkpoints/resnet50-11ad3fa6.pth
     myrcnn=CustomRCNN(backbone_modulename=model_name,trainable_layers=0,num_classes=num_classes,out_channels=256,min_size=800,max_size=1333)
-    # summary(model=myrcnn, 
-    #     input_size=(1, 3, 300, 400), #(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
-    #     # col_names=["input_size"], # uncomment for smaller output
-    #     col_names=["input_size", "output_size", "num_params", "trainable"],
-    #     col_width=20,
-    #     row_settings=["var_names"]
-    # ) 
+    summary(model=myrcnn, 
+        input_size=(1, 3, 300, 400), #(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
+        # col_names=["input_size"], # uncomment for smaller output
+        col_names=["input_size", "output_size", "num_params", "trainable"],
+        col_width=20,
+        row_settings=["var_names"]
+    ) 
     device='cuda:3'
     ckpt_file = "/data/cmpe249-fa23/modelzoo/fasterrcnn_resnet50_fpn_v2.pt"
     #ckpt_file = "/data/cmpe249-fa23/trainoutput/waymococo/0923/model_40.pth" #resnet152

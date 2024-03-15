@@ -44,11 +44,11 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/data/cmpe249-fa23/WaymoCOCO/", type=str, help="dataset path")
-    parser.add_argument("--annotationfile", default="annotations_train200new.json", type=str, help="dataset annotion file path, e.g., coco json file")
+    parser.add_argument("--data-path", default="/data/cmpe249-fa23/WaymoCOCO/", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
+    parser.add_argument("--annotationfile", default="", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
     parser.add_argument(
         "--dataset",
-        default="waymococo", 
+        default="coco", #waymococo
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
@@ -141,7 +141,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
-    parser.add_argument("--expname", default="0923", help="experiment name, create a sub-folder")
+    parser.add_argument("--expname", default="0315", help="experiment name, create a sub-folder")
 
     return parser
 
