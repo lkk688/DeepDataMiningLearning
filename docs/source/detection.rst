@@ -14,21 +14,58 @@ COCO Object Detection
 
 .. code-block:: console
 
-   (mycondapy310) [010796032@cs004 detection]$ python mytrain.py --data-path="/data/cmpe249-fa23/COCOoriginal/" --dataset="coco" --model="fasterrcnn_resnet50_fpn_v2" --resume="" --test-only=True   
+   (mycondapy310) [010796032@cs004 detection]$ python mytrain.py --data-path="/data/cmpe249-fa23/COCOoriginal/" --dataset="coco" --model="fasterrcnn_resnet50_fpn_v2" --resume="" --test-only   
 
    IoU metric: bbox
-   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.301
-   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.489
-   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.350
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.321
+   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.552
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.340
    Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = -1.000
-   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.187
-   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.480
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.200
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.486
    Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.000
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.377
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.438
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.385
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.469
    Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = -1.000
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.186
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.733
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.214
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.767
+
+Train "customrcnn_resnet50" based on COCO dataset:
+
+.. code-block:: console
+
+   python mytrain.py --data-path "/data/cmpe249-fa23/COCOoriginal/" --dataset "coco" --model "customrcnn_resnet50" --device "cuda:3" --epochs 20 --expname "0315coco"  --output-dir "/data/rnd-liu/output" --annotationfile "" --resume "/data/rnd-liu/output/coco/0315coco/model_12.pth"
+   After 20 epoches
+   IoU metric: bbox
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.252
+   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.460
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.245
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.157
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.295
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.296
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.240
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.409
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.435
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.277
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.480
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.520
+
+   python mytrain.py --data-path "/data/cmpe249-fa23/COCOoriginal/" --dataset "coco" --model "customrcnn_resnet50" --device "cuda:3" --epochs 40 --expname "0315coco"  --output-dir "/data/rnd-liu/output" --annotationfile "" --resume "/data/rnd-liu/output/coco/0315coco/model_20.pth"
+   After 40 epoches
+   IoU metric: bbox
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.260
+   Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets=100 ] = 0.472
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets=100 ] = 0.252
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.163
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.300
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.307
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=  1 ] = 0.244
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 10 ] = 0.414
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.440
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= small | maxDets=100 ] = 0.287
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets=100 ] = 0.488
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.518
+
 
 Kitti Object Detection
 ----------------------
