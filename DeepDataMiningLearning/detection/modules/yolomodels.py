@@ -494,7 +494,7 @@ def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = '
     
     modelcfg_file=os.path.join('./DeepDataMiningLearning/detection/modules', modelname+'.yaml')
     cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
-    myyolov8 = None
+    myyolo = None
     preprocess =None
     classesList = None
     if os.path.exists(modelcfg_file) and os.path.exists(cfgPath):
@@ -502,20 +502,20 @@ def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = '
         classes=DEFAULT_CFG_DICT['names']
         nc=len(classes)
         classesList = list(classes.values())
-        myyolov8=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3) #nc =80
+        myyolo=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3) #nc =80
         if os.path.exists(ckpt_file):
-            myyolov8=load_checkpoint(myyolov8, ckpt_file)
-        myyolov8=myyolov8.to(device).eval()
-        stride = max(int(myyolov8.stride.max()), 32)  # model stride
-        names = myyolov8.module.names if hasattr(myyolov8, 'module') else myyolov8.names  # get class names
+            myyolo=load_checkpoint(myyolo, ckpt_file)
+        myyolo=myyolo.to(device).eval()
+        stride = max(int(myyolo.stride.max()), 32)  # model stride
+        names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # get class names
         #model = model.fuse(verbose=verbose) if fuse else model
-        myyolov8 = myyolov8.half() if fp16 else myyolov8.float()
+        myyolo = myyolo.half() if fp16 else myyolo.float()
 
         preprocess = YoloTransform(min_size=640, max_size=640, device=device, fp16=fp16, cfgs=DEFAULT_CFG_DICT)
-        return myyolov8, preprocess, classesList
+        return myyolo, preprocess, classesList
     else:
         print("Config file not found")
-        return myyolov8, preprocess, classesList
+        return myyolo, preprocess, classesList
 
 def freeze_yolomodel(model, freeze=[]):
     # Freeze layers
