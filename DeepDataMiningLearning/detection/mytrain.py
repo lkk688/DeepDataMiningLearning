@@ -22,18 +22,18 @@ except:
 
 
 #Select the visible GPU
-os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3" #"0,1"
+#os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3" #"0,1"
 
 MACHINENAME='HPC'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
-if MACHINENAME=='HPC':
-    os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
-    DATAPATH='/data/cmpe249-fa23/torchvisiondata/'
-elif MACHINENAME=='Container':
-    os.environ['TORCH_HOME'] = '/data/torchhome/'
-    DATAPATH='/data/torchvisiondata'
-else:
-    DATAPATH='./data'
+# if MACHINENAME=='HPC':
+#     os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
+#     DATAPATH='/data/cmpe249-fa23/torchvisiondata/'
+# elif MACHINENAME=='Container':
+#     os.environ['TORCH_HOME'] = '/data/torchhome/'
+#     DATAPATH='/data/torchvisiondata'
+# else:
+#     DATAPATH='./data'
 
 #dataset: #coco, /data/cmpe249-fa23/COCOoriginal/
 #kitti /data/cmpe249-fa23/torchvisiondata/Kitti/
