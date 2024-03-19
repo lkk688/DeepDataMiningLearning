@@ -100,6 +100,8 @@ class YoloDetectionModel(nn.Module):
         Returns:
             (torch.Tensor): The output of the network.
         """
+        #model.train() self.training=True
+        #model.eval() self.training=False
         if isinstance(x, dict):# for cases of training and validating while training.
             return self.loss(x, *args, **kwargs)
         elif self.training:
