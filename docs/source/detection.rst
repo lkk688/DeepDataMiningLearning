@@ -361,6 +361,28 @@ GPU Utilization:
    |    3   N/A  N/A     18467      C   ...conda3/envs/mycondapy310/bin/python    37128MiB |
    +---------------------------------------------------------------------------------------+
 
+YOLO dataset
+-------------
+Download COCO dataset and YOLO formated label via [getcoco.sh](/data/scripts/get_coco.sh), after downloading you will see the following folders
+
+.. code-block:: console
+
+   Dataset/coco$ ls
+   annotations  labels   README.txt        train2017.cache  val2017.cache
+   images       LICENSE  test-dev2017.txt  train2017.txt    val2017.txt
+   /Dataset/coco$ ls images/
+   test2017  train2017  val2017
+   /Dataset/coco$ cat labels/train2017/000000436300.txt
+   5 0.527578 0.541663 0.680750 0.889628
+   0 0.982781 0.696762 0.033719 0.174020
+   0 0.169938 0.659901 0.020406 0.080844
+   0 0.093156 0.685223 0.015031 0.081315
+
+   
+The label format is YOLO format, not the original COCO annotation format. Each row in the .txt label file is (class x_center y_center width height) format, all these are in normalized xywh format (from 0 - 1). The COCO box format is [top left x, top left y, width, height] in pixels.
+
+If you have the original COCO annotation file (.json), I added this python code to do the conversion: [cocojsontoyolo.py](/data/cocojsontoyolo.py). You can add the COCO .json file path in the main function of this file. If you have other dataset format, you can direct convert them to YOLO format, you can also convert them to standard COCO json format, then use [cocojsontoyolo.py](/data/cocojsontoyolo.py) to convert to YOLO format. If you want to use the Waymo dataset, you can check my [WaymoObjectDetection](https://github.com/lkk688/WaymoObjectDetection) repository.
+
 YOLOv8
 -------
 Our custom YOLOv8 training
