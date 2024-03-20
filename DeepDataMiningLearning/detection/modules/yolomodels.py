@@ -67,14 +67,14 @@ class YoloDetectionModel(nn.Module):
 
         # Build strides
         m = self.model[-1]  # Detect()
-        if isinstance(m, (Detect, Segment, Pose)): #added yolov7's IDetect
+        if isinstance(m, (Detect, Segment, Pose)): 
             s = 256  # 2x min stride
             m.inplace = self.inplace
             forward = lambda x: self.forward(x)[0] if isinstance(m, (Segment, Pose)) else self.forward(x)
             m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
             self.stride = m.stride #[ 8., 16., 32.]
             m.bias_init()  # only run once
-        elif isinstance(m, IDetect):
+        elif isinstance(m, IDetect): #added yolov7's IDetect
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             m.anchors /= m.stride.view(-1, 1, 1)
@@ -443,7 +443,12 @@ def load_checkpoint(model, ckpt_file, fp16=False):
     ckpt=torch.load(ckpt_file, map_location='cpu')
     nn_module = isinstance(ckpt, torch.nn.Module)
     print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
-    currentmodel_statedict = model.state_dict()
+    currentmodel_statedict = model.state_dict()#starts with 'model.'
+    #rename ckpt for yolov7
+    for key in list(ckpt.keys()):
+        if not key.startswith("model"):
+            ckpt['model.'+key] = ckpt.pop(key)
+
     csd = intersect_dicts(ckpt, currentmodel_statedict)  # intersect
     model.load_state_dict(ckpt, strict=False)
     print(f'Transferred {len(csd)}/{len(model.state_dict())} items from pretrained weights')
@@ -502,8 +507,8 @@ def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = '
     if os.path.exists(modelcfg_file) and os.path.exists(cfgPath):
         DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
         classes=DEFAULT_CFG_DICT['names']
-        nc=len(classes)
-        classesList = list(classes.values())
+        nc=len(classes) #80
+        classesList = list(classes.values()) #class name list
         myyolo=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3) #nc =80
         if os.path.exists(ckpt_file):
             myyolo=load_checkpoint(myyolo, ckpt_file)
@@ -555,7 +560,7 @@ if __name__ == "__main__":
     myyolo=load_checkpoint(myyolo, ckpt_file)
     myyolo=myyolo.to(device).eval()
     stride = max(int(myyolo.stride.max()), 32)  # model stride
-    names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # get class names
+    names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # get class names, dict 0~79
     #model = model.fuse(verbose=verbose) if fuse else model
     myyolo = myyolo.half() if fp16 else myyolo.float()
 
@@ -576,9 +581,9 @@ if __name__ == "__main__":
     img_trans=im0[..., ::-1].transpose((2,0,1))  # BGR to RGB, HWC to CHW
     imgtensor = torch.from_numpy(img_trans.copy()) #[3, 1080, 810]
     #pred_bbox_tensor=torchvision.ops.box_convert(torch.from_numpy(onedetection["boxes"]), 'xywh', 'xyxy')
-    pred_bbox_tensor=torch.from_numpy(onedetection["boxes"])
+    pred_bbox_tensor=onedetection["boxes"] #torch.from_numpy(onedetection["boxes"])
     print(pred_bbox_tensor)
-    pred_labels = onedetection["labels"].astype(str).tolist()
+    pred_labels = onedetection["labels"].numpy().astype(str).tolist()
     #img: Tensor of shape (C x H x W) and dtype uint8.
     #box: Tensor of size (N, 4) containing bounding boxes in (xmin, ymin, xmax, ymax) format.
     #labels: Optional[List[str]]
