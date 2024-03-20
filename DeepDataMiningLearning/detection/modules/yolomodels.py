@@ -546,18 +546,18 @@ if __name__ == "__main__":
     modelcfg_file='./DeepDataMiningLearning/detection/modules/yolov8.yaml'
     imagepath='./sampledata/bus.jpg'
     #im=preprocess_img(imagepath, opencvread=True) #[1, 3, 640, 480]
-    myyolov8=YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3) #nc =80
-    print(myyolov8)
+    myyolo=YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3) #nc =80
+    print(myyolo)
 
     ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt'
-    device = 'cuda:0'
+    device = 'cuda:3'
     fp16 = False
-    myyolov8=load_checkpoint(myyolov8, ckpt_file)
-    myyolov8=myyolov8.to(device).eval()
-    stride = max(int(myyolov8.stride.max()), 32)  # model stride
-    names = myyolov8.module.names if hasattr(myyolov8, 'module') else myyolov8.names  # get class names
+    myyolo=load_checkpoint(myyolo, ckpt_file)
+    myyolo=myyolo.to(device).eval()
+    stride = max(int(myyolo.stride.max()), 32)  # model stride
+    names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # get class names
     #model = model.fuse(verbose=verbose) if fuse else model
-    myyolov8 = myyolov8.half() if fp16 else myyolov8.float()
+    myyolo = myyolo.half() if fp16 else myyolo.float()
 
     #inference
     im0 = cv2.imread(imagepath) #(1080, 810, 3)
@@ -565,7 +565,7 @@ if __name__ == "__main__":
     origimageshapes=[img.shape for img in imgs] #(height, width, c)
     yoyotrans = YoloTransform(min_size=640, max_size=640, device=device, fp16=fp16, cfgs=DEFAULT_CFG_DICT)
     imgtensors = yoyotrans(imgs) #[1, 3, 640, 480]
-    preds = myyolov8(imgtensors) #inference od [1, 84, 6300], 84=4(boxes)+80(classes)
+    preds = myyolo(imgtensors) #inference od [1, 84, 6300], 84=4(boxes)+80(classes)
     imgsize = imgtensors.shape[2:] #640, 480 HW
     detections = yoyotrans.postprocess(preds, imgsize, origimageshapes)
     print(detections)  #bounding boxes in (xmin, ymin, xmax, ymax) format
