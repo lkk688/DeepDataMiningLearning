@@ -1401,3 +1401,6 @@ class SimpleClass:
         name = self.__class__.__name__
         raise AttributeError(f"'{name}' object has no attribute '{attr}'. See valid attributes below.\n{self.__doc__}")
 
+#from: https://github.com/lkk688/myyolov7/blob/main/utils/torch_utils.py
+def is_parallel(model):
+    return type(model) in (nn.parallel.DataParallel, nn.parallel.DistributedDataParallel)

@@ -16,7 +16,7 @@ from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3
 from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, non_max_suppression, scale_boxes #colorstr, 
 from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
-from DeepDataMiningLearning.detection.modules.loss import myv8DetectionLoss
+from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss
 from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
 
 
