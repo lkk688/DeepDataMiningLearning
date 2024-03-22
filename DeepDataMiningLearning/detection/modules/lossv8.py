@@ -5,6 +5,8 @@ from DeepDataMiningLearning.detection.modules.tal import TaskAlignedAssigner, di
 from DeepDataMiningLearning.detection.modules.metrics import bbox_iou
 from DeepDataMiningLearning.detection.modules.utils import xywh2xyxy
 
+#ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/utils/loss.py
+
 class FocalLoss(nn.Module):
     """Wraps focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)."""
 

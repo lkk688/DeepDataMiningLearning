@@ -13,10 +13,11 @@ from typing import Dict, List, Optional, Tuple, Union
 from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
                     Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
                     Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC )
-from DeepDataMiningLearning.detection.modules.utils import LOGGER, make_divisible, non_max_suppression, scale_boxes #colorstr, 
+from DeepDataMiningLearning.detection.modules.utils import extract_filename, LOGGER, make_divisible, non_max_suppression, scale_boxes #colorstr, 
 from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
 #Detect, Classify, Pose, RTDETRDecoder, Segment
 from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss
+from DeepDataMiningLearning.detection.modules.lossv7 import myv7DetectionLoss
 from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
 
 
@@ -53,6 +54,7 @@ class YoloDetectionModel(nn.Module):
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)  # cfg dict, nc=80, 'scales', 'backbone', 'head'
         self.yaml['scale'] = scale
+        self.modelname=extract_filename(cfg)
 
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels, ch=3
@@ -261,7 +263,10 @@ class YoloDetectionModel(nn.Module):
     #     return y
 
     def init_criterion(self):
-        return myv8DetectionLoss(self) #v8DetectionLoss(self)
+        if "v8" in self.modelname:
+            return myv8DetectionLoss(self) #v8DetectionLoss(self)
+        elif "v7" in self.modelname:
+            return myv7DetectionLoss(self)
     
     def loss(self, batch, preds=None):
         """
@@ -396,30 +401,6 @@ def intersect_dicts(da, db, exclude=()):
     """Returns a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values."""
     return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
 
-def test_yolov7weights():
-    myyolov7=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov7.yaml', ch=3) #nc =80
-    print(myyolov7)
-    img = torch.rand(1, 3, 640, 640)
-    myyolov7.eval()
-    y,x = myyolov7(img)#tuple output, first item is tensor [1, 25200, 85], second item is list of three, [1, 3, 80, 80, 85], [1, 3, 40, 40, 85], [1, 3, 20, 20, 85]
-    print(y.shape) #[1, 25200, 85]
-    print(len(x)) #3
-    print(x[0].shape) #[1, 3, 80, 80, 85]
-
-    ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov7_state_dict.pt'
-    #ModuleNotFoundError: No module named 'models'
-    ckpt=torch.load(ckpt_file, map_location='cpu')
-    print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
-    newckpt = {}
-    for key in ckpt.keys():
-        newkey='model.'+key
-        newckpt[newkey] = ckpt[key]#change key name
-    currentmodel_statedict = myyolov7.state_dict()
-    csd = intersect_dicts(newckpt, currentmodel_statedict)  # intersect
-    myyolov7.load_state_dict(newckpt, strict=False)
-    print(f'Transferred {len(csd)}/{len(myyolov7.state_dict())} items from pretrained weights')
-    #524/566 items
-    myyolov7.eval()
 
 # def create_yolomodel(modelname,num_classes):
 #     cfgpath='./DeepDataMiningLearning/detection/modules/'
@@ -497,7 +478,7 @@ from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
 import torchvision
 
-def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = 'cuda:0', scale='n'):
+def create_yolomodel(modelname, num_classes = None, ckpt_file = None, fp16 = False, device = 'cuda:0', scale='n'):
     
     modelcfg_file=os.path.join('./DeepDataMiningLearning/detection/modules', modelname+'.yaml')
     cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
@@ -509,8 +490,8 @@ def create_yolomodel(modelname, num_classes, ckpt_file, fp16 = False, device = '
         classes=DEFAULT_CFG_DICT['names']
         nc=len(classes) #80
         classesList = list(classes.values()) #class name list
-        myyolo=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3) #nc =80
-        if os.path.exists(ckpt_file):
+        myyolo=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3, nc =num_classes)
+        if ckpt_file is not None and os.path.exists(ckpt_file):
             myyolo=load_checkpoint(myyolo, ckpt_file)
         myyolo=myyolo.to(device).eval()
         stride = max(int(myyolo.stride.max()), 32)  # model stride
@@ -541,7 +522,35 @@ def freeze_yolomodel(model, freeze=[]):
             v.requires_grad = True
     return model
 
+def test_yolov7weights():
+    myyolov7=YoloDetectionModel(cfg='./DeepDataMiningLearning/detection/modules/yolov7.yaml', ch=3) #nc =80
+    print(myyolov7)
+    img = torch.rand(1, 3, 640, 640)
+    myyolov7.eval()
+    preds = myyolov7(img)
+    #y,x = myyolov7(img)#tuple output, first item is tensor [1, 25200, 85], second item is list of three, [1, 3, 80, 80, 85], [1, 3, 40, 40, 85], [1, 3, 20, 20, 85]
+    #print(y.shape) #[1, 25200, 85]
+    #print(len(x)) #3
+    #print(x[0].shape) #[1, 3, 80, 80, 85]
+
+    ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov7_statedicts.pt'
+    #ModuleNotFoundError: No module named 'models'
+    ckpt=torch.load(ckpt_file, map_location='cpu')
+    print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
+    newckpt = {}
+    for key in ckpt.keys():
+        newkey='model.'+key
+        newckpt[newkey] = ckpt[key]#change key name
+    currentmodel_statedict = myyolov7.state_dict()
+    csd = intersect_dicts(newckpt, currentmodel_statedict)  # intersect
+    myyolov7.load_state_dict(newckpt, strict=False)
+    print(f'Transferred {len(csd)}/{len(myyolov7.state_dict())} items from pretrained weights')
+    #524/566 items
+    myyolov7.eval()
+
 if __name__ == "__main__":
+    test_yolov7weights()
+
     cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
     DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
     images=[]
@@ -552,15 +561,15 @@ if __name__ == "__main__":
     imagepath='./sampledata/bus.jpg'
     #im=preprocess_img(imagepath, opencvread=True) #[1, 3, 640, 480]
     myyolo=YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3) #nc =80
-    print(myyolo)
+    print(myyolo.modelname)
 
     ckpt_file = '/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt'
     device = 'cuda:3'
     fp16 = False
     myyolo=load_checkpoint(myyolo, ckpt_file)
     myyolo=myyolo.to(device).eval()
-    stride = max(int(myyolo.stride.max()), 32)  # model stride
-    names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # get class names, dict 0~79
+    stride = max(int(myyolo.stride.max()), 32)  # model stride [ 8., 16., 32.]
+    names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # no module, get class names, dict 0~79
     #model = model.fuse(verbose=verbose) if fuse else model
     myyolo = myyolo.half() if fp16 else myyolo.float()
 

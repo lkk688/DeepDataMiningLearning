@@ -349,6 +349,23 @@ def coco80_to_coco91_class():  # converts 80-index (val2014) to 91-index (paper)
          64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
     return x
 
+def extract_filename(file_path, without_extension=True):
+    """
+    Extracts the filename from a given file path and removes the file type extension.
+
+    Args:
+        file_path (str): The complete file path.
+
+    Returns:
+        str: The extracted filename without the extension.
+    """
+    base_filename = os.path.basename(file_path)
+    if without_extension:
+        filename_without_extension, _ = os.path.splitext(base_filename)
+        return filename_without_extension
+    else:
+        return base_filename
+
 
 def xyxy2xywh(x):
     # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right

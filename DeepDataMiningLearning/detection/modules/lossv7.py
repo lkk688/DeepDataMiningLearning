@@ -562,10 +562,10 @@ class ComputeLoss:
         return tcls, tbox, indices, anch
 
 
-class ComputeLossOTA:
+class myv7DetectionLoss: #ComputeLossOTA:
     # Compute losses
     def __init__(self, model, autobalance=False):
-        super(ComputeLossOTA, self).__init__()
+        super(myv7DetectionLoss, self).__init__()
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
 

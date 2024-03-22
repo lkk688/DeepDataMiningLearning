@@ -44,7 +44,7 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/data/cmpe249-fa23/coco/", type=str, help="dataset path")
+    parser.add_argument("--data-path", default="/data/cmpe249-fa23/waymotrain200cocoyolo/", type=str, help="dataset path") #/data/cmpe249-fa23/waymotrain200cocoyolo/, /data/cmpe249-fa23/coco/
     parser.add_argument("--annotationfile", default="", type=str, help="dataset annotion file path, e.g., coco json file")
     parser.add_argument(
         "--dataset",
@@ -52,9 +52,9 @@ def get_args_parser(add_help=True):
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
-    parser.add_argument("--model", default="yolov7", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
+    parser.add_argument("--model", default="yolov8", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
     parser.add_argument("--scale", default="x", type=str, help="model scale: n, x") 
-    parser.add_argument("--ckpt", default="/data/cmpe249-fa23/modelzoo/yolov7_statedicts.pt", type=str, help="model name") #"/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt"
+    parser.add_argument("--ckpt", default="/data/cmpe249-fa23/modelzoo/yolov8x_statedicts.pt", type=str, help="model name") #"/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt"
     parser.add_argument("--trainable", default=0, type=int, help="number of trainable layers (sequence) of backbone")
     parser.add_argument("--device", default="cuda:3", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -106,7 +106,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument("--print-freq", default=50, type=int, help="print frequency")
     parser.add_argument("--output-dir", default="/data/cmpe249-fa23/trainoutput", type=str, help="path to save outputs")
-    parser.add_argument("--resume", default="", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/yolo/yolov8x0318/model_25.pth
+    parser.add_argument("--resume", default="/data/cmpe249-fa23/trainoutput/yolo/yolov8x0319/model_30.pth", type=str, help="path of checkpoint") #/data/cmpe249-fa23/trainoutput/yolo/yolov8x0318/model_25.pth
     parser.add_argument("--start_epoch", default=0, type=int, help="start epoch")
     parser.add_argument("--aspect-ratio-group-factor", default=-1, type=int) #3
     parser.add_argument("--rpn-score-thresh", default=None, type=float, help="rpn score threshold for faster-rcnn")
@@ -124,7 +124,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--test-only",
-        default=False,
+        default=True,
         type=bool, 
         help="Only test the model",
     )
@@ -236,13 +236,13 @@ def main(args):
         model_without_ddp = model.module
 
     if args.norm_weight_decay is None:
-        parameters = [p for p in model.parameters() if p.requires_grad]
+        parameters = [p for p in model.parameters() if p.requires_grad]#add parameters to list
     else:
         param_groups = torchvision.ops._utils.split_normalization_params(model)
         wd_groups = [args.norm_weight_decay, args.weight_decay]
         parameters = [{"params": p, "weight_decay": w} for p, w in zip(param_groups, wd_groups) if p]
 
-    opt_name = args.opt.lower()
+    opt_name = args.opt.lower() #'sgd'
     if opt_name.startswith("sgd"):
         optimizer = torch.optim.SGD(
             parameters,
@@ -256,7 +256,7 @@ def main(args):
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD and AdamW are supported.")
 
-    scaler = torch.cuda.amp.GradScaler() if args.amp else None
+    scaler = torch.cuda.amp.GradScaler() if args.amp else None #amp False
 
     args.lr_scheduler = args.lr_scheduler.lower()
     if args.lr_scheduler == "multisteplr":

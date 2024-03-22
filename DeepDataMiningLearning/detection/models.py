@@ -174,7 +174,7 @@ def load_checkpoint(model, ckpt_file, fp16=False):
     model.half() if fp16 else model.float()
     return model
 
-def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file = None, fp16=False, device= 'cuda:0', scale='n'):
+def create_detectionmodel(modelname, num_classes=None, trainable_layers=0, ckpt_file = None, fp16=False, device= 'cuda:0', scale='n'):
     model = None
     preprocess = None
     classes = None
@@ -182,7 +182,7 @@ def create_detectionmodel(modelname, num_classes, trainable_layers=0, ckpt_file 
         freezemodel = True
     if modelname == 'fasterrcnn_resnet50_fpn_v2':
         model, preprocess, weights, classes = get_torchvision_detection_models(modelname)
-        if len(classes) != num_classes:
+        if num_classes is not None and len(classes) != num_classes:
             model = modify_fasterrcnnheader(model, num_classes, freeze=freezemodel)
         if ckpt_file:
             model = load_checkpoint(model, ckpt_file, fp16)

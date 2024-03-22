@@ -1,8 +1,6 @@
 from transformers import AutoModelForObjectDetection
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from PIL import Image, ImageDraw
-from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
-from DeepDataMiningLearning.hfvisionmain import load_visionmodel, load_dataset
 from tqdm.auto import tqdm
 import requests
 import numpy as np
@@ -26,6 +24,10 @@ from torchvision.transforms import (
 import albumentations#pip install albumentations
 from time import perf_counter
 
+from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
+from DeepDataMiningLearning.hfvisionmain import load_visionmodel, load_dataset
+from DeepDataMiningLearning.detection.models import create_detectionmodel
+
 #tasks: "depth-estimation", "image-classification", "object-detection"
 class MyVisionInference():
     def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
@@ -40,12 +42,14 @@ class MyVisionInference():
         self.image_processor = None
         self.transforms = None
         if isinstance(model_name, str) and model_type=="huggingface":
-            os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
+            #os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
             self.model, self.image_processor = load_visionmodel(model_name, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
         # elif isinstance(model_name, torch.nn.Module):
         #     self.model = model_name
         elif isinstance(model_name, str) and task=="image-classification":#torch model
             self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True) #'resnet18'
+        elif isinstance(model_name, str) and task=="object-detection":#torch model
+            self.model = create_detectionmodel(modelname=model_name, num_classes=None, ckpt_file="", device=self.device, scale='x')
         elif isinstance(model_name, str) and task=="depth-estimation":#torch model
             #https://pytorch.org/hub/intelisl_midas_v2/
             #model_names: "MiDaS_small", "DPT_Hybrid", "DPT_Large"
