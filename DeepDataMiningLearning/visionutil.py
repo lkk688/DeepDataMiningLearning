@@ -56,7 +56,8 @@ def load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt'):
 def read_image(image, use_pil=True, use_cv2=False, rgb=True, output_format='numpy', plotfig=False):
     if isinstance(image, Image.Image):
         if output_format == 'numpy':
-            image = np.array(image)
+            # Convert PIL image to NumPy array
+            image = np.array(image.convert("RGB"))
         elif output_format == 'pil':
             image = image
     if isinstance(image, str):

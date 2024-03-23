@@ -86,20 +86,24 @@ class MyVisionInference():
 
     def __call__(self, image):
         self.image, self.org_sizeHW = read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False)
+        print(f"Shape of the NumPy array: {self.image.shape}")
         #HWC numpy (427, 640, 3)
-        if self.image_processor is not None: #self.model_type=="huggingface":
+        if self.image_processor is not None and self.model_type=="huggingface":
             inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
             print(inputs.shape) #torch.Size([1, 3, 224, 224]) [1, 3, 350, 518]
+        elif self.image_processor is not None:
+            inputs = self.image_processor(self.image) #BCHW for tensor
         else:
             inputs = self.mypreprocess(self.image)
             print(inputs.shape) #torch.Size([1, 3, 384, 576])
-        inputs = inputs.to(self.device)
+        inputs = inputs.to(self.device) #BCHW
 
         start_time = perf_counter()
         with torch.no_grad():
-            outputs = self.model(inputs)
+            outputs = self.model(inputs) #output: [1, 84, 5880] 84=4(boxes)+80(classes)
         end_time = perf_counter()
         print(f'Elapsed inference time: {end_time-start_time:.3f}s')
+        self.inputs = inputs
         
         results = None
         if self.task=="image-classification":
@@ -112,21 +116,28 @@ class MyVisionInference():
     
     def objectdetection_postprocessing(self, outputs, threshold=0.3):
         target_sizes = torch.tensor([self.org_sizeHW]) #(640, 427)=> [[427, 640]]
-        results = self.image_processor.post_process_object_detection(outputs, threshold=threshold, target_sizes=target_sizes)[0] #'scores'[30], 'labels', 'boxes'[30,4]
-
+        if self.model_type == "huggingface":
+            results = self.image_processor.post_process_object_detection(outputs, threshold=threshold, target_sizes=target_sizes)[0] #'scores'[30], 'labels', 'boxes'[30,4]
+        else: #torch model
+            imgsize = self.inputs.shape[2:] #640, 480 HW
+            results_list = self.image_processor.postprocess(preds=outputs, newimagesize=imgsize, origimageshapes=target_sizes)
+            #result: List[Dict[str, Tensor]]: resdict["boxes"], resdict["scores"], resdict["labels"]
+            #bounding boxes in (xmin, ymin, xmax, ymax) format
+            results = results_list[0]
+        
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
             box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
             print(
-                f"Detected {self.id2label[label.item()]} with confidence "
+                f"Detected {self.id2label[str(int(label.item()))]} with confidence "
                 f"{round(score.item(), 3)} at location {box}"
             )
-        pilimage=Image.fromarray(self.image)
+        pilimage=Image.fromarray(self.image)#numpy HWC
         draw = ImageDraw.Draw(pilimage)
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
             box = [round(i, 2) for i in box.tolist()]
             x, y, x2, y2 = tuple(box)
             draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
-            draw.text((x, y), self.id2label[label.item()], fill="white")
+            draw.text((x, y), self.id2label[str(int(label.item()))], fill="white")
         pilimage.save("output/ImageDraw.png")
         return pilimage
 
@@ -615,8 +626,23 @@ def test_inference():
     clip_test(mycache_dir=mycache_dir)
     confidences = vision_inferencetest(model_name_or_path="google/bit-50", task="image-classification", mycache_dir=mycache_dir)
 
+
+def MyVisionInferencetest(task="object-detection", mycache_dir=None):
+
+    url = 'https://huggingface.co/nielsr/convnext-tiny-finetuned-eurostat/resolve/main/forest.png'
+    image = Image.open(requests.get(url, stream=True).raw)
+    imagepath='./sampledata/bus.jpg'
+    #inference
+    im0 = cv2.imread(imagepath) #(1080, 810, 3)
+    imgs = [im0]
+
+    myinference = MyVisionInference(model_name="yolov8", model_path="/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt", task=task, model_type="torch", cache_dir=mycache_dir, gpuid='2', scale='n')
+    confidences = myinference(imagepath)
+    print(confidences)
+
 if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
     #"microsoft/resnet-50"
-    test_inference()
+    MyVisionInferencetest(task="object-detection", mycache_dir=None)
+    #test_inference()

@@ -167,12 +167,12 @@ class YoloTransform(nn.Module):
         elif isinstance(images, torch.Tensor):
             images = self.pre_processing(images)
             return images
-        else: #single image input
-            val = images.shape[-2:] #CHW format
+        else: #single image input, numpy array
+            val = images.shape[-2:] #HWC to CHW format
             #self.original_image_sizes.append((val[0], val[1]))
             images=[self.letterbox(image=images)]
             images = self.pre_processing(images)
-            return images #tensor output
+            return images #tensor output BCHW
     
     def pre_processing(self, im):
         """Prepares input image before inference.
@@ -196,6 +196,12 @@ class YoloTransform(nn.Module):
     #ref: https://github.com/lkk688/myyolov8/blob/main/ultralytics/models/yolo/detect/predict.py
     def postprocess(self, preds, newimagesize, origimageshapes):
         """Post-processes predictions and returns a list of Results objects."""
+
+        if isinstance(newimagesize, torch.Tensor):
+            newimagesize = newimagesize.detach().cpu().numpy()
+        if isinstance(origimageshapes, torch.Tensor):
+            origimageshapes = origimageshapes.detach().cpu().numpy()
+        
         #y,x output, training mode, direct output x (three items), inference mode: y,x output
         #non_max_suppression only use the detection results (y)
         preds = yolov8_non_max_suppression(preds,

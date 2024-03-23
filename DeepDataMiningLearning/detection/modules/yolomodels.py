@@ -582,7 +582,9 @@ if __name__ == "__main__":
     preds = myyolo(imgtensors) #inference od [1, 84, 6300], 84=4(boxes)+80(classes)
     imgsize = imgtensors.shape[2:] #640, 480 HW
     detections = yoyotrans.postprocess(preds, imgsize, origimageshapes)
-    print(detections)  #bounding boxes in (xmin, ymin, xmax, ymax) format
+    print(detections)  
+    #list of resdict["boxes"], resdict["scores"], resdict["labels"]
+    #bounding boxes in (xmin, ymin, xmax, ymax) format
 
     onedetection=detections[0]
     #labels = [names[i] for i in detections["labels"]] #classes[i]
