@@ -30,7 +30,7 @@ from DeepDataMiningLearning.detection.models import create_detectionmodel
 
 #tasks: "depth-estimation", "image-classification", "object-detection"
 class MyVisionInference():
-    def __init__(self, model_name, model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0') -> None:
+    def __init__(self, model_name, model_path="", model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0', scale='x') -> None:
         self.cache_dir = cache_dir
         self.model_name = model_name
         self.model_type = model_type
@@ -41,32 +41,28 @@ class MyVisionInference():
         self.model = None
         self.image_processor = None
         self.transforms = None
+        self.id2label = None
         if isinstance(model_name, str) and model_type=="huggingface":
             #os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
-            self.model, self.image_processor = load_visionmodel(model_name, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
-        # elif isinstance(model_name, torch.nn.Module):
-        #     self.model = model_name
+            if model_path and os.path.exists(model_path):
+                model_name_or_path = model_path
+            else:
+                model_name_or_path = model_name
+            self.model, self.image_processor = load_visionmodel(model_name_or_path = model_name_or_path, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
+            self.id2label = self.model.config.id2label
         elif isinstance(model_name, str) and task=="image-classification":#torch model
             self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True) #'resnet18'
+            labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
+            self.id2label = {str(i): label for i, label in enumerate(labels)}
         elif isinstance(model_name, str) and task=="object-detection":#torch model
-            self.model = create_detectionmodel(modelname=model_name, num_classes=None, ckpt_file="", device=self.device, scale='x')
+            self.model, self.image_processor, labels = create_detectionmodel(modelname=model_name, num_classes=None, ckpt_file=model_path, device=self.device, scale=scale)
+            self.id2label = {str(i): label for i, label in enumerate(labels)}
         elif isinstance(model_name, str) and task=="depth-estimation":#torch model
             #https://pytorch.org/hub/intelisl_midas_v2/
             #model_names: "MiDaS_small", "DPT_Hybrid", "DPT_Large"
             self.model = torch.hub.load('intel-isl/MiDaS', model_name, pretrained=True)
             transforms = torch.hub.load("intel-isl/MiDaS", "transforms")
             self.transforms = transforms.dpt_transform #.small_transform resize(384,) Normalized
-
-        #get labels for classification
-        if task=="image-classification" and model_type=="huggingface":
-            self.id2label = self.model.config.id2label
-        if task=="object-detection" and model_type=="huggingface":
-            self.id2label = self.model.config.id2label
-        elif task=="image-classification":
-            labels=load_ImageNetlabels(filepath='sampledata/imagenet_labels.txt')
-            self.id2label = {str(i): label for i, label in enumerate(labels)}
-        elif task=="depth-estimation":
-            pass
 
         self.model=self.model.to(self.device)
         self.model.eval()
@@ -91,7 +87,7 @@ class MyVisionInference():
     def __call__(self, image):
         self.image, self.org_sizeHW = read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False)
         #HWC numpy (427, 640, 3)
-        if self.model_type=="huggingface":
+        if self.image_processor is not None: #self.model_type=="huggingface":
             inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
             print(inputs.shape) #torch.Size([1, 3, 224, 224]) [1, 3, 350, 518]
         else:
