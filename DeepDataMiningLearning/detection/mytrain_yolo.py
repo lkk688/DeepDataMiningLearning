@@ -289,7 +289,7 @@ def main(args):
     start_time = time.time()
     for epoch in range(args.start_epoch, args.epochs+1):
         if args.distributed:
-            train_sampler.set_epoch(epoch)
+            train_sampler.set_epoch(epoch) #set the epoch for the train sampler
         train_one_epoch(model, optimizer, data_loader, device, preprocess, epoch, args.print_freq, scaler)
         lr_scheduler.step()
         if epoch % args.saveeveryepoch == 0 or epoch == args.epochs:

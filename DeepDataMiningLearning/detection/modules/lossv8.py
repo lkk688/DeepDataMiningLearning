@@ -41,14 +41,42 @@ class BboxLoss(nn.Module):
 
     def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
         """IoU loss."""
+        #The weight variable is used to weight the loss for each bounding box.
+        #computed as the sum of the target scores for all of the foreground bounding boxes
+        #The unsqueeze(-1) operation is used to add a new dimension to the weight variable. This is necessary because the weight variable is a 1-dimensional tensor, 
+        #but the loss function expects a 2-dimensional tensor.
         weight = target_scores.sum(-1)[fg_mask].unsqueeze(-1) #[16, 8400, 80]->[689, 1], K position from foreground
+        #weight variable is a 2-dimensional tensor with the same shape as the target_scores variable
+        #The weight variable is then used to weight the loss for each bounding box. 
+        #This ensures that the loss is higher for bounding boxes that contain objects and lower for bounding boxes that do not contain objects.
+
+        #computes the IoU between each predicted bounding box and each target bounding box.
+        #calculate pred_bboxes: box1(1, 4) target_bboxes: to box2(n, 4)
         iou = bbox_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask], xywh=False, CIoU=True) #[689, 1]
+        #The output of the iou variable is a tensor of shape [num_foreground_bounding_boxes, 1]. This tensor is used to compute the bounding box loss.
+
+        #The weight variable is used to weight the loss for each bounding box. 
+        #The target_scores_sum variable is the sum of the target scores for all of the foreground bounding boxes
         loss_iou = ((1.0 - iou) * weight).sum() / target_scores_sum #0.1373
 
         # DFL loss
         if self.use_dfl:
+            #The target_ltrb variable is the target distribution of the bounding boxes.
+            #converts the target bounding boxes from the xyxy format to the ltrb format. 
+            #The ltrb format is a representation of the bounding box in terms of the left, top, right, and bottom coordinates.
+            #The target_ltrb variable is used to compute the distribution focal loss (DFL) loss.
             target_ltrb = bbox2dist(anchor_points, target_bboxes, self.reg_max) #[16, 8400, 4]
+            #The target_ltrb variable is a 3-dimensional tensor with the shape [batch_size, num_anchors, 4]. 
+            #the third dimension corresponds to the four coordinates of the bounding box (left, top, right, bottom).
+
+            #The DFL loss is a variant of the focal loss that is designed to address the problem of class imbalance in object detection. 
+            #The DFL loss assigns a higher weight to the loss for bounding boxes that are far from the anchor points. 
+            #This helps to ensure that the model learns to predict accurate bounding boxes for all objects, regardless of their size or location.
+            #The weight variable is used to weight the loss for each bounding box.
+            #The view(-1, self.reg_max + 1) operation reshapes the pred_dist variable to a 2-dimensional tensor with self.reg_max + 1 columns.
             loss_dfl = self._df_loss(pred_dist[fg_mask].view(-1, self.reg_max + 1), target_ltrb[fg_mask]) * weight #[689, 1]
+            #output 1-dimensional tensor with the DFL loss for all of the foreground bounding boxes.
+
             loss_dfl = loss_dfl.sum() / target_scores_sum
         else:
             loss_dfl = torch.tensor(0.0).to(pred_dist.device)
@@ -63,6 +91,17 @@ class BboxLoss(nn.Module):
         tr = tl + 1  # target right
         wl = tr - target  # weight left, displacement as the weight l (0.2)
         wr = 1 - wl  # weight right [689, 4], displacement as the weight r 0.8
+        
+        #computes the DFL loss for a single bounding box. 
+        #The tl variable is the target left coordinate of the bounding box, and the tr variable is the target right coordinate of the bounding box. 
+        #The wl variable is the weight for the left coordinate, and the wr variable is the weight for the right coordinate.
+        #The F.cross_entropy function computes the cross-entropy loss between the predicted distribution and the target distribution. 
+        #The view(-1) operation reshapes the predicted distribution and the target distribution to be one-dimensional tensors.
+        #reduction='none' return a tensor of the same size as the input tensor
+        #The view(tl.shape) operation reshapes the loss tensor to be the same size as the tl and tr tensors. 
+        #The * wl and * wr operations multiply the loss tensor by the weight tensors.
+        #The mean(-1, keepdim=True) operation computes the mean of the loss tensor along the last dimension, and keeps the dimension. 
+        #This gives the average loss for the bounding box.
         return (F.cross_entropy(pred_dist, tl.view(-1), reduction='none').view(tl.shape) * wl +
                 F.cross_entropy(pred_dist, tr.view(-1), reduction='none').view(tl.shape) * wr).mean(-1, keepdim=True)
 
@@ -287,6 +326,10 @@ class myv8DetectionLoss:
         # bbox loss
         if fg_mask.sum():
             target_bboxes /= stride_tensor #[16, 8400, 4]/stride_tensor[8400, 1] (8,8, .. 32)
+            #pred_distri: predicted distribution of bounding boxes
+            #the predicted bounding boxes (pred_bboxes), the anchor points (anchor_points), the target bounding boxes (target_bboxes), 
+            #the target scores (target_scores), the target scores sum (target_scores_sum), and the foreground mask (fg_mask).
+            #BboxLoss
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
