@@ -313,6 +313,8 @@ class myv8DetectionLoss:
         # pboxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4) ->[16, 8400, 4]
 
+        #assign ground truth bounding boxes to predicted bounding boxes. The goal of this assignment is to match each predicted bounding box to the ground truth bounding box that it is most similar to. 
+        #This information is then used to calculate the loss function.
         _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
             pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
             anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt) #target_bboxes[16, 8400, 4], target_scores[16, 8400, 80], fg_mask[16, 8400]
