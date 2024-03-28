@@ -112,9 +112,12 @@ class TaskAlignedAssigner(nn.Module):
                     torch.zeros_like(pd_scores).to(device), torch.zeros_like(pd_scores[..., 0]).to(device),
                     torch.zeros_like(pd_scores[..., 0]).to(device))
 
+        #takes in predicted scores and bounding boxes, ground truth labels and bounding boxes, anchor points, and a mask indicating which ground truth boxes are valid.
         mask_pos, align_metric, overlaps = self.get_pos_mask(pd_scores, pd_bboxes, gt_labels, gt_bboxes, anc_points,
                                                              mask_gt)
-
+        #returns a mask indicating which anchor points are positive (i.e., assigned to a ground truth box), the alignment metric for each anchor point and ground truth box pair, and the overlap between each anchor point and ground truth box.
+        #used to assign anchor points to ground truth boxes and to compute the alignment metric and overlap for each anchor point and ground truth box pair. 
+        
         target_gt_idx, fg_mask, mask_pos = select_highest_overlaps(mask_pos, overlaps, self.n_max_boxes)
 
         # Assigned target
