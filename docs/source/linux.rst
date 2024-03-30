@@ -230,6 +230,10 @@ Use the automatic script to install docker:
     curl -fsSL https://get.docker.com -o install-docker.sh
     sudo sh install-docker.sh
     sudo docker run hello-world #test docker
+    chmod +x docker_post.sh
+    sudo ./docker_post.sh
+    docker run hello-world #test docker without sudo
+    #exit the docker via Ctrl+D or exit
 
 Add New Sudo Users
 ------------------

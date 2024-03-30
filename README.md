@@ -8,6 +8,8 @@ Data mining, machine learning, and deep learning sample codes for SJSU CMPE255 D
 Install this python package (optional) via
 
 ```bash
+git clone https://github.com/lkk688/DeepDataMiningLearning.git
+cd DeepDataMiningLearning
 % pip install flit
 % flit install --symlink
 ```
