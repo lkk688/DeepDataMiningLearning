@@ -89,6 +89,9 @@ If you follow the documentation of the device plugin, there is also a Helm chart
 ```
 you can install the device plugin also by applying the manifest directly or by installing the chart using “helm install”.
 
+> A Helm Chart is a package that contains all the necessary resources to deploy an application on a Kubernetes cluster. A Helm Chart serves as a blueprint or template for deploying applications on Kubernetes. It includes all the Kubernetes resource YAML manifest files needed to run the application. In addition to Kubernetes manifests, a Helm Chart directory structure contains other files specific to Helm, such as:
+Chart.yaml: Defines metadata about the chart (e.g., name, version, dependencies). values.yaml: Contains default configuration values that can be overridden during installation. Templates (Go templates): Used to render Kubernetes manifests dynamically based on user-defined values.
+
 Step 5: Test everything on a CUDA-enabled Pod. Finally, we can test everything by creating a Pod that uses the CUDA Docker image and requests a GPU resource:
 ```bash
     cat <<EOF | kubectl create -f -
