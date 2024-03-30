@@ -254,6 +254,15 @@ Ref: https://www.digitalocean.com/community/tutorials/how-to-create-a-new-sudo-e
     #To test that the new sudo permissions are working, first use the su command to switch to the new user account:
     lkk@p100:~$ su - student
 
+Git
+----
+
+.. code-block:: console
+    git checkout -- <file> #To discard changes in a specific file using Git
+    #If you want to discard changes in all files in the working directory, you can run:
+    git restore .
+    git pull #get the updates
+
 Common errors
 -------------
 

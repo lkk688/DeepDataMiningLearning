@@ -5,8 +5,20 @@ sudo apt-get update
 # Start and enable Docker service
 #sudo systemctl start docker
 #sudo systemctl enable docker
-sudo groupadd docker
-sudo usermod -aG docker $USER
+#sudo groupadd docker
+# Check if the 'docker' group exists
+if grep -q '^docker:' /etc/group; then
+    echo "The 'docker' group already exists."
+else
+    # Create the 'docker' group
+    sudo groupadd docker
+    echo "The 'docker' group has been created."
+fi
+addusercommand="sudo usermod -aG docker $USER"
+#sudo usermod -aG docker $USER
+# Execute the commands
+eval "$addusercommand" || true  # Execute command1 and ignore errors
+
 #log out and log back again, or run the following command
 newgrp docker
 echo "Finished docker rootless"
