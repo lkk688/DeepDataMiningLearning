@@ -98,6 +98,10 @@ Python data apps based on streamlit:
       *  Gradient boosting process, Gradient boosting regressor with scikit-learn, Gradient boosting classifier with scikit-learn
    * XGBoost -- [colablink](https://colab.research.google.com/drive/1ZKtpwoRnK8r2fy8ucXoz1K9E98X76dFC?usp=sharing)
       * XGBoost introduction, US Census Income Dataset from Big Query, UCI Dermatology dataset
+   * Naive Bayes Classifier -- [colablink](https://colab.research.google.com/drive/1a0e6XkaeMZiqy-NyRa6uX_jAyGa26u2e?usp=sharing)
+      * Bayesian Classification, Naive Bayes in SKlearn, Gaussian Naive Bayes, Multinomial Naive Bayes Classifying Text (20 Newsgroups)
+      * Naive Bayes for MNIST from Torchvision
+      * NVIDIA RAPIDS installation, NVIDIA Cuml Naive Bayes vs Sklearn Naive Bayes based on News Aggregator dataset
 
 ## Deep Learning
 Deep learning notebooks (colab link is better)
