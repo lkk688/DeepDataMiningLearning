@@ -223,6 +223,7 @@ Docker
 
 Install `Docker <https://docs.docker.com/engine/install/ubuntu/>`, follow `Post-installation steps for Linux <https://docs.docker.com/engine/install/linux-postinstall/>`
 
+Install NVIDIA container toolkit `container toolkit <https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html#installing-with-apt>`
 Use the automatic script to install docker:
 
 .. code-block:: console
@@ -234,6 +235,14 @@ Use the automatic script to install docker:
     sudo ./docker_post.sh
     docker run hello-world #test docker without sudo
     #exit the docker via Ctrl+D or exit
+    ./install_postnvidiacontainer.sh #perform post installation of docker and install nvidia-container toolkit
+    #Wrote updated config to /etc/docker/daemon.json
+
+Run a sample CUDA container:
+
+.. code-block:: console
+    systemctl restart docker #optional
+    docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
 
 Add New Sudo Users
 ------------------
@@ -257,7 +266,19 @@ Ref: https://www.digitalocean.com/community/tutorials/how-to-create-a-new-sudo-e
 Git
 ----
 
+To commit changes for a single file using Git
+
 .. code-block:: console
+    
+    git config --global user.email "kaikai.liu@sjsu.edu"
+    git config --global user.name "Kaikai Liu"
+    git add path/to/your/file.ext
+    git commit -m "Your commit message here"
+    git push #enter user name and password (use token instead of the actual password) of Github
+
+
+.. code-block:: console
+
     git checkout -- <file> #To discard changes in a specific file using Git
     #If you want to discard changes in all files in the working directory, you can run:
     git restore .
