@@ -3,13 +3,40 @@ Linux Machine Setup
 
 https://docs.google.com/document/d/17vIhJuqDILWZhxh3WPh_voTGPPe-221xAEj_djWgSJE/edit
 
+Get System information
+---------------------
+
+.. code-block:: console
+
+    lkk@p100:~$ uname -m && cat /etc/*release
+    x86_64
+    DISTRIB_ID=Ubuntu
+    DISTRIB_RELEASE=22.04
+    DISTRIB_CODENAME=jammy
+    DISTRIB_DESCRIPTION="Ubuntu 22.04.4 LTS"
+    PRETTY_NAME="Ubuntu 22.04.4 LTS"
+    NAME="Ubuntu"
+    VERSION_ID="22.04"
+    VERSION="22.04.4 LTS (Jammy Jellyfish)"
+    VERSION_CODENAME=jammy
+    ID=ubuntu
+    ID_LIKE=debian
+    HOME_URL="https://www.ubuntu.com/"
+    SUPPORT_URL="https://help.ubuntu.com/"
+    BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+    PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+    UBUNTU_CODENAME=jammy
+
 Install NVIDIA driver
 ---------------------
 
 .. code-block:: console
 
     $ sudo ubuntu-drivers devices
-    $ sudo apt install nvidia-driver-530
+    $ sudo apt install nvidia-driver-545 #for desktop
+    #for server: sudo apt install nvidia-driver-550-server
+
+If your nvidia-smi show "Failed to initialize NVML: Driver/library version mismatch", you need to install a matched nvidia driver version.
 
 Install Basic Software
 -----------------------
@@ -24,6 +51,7 @@ Install Basic Software
     $ sudo apt-get install libgtkglext1
     $ sudo dpkg -i anydesk_6.2.1-1_amd64.deb 
     $ sudo apt install ffmpeg
+    $ sudo apt install curl
 
 Download Cisco Anyconnect VPN client from SJSU: https://vpn.sjsu.edu/CACHE/stc/1/index.html
 
@@ -46,6 +74,7 @@ If Anyconnect cannot open browser, ref: https://community.cisco.com/t5/vpn/cisco
     sudo apt install firefox
 
 NVIDIA CUDA
+------------
 .. code-block:: console
 
     (base) lkk@lkk-intel13:~$ conda activate mycondapy310
@@ -84,9 +113,26 @@ NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/cont
 
     docker pull nvidia/cuda:11.7.1-devel-ubuntu22.04
 
+System Upgrade
+-----------------------
+.. code-block:: console
+    sudo apt update
+    sudo apt upgrade
+    $ sudo apt dist-upgrade
+    $ do-release-upgrade
 
-Mount Disk
+    To make recovery in case of failure easier, an additional sshd will
+    be started on port '1022'. If anything goes wrong with the running
+    ssh you can still connect to the additional one.
+    If you run a firewall, you may need to temporarily open this port. As
+    this is potentially dangerous it's not done automatically. You can
+    open the port with e.g.:
+    'iptables -I INPUT -p tcp --dport 1022 -j ACCEPT'
+
+Disk
 ----------
+
+Check disk space:
 
 .. code-block:: console
 
@@ -124,7 +170,7 @@ Mount Disk
     ├─nvme0n1p1 259:1    0   512M  0 part /boot/efi
     └─nvme0n1p2 259:2    0   1.8T  0 part /var/snap/firefox/common/host-hunspell
 
-You can see disk "sda" from the "lsblk" is not mounted. 
+Mount a new disk. You can see disk "sda" from the "lsblk" is not mounted. 
 
 .. code-block:: console
 
@@ -151,11 +197,39 @@ Check directory size:
     du -sh /path/to/directory
 
 sshfs
-------
+======
 .. code-block:: console
 
     lkk@lkk-intel12:~/Documents/Dataset/Kitti$ sudo apt-get install sshfs
     lkk@lkk-intel12:~/Documents/Dataset/HPC249Data$ sshfs 010796032@coe-hpc2.sjsu.edu:/data/cmpe249-fa22 .
+
+
+Network
+-------
+
+You can use the following Linux commands to scan for IP addresses of other machines in your local network:
+
+.. code-block:: console
+
+    #option1:
+    sudo apt-get install arp-scan
+    sudo arp-scan --interface=eth0 --localnet
+    #option2:
+    sudo apt-get install nmap
+    sudo nmap -sn 192.168.1.0/24
+
+Docker
+------
+
+Install `Docker <https://docs.docker.com/engine/install/ubuntu/>`, follow `Post-installation steps for Linux <https://docs.docker.com/engine/install/linux-postinstall/>`
+
+Use the automatic script to install docker:
+
+.. code-block:: console
+
+    curl -fsSL https://get.docker.com -o install-docker.sh
+    sudo sh install-docker.sh
+    sudo docker run hello-world #test docker
 
 Add New Sudo Users
 ------------------
