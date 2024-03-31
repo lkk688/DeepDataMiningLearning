@@ -73,13 +73,156 @@ If you want to uninstall k3s, run the following script:
 /usr/local/bin/k3s-agent-uninstall.sh #Uninstall K3s from Agent Nodes
 /usr/local/bin/k3s-uninstall.sh
 rm -rf /var/lib/rancher/k3s
+```
 
+You can also install and uninstall K3S via our script
+```bash
+lkk@dellr530:~/MyRepo/DeepDataMiningLearning/docker$ ./k3s-install.sh
 ```
 
 A single-node server installation is a fully-functional Kubernetes cluster, including all the datastore, control-plane, kubelet, and container runtime components necessary to host workload pods. It is not necessary to add additional server or agents nodes, but you may want to do so to add additional capacity or redundancy to your cluster.
 ```bash
-cmpe@dellr530:~$ kubectl get nodes #check all agent nodes
+#check server address
+kubectl config view --minify -o jsonpath='{.clusters[0].cluster.server}'
+$ kubectl get nodes
+NAME       STATUS   ROLES                  AGE   VERSION
+dellr530   Ready    control-plane,master   24s   v1.28.8+k3s1
 ```
+
+Remove MicroK8S
+```bash
+sudo microk8s reset
+sudo snap remove microk8s
+sudo microk8s disable
+sudo microk8s status
+```
+
+You can verify by listing all the Kubernetes objects in the kube-system namespace.
+```bash
+$ kubectl get all -n kube-system
+$ kubectl get pods --all-namespaces #check which containers (pods) get created
+NAMESPACE     NAME                                      READY   STATUS      RESTARTS   AGE
+kube-system   coredns-6799fbcd5-tgbv9                   1/1     Running     0          2m14s
+kube-system   local-path-provisioner-6c86858495-gth54   1/1     Running     0          2m14s
+kube-system   helm-install-traefik-crd-b7wgn            0/1     Completed   0          2m14s
+kube-system   helm-install-traefik-vgs59                0/1     Completed   1          2m14s
+kube-system   svclb-traefik-b18a0d17-f67d9              2/2     Running     0          108s
+kube-system   metrics-server-54fd9b65b-cwvsm            1/1     Running     0          2m14s
+kube-system   traefik-f4564c4f4-tsw86                   1/1     Running     0          108s
+$ kubectl get pods
+No resources found in default namespace.
+```
+We can see a basic K3s setup composed by:
+    * Traefik as an ingress controller for HTTP reverse proxy and load balancing
+    * CoreDns to manage DNS resolution inside the cluster and nodes
+    * Local Path Provisioner provides a way to utilize the local storage in each node
+    * Helm, which we can use to customize packaged components
+
+Instead of running components in different processes, K3s will run all in a single server or agent process. As it is packaged in a single file, we can also work offline, using an Air-gap installation. Interestingly, we can also run K3s in Docker using K3d.
+
+Test Nginx image with 2 replicas available on port 80:
+```bash
+$ kubectl create deployment nginx --image=nginx --port=80 --replicas=2
+deployment.apps/nginx created
+lkk@dellr530:~/MyRepo/DeepDataMiningLearning/docker$ kubectl get pods
+NAME                     READY   STATUS    RESTARTS   AGE
+nginx-7c5ddbdf54-5nczm   1/1     Running   0          22s
+nginx-7c5ddbdf54-cc5wv   1/1     Running   0          22s
+```
+Pods are not permanent resources and get created and destroyed constantly. Therefore, we need a Service to map the pods’ IPs to the outer world dynamically. Services can be of different types. We'll choose a ClusterIp. In Kubernetes, a ClusterIP is a virtual IP address assigned to a Service. In Kubernetes, a Service is an abstract way to expose an application running on a set of Pods. Services allow clients (both inside and outside the cluster) to connect to the application. They provide load balancing across the different backing Pods.
+
+A ClusterIP is a type of Service that has a cluster-scoped virtual IP address. Clients within the Kubernetes cluster can connect to this virtual IP address. Kubernetes then load-balances traffic to the Service across the different Pods associated with it.
+
+```bash
+kubectl create service clusterip nginx --tcp=80:80
+kubectl describe service nginx
+```
+creates a ClusterIP Service named "nginx" that exposes port 80 within the Kubernetes cluster. kubectl create service is the command to create a Kubernetes service. clusterip specifies the type of service. In this case, it’s a ClusterIP Service. nginx is the name of the service being created. The port format is "--tcp=<external-port>:<internal-port>", 80:80 means that external traffic hitting port 80 will be directed to the Pods associated with this service on port 80.
+
+We can see the Endpoints corresponding to the pods (or containers) addresses where we can reach our applications. Services don’t have direct access. An Ingress Controller is usually in front of them for caching, load balancing, and security reasons, such as filtering out malicious requests. Finally, let’s define a Traefik controller in a YAML file. This will route the traffic from the incoming request to the service:
+
+```bash
+lkk@dellr530:~$ nano traefik_nginx.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nginx
+  annotations:
+    ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: nginx
+            port:
+              number: 80
+lkk@dellr530:~$ kubectl apply -f traefik_nginx.yaml
+ingress.networking.k8s.io/nginx created
+lkk@dellr530:~$ kubectl describe ingress nginx #describe our ingress controller:
+Name:             nginx
+Labels:           <none>
+Namespace:        default
+Address:          130.65.157.217
+Ingress Class:    traefik
+Default backend:  <default>
+Rules:
+  Host        Path  Backends
+  ----        ----  --------
+  *
+              /   nginx:80 (10.42.0.10:80,10.42.0.9:80)
+Annotations:  ingress.kubernetes.io/ssl-redirect: false
+Events:       <none>
+lkk@dellr530:~$ kubectl get pods,services,endpointslices
+NAME                         READY   STATUS    RESTARTS   AGE
+pod/nginx-7c5ddbdf54-5nczm   1/1     Running   0          88m
+pod/nginx-7c5ddbdf54-cc5wv   1/1     Running   0          88m
+
+NAME                 TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)   AGE
+service/kubernetes   ClusterIP   10.43.0.1     <none>        443/TCP   101m
+service/nginx        ClusterIP   10.43.40.47   <none>        80/TCP    7m8s
+
+NAME                                         ADDRESSTYPE   PORTS   ENDPOINTS              AGE
+endpointslice.discovery.k8s.io/kubernetes    IPv4          6443    130.65.157.217         101m
+endpointslice.discovery.k8s.io/nginx-k5cpb   IPv4          80      10.42.0.9,10.42.0.10   7m8s
+```
+Open the link of "130.65.157.217" can open the nginx server frontpage.
+
+Access the NGINX Pod: find the name of the NGINX Pod you want to access. You can list all Pods in the current namespace using:
+```bash
+lkk@dellr530:~$ kubectl get pods
+NAME                     READY   STATUS    RESTARTS   AGE
+nginx-7c5ddbdf54-5nczm   1/1     Running   0          92m
+nginx-7c5ddbdf54-cc5wv   1/1     Running   0          92m
+lkk@dellr530:~$ kubectl exec -it nginx-7c5ddbdf54-5nczm -- /bin/bash
+root@nginx-7c5ddbdf54-5nczm:/# cat /etc/nginx/nginx.conf
+#If you made changes to the configuration, restart NGINX inside the Pod: service nginx restart
+#exit the Pod by typing exit
+```
+
+Delete resources. If your Pods are managed by a Deployment (which is common in production environments), consider scaling down the Deployment to zero replicas:
+```bash
+kubectl scale deployment nginx --replicas=0
+lkk@dellr530:~$ kubectl delete pods --all
+pod "nginx-7c5ddbdf54-5nczm" deleted
+pod "nginx-7c5ddbdf54-cc5wv" deleted
+lkk@dellr530:~$ kubectl delete services --all
+service "kubernetes" deleted
+service "nginx" deleted
+lkk@dellr530:~$ kubectl delete -f traefik_nginx.yaml
+ingress.networking.k8s.io "nginx" deleted
+lkk@dellr530:~$ kubectl delete endpointslice --all
+endpointslice.discovery.k8s.io "kubernetes" deleted
+lkk@dellr530:~$ kubectl get pods,services,endpointslices
+```
+
+https://www.digitalocean.com/community/tutorials/how-to-setup-k3s-kubernetes-cluster-on-ubuntu
+
+Execute the following command to see all Kubernetes objects deployed in the cluster in the kube-system namespace. kubectl is installed automatically during the K3s installation and thus does not need to be installed individually.
+
 
 
 Installing the NVIDIA drivers on the K3s node. 
