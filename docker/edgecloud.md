@@ -219,7 +219,34 @@ endpointslice.discovery.k8s.io "kubernetes" deleted
 lkk@dellr530:~$ kubectl get pods,services,endpointslices
 ```
 
+Set up a Jupyter Lab pod in K3s cluster 
+```bash
+lkk@dellr530:~$ kubectl create deployment jupyter-lab --image=jupyter/base-notebook
+deployment.apps/jupyter-lab created
+lkk@dellr530:~$ kubectl get pods
+NAME                          READY   STATUS              RESTARTS   AGE
+jupyter-lab-d7bdfb78b-q4pj4   0/1     ContainerCreating   0          11s
+lkk@dellr530:~$ kubectl expose deployment jupyter-lab --type=ClusterIP --port=8888 #Expose the Deployment as a Service:
+service/jupyter-lab exposed
+#To access Jupyter Lab from your local browser, you’ll need to forward the port
+lkk@dellr530:~$ kubectl port-forward service/jupyter-lab 8888:8888
+Forwarding from 127.0.0.1:8888 -> 8888
+Forwarding from [::1]:8888 -> 8888
+lkk@dellr530:~$ kubectl describe service jupyter-lab
+lkk@dellr530:~$ kubectl exec -it pod/jupyter-lab-d7bdfb78b-q4pj4 -- /bin/bash
+```
+In 'image' part, The hostname of the container image registry (e.g., Docker Hub, Google Container Registry, etc.). If omitted, Kubernetes assumes the Docker public registry. Open your web browser and visit "http://130.65.157.217:8888". You should see the Jupyter Lab interface.
+
+
+Install Helm
+```bash
+curl https://raw.githubusercontent.com/helm/helm/HEAD/scripts/get-helm-3 | bash
+lkk@dellr530:~$ helm version
+WARNING: Kubernetes configuration file is group-readable. This is insecure. Location: /home/lkk/.kube/config
+WARNING: Kubernetes configuration file is world-readable. This is insecure. Location: /home/lkk/.kube/config
+version.BuildInfo{Version:"v3.14.3", GitCommit:"f03cc04caaa8f6d7c3e67cf918929150cf6f3f12", GitTreeState:"clean", GoVersion:"go1.21.7"}
 https://www.digitalocean.com/community/tutorials/how-to-setup-k3s-kubernetes-cluster-on-ubuntu
+```
 
 Execute the following command to see all Kubernetes objects deployed in the cluster in the kube-system namespace. kubectl is installed automatically during the K3s installation and thus does not need to be installed individually.
 
