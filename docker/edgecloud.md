@@ -59,8 +59,30 @@ MyRepo/myROS2$ ./scripts/runcontainer.sh myros2ubuntu22cuda117
 ```
 
 ## K3S for GPUs
+[K3s](https://docs.k3s.io/installation). Install K3s using the Installation Script via [K3squickstart](https://docs.k3s.io/quick-start). The installation script is the easiest way to set up K3s as a service on systemd and openrc based systems. Run the following command on the master node to install K3s and start the service automatically:
+```bash
+curl -sfL https://get.k3s.io | sh -
+#After successful installation, verify the K3s service status using:
+sudo systemctl restart k3s
+sudo systemctl status k3s
+```
+Additional utilities will be installed, including kubectl, crictl, ctr, k3s-killall.sh, and k3s-uninstall.sh. A kubeconfig file will be written to /etc/rancher/k3s/k3s.yaml and the kubectl installed by K3s will automatically use it.
 
-the required steps are first, installing the NVIDIA drivers on the K3s node. 
+If you want to uninstall k3s, run the following script:
+```bash
+/usr/local/bin/k3s-agent-uninstall.sh #Uninstall K3s from Agent Nodes
+/usr/local/bin/k3s-uninstall.sh
+rm -rf /var/lib/rancher/k3s
+
+```
+
+A single-node server installation is a fully-functional Kubernetes cluster, including all the datastore, control-plane, kubelet, and container runtime components necessary to host workload pods. It is not necessary to add additional server or agents nodes, but you may want to do so to add additional capacity or redundancy to your cluster.
+```bash
+cmpe@dellr530:~$ kubectl get nodes #check all agent nodes
+```
+
+
+Installing the NVIDIA drivers on the K3s node. 
 
 The second step is to install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/overview.html), which helps to expose the GPU resources from the K3S node to the containers running on it. The third step is to tell K3S to use this toolkit to enable GPUs on the containers. One point to pay attention to is to install only the containerd version of the toolkit. K3S does not use Docker at all, since Kubernetes already deprecated Docker, and it uses only the containerd to manage containers. Installing also the Docker support won’t impact how your cluster works since it will also implicitly install the containerd support, but since we avoid installing unnecessary packages on our lean Kubernetes nodes, we directly go with the containerd installation. ()
 

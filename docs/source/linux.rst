@@ -216,7 +216,7 @@ You can use the following Linux commands to scan for IP addresses of other machi
     sudo arp-scan --interface=eth0 --localnet
     #option2:
     sudo apt-get install nmap
-    sudo nmap -sn 192.168.1.0/24
+    sudo nmap -sn 130.65.157.0/24
 
 Docker
 ------
@@ -241,8 +241,19 @@ Use the automatic script to install docker:
 Run a sample CUDA container:
 
 .. code-block:: console
+
     systemctl restart docker #optional
     docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
+
+Clean up any resources (images, containers, volumes, and networks) that are dangling
+
+.. code-block:: console
+
+    docker system prune
+    #To additionally remove any stopped containers and all unused images (not just dangling images), add the -a flag:
+    docker system prune -a
+    #Using docker rmi (if you want to remove specific images): docker rmi ImageID_or_Tag
+
 
 Add New Sudo Users
 ------------------
