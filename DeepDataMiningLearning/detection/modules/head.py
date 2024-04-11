@@ -272,9 +272,12 @@ class Detect(nn.Module):
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes and class probabilities."""
+        #the x variable is a list of tensors, each of which represents the output of a previous layer in the network. 
+        #The nl variable is the number of layers in the network.
         shape = x[0].shape  # BCHW [1, 64, 32, 32] [1, 128, 16, 16] [1, 256, 8, 8]
         for i in range(self.nl):
             x[i] = torch.cat((self.cv2[i](x[i]), self.cv3[i](x[i])), 1)
+            #cv2: 64, cv3: 80 = 144
         if self.training:
             return x
         elif self.dynamic or self.shape != shape:
@@ -283,11 +286,17 @@ class Detect(nn.Module):
 
         x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
         if self.export and self.format in ('saved_model', 'pb', 'tflite', 'edgetpu', 'tfjs'):  # avoid TF FlexSplitV ops
-            box = x_cat[:, :self.reg_max * 4]
+            box = x_cat[:, :self.reg_max * 4] #16*4=64
             cls = x_cat[:, self.reg_max * 4:]
         else:
-            box, cls = x_cat.split((self.reg_max * 4, self.nc), 1)
+            box, cls = x_cat.split((self.reg_max * 4, self.nc), 1) #16*4=64, 80
+            #box: [1, 64, 6300], cls: [1, 80, 6300], 6300=80*60+40*30+20*15
+
+ 
+        #Dist2bbox Transform distance(ltrb) to box(xywh or xyxy)
+            #self.dfl = DFL is integration
         dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
+        #[1, 4, 6300] 4=64/reg_max(16)
 
         if self.export and self.format in ('tflite', 'edgetpu'):
             # Normalize xywh with image size to mitigate quantization error of TFLite integer models as done in YOLOv5:
@@ -299,6 +308,7 @@ class Detect(nn.Module):
             dbox /= img_size
 
         y = torch.cat((dbox, cls.sigmoid()), 1)
+        #output: y: [1, 84, 6300] and x
         return y if self.export else (y, x)
 
     def bias_init(self):

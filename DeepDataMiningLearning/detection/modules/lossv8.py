@@ -305,13 +305,18 @@ class myv8DetectionLoss:
 
         # The targets variable is a tensor that contains the target labels and bounding boxes for the current batch of images.
         targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1) #[87, 6] [imageid, cls, boxes]
+        #The function takes as input the target labels and bounding boxes, the batch size, and the scale tensor. The scale tensor is used to normalize the target bounding boxes to the same size as the input images.
         targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
-        #targets[j-th image, 0:n objects, 5(cls+box)]
+        #The function then reshapes the tensor so that it has the shape [batch_size, max_num_objects, 5], where max_num_objects is the maximum number of objects in any image in the batch. The function then fills in the missing values in the tensor with zeros.
+        #returns the preprocessed target labels and bounding boxes: targets[j-th image, 0:n objects, 5(cls+box)]
+
         gt_labels, gt_bboxes = targets.split((1, 4), 2)  # [16, 17, 1] cls, xyxy [16, 17, 4]
         mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0) #[16, 17, 1], among 17 data, mask=1 means contain object, otherwise mask=0
 
         # pboxes
+        #decode the predicted bounding box distribution into bounding boxes
         pred_bboxes = self.bbox_decode(anchor_points, pred_distri)  # xyxy, (b, h*w, 4) ->[16, 8400, 4]
+        #The output of the bbox_decode function is a tensor of predicted bounding boxes. The shape of the tensor is [batch_size, num_anchors, 4]
 
         #assign ground truth bounding boxes to predicted bounding boxes. The goal of this assignment is to match each predicted bounding box to the ground truth bounding box that it is most similar to. 
         #This information is then used to calculate the loss function.
@@ -331,7 +336,7 @@ class myv8DetectionLoss:
             #pred_distri: predicted distribution of bounding boxes
             #the predicted bounding boxes (pred_bboxes), the anchor points (anchor_points), the target bounding boxes (target_bboxes), 
             #the target scores (target_scores), the target scores sum (target_scores_sum), and the foreground mask (fg_mask).
-            #BboxLoss
+            #BboxLoss: Bbox loss (DFL Loss + CIOU Loss)
             loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
                                               target_scores_sum, fg_mask)
 
