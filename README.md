@@ -104,6 +104,9 @@ Python data apps based on streamlit:
       * Bayesian Classification, Naive Bayes in SKlearn, Gaussian Naive Bayes, Multinomial Naive Bayes Classifying Text (20 Newsgroups)
       * Naive Bayes for MNIST from Torchvision
       * NVIDIA RAPIDS installation, NVIDIA Cuml Naive Bayes vs Sklearn Naive Bayes based on News Aggregator dataset
+   * Support Vector Machine -- [colablink](https://colab.research.google.com/drive/1ZHBUREOF_midVVLe46Baot4HHdil89SU?usp=sharing)
+      * Support Vector Machines introduction, SVM for Breast Cancer Dataset, SVM for Face Recognition
+      * SVM for MNIST in Pytorch, Neural Network MNIST Pytorch
 
 ## Deep Learning
 Deep learning notebooks (colab link is better)
