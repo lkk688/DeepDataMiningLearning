@@ -3,7 +3,7 @@ import gradio as gr
 # import requests
 # from PIL import Image
 # from torchvision import transforms
-from DeepDataMiningLearning.hfvisionmain import MyVisionInference
+from DeepDataMiningLearning.hfvision_inference import MyVisionInference
 mycache_dir = r"D:\Cache\huggingface"
 # gradio gradio_image.py
 
