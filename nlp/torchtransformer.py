@@ -91,8 +91,15 @@ def data_process(raw_text_iter: dataset.IterableDataset) -> Tensor:
     for item in dataitem:
         if item: #only add non-empty data
             newdataitem.append(item)
+    #Tokenization and Encoding: 1)Tokenizes the raw text item (e.g., splits it into words or subwords).
+    #2) Encodes the tokenized item using a vocabulary (likely a dictionary mapping tokens to integer indices).
+    #Converts the encoded item into a PyTorch tensor of type long (integer).
     data = [torch.tensor(vocab(tokenizer(item)), dtype=torch.long) for item in newdataitem]
     #data = [torch.tensor(vocab(tokenizer(item)), dtype=torch.long) for item in raw_text_iter]
+    
+    #Filters out any empty tensors (those with zero elements) from the list of data.
+    #Concatenates the remaining tensors into a single flat tensor.
+    #The resulting tensor contains all the encoded data items in a flattened format.
     return torch.cat(tuple(filter(lambda t: t.numel() > 0, data))) #.numel() Returns the total number of elements in the input tensor
 
 #arranges the data into batch_size columns
