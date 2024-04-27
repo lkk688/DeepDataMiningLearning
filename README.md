@@ -155,7 +155,10 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
 ## Unsupervised Learning
 * Unsupervised Learning Jupyter notebooks
   * PCA: [colablink](https://colab.research.google.com/drive/1zho_nKQq8yQ-4IFXxw9GZEcdhVdtOabX?usp=share_link)
-    * Numpy/SKlearn SVD, PCA for digits and noise filtering, eigenfaces, PCA vs LDA vs NCA
+    * Affine Transformation via Matrix Application, eigenvalues and eigenvectors, eigendecomposition
+    * Numpy/SKlearn SVD, SVD for linear regression
+    * Principal Component Analysis in SKLearn, PCA as dimensionality reduction, PCA for SkLearn Iris dataset
+    * PCA for Image Compression, PCA for digits and noise filtering, Grey Image Example, Color Image Example, eigenfaces, PCA vs LDA vs NCA
   * Manifold Learning: [colablink](https://colab.research.google.com/drive/1XkCpm7tsnngB7l7AUcrnIo3rKjyfOZev?usp=share_link)
     * Multidimensional Scaling (MDS), Locally Linear Embedding (LLE), Isomap Embedding, T-distributed Stochastic Neighbor Embedding for HELLO, S-Curve, and Swiss roll dataset; Isomap on Faces; Regression with Mainfold Learning
   * Clustering: [colablink](https://colab.research.google.com/drive/1wOMrFR7AXnSc99mUkpJhMLfshpe5aeGd?usp=share_link) 
