@@ -15,6 +15,83 @@ from tqdm.auto import tqdm
 import collections
 import numpy as np
 import evaluate
+from transformers import AutoTokenizer
+import transformers
+import torch
+from transformers import AutoModelForCausalLM
+
+from transformers import AutoTokenizer, AutoConfig, AutoModel
+def loadmodels(model_ckpt, mycache_dir, newname):
+    #model_ckpt = "distilbert-base-uncased"
+    tokenizer = AutoTokenizer.from_pretrained(model_ckpt)#,cache_dir=mycache_dir)
+    config = AutoConfig.from_pretrained(model_ckpt)
+    model = AutoModel.from_pretrained(model_ckpt)
+    newpath=os.path.join(mycache_dir, newname)
+    tokenizer.save_pretrained(newpath)
+    config.save_pretrained(newpath)
+    model.save_pretrained(newpath)
+    print(model)
+#loadmodels("meta-llama/Llama-2-13b-chat-hf", "Llama-2-13b-chat-hf")
+
+def LLMmodel(modelname="meta-llama/Llama-2-7b-chat-hf"):
+
+    model = AutoModelForCausalLM.from_pretrained(modelname, device_map="auto")
+    model_inputs = tokenizer(["A sequence of numbers: 1, 2"], return_tensors="pt").to("cuda")
+    # By default, the output will contain up to 20 tokens
+    # Setting `max_new_tokens` allows you to control the maximum length
+    generated_ids = model.generate(**model_inputs, max_new_tokens=50)
+    tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    model_inputs = tokenizer("Where is San Jose, CA?", return_tensors="pt").to("cuda")
+    del model_inputs["token_type_ids"]
+    generated_ids = model.generate(**model_inputs, max_new_tokens=150)
+    result = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+    return result
+
+def LLMmodel_quant(modelname="meta-llama/Llama-2-7b-chat-hf"):
+    from transformers import BitsAndBytesConfig #pip install bitsandbytes
+    nf4_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16
+    )#requires CUDA
+
+    #model_nf4 = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf", quantization_config=nf4_config)
+    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf", load_in_4bit=True, device_map="auto")
+    model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-2-7b-chat-hf",
+            device_map='auto',
+            load_in_8bit=True,
+            max_memory=f'{int(torch.cuda.mem_get_info()[0]/1024**3)-2}GB')
+    
+    model_inputs = tokenizer(["I am a cat."], return_tensors="pt").to("cuda")
+
+    # LLM + greedy decoding = repetitive, boring output
+    generated_ids = model.generate(**model_inputs)
+    tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+    # With sampling, the output becomes more creative!
+    generated_ids = model.generate(**model_inputs, do_sample=True)
+    tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+def LLMinference(modelname):
+    modelname = "meta-llama/Llama-2-7b-chat-hf"
+    tokenizer = AutoTokenizer.from_pretrained(modelname)
+    pipeline = transformers.pipeline(
+        "text-generation",
+        model=modelname,
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    sequences = pipeline(
+        'Where is San Jose, CA? \n',
+        do_sample=True,
+        top_k=10,
+        num_return_sequences=1,
+        eos_token_id=tokenizer.eos_token_id,
+        max_length=200,
+    )
+    for seq in sequences:
+        print(f"Result: {seq['generated_text']}")
 
 def QAinference(model, tokenizer, question, context, device, usepipeline=True):
     if usepipeline ==True:
