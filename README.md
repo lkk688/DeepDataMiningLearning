@@ -182,7 +182,42 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
    * Recommendation via Python Surprise and Neural Collaborative Filtering (Tensorflow): [colablink](https://colab.research.google.com/drive/1PNi5Vl4YRCsNdLS-pcODSdgbhBlPUoBI?usp=sharing)
    * Tensorflow Recommender: [colab](https://colab.research.google.com/drive/14tfyPInCyZzcr4sk6zRejHR1847WwVR9?usp=sharing)
 
-## Large Language Models (LLMs) and Apps
+## NLP Models and Transformer
+NLP models based on Huggingface Transformer libraries
+* Starting
+   * [HuggingfaceTransformers](notebooks/Transformers.ipynb)
+   * [huggingfacetest](nlp/huggingfacetest.py)
+   * [hfdataset.py](nlp/hfdataset.py)
+   * [huggingfaceHPC.ipynb](nlp/huggingfaceHPC.ipynb)
+   * [huggingfaceHPCdata](nlp/huggingfaceHPCdata.py)
+* Classification application
+   * [BERTMTLfakehate](nlp/BERTMTLfakehate.py)
+   * [MLTclassifier](nlp/MLTclassifier.py)
+   * [huggingfaceClassifierNER.ipynb](nlp/huggingfaceClassifierNER.ipynb)
+* Multi-modal Classifier: [huggingfaceclassifier2](nlp/huggingfaceclassifier2.py), [huggingfaceclassifier](nlp/huggingfaceclassifier.py)
+* Sequence related application, e.g., translation, summary
+   * [huggingfaceSequence](nlp/huggingfaceSequence.ipynb)
+* Question and Answer (Q&A)
+   * [huggingfaceQA.py](nlp/huggingfaceQA.py)
+* Chatbot
+   * [huggingfacechatbot.ipynb](nlp/huggingfacechatbot.ipynb)
+
+Pytorch Transformer
+* [torchtransformer](nlp/torchtransformer.py)
+
+Open Source LLMs
+* [BERTLM.ipynb](nlp/BERTLM.ipynb)
+* Masked Language Modeling: [huggingfaceLM.ipynb](nlp/huggingfaceLM.ipynb)
+* [llama2](nlp/llama2.ipynb)
+
+LLMs Apps based on OpenAI API
+* [openaiqa.ipynb](dataapps/openaiqa.ipynb), [webcrawl.ipynb](dataapps/webcrawl.ipynb)
+
+LLMs Apps based on LangChain
+* [langchaintest.ipynb](nlp/langchaintest.ipynb)
+
+
+## Large Language Models (LLMs)
 Train a basic language modeling task via basic Pytorch and Torchtext WikiText2 dataset in HPC. 
 ```bash
 python nlp/torchtransformer.py
@@ -243,6 +278,7 @@ Epoch 2: Perplexity: 9.692566051540275
 
 ```
 
+## LLMs for Translation
 Train translation models based on huggingfaceSequence
 ```bash
 python nlp/huggingfaceSequence.py --data_name="kde4" --model_checkpoint="Helsinki-NLP/opus-mt-en-fr" --task="Seq2SeqLM" --traintag="1116" --usehpc=True --gpuid=0 --batch_size=8
@@ -334,6 +370,7 @@ HF evaluator: 25.89
 epoch 15, BLEU score: 25.90
 ```
 
+## LLMs for Summarization
 Train summarization model based on "cnn_dailymail" dataset
 ```bash
 (mycondapy310) [010796032@cs001 DeepDataMiningLearning]$ python nlp/huggingfaceSequence3.py --data_name="cnn_dailymail" --subset=0 --model_checkpoint="t5-base" --training --usehpc --task="summarization" --source_prefix="summarize: " --traintag="1125" --gpuid=1 --total_epochs=8 --batch_size=32
@@ -381,6 +418,7 @@ epoch 15, evaluation metric: squad
 Evaluation result: {'exact_match': 62.08, 'f1': 75.95170387159816}
 ```
 
+## LLMs for Question and Answering
 Run question and answering for squad dataset based on custom bert model in huggingfaceSequence4.py.
 ```bash
 nlp/huggingfaceSequence4.py
@@ -399,6 +437,7 @@ epoch 15, evaluation metric: squad_v2
 Evaluation result: {'exact': 76.38, 'f1': 82.8391234679352, 'total': 5000, 'HasAns_exact': 73.26367547633681, 'HasAns_f1': 83.18857324513708, 'HasAns_total': 3254, 'NoAns_exact': 82.18785796105384, 'NoAns_f1': 82.18785796105384, 'NoAns_total': 1746, 'best_exact': 76.32, 'best_exact_thresh': 0.0, 'best_f1': 82.77912346793502, 'best_f1_thresh': 0.0}
 ```
 
+## Multi-task LLMs
 Use Sequence5.py for translation training
 ```bash
 python nlp/huggingfaceSequence5.py --data_name="wmt19" --subset=100000 --model_checkpoint="t5-base" --task="translation" --target_lang="zh" --source_prefix="translate English to Chinese: " --traintag="1206" --pretrained="/data/cmpe249-fa23/trainoutput/huggingface/t5-base/wmt19_1124/savedmodel.pth" --usehpc --gpuid=1 --total_epochs=80 --batch_size=64
@@ -409,39 +448,6 @@ Fine tune "liam168/trans-opus-mt-en-zh" on wmt19 5000 subset
 epoch 15, evaluation metric: sacrebleu
 Evaluation result: {'score': 45.11294317735652, 'counts': [200677, 140858, 104286, 81486], 'totals': [283438, 274938, 266464, 258142], 'precisions': [70.8010217402042, 51.232641541001975, 39.1369941155278, 31.566347204251922], 'bp': 0.9805091347328498, 'sys_len': 283438, 'ref_len': 289017}
 ```
-
-NLP models based on Huggingface Transformer libraries
-* Starting
-   * [HuggingfaceTransformers](notebooks/Transformers.ipynb)
-   * [huggingfacetest](nlp/huggingfacetest.py)
-   * [hfdataset.py](nlp/hfdataset.py)
-   * [huggingfaceHPC.ipynb](nlp/huggingfaceHPC.ipynb)
-   * [huggingfaceHPCdata](nlp/huggingfaceHPCdata.py)
-* Classification application
-   * [BERTMTLfakehate](nlp/BERTMTLfakehate.py)
-   * [MLTclassifier](nlp/MLTclassifier.py)
-   * [huggingfaceClassifierNER.ipynb](nlp/huggingfaceClassifierNER.ipynb)
-* Multi-modal Classifier: [huggingfaceclassifier2](nlp/huggingfaceclassifier2.py), [huggingfaceclassifier](nlp/huggingfaceclassifier.py)
-* Sequence related application, e.g., translation, summary
-   * [huggingfaceSequence](nlp/huggingfaceSequence.ipynb)
-* Question and Answer (Q&A)
-   * [huggingfaceQA.py](nlp/huggingfaceQA.py)
-* Chatbot
-   * [huggingfacechatbot.ipynb](nlp/huggingfacechatbot.ipynb)
-
-Pytorch Transformer
-* [torchtransformer](nlp/torchtransformer.py)
-
-Open Source LLMs
-* [BERTLM.ipynb](nlp/BERTLM.ipynb)
-* Masked Language Modeling: [huggingfaceLM.ipynb](nlp/huggingfaceLM.ipynb)
-* [llama2](nlp/llama2.ipynb)
-
-LLMs Apps based on OpenAI API
-* [openaiqa.ipynb](dataapps/openaiqa.ipynb), [webcrawl.ipynb](dataapps/webcrawl.ipynb)
-
-LLMs Apps based on LangChain
-* [langchaintest.ipynb](nlp/langchaintest.ipynb)
 
 ## SignalAI
 Perform audio classification via "hfclassify1.py":
