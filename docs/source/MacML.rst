@@ -119,6 +119,7 @@ https://huggingface.co/docs/accelerate/basic_tutorials/install
   pip install librosa
   huggingface-cli login #enter token
   pip install -U "transformers==4.38.0" --upgrade
+  pip install -U transformers --upgrade
 
 PandasAI:
 .. code-block:: console

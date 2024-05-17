@@ -33,6 +33,7 @@ def loadmodels(model_ckpt, mycache_dir, newname):
     print(model)
 #loadmodels("meta-llama/Llama-2-13b-chat-hf", "Llama-2-13b-chat-hf")
 
+#https://huggingface.co/meta-llama/Meta-Llama-3-8B
 def LLMmodel(modelname="meta-llama/Llama-2-7b-chat-hf"):
 
     model = AutoModelForCausalLM.from_pretrained(modelname, device_map="auto")
@@ -93,6 +94,7 @@ def LLMinference(modelname):
     for seq in sequences:
         print(f"Result: {seq['generated_text']}")
 
+
 def QAinference(model, tokenizer, question, context, device, usepipeline=True):
     if usepipeline ==True:
         if device.type == 'cuda':
@@ -116,43 +118,98 @@ def QAinference(model, tokenizer, question, context, device, usepipeline=True):
         print(answers)
     return answers
 
+def get_device(gpuid='0', useamp=False):
+    if torch.cuda.is_available():
+        device = torch.device('cuda:'+str(gpuid))  # CUDA GPU 0
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        useamp = False
+    else:
+        device = torch.device("cpu")
+        useamp = False
+    print('Using device:', device)
+    return device, useamp
+
+def load_seqmodel(model_name_or_path, task='chat', device = "auto", dtype = torch.bfloat16, load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
+    tokenizer = None
+    model = None
+    if task == 'QA' and 'DistilBert' in model_name_or_path:
+        tokenizer = DistilBertTokenizerFast.from_pretrained(model_name_or_path)
+        #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+        model = DistilBertForQuestionAnswering.from_pretrained(model_name_or_path)
+        #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
+        #Some weights of DistilBertForQuestionAnswering were not initialized from the model checkpoint at distilbert-base-uncased and are newly initialized: ['qa_outputs.weight', 'qa_outputs.bias']
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=dtype, device_map=device)
+
+    return model, tokenizer
+
+class MultitaskSeq():
+    def __init__(self, model_name, model_path="", model_type="huggingface", task="QA", cache_dir="./output", gpuid='0') -> None:
+        self.cache_dir = cache_dir
+        self.model_name = model_name
+        self.model_type = model_type
+        #self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device, useamp = get_device(gpuid=gpuid, useamp=False)
+        self.task = task
+        self.model_name = model_name
+        self.model = None
+        self.tokenizer = None
+        if isinstance(model_name, str) and model_type=="huggingface":
+            #os.environ['HF_HOME'] = cache_dir #'~/.cache/huggingface/'
+            if model_path and os.path.exists(model_path):
+                model_name_or_path = model_path
+            else:
+                model_name_or_path = model_name
+            self.model, self.tokenizer = load_seqmodel(model_name_or_path = model_name_or_path, task=task, device = self.device)
+        #self.model=self.model.to(self.device)
+        self.model.eval()
+
+    def __call__(self, text):
+        if self.task == 'QA':
+            result=QAinference(self.model, self.tokenizer, question, context, self.device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
+        elif self.task == 'chat':
+            input_ids = self.tokenizer.apply_chat_template(text, return_tensors="pt").to(self.device)
+            prompt_len = input_ids.shape[-1]
+            print("prompt_len:", prompt_len)
+            output = self.model.generate(input_ids=input_ids, max_new_tokens=100, pad_token_id=0)
+            result = self.tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
+        return result
+
+def test_llama():
+    #https://huggingface.co/meta-llama/Meta-Llama-Guard-2-8B
+    model_id = "meta-llama/Meta-Llama-Guard-2-8B"
+    multitaskseq=MultitaskSeq(model_name=model_id, task="chat")
+    results=multitaskseq([
+        {"role": "user", "content": "I forgot how to kill a process in Linux, can you help?"},
+        {"role": "assistant", "content": "Sure! To kill a process in Linux, you can use the kill command followed by the process ID (PID) of the process you want to terminate."},
+    ])
+    print(results)
+
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='simple distributed training job')
+    parser = argparse.ArgumentParser(description='simple HFseq model inference')
     parser.add_argument('--data_type', type=str, default="huggingface",
                     help='data type name: huggingface, custom')
-    parser.add_argument('--data_name', type=str, default="squad",
-                    help='data name: imdb, conll2003, "glue", "mrpc" ')
-    parser.add_argument('--data_path', type=str, default=r"E:\Dataset\NLPdataset\squad",
-                    help='path to get data')
     parser.add_argument('--model_checkpoint', type=str, default="distilbert-base-uncased",
                     help='Model checkpoint name from https://huggingface.co/models, "bert-base-cased"')
     parser.add_argument('--task', type=str, default="QA",
-                    help='NLP tasks: sentiment, token_classifier, "sequence_classifier"')
+                    help='NLP tasks: QA, sentiment, token_classifier, sequence_classifier, chat')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
-    parser.add_argument('--training', type=bool, default=True,
-                    help='Perform training')
-    parser.add_argument('--total_epochs', default=8, type=int, help='Total epochs to train the model')
-    parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
-    parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     args = parser.parse_args()
 
-    global task
-    task = args.task
-    model_checkpoint = args.model_checkpoint
-    global tokenizer
-    tokenizer = DistilBertTokenizerFast.from_pretrained(model_checkpoint)
-    #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+    test_llama()
 
-    model = DistilBertForQuestionAnswering.from_pretrained(model_checkpoint)
-    #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
-    #Some weights of DistilBertForQuestionAnswering were not initialized from the model checkpoint at distilbert-base-uncased and are newly initialized: ['qa_outputs.weight', 'qa_outputs.bias']
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-    model.to(device)
+    # global task
+    # task = args.task
+    # model_checkpoint = args.model_checkpoint
+    # global tokenizer
+    #device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    #model.to(device)
 
     #Test QA
-    question = "How many programming languages does BLOOM support?"
-    context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
-    answers=QAinference(model, tokenizer, question, context, device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
+    # question = "How many programming languages does BLOOM support?"
+    # context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
+    # answers=QAinference(model, tokenizer, question, context, device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}

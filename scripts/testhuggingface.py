@@ -1,6 +1,8 @@
 #from huggingface_hub import model_info; 
 #print(model_info('gpt2'))
-
+import transformers
+print(transformers.__version__)
+#update transformer via: pip install -U transformers --upgrade
 
 import os
 from getsysteminfo import getDeviceType
