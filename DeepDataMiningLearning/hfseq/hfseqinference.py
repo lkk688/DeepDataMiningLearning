@@ -133,10 +133,10 @@ def get_device(gpuid='0', useamp=False):
 def load_seqmodel(model_name_or_path, task='chat', device = "auto", dtype = torch.bfloat16, load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
     tokenizer = None
     model = None
-    if task == 'QA' and 'DistilBert' in model_name_or_path:
+    if task == 'QA' and 'distilbert' in model_name_or_path:
         tokenizer = DistilBertTokenizerFast.from_pretrained(model_name_or_path)
         #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-        model = DistilBertForQuestionAnswering.from_pretrained(model_name_or_path)
+        model = DistilBertForQuestionAnswering.from_pretrained(model_name_or_path, torch_dtype=dtype, device_map=device)
         #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
         #Some weights of DistilBertForQuestionAnswering were not initialized from the model checkpoint at distilbert-base-uncased and are newly initialized: ['qa_outputs.weight', 'qa_outputs.bias']
     else:
@@ -166,18 +166,35 @@ class MultitaskSeq():
         #self.model=self.model.to(self.device)
         self.model.eval()
 
-    def __call__(self, text):
+    def __call__(self, text, context=None, max_new_tokens=100):
+        #text is a list
         if self.task == 'QA':
-            result=QAinference(self.model, self.tokenizer, question, context, self.device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
-        elif self.task == 'chat':
+            result=QAinference(self.model, self.tokenizer, text, context, self.device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
+        elif self.task == 'text-generation' or self.task == 'chat':
+            model_inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+            # By default, the output will contain up to 20 tokens
+            # Setting `max_new_tokens` allows you to control the maximum length
+            generated_ids = self.model.generate(**model_inputs, \
+                                                max_new_tokens=max_new_tokens, \
+                                                pad_token_id=self.tokenizer.eos_token_id)
+            result = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+
+        elif self.task == 'chat-template':
             input_ids = self.tokenizer.apply_chat_template(text, return_tensors="pt").to(self.device)
             prompt_len = input_ids.shape[-1]
             print("prompt_len:", prompt_len)
-            output = self.model.generate(input_ids=input_ids, max_new_tokens=100, pad_token_id=0)
+            output = self.model.generate(input_ids=input_ids, max_new_tokens=max_new_tokens, pad_token_id=0)
             result = self.tokenizer.decode(output[0][prompt_len:], skip_special_tokens=True)
         return result
 
 def test_llama():
+    #"meta-llama/Llama-2-7b-chat-hf"
+    model_id = "meta-llama/Meta-Llama-3-8B" #"meta-llama/Llama-2-7b-chat-hf"
+    multitaskseq=MultitaskSeq(model_name=model_id, task="chat")
+    results=multitaskseq(['Where is San Jose, CA? \n'], max_new_tokens=300)
+    print(results)
+
+def test_llama_guard():
     #https://huggingface.co/meta-llama/Meta-Llama-Guard-2-8B
     model_id = "meta-llama/Meta-Llama-Guard-2-8B"
     multitaskseq=MultitaskSeq(model_name=model_id, task="chat")
@@ -185,6 +202,16 @@ def test_llama():
         {"role": "user", "content": "I forgot how to kill a process in Linux, can you help?"},
         {"role": "assistant", "content": "Sure! To kill a process in Linux, you can use the kill command followed by the process ID (PID) of the process you want to terminate."},
     ])
+    print(results) #'safe'
+
+#Test QA
+    # 
+    #  answers=QAinference(model, tokenizer, question, context, device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
+def test_QA():
+    multitaskseq=MultitaskSeq(model_name='distilbert-base-uncased', task="QA")
+    question = "How many programming languages does BLOOM support?"
+    context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
+    results=multitaskseq(text=question, context=context)
     print(results)
 
 if __name__ == "__main__":
@@ -200,6 +227,8 @@ if __name__ == "__main__":
                     help='output path')
     args = parser.parse_args()
 
+    #test_llama_guard()
+    #test_QA()
     test_llama()
 
     # global task
@@ -209,7 +238,4 @@ if __name__ == "__main__":
     #device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     #model.to(device)
 
-    #Test QA
-    # question = "How many programming languages does BLOOM support?"
-    # context = "BLOOM has 176 billion parameters and can generate text in 46 languages natural languages and 13 programming languages."
-    # answers=QAinference(model, tokenizer, question, context, device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
+    
