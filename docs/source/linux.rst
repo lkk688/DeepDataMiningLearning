@@ -177,6 +177,7 @@ Install huggingface transformers: https://huggingface.co/docs/accelerate/basic_t
 .. code-block:: console
 
     $ pip install transformers #conda install -c huggingface transformers
+    #pip install -U transformers --upgrade
     $ pip install accelerate # conda install -c conda-forge accelerate
     $ pip install evaluate
     $ pip install cchardet
@@ -187,6 +188,7 @@ Install huggingface transformers: https://huggingface.co/docs/accelerate/basic_t
     $ pip install configargparse
     $ pip install datasets # conda install -c huggingface -c conda-forge datasets
     $ pip install torchinfo
+    $ pip install gputil
 
     pip install pyyaml seaborn scikit-image onnx onnx-simplifier onnxruntime
     pip install sacrebleu sacremoses nltk rouge_score
