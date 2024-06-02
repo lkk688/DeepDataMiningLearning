@@ -194,6 +194,10 @@ Install huggingface transformers: https://huggingface.co/docs/accelerate/basic_t
     pip install librosa #changed numpy-1.26.2 to 1.24.4
     pip install jiwer #evaluate using the word error rate (WER) metric
 
+    conda install chardet #solve problem of "ImportError: cannot import name 'get_full_repo_name' from 'huggingface_hub'"
+    pip install safetensors
+    conda install -c conda-forge tokenizers
+
    % accelerate config
       Do you wish to use FP16 or BF16 (mixed precision)?                                                                                                          
    bf16                                                                                                                                                        
