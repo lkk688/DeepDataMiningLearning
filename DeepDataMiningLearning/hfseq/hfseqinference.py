@@ -4,6 +4,7 @@ import torch
 import json
 from pathlib import Path
 import os
+from transformers import pipeline
 from transformers import DistilBertTokenizerFast, AutoTokenizer
 from transformers import DistilBertForQuestionAnswering, AutoModelForQuestionAnswering
 from transformers import get_scheduler
@@ -166,8 +167,9 @@ class MultitaskSeq():
         #self.model=self.model.to(self.device)
         self.model.eval()
 
-    def __call__(self, text):
+    def __call__(self, text, context=None):
         if self.task == 'QA':
+            question = text
             result=QAinference(self.model, self.tokenizer, question, context, self.device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
         elif self.task == 'chat':
             input_ids = self.tokenizer.apply_chat_template(text, return_tensors="pt").to(self.device)
@@ -187,6 +189,27 @@ def test_llama():
     ])
     print(results)
 
+#https://huggingface.co/docs/transformers/main/conversations
+def test_chat():
+    chat = [
+        {"role": "system", "content": "You are a sassy, wise-cracking robot as imagined by Hollywood circa 1986."},
+        {"role": "user", "content": "Hey, can you tell me any fun things to do in New York?"}
+    ]
+    pipe = pipeline("text-generation", "meta-llama/Meta-Llama-3-8B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
+    response = pipe(chat, max_new_tokens=512)
+    print(response[0]['generated_text'][-1]['content'])
+
+    #You can continue the chat by appending your own response to it. 
+    # The response object returned by the pipeline actually contains the entire chat so far, 
+    # so we can simply append a message and pass it back:
+    chat = response[0]['generated_text']
+    chat.append(
+        {"role": "user", "content": "Wait, what's so wild about soup cans?"}
+    )
+    response = pipe(chat, max_new_tokens=512)
+    print(response[0]['generated_text'][-1]['content'])
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description='simple HFseq model inference')
@@ -200,7 +223,9 @@ if __name__ == "__main__":
                     help='output path')
     args = parser.parse_args()
 
-    test_llama()
+    #test_llama()
+
+    test_chat()
 
     # global task
     # task = args.task
