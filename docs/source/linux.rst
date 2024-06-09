@@ -75,15 +75,30 @@ If Anyconnect cannot open browser, ref: https://community.cisco.com/t5/vpn/cisco
 
 NVIDIA CUDA
 ------------
+Install NVIDIA CUDA , ref: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/
+
+To verify that your GPU is CUDA-capable, go to your distribution's equivalent of System Properties, or, from the command line, enter:
+
+.. code-block:: console
+
+    $ lspci | grep -i nvidia
+    $ uname -m && cat /etc/*release
+    $ gcc --version #To verify the version of gcc installed on your system
+    $ uname -r #The version of the kernel your system is running
+
+There are multiple ways to install cuda, here we use Conda to install the specific version (11.8) of the cuda: https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#conda-installation
+
 .. code-block:: console
 
     (base) lkk@lkk-intel13:~$ conda activate mycondapy310
+    $ conda install cuda -c nvidia/label/cuda-11.8.0
     (mycondapy310) lkk@lkk-intel13:~$ nvcc -V
-    nvcc: NVIDIA (R) Cuda compiler driver
-    Copyright (c) 2005-2022 NVIDIA Corporation
-    Built on Wed_Sep_21_10:33:58_PDT_2022
-    Cuda compilation tools, release 11.8, V11.8.89
-    Build cuda_11.8.r11.8/compiler.31833905_0
+    $ nvcc -V                                                                
+    nvcc: NVIDIA (R) Cuda compiler driver                                                                    
+    Copyright (c) 2005-2022 NVIDIA Corporation                                                               
+    Built on Wed_Sep_21_10:33:58_PDT_2022                                                                    
+    Cuda compilation tools, release 11.8, V11.8.89                                                           
+    Build cuda_11.8.r11.8/compiler.31833905_0 
 
 NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 
@@ -114,6 +129,7 @@ NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/cont
     docker pull nvidia/cuda:11.7.1-devel-ubuntu22.04
 
 System Upgrade
+
 -----------------------
 .. code-block:: console
     sudo apt update
@@ -128,6 +144,80 @@ System Upgrade
     this is potentially dangerous it's not done automatically. You can
     open the port with e.g.:
     'iptables -I INPUT -p tcp --dport 1022 -j ACCEPT'
+
+Pytorch and Huggingface installation
+------------------------
+Install pytorch: https://pytorch.org/get-started/locally/
+
+.. code-block:: console
+
+    $ conda -V # check version
+    $ conda info --envs #Check available conda environments
+    $ conda activate mycondapy310
+    $ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
+    #verify pytorch installation
+    $ python
+    >>> import torch                                                                                         
+    >>> print(torch.__version__)
+    2.3.0                                                                                                    
+    >>> torch.cuda.is_available()                                                                            
+    True
+
+setup jupyter:
+
+.. code-block:: console
+
+    $ conda install -c conda-forge scikit-learn tensorboard jupyterlab
+    $ conda install ipykernel
+    ipython kernel install --user --name=mycondapy310
+    $ jupyter kernelspec list #view current jupyter kernels
+
+Install huggingface transformers: https://huggingface.co/docs/accelerate/basic_tutorials/install
+
+.. code-block:: console
+
+    $ pip install transformers #conda install -c huggingface transformers
+    #pip install -U transformers --upgrade
+    $ pip install accelerate # conda install -c conda-forge accelerate
+    $ pip install evaluate
+    $ pip install cchardet
+    $ conda install -c conda-forge umap-learn #pip install umap-learn
+    $ pip install portalocker
+    $ pip install torchdata
+    $ pip install torchtext
+    $ pip install configargparse
+    $ pip install datasets # conda install -c huggingface -c conda-forge datasets
+    $ pip install torchinfo
+    $ pip install gputil
+
+    pip install pyyaml seaborn scikit-image onnx onnx-simplifier onnxruntime
+    pip install sacrebleu sacremoses nltk rouge_score
+    pip install soundfile #for audio
+    pip install librosa #changed numpy-1.26.2 to 1.24.4
+    pip install jiwer #evaluate using the word error rate (WER) metric
+
+    conda install chardet #solve problem of "ImportError: cannot import name 'get_full_repo_name' from 'huggingface_hub'"
+    pip install safetensors
+    conda install -c conda-forge tokenizers
+
+   % accelerate config
+      Do you wish to use FP16 or BF16 (mixed precision)?                                                                                                          
+   bf16                                                                                                                                                        
+   accelerate configuration saved at /Users/kaikailiu/.cache/huggingface/accelerate/default_config.yaml 
+   % accelerate env
+   
+   $ conda install -c conda-forge spacy #https://spacy.io/usage
+   #$ conda install -c conda-forge cupy #https://docs.cupy.dev/en/stable/install.html
+   $ python -m spacy download en_core_web_sm
+   >>> import spacy
+   >>> spacy.prefer_gpu()
+   True
+   >>> nlp = spacy.load("en_core_web_sm")
+   
+   
+
+
+   
 
 Disk
 ----------
