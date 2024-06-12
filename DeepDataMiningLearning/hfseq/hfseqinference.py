@@ -216,25 +216,74 @@ def test_QA():
     print(results)
 
 #https://huggingface.co/docs/transformers/main/conversations
-def test_chat():
+def test_chatpipeline(model_id = "meta-llama/Meta-Llama-3-8B-Instruct", max_new_tokens=512):
     chat = [
-        {"role": "system", "content": "You are a sassy, wise-cracking robot as imagined by Hollywood circa 1986."},
-        {"role": "user", "content": "Hey, can you tell me any fun things to do in New York?"}
+        {"role": "system", "content": "You are a travel agent that can help people plan their trips."},
+        {"role": "user", "content": "Hey, can you tell me any fun places to visit in New York?"}
     ]
-    pipe = pipeline("text-generation", "meta-llama/Meta-Llama-3-8B-Instruct", torch_dtype=torch.bfloat16, device_map="auto")
-    response = pipe(chat, max_new_tokens=512)
-    print(response[0]['generated_text'][-1]['content'])
+    #pipeline = pipeline("text-generation", model_id, torch_dtype=torch.bfloat16, device_map="auto")
+    pipeline = pipeline(
+        "text-generation",
+        model=model_id,
+        model_kwargs={"torch_dtype": torch.bfloat16},
+        device_map="auto",
+    )
+    #outputs = pipeline(chat, max_new_tokens=512)
+    terminators = [
+        pipeline.tokenizer.eos_token_id,
+        pipeline.tokenizer.convert_tokens_to_ids("<|eot_id|>")
+    ]
+    outputs = pipeline(
+        chat,
+        max_new_tokens=max_new_tokens,
+        eos_token_id=terminators,
+        do_sample=True,
+        temperature=0.6,
+        top_p=0.9,
+    )
+    print(outputs[0]["generated_text"][-1])
+    print(outputs[0]['generated_text'][-1]['content'])
 
     #You can continue the chat by appending your own response to it. 
     # The response object returned by the pipeline actually contains the entire chat so far, 
     # so we can simply append a message and pass it back:
-    chat = response[0]['generated_text']
+    chat = outputs[0]['generated_text']
     chat.append(
-        {"role": "user", "content": "Wait, what's so wild about soup cans?"}
+        {"role": "user", "content": "What's the recommended traffic way from JFK airport to the downtown?"}
     )
-    response = pipe(chat, max_new_tokens=512)
+    response = pipeline(chat, max_new_tokens=512)
     print(response[0]['generated_text'][-1]['content'])
 
+#https://huggingface.co/docs/transformers/main/llm_tutorial
+#https://huggingface.co/docs/transformers/main/conversations
+def test_chatmodel(model_id = "meta-llama/Meta-Llama-3-8B-Instruct", max_new_tokens=512):
+    # Prepare the input as before
+    chat = [
+        {"role": "system", "content": "You are a sassy, wise-cracking robot as imagined by Hollywood circa 1986."},
+        {"role": "user", "content": "Hey, can you tell me any fun things to do in New York?"}
+    ]
+
+    # 1: Load the model and tokenizer
+    model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", model_kwargs={"torch_dtype": torch.bfloat16})#, torch_dtype=torch.bfloat16)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+
+    # 2: Apply the chat template
+    formatted_chat = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+    print("Formatted chat:\n", formatted_chat)
+
+    # 3: Tokenize the chat (This can be combined with the previous step using tokenize=True)
+    inputs = tokenizer(formatted_chat, return_tensors="pt", add_special_tokens=False)
+    # Move the tokenized inputs to the same device the model is on (GPU/CPU)
+    inputs = {key: tensor.to(model.device) for key, tensor in inputs.items()}
+    print("Tokenized inputs:\n", inputs)
+
+    # 4: Generate text from the model
+    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.)
+    print("Generated tokens:\n", outputs)
+
+    # 5: Decode the output back to a string
+    decoded_output = tokenizer.decode(outputs[0][inputs['input_ids'].size(1):], skip_special_tokens=True)
+    print("Decoded output:\n", decoded_output)
 
 if __name__ == "__main__":
     import argparse
@@ -251,7 +300,9 @@ if __name__ == "__main__":
 
     #test_llama_guard()
     #test_QA()
-    test_llama()
+    #test_llama()
+    #test_chatpipeline()
+    test_chatmodel()
 
     # global task
     # task = args.task
