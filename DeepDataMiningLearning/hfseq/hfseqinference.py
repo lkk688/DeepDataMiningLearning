@@ -131,28 +131,17 @@ def get_device(gpuid='0', useamp=False):
     print('Using device:', device)
     return device, useamp
 
-def load_seqmodel(model_name_or_path, task='chat', device = "auto", dtype = torch.bfloat16, load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
-    tokenizer = None
-    model = None
-    if task == 'QA' and 'distilbert' in model_name_or_path:
-        tokenizer = DistilBertTokenizerFast.from_pretrained(model_name_or_path)
-        #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-        model = DistilBertForQuestionAnswering.from_pretrained(model_name_or_path, torch_dtype=dtype, device_map=device)
-        #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
-        #Some weights of DistilBertForQuestionAnswering were not initialized from the model checkpoint at distilbert-base-uncased and are newly initialized: ['qa_outputs.weight', 'qa_outputs.bias']
-    else:
-        tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=dtype, device_map=device)
-
-    return model, tokenizer
 
 class MultitaskSeq():
-    def __init__(self, model_name, model_path="", model_type="huggingface", task="QA", cache_dir="./output", gpuid='0') -> None:
+    def __init__(self, model_name, model_path="", model_type="huggingface", task="QA", cache_dir="./output", device = "auto", gpuid='0') -> None:
         self.cache_dir = cache_dir
         self.model_name = model_name
         self.model_type = model_type
         #self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.device, useamp = get_device(gpuid=gpuid, useamp=False)
+        if device == "audo":
+            self.device = device
+        else:
+            self.device, useamp = get_device(gpuid=gpuid, useamp=False)
         self.task = task
         self.model_name = model_name
         self.model = None
@@ -163,9 +152,57 @@ class MultitaskSeq():
                 model_name_or_path = model_path
             else:
                 model_name_or_path = model_name
-            self.model, self.tokenizer = load_seqmodel(model_name_or_path = model_name_or_path, task=task, device = self.device)
+            self.model, self.tokenizer = self.load_seqmodel(model_name_or_path = model_name_or_path, task=task, device = self.device)
         #self.model=self.model.to(self.device)
         self.model.eval()
+
+    def load_seqmodel(self, model_name_or_path, task='chat', device = "auto", dtype = torch.bfloat16, load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
+        
+        if task == 'QA' and 'distilbert' in model_name_or_path:
+            tokenizer = DistilBertTokenizerFast.from_pretrained(model_name_or_path)
+            #tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
+            model = DistilBertForQuestionAnswering.from_pretrained(model_name_or_path, torch_dtype=dtype, device_map=device)
+            #model = AutoModelForQuestionAnswering.from_pretrained(model_checkpoint) #"distilbert-base-uncased")
+            #Some weights of DistilBertForQuestionAnswering were not initialized from the model checkpoint at distilbert-base-uncased and are newly initialized: ['qa_outputs.weight', 'qa_outputs.bias']
+        else:
+            tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+            model = AutoModelForCausalLM.from_pretrained(model_name_or_path, torch_dtype=dtype, device_map=device)
+        print(f"Model located in {model.device}")
+        return model, tokenizer
+
+    def apply_chattemplate(self, chat):
+        # 2: Apply the chat template
+        formatted_chat = self.tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+        print("Formatted chat:\n", formatted_chat)
+        return formatted_chat
+
+    def tokenizeprocess(self, text):
+        # 3: Tokenize the chat (This can be combined with the previous step using tokenize=True)
+        inputs = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)
+        # Move the tokenized inputs to the same device the model is on (GPU/CPU)
+        inputs = {key: tensor.to(self.model.device) for key, tensor in inputs.items()}
+        #print("Tokenized inputs:\n", inputs)
+        prompt_len = inputs['input_ids'].size(1) #inputs.shape[-1] torch.Size([1, 49]) 49
+        print("prompt_len:", prompt_len)
+        print(inputs['input_ids'].size(1))
+        return inputs, prompt_len
+
+    def generate(self, inputs, max_new_tokens=512, temperature=0.2):
+        # 4: Generate text from the model
+        # By default, the output will contain up to 20 tokens
+            # Setting `max_new_tokens` allows you to control the maximum length
+        outputs = self.model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=temperature, pad_token_id=self.tokenizer.eos_token_id)#Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation
+        print("Generated tokens:\n", outputs)
+        return outputs
+    
+    def decode(self, outputs, prompt_len=0, batch=False):
+        # 5: Decode the output back to a string
+        if batch:
+            decoded_output = self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
+        else:
+            decoded_output = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
+        print("Decoded output:\n", decoded_output)
+        return decoded_output
 
     def __call__(self, text, context=None, max_new_tokens=100):
         #text is a list
@@ -173,8 +210,7 @@ class MultitaskSeq():
             result=QAinference(self.model, self.tokenizer, text, context, self.device, usepipeline=False) #not correct before training {'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}{'score': 0.004092414863407612, 'start': 14, 'end': 57, 'answer': 'billion parameters and can generate text in'}
         elif self.task == 'text-generation' or self.task == 'chat':
             model_inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
-            # By default, the output will contain up to 20 tokens
-            # Setting `max_new_tokens` allows you to control the maximum length
+            
             generated_ids = self.model.generate(**model_inputs, \
                                                 max_new_tokens=max_new_tokens, \
                                                 pad_token_id=self.tokenizer.eos_token_id)
@@ -256,6 +292,7 @@ def test_chatpipeline(model_id = "meta-llama/Meta-Llama-3-8B-Instruct", max_new_
 
 #https://huggingface.co/docs/transformers/main/llm_tutorial
 #https://huggingface.co/docs/transformers/main/conversations
+#llama3 need huggingface login to access the model via 'huggingface-cli login', then enter token
 def test_chatmodel(model_id = "meta-llama/Meta-Llama-3-8B-Instruct", max_new_tokens=512):
     # Prepare the input as before
     chat = [
@@ -264,25 +301,30 @@ def test_chatmodel(model_id = "meta-llama/Meta-Llama-3-8B-Instruct", max_new_tok
     ]
 
     # 1: Load the model and tokenizer
-    model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", model_kwargs={"torch_dtype": torch.bfloat16})#, torch_dtype=torch.bfloat16)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    mychat = MultitaskSeq(model_name=model_id, model_type="huggingface", task="chat")
+    # model = AutoModelForCausalLM.from_pretrained(model_id, device_map="auto", torch_dtype=torch.bfloat16)#, torch_dtype=torch.bfloat16)
+    # tokenizer = AutoTokenizer.from_pretrained(model_id)
 
     # 2: Apply the chat template
-    formatted_chat = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+    #formatted_chat = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+    formatted_chat = mychat.apply_chattemplate(chat=chat)
     print("Formatted chat:\n", formatted_chat)
 
     # 3: Tokenize the chat (This can be combined with the previous step using tokenize=True)
-    inputs = tokenizer(formatted_chat, return_tensors="pt", add_special_tokens=False)
+    #inputs = tokenizer(formatted_chat, return_tensors="pt", add_special_tokens=False)
     # Move the tokenized inputs to the same device the model is on (GPU/CPU)
-    inputs = {key: tensor.to(model.device) for key, tensor in inputs.items()}
+    #inputs = {key: tensor.to(model.device) for key, tensor in inputs.items()}
+    inputs, prompt_len = mychat.tokenizeprocess(formatted_chat)
     print("Tokenized inputs:\n", inputs)
 
     # 4: Generate text from the model
-    outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.)
+    #outputs = model.generate(**inputs, max_new_tokens=max_new_tokens, temperature=0.2, pad_token_id=tokenizer.eos_token_id)#Setting `pad_token_id` to `eos_token_id`:128001 for open-end generation
+    outputs = mychat.generate(inputs=inputs)
     print("Generated tokens:\n", outputs)
 
     # 5: Decode the output back to a string
-    decoded_output = tokenizer.decode(outputs[0][inputs['input_ids'].size(1):], skip_special_tokens=True)
+    #decoded_output = tokenizer.decode(outputs[0][inputs['input_ids'].size(1):], skip_special_tokens=True)
+    decoded_output = mychat.decode(outputs=outputs, prompt_len=prompt_len, batch=False)
     print("Decoded output:\n", decoded_output)
 
 if __name__ == "__main__":
