@@ -58,6 +58,8 @@ Networking
 -----------
 Check current IP address via `ifconfig` or `ip route show | grep -i default | awk '{ print $3}'`
 
+To view all TCP or UDP ports that are being listened on, along with the associated services and socket status: `sudo netstat -tunlp`
+
 Download Cisco Anyconnect VPN client from SJSU: https://vpn.sjsu.edu/CACHE/stc/1/index.html
 
 .. code-block:: console
