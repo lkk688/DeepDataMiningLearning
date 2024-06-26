@@ -38,6 +38,8 @@ Create a Conda virtual environment with python 3.10:
    (mycondapy310) lkk@lkk-intel13:~$ conda deactivate #To deactivate an active environment
    #To create an alias that links the python command to python3, fo
    echo 'alias python="python3"' >> ~/.bashrc
+   conda remove -n ENV_NAME --all #delete conda environment
+   conda update -n base -c defaults conda #update conda
    
 Popular packages
 ~~~~~~~~~~~~~~~~~

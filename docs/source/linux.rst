@@ -27,6 +27,16 @@ Get System information
     PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
     UBUNTU_CODENAME=jammy
 
+Install Python
+-----------------
+Python 3.8-3.11 is generally installed by default on any of our supported Linux distributions, if you want to install another version, there are multiple ways: 1) APT: `sudo apt install python` or 2) Download from [Python](https://www.python.org/downloads/)
+
+Python two supported package managers: Anaconda or pip. Anaconda is the recommended package manager as it will provide you all of the PyTorch dependencies in one, sandboxed install, including Python. While Python 3.x is installed by default on Linux, pip is not installed by default: `sudo apt install python3-pip`. 
+
+.. code-block:: console
+
+    curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    sh Miniconda3-latest-Linux-x86_64.sh
 
 Install NVIDIA driver
 ---------------------
@@ -107,6 +117,13 @@ There are multiple ways to install cuda, here we use Conda to install the specif
     Cuda compilation tools, release 11.8, V11.8.89                                                           
     Build cuda_11.8.r11.8/compiler.31833905_0 
 
+Install CUDNN (only required for Tensorflow). Check [TensorflowGPU](https://www.tensorflow.org/install/source#tested_build_configurations) for required CUDNN versions (e.g., tensorflow-2.14.0 support cudnn8.7 and cuda11.8). Install latest [cudnn](https://docs.nvidia.com/deeplearning/cudnn/latest/) or [cudnn8.7](https://docs.nvidia.com/deeplearning/cudnn/archives/cudnn-870/index.html).
+
+If only install cudnn python runtime, you can install from [nvidia-cudnn-cu11](https://pypi.org/project/nvidia-cudnn-cu11/#history), e.g., `pip install nvidia-cudnn-cu11==8.7.0.84`
+
+NVIDIA Docker
+--------------
+
 NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 
 .. code-block:: console
@@ -152,7 +169,7 @@ System Upgrade
     open the port with e.g.:
     'iptables -I INPUT -p tcp --dport 1022 -j ACCEPT'
 
-Pytorch and Huggingface installation
+Pytorch, Tensorflow, and Huggingface installation
 ------------------------
 Install pytorch: https://pytorch.org/get-started/locally/
 
@@ -169,6 +186,13 @@ Install pytorch: https://pytorch.org/get-started/locally/
     2.3.0                                                                                                    
     >>> torch.cuda.is_available()                                                                            
     True
+
+Install Tensorflow:
+
+.. code-block:: console
+
+    python3 -m pip install tensorflow[and-cuda]
+    #pip install tensorflow[and-cuda]==2.14.0
 
 setup jupyter:
 
