@@ -1,7 +1,7 @@
-CONDA_ENV=py310cu118
-conda -V # check version
-conda info --envs
-conda activate $CONDA_ENV
+# CONDA_ENV=py310cu118
+# conda -V # check version
+# conda info --envs
+# conda activate $CONDA_ENV
 
 # Verify Tensorflow installation
 python3 -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
@@ -12,6 +12,8 @@ python3 -c "import torch; print('Torch version:', torch.__version__); print(torc
 python3 -c "import tensorrt; print('Tensorrt version:', tensorrt.__version__)"
 
 conda install -y -c conda-forge jupyterlab
+conda install -y ipykernel
+jupyter kernelspec list #view current jupyter kernels
 ipython kernel install --user --name=$CONDA_ENV
 
 conda install -y -c intel scikit-learn
@@ -37,7 +39,7 @@ pip install -U --trusted-host www.open3d.org -f http://www.open3d.org/docs/lates
 # Verify installation
 python -c "import open3d as o3d; print(o3d.__version__)"
 
-conda install -c conda-forge accelerate
-conda install -c huggingface transformers
+conda install -y -c conda-forge accelerate
+conda install -y -c huggingface transformers
 
 

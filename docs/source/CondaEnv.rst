@@ -40,6 +40,8 @@ Create a Conda virtual environment with python 3.10:
    echo 'alias python="python3"' >> ~/.bashrc
    conda remove -n ENV_NAME --all #delete conda environment
    conda update -n base -c defaults conda #update conda
+   conda list -n base -r #check history
+   $ conda install --revision 1 #back to a previous version
    
 Popular packages
 ~~~~~~~~~~~~~~~~~
