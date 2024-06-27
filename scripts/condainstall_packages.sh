@@ -21,6 +21,7 @@ conda install -y scikit-learn-intelex
 conda install -y numpy matplotlib pandas Pillow scipy pyyaml scikit-image 
 
 pip install -q torchinfo
+pip install pynvml #see more GPU information
 pip install onnx onnx-simplifier onnxruntime seaborn
 
 

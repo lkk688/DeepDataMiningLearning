@@ -20,6 +20,6 @@ print(torch.cuda.get_device_name(0))
 
 print(torch.rand(2,3).cuda())
 
-# import tensorrt
-# print(tensorrt.__version__)
+import tensorrt
+print("TensorRT version:", tensorrt.__version__)
 # assert tensorrt.Builder(tensorrt.Logger())
