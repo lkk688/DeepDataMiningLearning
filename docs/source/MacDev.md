@@ -51,17 +51,42 @@ conda search python #check existing python versions
 #% conda create --name py312 python=3.12 #install python3.12
 % conda activate py310
 % python -V
-% conda install -c conda-forge pylibiio
-% pip install pyadi-iio
-% pip install numpy matplotlib
 % conda deactivate 
+conda info --envs #check existing conda environment
 ```
 
 A Minimal Setup for Data science:
 ```bash
 conda install pandas numpy numba matplotlib seaborn scikit-learn jupyter
+conda install -y Pillow scipy pyyaml scikit-image 
+pip install opencv-python-headless
+pip install PyQt5
+pip install pyqtgraph
+pip install pyqt6
+pip install pyside6 #Side6 and QT5 works in Mac
 ```
 
+Setup for ADI IIO:
+```bash
+(py312) kaikailiu@kaikais-mbp Documents % conda install -c conda-forge pylibiio
+Channels:
+ - conda-forge
+ - defaults
+Platform: osx-arm64
+% pip install pyadi-iio
+pip install pyqt5 pyqt6 PySide6 pyqtgraph opencv-python-headless PyOpenGL PyOpenGL_accelerate pyopengl
+pip install sionna DeepMIMO
+(mypy310) (base) kaikailiu@Kaikais-MBP radarsensing % pip install tensorflow==2.14.0
+#Test tensorflow
+python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000, 1000])))"
+pip install sionna
+```
 
-# 3. Jupyter notebook setup
+## Jupyter notebook setup
+```bash
+conda install -y -c conda-forge jupyterlab
+conda install -y ipykernel
+jupyter kernelspec list #view current jupyter kernels
+ipython kernel install --user --name=py312
+```
 
