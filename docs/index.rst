@@ -17,6 +17,7 @@ Contents
 
 .. toctree::
 
+   source/MacDev
    source/python
    source/linux
    source/CondaEnv
