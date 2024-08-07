@@ -13,7 +13,7 @@ conda install -y cuda -c nvidia/label/cuda-11.8.0 #new method from https://docs.
 # Install pytorch
 conda install -y pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
 
-# install cuDNN and Tensorflow
+# install cuDNN and Tensorflow https://www.tensorflow.org/install/source#tested_build_configurations
 #python3 -m pip install nvidia-cudnn-cu11==8.6.0.163 tensorflow==2.12.0
 python3 -m pip install nvidia-cudnn-cu11==8.7.0.84
 python3 -m pip install tensorflow[and-cuda]==2.14.0

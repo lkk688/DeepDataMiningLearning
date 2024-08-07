@@ -174,10 +174,28 @@ Pytorch, Tensorflow, and Huggingface installation
 ------------------------
 Install pytorch: https://pytorch.org/get-started/locally/
 
+Check the supported CUDA, CUDNN version for a specific Tensorflow version: [Tensorflow Versions](https://www.tensorflow.org/install/source#tested_build_configurations)
+
 .. code-block:: console
 
     $ conda -V # check version
     $ conda info --envs #Check available conda environments
+    (base) lkk@lkk-intel12:~$ conda create -n py311cu122 python=3.11
+    (base) lkk@lkk-intel12:~$ conda activate py311cu122
+    (py311cu122) lkk@lkk-intel12:~$ pip install tensorflow[and-cuda]==2.15.* #2.15.0.post1 does not require TensorRT
+    (py311cu122) lkk@lkk-intel12:~$ conda install -y cuda -c nvidia/label/cuda-12.2
+    (py311cu122) lkk@lkk-intel12:~$ nvcc -V
+    nvcc: NVIDIA (R) Cuda compiler driver                                                                      
+    Copyright (c) 2005-2024 NVIDIA Corporation                                                                 
+    Built on Thu_Mar_28_02:18:24_PDT_2024                                                                      
+    Cuda compilation tools, release 12.4, V12.4.131                                                            
+    Build cuda_12.4.r12.4/compiler.34097967_0 
+    (py311cu122) lkk@lkk-intel12:~$ pip install nvidia-cudnn-cu12==8.9.*
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+Old version:
+.. code-block:: console
+
     $ conda activate mycondapy310
     $ conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia
     #verify pytorch installation
