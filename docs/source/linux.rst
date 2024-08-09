@@ -192,7 +192,8 @@ Check the supported CUDA, CUDNN version for a specific Tensorflow version: [Tens
     Build cuda_12.4.r12.4/compiler.34097967_0 
     (py311cu122) lkk@lkk-intel12:~$ pip install nvidia-cudnn-cu12==8.9.* #no effect
     pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-
+    conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+    
 Old version:
 .. code-block:: console
 
