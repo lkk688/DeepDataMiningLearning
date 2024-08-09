@@ -1,18 +1,18 @@
 # Development Environment for Apple Silicon
 
-# Xcode Tools
+## Xcode Tools
 Install Xcode command-line tools (CLT), this includes all the useful open-source tools Unix developers expect, like git, clang, and more.
 ```bash
 xcode-select --install
 ```
 
-# Brew
+## Brew
 Install [Brew](https://brew.sh/): package manager for Macs
 
-# Python Environment
+## Python Environment
 To install conda environment in Mac, there are several options. You can install miniforge or miniconda.
 
-## Install python via miniforge
+### Install python via miniforge
 
 Miniforge is a minimal installer for Conda that works well with Apple Silicon. You can download it from [miniforge](https://github.com/conda-forge/miniforge).
 
@@ -23,7 +23,7 @@ bash Miniforge3-latest-MacOSX-arm64.sh
 
 Follow the installation guide, and do not forget to restart your terminal after it is completed.
 
-## Install python via miniconda
+### Install python via miniconda
 Download miniconda from [link](https://docs.anaconda.com/miniconda/)
 
 ```bash
@@ -41,7 +41,7 @@ brew upgrade
 brew install md5sha1sum
 ```
 
-## Create Conda environment with python 
+### Create Conda environment with python 
 After miniconda or miniforge3 installed, you can use the `conda` command to create python environment
 ```bash
 conda search python #check existing python versions
@@ -82,7 +82,7 @@ python3 -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000,
 pip install sionna
 ```
 
-## Jupyter notebook setup
+### Jupyter notebook setup
 ```bash
 conda install -y -c conda-forge jupyterlab
 conda install -y ipykernel
