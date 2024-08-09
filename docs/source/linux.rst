@@ -388,7 +388,8 @@ Check directory size:
     du -sh /path/to/directory
 
 sshfs
-======
+-------
+
 .. code-block:: console
 
     lkk@lkk-intel12:~/Documents/Dataset/Kitti$ sudo apt-get install sshfs

@@ -257,7 +257,7 @@ CUDA Setup Tutorial
 There are multiple options to install cuda in HPC: 1) module load the preinstalled cuda version (recommended); 2) install one cuda version inside the conda; 3) install cuda into your user directory outside of the conda (not recommended).
 
 Option1: module load the preinstalled cuda version
-===================================================
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 If you module load the cuda 11.8 via the follow script, you should be able to access the cuda in the GPU node. You can use "nvcc -V" to the cuda version
 
@@ -272,7 +272,7 @@ If you module load the cuda 11.8 via the follow script, you should be able to ac
    Build cuda_11.8.r11.8/compiler.31833905_0
 
 Option2: Install CUDA 11.8 under Conda
-======================================
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 In order to install cuda under conda, you need to activate the conda virtual environment first, and install the cudatoolkit:
 
 .. code-block:: console
