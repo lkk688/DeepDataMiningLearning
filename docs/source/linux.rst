@@ -180,19 +180,25 @@ Check the supported CUDA, CUDNN version for a specific Tensorflow version: [Tens
 
     $ conda -V # check version
     $ conda info --envs #Check available conda environments
-    (base) lkk@lkk-intel12:~$ conda create -n py311cu122 python=3.11
-    (base) lkk@lkk-intel12:~$ conda activate py311cu122
-    (py311cu122) lkk@lkk-intel12:~$ pip install tensorflow[and-cuda]==2.15.* #2.15.0.post1 does not require TensorRT
-    (py311cu122) lkk@lkk-intel12:~$ conda install -y cuda -c nvidia/label/cuda-12.2
-    (py311cu122) lkk@lkk-intel12:~$ nvcc -V
-    nvcc: NVIDIA (R) Cuda compiler driver                                                                      
-    Copyright (c) 2005-2024 NVIDIA Corporation                                                                 
-    Built on Thu_Mar_28_02:18:24_PDT_2024                                                                      
-    Cuda compilation tools, release 12.4, V12.4.131                                                            
-    Build cuda_12.4.r12.4/compiler.34097967_0 
-    (py311cu122) lkk@lkk-intel12:~$ pip install nvidia-cudnn-cu12==8.9.* #no effect
-    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
-    conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+    (base) lkk@lkk-intel12:~$ conda create -n py311cu124 python=3.11
+    (base) lkk@lkk-intel12:~$ conda activate py311cu124
+    (py311cu124) lkk@lkk-intel12:~$ conda install -y cuda -c nvidia/label/cuda-12.4
+    (py311cu124) lkk@lkk-intel12:~$ nvcc -V
+    nvcc: NVIDIA (R) Cuda compiler driver
+    Copyright (c) 2005-2024 NVIDIA Corporation
+    Built on Thu_Mar_28_02:18:24_PDT_2024
+    Cuda compilation tools, release 12.4, V12.4.131
+    Build cuda_12.4.r12.4/compiler.34097967_0
+    (py311cu124) lkk@lkk-intel12:~$ conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+
+    (py311cu124) lkk@lkk-intel12:~$ pip install tensorflow[and-cuda]
+    # Verify Pytorch installation
+    python3 -c "import torch; print('Torch version:', torch.__version__); print(torch.cuda.is_available())"
+
+    # Verify Tensorflow installation
+    python3 -c "import tensorflow as tf; print('tf version:', tf.__version__); print(tf.config.list_physical_devices('GPU'))"
+
+    (py311cu124) lkk@lkk-intel12:~$ conda install -y cuda -c nvidia/label/cuda-12.2 #new method from https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#conda-installation
     
 Old version:
 .. code-block:: console
@@ -214,13 +220,39 @@ Install Tensorflow:
     python3 -m pip install tensorflow[and-cuda]
     #pip install tensorflow[and-cuda]==2.14.0
 
+Install TensorRT: https://developer.nvidia.com/tensorrt, using the tar methold installation: https://docs.nvidia.com/deeplearning/tensorrt/install-guide/index.html#installing-tar, select "TensorRT 10.3 GA for Linux x86_64 and CUDA 12.0 to 12.5 TAR Package"
+
+.. code-block:: console
+
+    (py311cu124) lkk@lkk-intel12:~/Developer$ tar -xzvf TensorRT-10.3.0.26.Linux.x86_64-gnu.cuda-12.5.tar.gz
+    (py311cu124) lkk@lkk-intel12:~/Developer$ ls TensorRT-10.3.0.26
+    bin  data  doc  include  lib  python  samples  targets
+    (py311cu124) lkk@lkk-intel12:~/Developer$ export LD_LIBRARY_PATH=/home/lkk/Developer/TensorRT-10.3.0.26/lib:$LD_LIBRARY_PATH
+    (py311cu124) lkk@lkk-intel12:~/Developer/TensorRT-10.3.0.26/python$ python3 -m pip install tensorrt-10.3.0-cp311-none-linux_x86_64.whl 
+    Processing ./tensorrt-10.3.0-cp311-none-linux_x86_64.whl
+    Installing collected packages: tensorrt
+    Successfully installed tensorrt-10.3.0
+    (py311cu124) lkk@lkk-intel12:~/Developer/TensorRT-10.3.0.26/python$ python3 -m pip install numpy onnx onnx-graphsurgeon
+    #$ strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep GLIBCXX
+    (py311cu124) lkk@lkk-intel12:~/Developer/TensorRT-10.3.0.26/samples/build$ export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/lkk/miniconda3/lib #solve the glibc problem
+    $ conda config --set channel_priority flexible 
+    $ conda install -c anaconda scipy
+    (py311cu124) lkk@lkk-intel12:~/Developer/TensorRT-10.3.0.26/samples/build$ strings ~/miniconda3/lib/libstdc++.so.6 | grep GLIBCXX_3.4.30
+    (py311cu124) lkk@lkk-intel12:~/Developer/TensorRT-10.3.0.26/samples/build$ strings /usr/lib/x86_64-linux-gnu/libstdc++.so.6 | grep GLIBCXX_3.4.30
+    GLIBCXX_3.4.30
+
+    (py311cu124) lkk@lkk-intel12:~/Developer/TensorRT-10.3.0.26/samples/build$ cmake .. -DTRT_OUT_DIR=`pwd`/out
+    cmake: /home/lkk/miniconda3/lib/libstdc++.so.6: version `GLIBCXX_3.4.30' not found (required by cmake)
+
+
+
 setup jupyter:
 
 .. code-block:: console
 
     $ conda install -c conda-forge scikit-learn tensorboard jupyterlab
     $ conda install ipykernel
-    ipython kernel install --user --name=mycondapy310
+    ipython kernel install --user --name=py311cu124
     $ jupyter kernelspec list #view current jupyter kernels
 
 Install huggingface transformers: https://huggingface.co/docs/accelerate/basic_tutorials/install
@@ -231,7 +263,7 @@ Install huggingface transformers: https://huggingface.co/docs/accelerate/basic_t
     #pip install -U transformers --upgrade
     $ pip install accelerate # conda install -c conda-forge accelerate
     $ pip install evaluate
-    $ pip install cchardet
+    #$ pip install cchardet
     $ conda install -c conda-forge umap-learn #pip install umap-learn
     $ pip install portalocker
     $ pip install torchdata
