@@ -353,6 +353,74 @@ def tol_cset(colorset=None):
 def main():
 
     from matplotlib import pyplot as plt
+    #from tol_colors import tol_cmap, tol_cset
+    #ref: https://www.alanshawn.com/tech/2022/05/16/matplotlib-latex-guide.html
+    import numpy as np
+    from scipy.stats import multivariate_normal
+
+    # generate some dummy data
+    line_x = np.linspace(0, 2*np.pi, 100)
+    line_ys = [np.sin(line_x + i * np.pi / 6.0) for i in range(4)]
+
+    scatter_data = [np.random.normal(0, i+1, size=(40, 2)) for i in range(4)] #array of four (40,2)
+
+    heatmap_t = np.linspace(-2, 2, 100)
+    heatmap_xs, heatmap_ys = np.meshgrid(heatmap_t, heatmap_t)
+    heatmap_data1 = multivariate_normal.pdf(np.dstack([heatmap_xs, heatmap_ys]), mean=np.zeros(2), cov=np.eye(2)) #(100,100)
+    heatmap_data2 = np.sinc(heatmap_xs) * np.sinc(heatmap_ys) #(100,100)
+
+    cmap = tol_cset('bright') #len=8
+    plt.figure(0)
+    for i in range(len(line_ys)):
+        plt.plot(line_x, line_ys[i], color=cmap[i], label=f'Label {i+1}')
+    plt.legend(bbox_to_anchor=(1.02,0.9))
+    plt.title('quantitative colors (bright)')
+    plt.show()
+
+    cmap = tol_cset('muted') #len=11
+    plt.figure(1)
+    for i in range(len(scatter_data)):
+        data = scatter_data[i]
+        plt.scatter(data[:, 0], data[:, 1], color=cmap[i], s=2, label=f'Label {i+1}')
+    plt.legend(bbox_to_anchor=(1.02,0.9))
+    plt.title('quantitative colors (muted)')
+    plt.show()
+
+    cmap = tol_cmap('sunset')
+    plt.figure(2)
+    plt.imshow(heatmap_data2, cmap=cmap)
+    plt.colorbar()
+    plt.title('diverging colormap (sunset)')
+    plt.show()
+
+    cmap = tol_cmap('PRGn')
+    plt.figure(3)
+    plt.imshow(heatmap_data1, cmap=cmap)
+    plt.colorbar()
+    plt.title('diverging colormap (sunset)')
+    plt.show()
+
+    cmap = tol_cmap('YlOrBr')
+    plt.figure(4)
+    plt.imshow(heatmap_data2, cmap=cmap)
+    plt.colorbar()
+    plt.title('sequential colormap (YlOrBr)')
+    plt.show()
+
+    cmap = tol_cmap('iridescent')
+    plt.figure(5)
+    plt.imshow(heatmap_data1, cmap=cmap)
+    plt.colorbar()
+    plt.title('sequential colormap (iridescent)')
+    plt.show()
+
+    #math equation in plot
+    x = np.linspace(-5, 5, 100)
+    y = np.sinc(x)
+    plt.figure(6)
+    plt.plot(x, y)
+    plt.title(r'The plot of \$\operatorname{sinc}(x)=\frac{\sin \pi x}{\pi x}\$')
+    plt.savefig('sinc_plot.svg')
 
     # Change default colorset (for lines) and colormap (for maps).
 #    plt.rc('axes', prop_cycle=plt.cycler('color', list(tol_cset('bright'))))
