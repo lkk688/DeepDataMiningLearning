@@ -47,7 +47,11 @@ There are three main ways of running the notebooks we recommend:
    :caption: Pytorch Tutorial
    :maxdepth: 2
 
-   notebooks/Introduction_to_PyTorch
+   notebooks/CMPE_pytorch1_2024Fall
+   notebooks/CMPE_pytorch2_2024Fall
+   notebooks/CMPE_pytorch3_2024Fall
+   notebooks/CMPE_pytorch4_2024Fall
+
 
 .. toctree::
 
