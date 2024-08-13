@@ -4,7 +4,7 @@ print(o3d.__version__)
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-from DeepDataMiningLearning.visionutil import read_image
+from DeepDataMiningLearning.Utils.visionutil import read_image
 r"""
 python -c "import open3d as o3d; \
            mesh = o3d.geometry.TriangleMesh.create_sphere(); \

@@ -51,6 +51,8 @@ There are three main ways of running the notebooks we recommend:
    notebooks/CMPE_pytorch2_2024Fall
    notebooks/CMPE_pytorch3_2024Fall
    notebooks/CMPE_pytorch4_2024Fall
+   notebooks/CMPE_pytorch5_2024Fall
+   notebooks/CMPE_pytorch6_2024Fall
 
 
 .. toctree::
