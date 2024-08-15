@@ -25,7 +25,7 @@ import albumentations#pip install albumentations
 from time import perf_counter
 
 from DeepDataMiningLearning.Utils.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
-from DeepDataMiningLearning.hfvisionmain import load_visionmodel, load_dataset
+from DeepDataMiningLearning.vision.hfvisionmain import load_visionmodel, load_dataset
 from DeepDataMiningLearning.detection.models import create_detectionmodel
 
 #tasks: "depth-estimation", "image-classification", "object-detection"
