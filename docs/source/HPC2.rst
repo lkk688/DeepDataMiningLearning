@@ -22,20 +22,9 @@ If you have provided your SJSU ID to your instructor, you can access the HPC usi
    * It's important to remember that the HPC system is provided as a courtesy, and there is no guarantee of computing resources.
    * Some frameworks will download the datasets and models into their default cache directories (i.e., in your home directory). Please do the following changes to setup a different cache folder for pytorch and huggingface. Add the following lines into your "~/.bashrc" file:
 
-.. code-block:: console
 
-   nano ~/.bashrc
-   #add the following lines
-   export HF_HOME=/data/cmpe258-sp24/.cache/huggingface
-   export TORCH_HOME=/data/cmpe258-sp24/.cache/torch
-   source ~/.bashrc #to take effect
-
-Ref our previous HPC tutorial: https://docs.google.com/document/d/1bNOUUqkeb9ItTsGHAXHLvFsLR6fA0MeZcBRVMCnvtms/edit?usp=sharing
-
-
-
-Remote access
--------------
+Remote access to HPC
+--------------------
 
 SSH Access
 ~~~~~~~~~~
@@ -78,6 +67,21 @@ You can also make use of Visual Studio Code Remote Debugging (https://code.visua
       ForwardX11 yes
       ForwardX11Trusted yes
       ServerAliveInterval 30
+
+Bashrc Setup (optional)
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. code-block:: console
+
+   nano ~/.bashrc
+   #add the following lines
+   export http_proxy=http://172.16.1.2:3128
+   export https_proxy=http://172.16.1.2:3128
+   export HF_HOME=/data/cmpe258-sp24/.cache/huggingface
+   export TORCH_HOME=/data/cmpe258-sp24/.cache/torch
+   source ~/.bashrc #to take effect
+
+Ref our previous HPC tutorial: https://docs.google.com/document/d/1bNOUUqkeb9ItTsGHAXHLvFsLR6fA0MeZcBRVMCnvtms/edit?usp=sharing
+
 
 VSCode Remote to Lab's Server
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
