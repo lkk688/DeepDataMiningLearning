@@ -487,6 +487,14 @@ To commit changes for a single file using Git
     git restore .
     git pull #get the updates
 
+Sync Folder
+------------
+rsync command: https://www.redhat.com/sysadmin/sync-rsync
+
+.. code-block:: console
+
+    $ rsync -rtvuP ImageClassData/ ../rnd-liu/Datasets/ImageClassData/
+
 Common errors
 -------------
 
