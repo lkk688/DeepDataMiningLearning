@@ -37,14 +37,14 @@ def create_torchclassifiermodel(model_name, numclasses=None, model_type='torchvi
             if pretrained == True:
                 pretrained_model=get_model(model_name, weights=weights)#weights="DEFAULT"
                 #pretrained_model=get_model(model_name, weights="DEFAULT")
-                # Freeze the base parameters
-                if freezeparameters == True :
-                    print('Freeze parameters')
-                    for parameter in pretrained_model.parameters():
-                        parameter.requires_grad = False
             else:
                 pretrained_model=get_model(model_name, weights=None)
             #print(pretrained_model)
+            # Freeze the base parameters
+            if freezeparameters == True :
+                print('Freeze parameters')
+                for parameter in pretrained_model.parameters():
+                    parameter.requires_grad = False
             # Step 2: Initialize the inference transforms
             preprocess = weights.transforms()#preprocess.crop_size
             imagenet_classes = weights.meta["categories"]
@@ -113,6 +113,10 @@ def modify_classifier(pretrained_model, numclasses, dropoutp=0.3, classifiername
     return pretrained_model
 
 if __name__ == "__main__":
+    model_name='resnet50'
+    model = create_torchclassifiermodel(model_name, numclasses=None, model_type='timm', freezeparameters=False, pretrained=True)
+    
+
     model_name='efficientnet_b1'
     model = create_torchclassifiermodel(model_name, numclasses=None, model_type='torchvision', freezeparameters=False, pretrained=True)
     summary(model=model,
