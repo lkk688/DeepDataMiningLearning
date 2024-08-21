@@ -511,6 +511,10 @@ rsync command: https://www.redhat.com/sysadmin/sync-rsync
 
     $ rsync -rtvuP ImageClassData/ ../rnd-liu/Datasets/ImageClassData/
 
+VSCode Extensions:
+
+"Black Formatter" to automatic code
+
 Common errors
 -------------
 

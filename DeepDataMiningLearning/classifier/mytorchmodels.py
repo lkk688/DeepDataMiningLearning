@@ -5,6 +5,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import numpy as np
+import os
+import time
 import torchvision
 from torchvision import datasets, models, transforms
 #new approach: https://pytorch.org/blog/easily-list-and-initialize-models-with-new-apis-in-torchvision/
@@ -12,6 +14,12 @@ from torchvision.models import get_model, get_model_weights, get_weight, list_mo
 #print("Torch buildin models:", list_models())
 model_names=list_models(module=torchvision.models)
 #print("Torchvision buildin models:", model_names)
+from timm.utils import AverageMeter
+import timm #pip install timm
+        #model_names = timm.list_models(pretrained=True)
+        #model_names = timm.list_models('*resnet*')
+
+from mydataset import get_labelfn
 
 # Try to get torchinfo, install it if it doesn't work
 try:
@@ -62,17 +70,14 @@ def create_torchclassifiermodel(model_name, numclasses=None, model_type='torchvi
         #pretrained_model = torch.hub.load('facebookresearch/deit:main', model_name, pretrained=True)
         pretrained_model = torch.hub.load(torchhublink, model_name, pretrained=pretrained)
     elif model_type == 'timm':
-        import timm #pip install timm
-        model_names = timm.list_models(pretrained=True)
-        if model_name in model_names:
-            #'mobilenetv3_large_100' 'resnet50' 'resnest26d'
-            pretrained_model = timm.create_model(model_name, pretrained=pretrained, num_classes=numclasses)
-            data_cfg = timm.data.resolve_data_config(pretrained_model.pretrained_cfg)
-            preprocess = timm.data.create_transform(**data_cfg)
-        else:
-            print('Model name not exist.')
+        #if model_name in model_names:
+        pretrained_model = timm.create_model(model_name, pretrained=pretrained, num_classes=numclasses)
+        data_cfg = timm.data.resolve_data_config(pretrained_model.pretrained_cfg)
+        preprocess = timm.data.create_transform(**data_cfg)
         
-    return pretrained_model, preprocess, numclasses, imagenet_classes
+    print(f'Model {model_name} created, param count: {sum([m.numel() for m in model.parameters()])}')
+    num_classes = getattr(pretrained_model, 'num_classes', None)
+    return pretrained_model, preprocess, num_classes, imagenet_classes
 
 def modify_classifier(pretrained_model, numclasses, dropoutp=0.3, classifiername=None):
     #display model architecture
@@ -112,10 +117,57 @@ def modify_classifier(pretrained_model, numclasses, dropoutp=0.3, classifiername
     
     return pretrained_model
 
-if __name__ == "__main__":
-    model_name='resnet50'
-    model = create_torchclassifiermodel(model_name, numclasses=None, model_type='timm', freezeparameters=False, pretrained=True)
+def inference(model, loader, use_probs=True, top_k=True, to_label=None):
+    all_indices = []
+    all_labels = []
+    all_outputs = []
+    to_label = get_labelfn(model)
+    batch_time = AverageMeter()
+    end = time.time()
+    with torch.no_grad():
+        for batch_idx, (input, _) in enumerate(loader):
+            output = model(input)
+
+            if use_probs:
+                output = output.softmax(-1)
+
+            if top_k:
+                output, indices = output.topk(top_k)
+                np_indices = indices.cpu().numpy()
+                all_indices.append(np_indices)
+                if to_label is not None:
+                    np_labels = to_label(np_indices)
+                    all_labels.append(np_labels)
+
+            all_outputs.append(output.cpu().numpy())
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
     
+    all_indices = np.concatenate(all_indices, axis=0) if all_indices else None
+    all_labels = np.concatenate(all_labels, axis=0) if all_labels else None
+    all_outputs = np.concatenate(all_outputs, axis=0).astype(np.float32)
+    return all_indices, all_labels, all_outputs
+    
+
+if __name__ == "__main__":
+    model_name='resnet50' #'mobilenetv3_large_100' 'resnet50' 'resnest26d'
+    model = create_torchclassifiermodel(model_name, numclasses=None, model_type='timm', freezeparameters=False, pretrained=True)
+    # check if CUDA is available
+    train_on_gpu = torch.cuda.is_available()
+    device = (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps"
+        if torch.backends.mps.is_available()
+        else "cpu"
+    )
+    print(f"Using {device} device")
+    model = model.to(device)
+    model.eval()
+
+    model = torch.jit.script(model)
 
     model_name='efficientnet_b1'
     model = create_torchclassifiermodel(model_name, numclasses=None, model_type='torchvision', freezeparameters=False, pretrained=True)
