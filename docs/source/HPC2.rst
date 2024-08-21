@@ -511,8 +511,24 @@ Test ROS2:
    [INFO] [1694195934.574829172] [talker]: Publishing: 'Hello World: 3'
    [INFO] [1694195935.574795028] [talker]: Publishing: 'Hello World: 4'
 
+Build Container (ref: https://docs.sylabs.io/guides/3.0/user-guide/build_env.html):
+
+.. code-block:: console
+   #If you wanted to create a container within a writable directory (called a sandbox) you can do so with the --sandbox option.
+   [010796032@coe-hpc1 containers]$ singularity build --sandbox pytorch/ docker://pytorch/pytorch
+   #To make changes within the container, use the --writable flag when you invoke your container.
+   $ singularity shell --writable pytorch/
+   $ singularity -v run --nv --writable mysandbox/
+   $ export SINGULARITY_TMPDIR=/data/rnd-liu/containers/tmp
+   $ singularity build colab.sif docker://us-docker.pkg.dev/colab-images/public/runtime
+   
+   $ singularity run --bind /data/cmpe249-fa22:/data/ --nv --writable mysandbox/
+   $ singularity run --bind /data/cmpe249-fa22:/data/ --nv mybox.sif
+   
+
 Exit the container:
 
 .. code-block:: console
+
    Singularity> pip install pypdf
    Singularity> exit

@@ -410,6 +410,22 @@ You can use the following Linux commands to scan for IP addresses of other machi
     sudo apt-get install nmap
     sudo nmap -sn 130.65.157.0/24
 
+SSH tunnel
+-----------
+
+Access a colab instance in a remote machine
+
+.. code-block:: console
+
+    $ ssh lkk@lkk-intel12 #ssh into that remote machine
+    # run a colab docker image
+    $ docker run --gpus=all -p 127.0.0.1:9000:8080 us-docker.pkg.dev/colab-images/public/runtime
+    # check the output jupyter link with token. 
+    # Create a new terminal in your local machine, create ssh tunnel to the remote machine
+    ssh -L 9000:localhost:9000 lkk@lkk-intel12
+    # Open Colab in your local machine, click connect to a local instance via this link:
+    http://localhost:9000/?token=829d73b43e0954bbf277956aeca4964494c04d6ef7f58016
+
 Docker
 ------
 
