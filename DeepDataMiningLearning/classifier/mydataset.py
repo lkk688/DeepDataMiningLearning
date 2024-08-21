@@ -8,7 +8,6 @@ from timm.data import (
 import numpy as np
 import timm
 from timm.data import ImageDataset
-from timm.data import create_dataset
 from timm.data.transforms_factory import create_transform
 from pathlib import Path
 import os
@@ -17,7 +16,27 @@ import pandas as pd
 #Download dataset:
 #~/Developer/DeepDataMiningLearning/data$ wget https://s3.amazonaws.com/fast-ai-imageclas/imagenette2-320.tgz -P imagenette
 #tar zxf imagenette/imagenette2-320.tgz -C imagenette
-
+def timmcreate_dataloader(model, train_data, test_data=None, batch_size=16):
+    train_dataloader = None
+    test_dataloader = None
+    input_size = model.pretrained_cfg['input_size']
+    try:
+        # only works if gpu present on machine
+        train_dataloader = create_loader(train_data, input_size, batch_size, is_training=True)
+    except:
+        train_dataloader = create_loader(train_data, input_size, batch_size, is_training=True,use_prefetcher=False)
+    
+    if test_data is not None:
+        try:
+            # only works if gpu present on machine
+            test_dataloader = create_loader(test_data, input_size, batch_size)
+        except:
+            test_dataloader = create_loader(test_data, input_size, batch_size, use_prefetcher=False)
+        return train_dataloader, test_dataloader
+    else:
+        return train_dataloader
+            
+#https://github.com/Evolving-AI-Lab/ppgn/blob/master/misc/map_clsloc.txt
 def timmget_datasetfromfolder(data_path, mapidfile="map_clsloc.txt", use_autoaugment=False, trainfoldername='train', valfoldername='val'):
     data_path = Path(data_path)
     train_path = data_path / trainfoldername
