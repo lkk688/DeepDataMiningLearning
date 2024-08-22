@@ -503,6 +503,19 @@ To commit changes for a single file using Git
     git restore .
     git pull #get the updates
 
+
+NodeJS Install
+--------------
+
+.. code-block:: console
+
+    $ sudo apt install nodejs
+    $ sudo apt install npm
+    #install localtunnel: https://www.npmjs.com/package/localtunnel
+    npm install localtunnel
+    $ npx localtunnel --port 8501
+    your url is: https://neat-taxis-fetch.loca.lt
+
 Sync Folder
 ------------
 rsync command: https://www.redhat.com/sysadmin/sync-rsync
