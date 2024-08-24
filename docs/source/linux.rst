@@ -410,8 +410,8 @@ You can use the following Linux commands to scan for IP addresses of other machi
     sudo apt-get install nmap
     sudo nmap -sn 130.65.157.0/24
 
-SSH tunnel
------------
+Network Tunnel
+--------------
 
 Access a colab instance in a remote machine
 
@@ -425,6 +425,38 @@ Access a colab instance in a remote machine
     ssh -L 9000:localhost:9000 lkk@lkk-intel12
     # Open Colab in your local machine, click connect to a local instance via this link:
     http://localhost:9000/?token=829d73b43e0954bbf277956aeca4964494c04d6ef7f58016
+
+Install zrok (https://docs.zrok.io/docs/guides/install/linux/):
+
+.. code-block:: console
+
+    $ sudo apt  install curl
+    $ (set -euo pipefail;
+
+    curl -sSLf https://get.openziti.io/tun/package-repos.gpg \
+    | sudo gpg --dearmor --output /usr/share/keyrings/openziti.gpg;
+    sudo chmod a+r /usr/share/keyrings/openziti.gpg;
+
+    sudo tee /etc/apt/sources.list.d/openziti-release.list >/dev/null <<EOF;
+    deb [signed-by=/usr/share/keyrings/openziti.gpg] https://packages.openziti.org/zitipax-openziti-deb-stable debian main
+    EOF
+
+    sudo apt update;
+    sudo apt install zrok;
+    zrok version;
+    )
+    $ zrok invite
+
+After you enter your email address, you will get the registration email from zrok and create a new account. When your zrok account was created, the service generated a secret token that identifies and authenticates in a single step. You can also get this command from the web console, click on your email address in the upper right corner of the header. That drop down menu contains an Enable Your Environment link.
+
+.. code-block:: console
+
+    To enable your shell for zrok, use this command:
+    $ zrok enable XXXX 
+    ⡿  the zrok environment was successfully enabled...
+    $ zrok status
+
+If we return to the web console, we'll now see the new environment reflected in the explorer view:
 
 Docker
 ------

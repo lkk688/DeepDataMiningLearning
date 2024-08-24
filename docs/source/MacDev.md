@@ -90,3 +90,27 @@ jupyter kernelspec list #view current jupyter kernels
 ipython kernel install --user --name=py312
 ```
 
+## Network
+Install zrok tunnel:
+```bash
+kaikailiu@Kaikais-MacBook-Pro Downloads % mkdir -p /tmp/zrok && tar -xf ./zrok_0.4.39_darwin_arm64.tar.gz -C /tmp/zrok
+% cd /tmp/zrok
+% mkdir -p bin && install /tmp/zrok/zrok bin/
+#nano ~/.zshrc
+% export PATH=/tmp/zrok/bin:$PATH
+% zrok version
+% zrok enable DmXXX #add environment
+ssh lkk@127.0.0.1 -p 9191
+```
+
+If you want to ssh into a remote linux machine via ssh, enter share in the Linux machine
+```bash
+$ zrok share private --backend-mode tcpTunnel 192.168.9.1:22
+#it will show access your share with: zrok access private gdjf3oz1pudh
+```
+
+In your local Mac, enter `zrok access private gdjf3oz1pudh`, it will show `tcp://127.0.0.1:9191 -> gdjf3oz1pudh`. In another Mac terminal, ssh into the remote machine
+```bash
+% ssh lkk@127.0.0.1 -p 9191
+# same to this: ssh lkk@localhost -p 9191
+```
