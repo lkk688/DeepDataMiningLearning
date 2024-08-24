@@ -471,10 +471,45 @@ Use the automatic script to install docker:
     curl -fsSL https://get.docker.com -o install-docker.sh
     sudo sh install-docker.sh
     sudo docker run hello-world #test docker
-    chmod +x docker_post.sh
-    sudo ./docker_post.sh
+    $ sudo groupadd docker
+    $ sudo usermod -aG docker $USER
+    $ newgrp docker #activate changes
+    #chmod +x docker_post.sh
+    #sudo ./docker_post.sh
     docker run hello-world #test docker without sudo
     #exit the docker via Ctrl+D or exit
+
+Install Nvidia container toolkit via APT:
+
+.. code-block:: console
+
+    $ curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+  && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    $ sudo apt-get update
+    $ sudo apt-get install -y nvidia-container-toolkit
+    #Configure the container runtime by using the nvidia-ctk command:
+    $ sudo nvidia-ctk runtime configure --runtime=docker
+    $ sudo systemctl restart docker
+    #To configure the container runtime for Docker running in Rootless mode
+    #$ nvidia-ctk runtime configure --runtime=docker --config=$HOME/.config/docker/daemon.json #this may cause the NVML unknown error
+    $ sudo systemctl restart docker
+    #Configure /etc/nvidia-container-runtime/config.toml by using the sudo nvidia-ctk command:
+    $ sudo nvidia-ctk config --set nvidia-container-cli.no-cgroups --in-place
+    #Configuring containerd (for Kubernetes) -- optional
+    $ sudo nvidia-ctk runtime configure --runtime=containerd
+    $ sudo systemctl restart docker
+    #Run a sample CUDA container:
+    $ docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
+    #if you see the error of "Failed to initialize NVML: Unknown Error"
+    $ sudo nano /etc/nvidia-container-runtime/config.toml #set the parameter no-cgroups = false
+
+
+We also put the post installation of Docker and install nvidia container in one script file:
+
+.. code-block:: console
+
     ./install_postnvidiacontainer.sh #perform post installation of docker and install nvidia-container toolkit
     #Wrote updated config to /etc/docker/daemon.json
 
