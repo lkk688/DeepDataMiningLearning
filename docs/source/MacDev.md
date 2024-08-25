@@ -105,7 +105,7 @@ ssh lkk@127.0.0.1 -p 9191
 
 If you want to ssh into a remote linux machine via ssh, enter share in the Linux machine
 ```bash
-$ zrok share private --backend-mode tcpTunnel 192.168.9.1:22
+$ zrok share private --backend-mode tcpTunnel 192.168.137.14:22
 #it will show access your share with: zrok access private gdjf3oz1pudh
 ```
 
