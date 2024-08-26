@@ -541,7 +541,10 @@ Clean up any resources (images, containers, volumes, and networks) that are dang
     docker system prune -a
     #Using docker rmi (if you want to remove specific images): docker rmi ImageID_or_Tag
 
-Run Google Colab container image: `docker run -p 127.0.0.1:9000:8080 us-docker.pkg.dev/colab-images/public/runtime`
+Run Google Colab container image:
+.. code-block:: console
+    
+    $ docker run -p 127.0.0.1:9000:8080 --rm --runtime=nvidia --gpus all us-docker.pkg.dev/colab-images/public/runtime
 
 In another terminal, you can check the new container via "docker images", note down the image id, and run this image: `docker run -it --rm 486a56765aad`. For Colab image, you can connect to the colab container runtime in Colab and make changes.
 
@@ -549,12 +552,15 @@ After you entered the container and did changes inside the container, click "con
 
 .. code-block:: console
     
-    docker commit -a "Kaikai Liu" -m "First ROS2-x86 container" 196073a381b4 myros2:v1
+    docker commit -a "Kaikai Liu" -m "Mymodified colab container" a43c343f7f7c mycolab:v1
 
-Now, you can see your newly created container image named "myros2:v1" in "docker images".
+Now, you can see your newly created container image named "mycolab:v1" in "docker images".
 
-after you 
-Re-enter a container: use the command "docker exec -it container_id /bin/bash" to get a bash shell in the container.
+After you modified the container, you can use the command "docker exec -it container_id /bin/bash" to get a bash shell in the container. We also created a shell script to enter into the colab container:
+
+.. code-block:: console
+
+    DeepDataMiningLearning/docker$ ./runcolabcontainer.sh mycolab:v1
 
 Popular Docker commands:
  * Stop a running container: docker stop container_id
