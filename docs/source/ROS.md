@@ -152,7 +152,44 @@ colcon build --symlink-install --packages-up-to-regex realsense*
 realsense-viewer
 ```
 
+https://nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_image_pipeline/isaac_ros_image_proc/index.html#quickstart
+```bash
+cd ${ISAAC_ROS_WS}/src && \
+git clone https://github.com/NVIDIA-ISAAC-ROS/isaac_ros_image_pipeline.git
+rosdep install --from-paths ${ISAAC_ROS_WS}/src/isaac_ros_image_pipeline/isaac_ros_image_proc --ignore-src -y
+cd ${ISAAC_ROS_WS}/ && \
+   colcon build --symlink-install --packages-up-to isaac_ros_image_proc --symlink-install
+source install/setup.bash
+sudo apt-get install -y ros-humble-isaac-ros-examples ros-humble-isaac-ros-realsense
+
+ros2 launch isaac_ros_examples isaac_ros_examples.launch.py launch_fragments:=realsense_mono,resize
+```
+In another terminal
+```bash
+ros2 run image_view image_view --ros-args --remap image:=resize/image
+```
+## Docker changes
+Commit docker images changes:
+```bash
+(mycondapy310) lkk@lkk-intel12:~/miniconda3/lib$ docker ps
+CONTAINER ID   IMAGE                  COMMAND                  CREATED        STATUS        PORTS     NAMES
+d0b8a15dfacd   isaac_ros_dev-x86_64   "/usr/local/bin/scri…"   14 hours ago   Up 14 hours             isaac_ros_dev-x86_64-container
+(mycondapy310) lkk@lkk-intel12:~/miniconda3/lib$ docker commit -a "Kaikai Liu" -m "First ROS2-x86 container" d0b8a15dfacd myisaac_ros:v1
+(mycondapy310) lkk@lkk-intel12:~/miniconda3/lib$ docker images
+REPOSITORY                                      TAG                        IMAGE ID       CREATED          SIZE
+myisaac_ros                                     v1                         6ffb5c654ba5   46 seconds ago   30.8GB
+isaac_ros_dev-x86_64                            latest                     8b15e5a14953   15 hours ago     30.6GB
+```
+
+## ISAAC SIM
+https://docs.omniverse.nvidia.com/isaacsim/latest/installation/install_container.html
+https://docs.omniverse.nvidia.com/isaacsim/latest/introductory_tutorials/tutorial_intro_workflows.html#ros-application
+https://docs.omniverse.nvidia.com/isaacsim/latest/ros2_tutorials/index.html
+
 ## References
+https://developer.nvidia.com/isaac/ros
+https://nvidia-isaac-ros.github.io/getting_started/index.html
+
 https://nvidia-isaac-ros.github.io/repositories_and_packages/isaac_ros_apriltag/isaac_ros_apriltag/index.html#quickstart
 Tutorial for AprilTag Detection with a USB Camera: https://nvidia-isaac-ros.github.io/concepts/fiducials/apriltag/tutorial_usb_cam.html
 
