@@ -4,6 +4,8 @@ from langchain_openai import ChatOpenAI
 from langchain_community.docstore.document import Document
 from langchain_text_splitters import CharacterTextSplitter
 
+#% streamlit run dataapps/streamlit_langchain.py
+
 # Streamlit app
 st.subheader('Summarize Text')
 

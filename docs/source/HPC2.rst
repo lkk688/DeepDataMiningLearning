@@ -449,7 +449,7 @@ Test code:
 
 Container
 ----------
-Load Singularity to use container: 
+Load Singularity to use container (https://apptainer.org/user-docs/master/introduction.html): 
 
 .. code-block:: console
 
@@ -515,16 +515,30 @@ Build Container (ref: https://docs.sylabs.io/guides/3.0/user-guide/build_env.htm
 
 .. code-block:: console
    #If you wanted to create a container within a writable directory (called a sandbox) you can do so with the --sandbox option.
+   $ export SINGULARITY_TMPDIR=/data/rnd-liu/containers/tmp
    [010796032@coe-hpc1 containers]$ singularity build --sandbox pytorch/ docker://pytorch/pytorch
    #To make changes within the container, use the --writable flag when you invoke your container.
-   $ singularity shell --writable pytorch/
+   #$ singularity shell --writable pytorch/
+   $ singularity -v run --nv pytorch
+   >>> import torch
+   >>> torch.cuda.is_available()
+   True
+   >>> torch.__version__
+   '2.2.1'
+   $ singularity shell --nv cuda118u22.simg
+   $ singularity overlay create --size 1024 cuda118u22.simg
+
    $ singularity -v run --nv --writable mysandbox/
-   $ export SINGULARITY_TMPDIR=/data/rnd-liu/containers/tmp
+   
    $ singularity build colab.sif docker://us-docker.pkg.dev/colab-images/public/runtime
    
    $ singularity run --bind /data/cmpe249-fa22:/data/ --nv --writable mysandbox/
    $ singularity run --bind /data/cmpe249-fa22:/data/ --nv mybox.sif
-   
+
+Colab container:
+.. code-block:: console
+
+   $ singularity build --sandbox colab/ docker://us-docker.pkg.dev/colab-images/public/runtime
 
 Exit the container:
 

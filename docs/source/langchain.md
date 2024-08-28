@@ -93,8 +93,20 @@ print(doc_result)
 print(len(doc_result))
 ```
 
- Chroma, is an open-source, lightweight embedding (or vector) database that can be used to store embeddings locally. Chroma provides wrappers around the OpenAI embedding API, which uses the text-embedding-ada-002 second-generation model. By default, Chroma uses an in-memory DuckDB database; it can be persisted to disk in the persist_directory folder on exit and loaded on start (if it exists), but will be subject to the machine's available memory. Chroma can also be configured to run in a client-server mode, where the database runs from the disk instead of memory, [link](https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/chroma.html?ref=alphasec.io#persistance)
 
- To summarize the document, we first split the uploaded file into individual pages, create embeddings for each page using the OpenAI embeddings API, and insert them into the Chroma vector database. Then, we retrieve the information from the vector database using a similarity search, and run the LangChain Chains module to perform the summarization over the input.
+# LangChain with Chroma
+Chroma provides wrappers around the OpenAI embedding API, which uses the text-embedding-ada-002 second-generation model. By default, Chroma uses an in-memory DuckDB database; it can be persisted to disk in the persist_directory folder on exit and loaded on start (if it exists), but will be subject to the machine's available memory. Chroma can also be configured to run in a client-server mode, where the database runs from the disk instead of memory, [link](https://python.langchain.com/en/latest/modules/indexes/vectorstores/examples/chroma.html?ref=alphasec.io#persistance)
+
+## Summarize Documents
+Use OpenAI API and LangChain to summarize documents:
+```bash
+% streamlit run dataapps/streamlit_langchainbasic.py
+```
+
+Summarize Documents with LangChain and Chroma: To summarize the document, we first split the uploaded file into individual pages, create embeddings for each page using the OpenAI embeddings API, and insert them into the Chroma vector database. Then, we retrieve the information from the vector database using a similarity search, and run the LangChain Chains module to perform the summarization over the input.
+```bash
+% streamlit run dataapps/streamlit_langchainchroma.py
+```
 
  https://alphasec.io/summarize-documents-with-langchain-and-chroma/
+ https://github.com/alphasecio/langchain-examples/tree/main/chroma-summary

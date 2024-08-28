@@ -90,6 +90,27 @@ jupyter kernelspec list #view current jupyter kernels
 ipython kernel install --user --name=py312
 ```
 
+### LLM related Packages
+```bash
+pip install langchain
+pip install -qU langchain-openai
+pip install -qU langchain-google-vertexai
+pip install -qU langchain-nvidia-ai-endpoints
+pip install langchain_community
+pip install langchain-chroma
+pip install openai
+pip install streamlit
+pip install tiktoken
+pip install pypdf
+```
+### Google Cloud
+Install the Google Cloud CLI: https://cloud.google.com/sdk/docs/install-sdk
+```bash
+curl https://sdk.cloud.google.com | bash
+% ls ~/google-cloud-sdk
+google-cloud-sdk % ./bin/gcloud init
+```
+
 ## Network
 Install zrok tunnel:
 ```bash
