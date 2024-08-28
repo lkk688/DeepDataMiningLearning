@@ -541,6 +541,22 @@ Clean up any resources (images, containers, volumes, and networks) that are dang
     docker system prune -a
     #Using docker rmi (if you want to remove specific images): docker rmi ImageID_or_Tag
 
+Edit docker daemon configuration /etc/docker/daemon.json with following content:
+
+.. code-block:: console
+    {
+        "runtimes": {
+            "nvidia": {
+                "path": "nvidia-container-runtime",
+                "runtimeArgs": []
+            }
+        }
+        "data-root":"/Developer/dockerimages"
+    }
+    #Copy the current data directory to the new one
+    $ sudo rsync -aP /var/lib/docker/ "/Developer/dockerimages"
+    sudo mv /var/lib/docker /var/lib/docker.old
+    sudo service docker start
 
 Add New Sudo Users
 ------------------
