@@ -4,7 +4,7 @@ from PIL import Image, ImageDraw
 from tqdm.auto import tqdm
 import requests
 import numpy as np
-import cv2
+import cv2 #pip install opencv-python
 import os
 import evaluate
 import math
