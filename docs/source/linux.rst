@@ -459,16 +459,18 @@ After you enter your email address, you will get the registration email from zro
 If we return to the web console, we'll now see the new environment reflected in the explorer view.
 
 If you want to ssh into a remote linux machine via ssh, enter share in the Linux machine
-```bash
-$ zrok share private --backend-mode tcpTunnel 192.168.137.14:22
-#it will show access your share with: zrok access private gdjf3oz1pudh
-```
+
+.. code-block:: console
+
+    $ zrok share private --backend-mode tcpTunnel 192.168.137.14:22
+    #it will show access your share with: zrok access private gdjf3oz1pudh
+
 
 In your local Mac, enter `zrok access private gdjf3oz1pudh`, it will show `tcp://127.0.0.1:9191 -> gdjf3oz1pudh`. In another Mac terminal, ssh into the remote machine
-```bash
-% ssh lkk@127.0.0.1 -p 9191
-# same to this: ssh lkk@localhost -p 9191
-```
+.. code-block:: console
+    
+    ssh lkk@127.0.0.1 -p 9191
+    # same to this: ssh lkk@localhost -p 9191
 
 Docker
 ------
