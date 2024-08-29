@@ -96,6 +96,7 @@ pip install langchain
 pip install -qU langchain-openai
 pip install -qU langchain-google-vertexai
 pip install -qU langchain-nvidia-ai-endpoints
+pip install langchain-pinecone
 pip install langchain_community
 pip install langchain-chroma
 pip install openai

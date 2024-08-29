@@ -8,7 +8,7 @@ Install the Python client on the command line:
 pip install pinecone #install without gRPC
 pip install "pinecone-client[grpc]"
 ```
-use your API key to initialize your client:
+Use your API key to initialize your client:
 ```bash
 PINECONE_API_KEY="YOUR_API_KEY"
 from pinecone import Pinecone, ServerlessSpec
@@ -16,13 +16,21 @@ from pinecone import Pinecone, ServerlessSpec
 pc = Pinecone(api_key=PINECONE_API_KEY)
 ```
 
-In Pinecone, an index is the highest-level organizational unit of data, where you define the dimension of vectors to be stored and the similarity metric to be used when querying them. Normally, you choose a dimension and similarity metric based on the embedding model used to create your vectors. Create a serverless index named "myindex" that performs nearest-neighbor search using the cosine distance metric for 2-dimensional vectors:
+Key concepts in Pinecone: https://docs.pinecone.io/guides/get-started/key-concepts. A organization is a group of one or more projects that use the same billing. A project belongs to an organization and contains one or more indexes. Each project belongs to exactly one organization, but only users who belong to the project can access the indexes in that project. API keys and Assistants are project-specific. 
+
+In Pinecone, an index is the highest-level organizational unit of data, where you define the dimension of vectors (i.e., number of values in a vector) to be stored and the similarity metric to be used when querying them. Normally, you choose a dimension and similarity metric based on the embedding model used to create your vectors. In Pinecone, there are two types of indexes: serverless and pod-based. Each index runs on at least one pod, which are pre-configured units of hardware for running a Pinecone service." With the free Starter plan, you can create one pod with enough resources to support 100K vectors with 1536-dimensional embeddings and metadata.
+
+A backup is a static copy of a serverless index. A collection is a static copy of a pod-based index. Both backups and collections only consume storage. They are non-queryable representations of a set of records. You can create a backup or collection from an index, and you can create a new index from that backup or collection.
+
+You can create an index in the Pinecone web console. Click Create your first Index, provide the Index Name and Dimensions, select the Pod Type, and click Create Index.
+
+You can also create a serverless index named "myindex" in code. that performs nearest-neighbor search using the cosine distance metric for 2-dimensional vectors:
 ```bash
 index_name = "myindex"
 if index_name not in pc.list_indexes().names():
     pc.create_index(
         name=index_name,
-        dimension=2, # Replace with your model dimensions
+        dimension=1536, # Replace with your model dimensions, max is 1536
         metric="cosine", # Replace with your model metric
         spec=ServerlessSpec(
             cloud='aws', 
@@ -31,7 +39,10 @@ if index_name not in pc.list_indexes().names():
     ) 
 ```
 
-Within an index, vectors are stored in namespaces, and all upserts, queries, and other data operations always target one namespace. Namespaces are essential for implementing multitenancy when you need to isolate the data of each customer/user. For example, use the upsert operation to write six 2-dimensional vectors into 2 distinct namespaces. Use the describe_index_stats operation to check if the current vector count matches the number of vectors you upserted:
+Within an index, vectors are stored in namespaces, and all upserts, queries, and other data operations always target one namespace. A namespace is a partition within an index. It divides records in an index into separate groups. Namespaces are essential for implementing multitenancy when you need to isolate the data of each customer/user. A record is a basic unit of data and consists of the following: Record ID (record’s unique ID), Dense vector (also referred to as a vector embedding or simply a vector), Metadata (optional, additional information that can be attached to vector embeddings to provide more context and enable additional filtering capabilities), and Sparse vector (optional). For example, the original text of the embeddings can be stored in the metadata. Each dimension in a sparse vector typically represents a word from a dictionary, and the non-zero values represent the importance of these words in the document.
+
+
+For example, use the upsert operation to write six 2-dimensional vectors into 2 distinct namespaces. Use the describe_index_stats operation to check if the current vector count matches the number of vectors you upserted:
 ```bash
 index = pc.Index(index_name)
 
@@ -78,8 +89,13 @@ print(query_results2)
 When you no longer need the index, use the delete_index operation to delete it:
 ```bash
 pc.delete_index(index_name)
-
 ```
+
+References:
+
+https://docs.pinecone.io/examples/notebooks
+
+https://colab.research.google.com/github/pinecone-io/examples/blob/master/docs/rag-getting-started.ipynb
 
 https://colab.research.google.com/github/pinecone-io/examples/blob/master/docs/langchain-retrieval-augmentation.ipynb
 

@@ -152,6 +152,9 @@ NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/cont
     sudo docker run --rm --gpus all nvidia/cuda:11.7.1-devel-ubuntu22.04 nvidia-smi
 
     docker pull nvidia/cuda:11.7.1-devel-ubuntu22.04
+    docker pull nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+    #https://hub.docker.com/r/nvidia/cuda
+    docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 nvidia-smi
 
 System Upgrade
 
