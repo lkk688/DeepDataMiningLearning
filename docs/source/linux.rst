@@ -580,7 +580,7 @@ Edit docker daemon configuration /etc/docker/daemon.json with following content:
                 "path": "nvidia-container-runtime",
                 "runtimeArgs": []
             }
-        }
+        },
         "data-root":"/Developer/dockerimages"
     }
     #Copy the current data directory to the new one
