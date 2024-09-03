@@ -51,10 +51,12 @@ There are three main ways of running the notebooks we recommend:
    notebooks/CMPE_pytorch2_2024Fall
    notebooks/CMPE_pytorch3_2024Fall
    notebooks/CMPE_pytorch4_2024Fall
-   notebooks/CMPE_pytorch5_2024Fall
-   notebooks/CMPE_pytorch6_2024Fall
-   notebooks/CMPE_pytorch7_2024Fall
+   notebooks/CMPE_pytorch5_2024Fall_imageclassification
+   notebooks/CMPE_pytorch6_2024Fall_mlp2resnet
+   notebooks/CMPE_pytorch7_2024Fall_torchvision
    notebooks/CMPE_pytorch8_2024Fall_timm
+   notebooks/CMPE_pytorch9_2024Fall_inferenceoptimization
+   notebooks/CMPE_pytorch10_2024Fall_huggingfaceimage
 
 
 .. toctree::

@@ -428,6 +428,8 @@ Access a colab instance in a remote machine
     ssh -L 9000:localhost:9000 lkk@lkk-intel12
     # Open Colab in your local machine, click connect to a local instance via this link:
     http://localhost:9000/?token=829d73b43e0954bbf277956aeca4964494c04d6ef7f58016
+    # Stop the container when not used
+    $ docker stop ca4e5567f48c
 
 Install zrok (https://docs.zrok.io/docs/guides/install/linux/):
 
