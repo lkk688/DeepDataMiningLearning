@@ -682,3 +682,10 @@ Fix nvidia-smi error of "NVIDIA-SMI has failed because it couldn't communicate w
     sudo ubuntu-drivers devices #check the latest and recommended driver version
     sudo apt install nvidia-driver-545
     sudo reboot
+
+Fix git push problem when the file is big: "RPC failed; HTTP 400 curl 22 The requested URL returned error: 400 Bad Request"
+
+.. code-block:: console
+
+    git config http.postBuffer 524288000
+    git pull && git push
