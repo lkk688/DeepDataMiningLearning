@@ -18,8 +18,8 @@ from langchain.prompts import PromptTemplate
 #from langchain.chains import LLMChain #Deprecated
 from langchain.agents import Tool
 from langchain_core.output_parsers import StrOutputParser
-
-
+from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 
 def simplellmchain():
     # prompt_template = "Tell me a {adjective} joke"
@@ -45,6 +45,8 @@ if __name__ == "__main__":
     top_p=0.7,
     max_tokens=1024,
     )
+    response = llm.invoke([HumanMessage(content="hi!")])
+    print(response.content)
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -73,6 +75,19 @@ if __name__ == "__main__":
     tools = [magic_function, llm_tool]
 
     agent = create_tool_calling_agent(llm, tools, prompt)
+    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, return_intermediate_steps=True)
+    result = agent_executor.invoke({"input": "what is the value of magic_function(3)?"})
+
+    # Using with chat history
+    agent_executor.invoke(
+        {
+            "input": "what's my name?",
+            "chat_history": [
+                HumanMessage(content="hi! my name is bob"),
+                AIMessage(content="Hello Bob! How can I assist you today?"),
+            ],
+        }
+    )
     
     zero_shot_agent = initialize_agent(
         agent="zero-shot-react-description",
@@ -96,19 +111,4 @@ if __name__ == "__main__":
         "What's my name?"
     )
     
-    agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
-
-    result = agent_executor.invoke({"input": "what is the value of magic_function(3)?"})
-
-    # Using with chat history
-    from langchain_core.messages import AIMessage, HumanMessage
-    agent_executor.invoke(
-        {
-            "input": "what's my name?",
-            "chat_history": [
-                HumanMessage(content="hi! my name is bob"),
-                AIMessage(content="Hello Bob! How can I assist you today?"),
-            ],
-        }
-    )
     print("Done")
