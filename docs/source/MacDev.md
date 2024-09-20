@@ -1,5 +1,11 @@
 # Development Environment for Apple Silicon
 
+## Environment
+```bash
+(mypy310) kaikailiu@kaikais-mbp ~ % nano ~/.zshrc
+(mypy310) kaikailiu@kaikais-mbp ~ % source ~/.zshrc
+```
+
 ## Xcode Tools
 Install Xcode command-line tools (CLT), this includes all the useful open-source tools Unix developers expect, like git, clang, and more.
 ```bash
