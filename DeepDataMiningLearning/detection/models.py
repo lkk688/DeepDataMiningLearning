@@ -22,7 +22,7 @@ def get_torchvision_detection_models(modelname, box_score_thresh=0.9):
     weights = weights_enum.DEFAULT #get the default weights
     preprocess = weights.transforms()
     classes = weights.meta["categories"]
-    pretrained_model=get_model(modelname, box_score_thresh=0.9, weights="DEFAULT")
+    pretrained_model=get_model(modelname, box_score_thresh=box_score_thresh, weights="DEFAULT")
     
     return pretrained_model, preprocess, weights, classes
 
