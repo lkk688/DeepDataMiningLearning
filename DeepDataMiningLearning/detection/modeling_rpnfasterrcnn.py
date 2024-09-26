@@ -1269,6 +1269,36 @@ class CustomRCNN(nn.Module):
 
         return detections
 
+import torchvision
+def create_testdata(num_images=4):
+    images, boxes = torch.rand(num_images, 3, 600, 1200), torch.rand(num_images, 11, 4)
+    boxes[:, :, 2:4] = boxes[:, :, 0:2] + boxes[:, :, 2:4] #xywh->xyxy
+    labels = torch.randint(1, 91, (4, 11)) #[4, 11] size
+    images = list(image for image in images) #list of tensor (torch.Size([3, 600, 1200]))
+    targets = []
+    for i in range(len(images)):
+        d = {}
+        d['boxes'] = boxes[i]
+        d['labels'] = labels[i]
+        targets.append(d)
+    return images, targets
 
-# if __name__ == "__main__":
-#     test_Customrcnn()
+if __name__ == "__main__":
+    #test_Customrcnn()
+    model_names=list_models(module=torchvision.models)
+    print("Torchvision buildin models:", model_names)
+    detectionmodel_names=list_models(module=torchvision.models.detection)
+    print("Torchvision detection models:", detectionmodel_names)
+    
+    backbonename='resnet50'
+    trainable_layers =2
+    #layers_to_train = ["layer4", "layer3", "layer2", "layer1", "conv1"]
+    num_classes = 90
+    model=CustomRCNN(backbone_modulename=backbonename,trainable_layers=trainable_layers,num_classes=num_classes, out_channels=256, min_size=800, max_size=1333)
+    model.train()#model.eval()
+    
+    images, targets = create_testdata()#images is list of [3, 600, 1200], 
+    output = model(images, targets)
+    #Inference model, output is a list, training mode: output is the loss
+    print([(k, v.shape) for k, v in output[0].items()])
+    

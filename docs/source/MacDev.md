@@ -142,3 +142,6 @@ In your local Mac, enter `zrok access private gdjf3oz1pudh`, it will show `tcp:/
 % ssh lkk@127.0.0.1 -p 9191
 # same to this: ssh lkk@localhost -p 9191
 ```
+
+## Problems
+* "torchvision.ops box_ops Couldn't load custom C++ ops.": upgrade torch and torchvision to the same version.
