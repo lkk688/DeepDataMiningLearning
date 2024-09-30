@@ -390,46 +390,46 @@ class RegionProposalNetwork(torch.nn.Module):
         device = proposals.device
         # do not backprop through objectness
         objectness = objectness.detach()
-        objectness = objectness.reshape(num_images, -1)
+        objectness = objectness.reshape(num_images, -1) #[4images, 225603]
 
         levels = [
             torch.full((n,), idx, dtype=torch.int64, device=device) for idx, n in enumerate(num_anchors_per_level)
         ]
         levels = torch.cat(levels, 0)
-        levels = levels.reshape(1, -1).expand_as(objectness)
+        levels = levels.reshape(1, -1).expand_as(objectness) #[4, 225603] 0-4 ids
 
         # select top_n boxes independently per level before applying nms
-        top_n_idx = self._get_top_n_idx(objectness, num_anchors_per_level)
+        top_n_idx = self._get_top_n_idx(objectness, num_anchors_per_level) #num_anchors_per_level: [169344, 42336, 10584, 2646, 693], return [4, 8693]
 
         image_range = torch.arange(num_images, device=device)
         batch_idx = image_range[:, None]
 
-        objectness = objectness[batch_idx, top_n_idx]
-        levels = levels[batch_idx, top_n_idx]
-        proposals = proposals[batch_idx, top_n_idx]
+        objectness = objectness[batch_idx, top_n_idx] #[4, 8693]
+        levels = levels[batch_idx, top_n_idx] #[4, 8693]
+        proposals = proposals[batch_idx, top_n_idx] #[4, 8693, 4]
 
         objectness_prob = torch.sigmoid(objectness)
 
         final_boxes = []
         final_scores = []
         for boxes, scores, lvl, img_shape in zip(proposals, objectness_prob, levels, image_shapes):
-            boxes = box_ops.clip_boxes_to_image(boxes, img_shape)
+            boxes = box_ops.clip_boxes_to_image(boxes, img_shape) #[8693, 4]
 
             # remove small boxes
             keep = box_ops.remove_small_boxes(boxes, self.min_size)
-            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
+            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep] #[8693, 4]
 
             # remove low scoring boxes
             # use >= for Backwards compatibility
             keep = torch.where(scores >= self.score_thresh)[0]
-            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep]
+            boxes, scores, lvl = boxes[keep], scores[keep], lvl[keep] #[8693, 4]
 
             # non-maximum suppression, independently done per level
             keep = box_ops.batched_nms(boxes, scores, lvl, self.nms_thresh)
 
             # keep only topk scoring predictions
             keep = keep[: self.post_nms_top_n()]
-            boxes, scores = boxes[keep], scores[keep]
+            boxes, scores = boxes[keep], scores[keep] #[2000, 4]
 
             final_boxes.append(boxes)
             final_scores.append(scores)
@@ -497,7 +497,7 @@ class RegionProposalNetwork(torch.nn.Module):
         """
         # RPN uses all feature maps that are available
         features = list(features.values()) 
-        #list of 0-4 features: [2, 256, 200, 304], [2, 256, 100, 152]
+        #list of 0-4 features (len=5): [2, 256, 200, 304], [2, 256, 100, 152]
 
         objectness, pred_bbox_deltas = self.head(features) #RPNHead Conv2d
         #return logits: list of 5 [2, 3, 200, 304], [2, 3, 100, 152], [2, 3, 50, 76], [2, 3, 25, 38], [2, 3, 13, 19]
@@ -528,9 +528,8 @@ class RegionProposalNetwork(torch.nn.Module):
         #image_shapes: A list of tuples, representing the original image sizes
         #num_anchors_per_level: A list of integers, representing the number of anchors per level.
         boxes, scores = self.filter_proposals(proposals, objectness, images.image_sizes, num_anchors_per_level)
-        #boxes: A tensor of shape [M, 4], representing the filtered proposals. 
-        #boxes list of 2, each [1000, 4]
-        #scores: A tensor of shape [M], representing the objectness scores for the filtered proposals.
+        #boxes list of 2 (num of images), each [2000, 4] representing the filtered proposals.
+        #scores: list of 2 (num of images), each [2000] tensor of shape [M], representing the objectness scores for the filtered proposals.
         
         losses = {}
         if self.training:
@@ -546,15 +545,15 @@ class RegionProposalNetwork(torch.nn.Module):
             #then the anchor is assigned a label of 1. Otherwise, if the anchor has an IoU with a ground-truth box that is less than the negative IoU threshold, 
             #then the anchor is assigned a label of -1. All other anchors are assigned a label of 0.
             labels, matched_gt_boxes = self.assign_targets_to_anchors(anchors, targets)
-            #labels: A tensor of shape [N], representing the label for each anchor.
-            #matched_gt_boxes: A tensor of shape [N, 4], representing the matched ground-truth boxes for each anchor.
+            #labels: A list of tensors (num_image), each [N], for each anchor.
+            #matched_gt_boxes: A list of tensors (num_image), each tensor of shape [N, 4], representing the matched ground-truth boxes for each anchor.
 
             #encode matched_gt_boxes bounding boxes into bounding box deltas
-            #anchors: A tensor of shape [N, 4], representing the anchors to which the bounding boxes will be encoded.
+            #anchors: A list of tensor of shape [N, 4], representing the anchors to which the bounding boxes will be encoded.
             #The method first computes the intersection-over-union (IoU) between each bounding box and each anchor. 
             #Then, it uses the IoU to compute the bounding box deltas.
             regression_targets = self.box_coder.encode(matched_gt_boxes, anchors)
-            #regression_targets: A tensor of shape [N, 4], representing the bounding box deltas for each anchor.
+            #regression_targets: A list of tensor of shape [N, 4], representing the bounding box deltas for each anchor.
 
             #objectness: A tensor of shape [N], representing the objectness score for each anchor.
             #pred_bbox_deltas: A tensor of shape [N, 4], representing the predicted bounding box deltas for each anchor.
@@ -1225,7 +1224,7 @@ class CustomRCNN(nn.Module):
 
         images, targets = self.detcttransform(images, targets)#images is ImageList
         ##images is ImageList, image_sizes:[(800, 1066), (800, 1199)], tensors [2, 3, 800, 1216]
-
+        #targets is a list of dict, each dict has keys of 'boxes'[11,4], 'labels'[11]
         # cnnfeatures = self.body(images.tensors, targets)
         # features = self.fpn(cnnfeatures)
         features = self.backbone(images.tensors) #[2, 3, 800, 1216]
