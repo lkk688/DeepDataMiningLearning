@@ -1,4 +1,45 @@
+# LLM Concepts
+
+Large language models (LLMs) are a class of generative AI models built using transformer networks that can recognize, summarize, translate, predict, and generate language using very large datasets.
+
+Tokenization is the first step to building a model, which involves splitting text into smaller units called tokens that become the basic building blocks for LLMs. These extracted tokens are used to build a vocabulary index mapping tokens to numeric IDs, to numerically represent text suitable for deep learning computations. During the encoding process, these numeric tokens are encoded into vectors representing each token’s meaning. During the decoding process, when LLMs perform generation, tokenizers decode the numeric vectors back into readable text sequences.  
+
+Retrieval Augmented Generation: rather than just passing a user question directly to a language model, the system "retrieves" any documents that could be relevant in answering the question, and then passes those documents (along with the original question) to the language model for a "generation" step. 
+* Retrieval is by using semantic search. In this process, a numerical vector (an embedding) is calculated for all documents, and those vectors are then stored in a vector database (a database optimized for storing and querying vectors). 
+* Incoming queries are then vectorized as well, and the documents retrieved are those who are closest to the query in embedding space.
+* Langchain supports two different query methods: one that just optimizes similarity, another with optimizes for maximal marginal relevance. Users often want to specify metadata filters to filter results before doing semantic search
+* An index is a data structure that supports efficient searching, and a retriever is the component that uses the index to find and return relevant documents in response to a user's query. The index is a key component that the retriever relies on to perform its function.
+
+LlamaIndex(previously known as GPT Index), is a data framework specifically designed for LLM apps. It builds on top of LangChain to provide “a central interface to connect your LLMs with external data.” Its primary focus is on ingesting, structuring, and accessing private or domain-specific data. LlamaIndex offers a set of tools that facilitate the integration of private data into LLMs.
+* Feed relevant information into the prompt of an LLM. Instead of feeding it all the data, you try to pick out the bits useful to each query.
+* Starting with your documents, you first load them into LlamaIndex. It comes with many ready-made readers for sources such as databases, Discord, Slack, Google Docs, Notion, and GitHub repos. `docs = loader.load_data(branch="main")`, where `docs` is a list of all the files and their text, we can move on to parsing them into nodes.
+* Next, you use LlamaIndex to parse the documents into nodes — basically chunks of text. An index is constructed next so that, later, when we query the documents, LlamaIndex can quickly retrieve the relevant data. The index can be stored in different ways, e.g., Vector Store.
+```bash
+# 2. Parse the docs into nodes
+from llama_index.node_parser import SimpleNodeParser
+parser = SimpleNodeParser()
+nodes = parser.get_nodes_from_documents(docs)
+```
+* Step3 Index Construction: create embeddings (check out this article for a visual explanation) for each node and store it in a Vector Store.
+* Step4 Store the Index. The documents are read, parsed, and indexed, but the index will be in memory. LlamaIndex has many storage backends (e.g., Pinecone, JSON flat-files).
+* Step5 Run query. 
+```bash
+from llama_index import StorageContext, load_index_from_storage
+
+storage_context = StorageContext.from_defaults(persist_dir="index")
+
+index = load_index_from_storage(storage_context)
+query_engine = index.as_query_engine()
+response = query_engine.query(
+    "What does load_index_from_storage do and how does it work?"
+)
+print(response)
+```
+
+LangChain vs LlamaIndex: LangChain is also suitable for building intelligent agents capable of performing multiple tasks simultaneously. if your main goal is smart search and retrieval, LlamaIndex is a great choice. It excels in indexing and retrieval for LLMs, making it a powerful tool for deep exploration of data.
+
 # LangChain
+LangChain is a framework for developing applications powered by language models. LangChain is a framework that enables the development of data-aware and agentic applications. It provides a set of components and off-the-shelf chains that make it easy to work with LLMs (such as GPT). LangChain is ideal if you are looking for a broader framework to bring multiple tools together. 
 
 Install LangChain via [link](https://python.langchain.com/v0.2/docs/how_to/installation/)
 ```bash
