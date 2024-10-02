@@ -6,8 +6,9 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from DeepDataMiningLearning.detection.modules.yolomodels import create_yolomodel, freeze_yolomodel
-from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
+#from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
 import os
+from modeling_rpnfasterrcnn import CustomRCNN
 
 try:
     from torchinfo import summary
@@ -100,6 +101,7 @@ def create_testdata():
     return images, targets
 
 #Pass
+import torchinfo
 def test_defaultmodels():
     model_names=list_models(module=torchvision.models)
     print("Torchvision buildin models:", model_names)
@@ -112,10 +114,25 @@ def test_defaultmodels():
 
     modelname = 'fasterrcnn_resnet50_fpn_v2'
     model, preprocess, weights, classes = get_torchvision_detection_models(modelname, box_score_thresh=0.2)
+    try:
+        torchinfo.summary(model=model,
+            input_size=(32, 3, 224, 224), # make sure this is "input_size", not "input_shape"
+            # col_names=["input_size"], # uncomment for smaller output
+            col_names=["input_size", "output_size", "num_params", "trainable"],
+            col_width=20,
+            row_settings=["var_names"]
+        )
+    except:
+        print(model)
+    
     INSTANCE_CATEGORY_NAMES = weights.meta["categories"]
     print(model.backbone.out_channels) #256
-    torch.save(model.state_dict(), "/data/cmpe249-fa23/modelzoo/fasterrcnn_resnet50_fpn_v2.pt")
+    #torch.save(model.state_dict(), "/data/cmpe249-fa23/modelzoo/fasterrcnn_resnet50_fpn_v2.pt")
 
+    x=torch.rand(1,3,800,800)
+    output = model.backbone(x) 
+    print([(k, v.shape) for k, v in output.items()])
+    
     x=torch.rand(1,3,64,64) #image.tensors #[2, 3, 800, 1312] list of tensors x= torch.rand(1,3,64,64)
     output = model.backbone(x) 
     print([(k, v.shape) for k, v in output.items()])
@@ -219,8 +236,8 @@ def create_detectionmodel(modelname, num_classes=None, trainable_layers=0, ckpt_
 if __name__ == "__main__":
     test_defaultmodels()
 
-    os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
-    DATAPATH='/data/cmpe249-fa23/torchvisiondata/'
+    #os.environ['TORCH_HOME'] = '/data/cmpe249-fa23/torchhome/'
+    #DATAPATH='/data/cmpe249-fa23/torchvisiondata/'
 
 
     

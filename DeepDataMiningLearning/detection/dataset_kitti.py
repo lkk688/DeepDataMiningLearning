@@ -154,7 +154,7 @@ class KittiDataset(torch.utils.data.Dataset):
             #target, image_id = self._parse_target(index) if self.train else None
 
         if WrapNewDict:
-            target = dict(image_id=imageidx, annotations=target) #new changes
+            target = dict(image_id=imageidx, annotations=target) #new changes, not used now
         if self.transform:
             image, target = self.transform(image, target)
         return image, target
