@@ -450,25 +450,25 @@ class RegionProposalNetwork(torch.nn.Module):
             box_loss (Tensor)
         """
 
-        sampled_pos_inds, sampled_neg_inds = self.fg_bg_sampler(labels)
-        sampled_pos_inds = torch.where(torch.cat(sampled_pos_inds, dim=0))[0]
-        sampled_neg_inds = torch.where(torch.cat(sampled_neg_inds, dim=0))[0]
+        sampled_pos_inds, sampled_neg_inds = self.fg_bg_sampler(labels) #labels: list of [242991] (0,1)
+        sampled_pos_inds = torch.where(torch.cat(sampled_pos_inds, dim=0))[0] #foreground anchor index, 144
+        sampled_neg_inds = torch.where(torch.cat(sampled_neg_inds, dim=0))[0] #880
 
-        sampled_inds = torch.cat([sampled_pos_inds, sampled_neg_inds], dim=0)
+        sampled_inds = torch.cat([sampled_pos_inds, sampled_neg_inds], dim=0) #1024
 
-        objectness = objectness.flatten()
+        objectness = objectness.flatten() #[971964, 1]->[971964] all 4 images together
 
-        labels = torch.cat(labels, dim=0)
-        regression_targets = torch.cat(regression_targets, dim=0)
+        labels = torch.cat(labels, dim=0) #4 images together [971964]
+        regression_targets = torch.cat(regression_targets, dim=0) #4 images together [971964, 4]
 
         box_loss = F.smooth_l1_loss(
-            pred_bbox_deltas[sampled_pos_inds],
-            regression_targets[sampled_pos_inds],
+            pred_bbox_deltas[sampled_pos_inds], #[971964, 4], sampled_pos_inds has 144 index
+            regression_targets[sampled_pos_inds], #[971964, 4]
             beta=1 / 9,
             reduction="sum",
         ) / (sampled_inds.numel())
 
-        objectness_loss = F.binary_cross_entropy_with_logits(objectness[sampled_inds], labels[sampled_inds])
+        objectness_loss = F.binary_cross_entropy_with_logits(objectness[sampled_inds], labels[sampled_inds]) #[971964]
 
         return objectness_loss, box_loss
 
@@ -537,7 +537,7 @@ class RegionProposalNetwork(torch.nn.Module):
                 raise ValueError("targets should not be None")
             
             #assign ground-truth boxes to anchors.
-            #anchors: A tensor of shape [N, 4], representing the anchors
+            #anchors: A list of images, each tensor of shape [N, 4], representing the anchors
             #targets: A list of dictionaries, each representing a ground-truth box.
             #first computes the intersection-over-union (IoU) between each anchor and each ground-truth box. 
             #Then, it assigns each anchor to the ground-truth box with the highest IoU.
@@ -725,12 +725,16 @@ class RoIHeads(nn.Module):
                 labels_in_image = torch.zeros((proposals_in_image.shape[0],), dtype=torch.int64, device=device)
             else:
                 #  set to self.box_similarity when https://github.com/pytorch/pytorch/issues/27495 lands
+                #gt_boxes_in_image: [11,4], proposals_in_image: [2011,4]
                 match_quality_matrix = box_ops.box_iou(gt_boxes_in_image, proposals_in_image)
+                #[11, 2011]
                 matched_idxs_in_image = self.proposal_matcher(match_quality_matrix)
+                #[2011], unmatched is -1, matched is index
 
                 clamped_matched_idxs_in_image = matched_idxs_in_image.clamp(min=0)
+                #[2011], unmatched is 0
 
-                labels_in_image = gt_labels_in_image[clamped_matched_idxs_in_image]
+                labels_in_image = gt_labels_in_image[clamped_matched_idxs_in_image] #[2011]
                 labels_in_image = labels_in_image.to(dtype=torch.int64)
 
                 # Label background (below the low threshold)
@@ -784,30 +788,33 @@ class RoIHeads(nn.Module):
         dtype = proposals[0].dtype
         device = proposals[0].device
 
-        gt_boxes = [t["boxes"].to(dtype) for t in targets]
-        gt_labels = [t["labels"] for t in targets]
+        gt_boxes = [t["boxes"].to(dtype) for t in targets] #get boxes, list of images, each [11,4]
+        gt_labels = [t["labels"] for t in targets]#list of images, each [11]
 
         # append ground-truth bboxes to propos
-        proposals = self.add_gt_proposals(proposals, gt_boxes)
+        proposals = self.add_gt_proposals(proposals, gt_boxes)#list of images, each [2011,4]
 
         # get matching gt indices for each proposal
         matched_idxs, labels = self.assign_targets_to_proposals(proposals, gt_boxes, gt_labels)
+        #matched_idxs, list of images, each is [2011], unmatched is 0
+        #labels, list of images, each is [2011]
+        
         # sample a fixed proportion of positive-negative proposals
-        sampled_inds = self.subsample(labels)
+        sampled_inds = self.subsample(labels) # list of 512
         matched_gt_boxes = []
-        num_images = len(proposals)
+        num_images = len(proposals) #4
         for img_id in range(num_images):
-            img_sampled_inds = sampled_inds[img_id]
-            proposals[img_id] = proposals[img_id][img_sampled_inds]
-            labels[img_id] = labels[img_id][img_sampled_inds]
-            matched_idxs[img_id] = matched_idxs[img_id][img_sampled_inds]
+            img_sampled_inds = sampled_inds[img_id] #512
+            proposals[img_id] = proposals[img_id][img_sampled_inds] #[512, 4]
+            labels[img_id] = labels[img_id][img_sampled_inds] #[512]
+            matched_idxs[img_id] = matched_idxs[img_id][img_sampled_inds] #[512]
 
-            gt_boxes_in_image = gt_boxes[img_id]
+            gt_boxes_in_image = gt_boxes[img_id] #[11, 4]
             if gt_boxes_in_image.numel() == 0:
                 gt_boxes_in_image = torch.zeros((1, 4), dtype=dtype, device=device)
-            matched_gt_boxes.append(gt_boxes_in_image[matched_idxs[img_id]])
+            matched_gt_boxes.append(gt_boxes_in_image[matched_idxs[img_id]]) #add [512, 4]
 
-        regression_targets = self.box_coder.encode(matched_gt_boxes, proposals)
+        regression_targets = self.box_coder.encode(matched_gt_boxes, proposals) #list of [512,4]
         return proposals, matched_idxs, labels, regression_targets
 
     def postprocess_detections(
@@ -871,10 +878,10 @@ class RoIHeads(nn.Module):
 
     def forward(
         self,
-        features,  # type: Dict[str, Tensor]
-        proposals,  # type: List[Tensor]
-        image_shapes,  # type: List[Tuple[int, int]]
-        targets=None,  # type: Optional[List[Dict[str, Tensor]]]
+        features,  
+        proposals,  
+        image_shapes, 
+        targets=None,
     ):
         # type: (...) -> Tuple[List[Dict[str, Tensor]], Dict[str, Tensor]]
         """
@@ -911,20 +918,20 @@ class RoIHeads(nn.Module):
         #First clips the proposals to the image boundaries. 
         #Then, it uses the roi_align function to extract features from the feature maps for each proposal
         box_features = self.box_roi_pool(features, proposals, image_shapes)
-        #tensor of shape [N, C=256, H=7, W=7],
+        #tensor of shape [N, C=256, H=7, W=7], [2048, 256, 7, 7]
         #where N is the number of proposals, C is the number of channels, and H and W are the height and the width of the feature map for each proposal.
         
         #takes as input the box_features and outputs a tensor of shape [N, C], where C is the number of classes.
         #TwoMLPHead class: 256*7*7 input ->two fully connected layer -> 1024 output
         box_features = self.box_head(box_features)
-        #box_features: tensor of shape [N, C], where C=1024 is the number of channels.
+        #box_features[2048, 1024]: tensor of shape [N, C], where C=1024 is the number of channels.
        
         #takes as input the box_features and outputs a tensor of shape [N, C], 
         #where C is the number of classes, and a tensor of shape [N, 4], where each row contains the predicted bounding box for the corresponding proposal.
-        #FastRCNNPredictor: two fully connected layer to map channel 1024 to 91 classes: class_logits (N,91) and box (N,91*4)
+        #FastRCNNPredictor: two fully connected layer to map channel 1024 to C classes: class_logits (N,C) and box (N,C*4)
         class_logits, box_regression = self.box_predictor(box_features)
-        #The class_logits variable contains the logits for each class, 
-        #while the box_regression variable contains the predicted bounding box deltas.
+        #The class_logits [2048, 90] variable contains the logits for each class, 
+        #while the box_regression [2048, 360] variable contains the predicted bounding box deltas.
 
         result: List[Dict[str, torch.Tensor]] = []
         losses = {}
@@ -1270,7 +1277,7 @@ class CustomRCNN(nn.Module):
 
 import torchvision
 def create_testdata(num_images=4):
-    images, boxes = torch.rand(num_images, 3, 600, 1200), torch.rand(num_images, 11, 4)
+    images, boxes = torch.rand(num_images, 3, 800, 1200), torch.rand(num_images, 11, 4)
     boxes[:, :, 2:4] = boxes[:, :, 0:2] + boxes[:, :, 2:4] #xywh->xyxy
     labels = torch.randint(1, 91, (4, 11)) #[4, 11] size
     images = list(image for image in images) #list of tensor (torch.Size([3, 600, 1200]))
