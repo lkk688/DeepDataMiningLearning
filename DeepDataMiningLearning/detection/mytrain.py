@@ -254,7 +254,8 @@ def main(args):
     else:
         raise RuntimeError(f"Invalid optimizer {args.opt}. Only SGD and AdamW are supported.")
 
-    scaler = torch.cuda.amp.GradScaler() if args.amp else None
+    #scaler = torch.cuda.amp.GradScaler() if args.amp else None
+    scaler = torch.amp.GradScaler() if args.amp else None
 
     args.lr_scheduler = args.lr_scheduler.lower()
     if args.lr_scheduler == "multisteplr":
@@ -328,7 +329,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, sc
     for images, targets in metric_logger.log_every(data_loader, print_freq, header):
         images = list(image.to(device) for image in images) #list of [3, 1280, 1920]
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets] #tuple to list
-        with torch.cuda.amp.autocast(enabled=scaler is not None):
+        #with torch.cuda.amp.autocast(enabled=scaler is not None):
+        with torch.amp.autocast(enabled=scaler is not None):
             loss_dict = model(images, targets) #dict with 4 keys
             losses = sum(loss for loss in loss_dict.values()) #single value
 
