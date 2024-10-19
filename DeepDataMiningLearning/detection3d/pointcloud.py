@@ -5,6 +5,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 from DeepDataMiningLearning.Utils.visionutil import read_image
+
 r"""
 python -c "import open3d as o3d; \
            mesh = o3d.geometry.TriangleMesh.create_sphere(); \
@@ -16,13 +17,13 @@ python -c "import open3d as o3d; \
 
 class MyPointCloud(object):
     def __init__(self, file):
-        img = self.read_image(file) #(427, 640) HW format uint8
+        img, self.org_sizeHW = self.read_image(file) #(427, 640) HW format uint8
         #img = img.transpose(1, 0) #(640, 427) WH format
         self.array = self.__preprocess(img) #(n,3)
         self.cloud = self.create_pcd(self.array)
     
     def read_image(self, path):
-        return read_image(path, rgb=False)
+        return read_image(path, rgb=False) #return img, org_sizeHW
     
     @staticmethod
     def __preprocess(array) -> dict:
@@ -159,7 +160,16 @@ def test_RGBD():
     pcd.transform([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
     o3d.visualization.draw_geometries([pcd])
 
+import os
 if __name__ == "__main__":
+
+    #filepath = "sampledata/depth_testresultmono.jpg"
+    filepath = os.path.join('sampledata', 'depth_testresultmono.jpg')
+    pp = MyPointCloud(file=filepath)
+    pp.draw_cloud()
+
+    pp.draw_voxels(pp.array)
+    
     xyz, z_norm=MyPointCloud.gen_simdata()
     pcd=MyPointCloud.create_pcd(xyz)
     o3d.visualization.draw_geometries([pcd])
@@ -167,9 +177,3 @@ if __name__ == "__main__":
     img = o3d.geometry.Image((z_norm * 255).astype(np.uint8)) #1 channel 
     o3d.io.write_image("data/test.png", img)
     o3d.visualization.draw_geometries([img])
-
-    filepath = "sampledata\depth_testresultmono.jpg"
-    pp = MyPointCloud(file=filepath)
-    pp.draw_cloud()
-
-    pp.draw_voxels(pp.array)
