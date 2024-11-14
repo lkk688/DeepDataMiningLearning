@@ -8,6 +8,7 @@ from typing import Any, Callable, List, Optional, Tuple
 from PIL import Image
 import csv
 from DeepDataMiningLearning.detection.dataset_kitti import KittiDataset
+from DeepDataMiningLearning.detection.dataset_nuscene import NuscenesDataset
 from DeepDataMiningLearning.detection.dataset_waymococo import WaymoCOCODataset
 from collections import defaultdict
 
@@ -157,6 +158,8 @@ def get_dataset(datasetname, is_train, is_val, args):
         ds, num_classes = get_waymococodataset(is_train, is_val, args)
     elif datasetname.lower() == 'yolo':
         ds, num_classes = get_yolodataset(is_train, is_val, args)
+    elif datasetname.lower() == 'nuscene':
+        ds, num_classes = get_nuscenedataset(is_train, is_val, args)
     return ds, num_classes
 
 def get_transform(is_train, args):
@@ -185,6 +188,22 @@ def get_cocodataset(is_train, is_val, args):
     )
     return ds, num_classes
 
+# Utility method to load nuScenes dataset
+def get_nuscenedataset(is_train, is_val, args):
+    rootPath=args.data_path
+    if is_val == True:
+        transformfunc=get_transform(False, args)
+        metadata_subdir = 'v1.0-mini'  # small dataset for development
+        metadata_subdir = 'v1.0-train' # full training dataset
+        dataset = NuscenesDataset(rootPath, metadata_subdir=metadata_subdir, train=True, transform=transformfunc)
+    else: #Training
+        transformfunc=get_transform(True, args) #add augumentation
+        metadata_subdir = 'v1.0-mini' # small dataset for development
+        metadata_subdir = 'v1.0-val'  # full validation dataset
+        dataset = NuscenesDataset(rootPath, metadata_subdir=metadata_subdir, train=is_train, transform=transformfunc)
+
+    num_classes = dataset.numclass
+    return dataset, num_classes
    
 def get_kittidataset(is_train, is_val, args):
     rootPath=args.data_path
