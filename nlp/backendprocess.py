@@ -1,7 +1,12 @@
 import os
 import requests
 from PyPDF2 import PdfFileReader
+import fitz  # PyMuPDF
 import pytube
+import pytesseract
+from PIL import Image
+import io
+import re
 
 from google.cloud import storage, firestore
 import os
@@ -157,6 +162,121 @@ class DataExtractor:
         stream.download()
         return stream.default_filename
 
+
+class PDFTextExtractor:
+    def __init__(self, pdf_path):
+        self.pdf_path = pdf_path
+        self.pdf_reader = None
+        self._load_pdf()
+
+    def _load_pdf(self):
+        with open(self.pdf_path, "rb") as file:
+            self.pdf_reader = PdfFileReader(file)
+
+    def extract_text_from_page(self, page_num):
+        if page_num < 0 or page_num >= self.pdf_reader.numPages:
+            raise ValueError("Invalid page number")
+        page = self.pdf_reader.getPage(page_num)
+        return page.extract_text()
+
+    def extract_text_from_all_pages(self):
+        extracted_text = []
+        for page_num in range(self.pdf_reader.numPages):
+            text = self.extract_text_from_page(page_num)
+            extracted_text.append(text)
+        return "\n".join(extracted_text)
+
+    def get_number_of_pages(self):
+        return self.pdf_reader.numPages
+
+    def extract_text_by_keyword(self, keyword):
+        extracted_text = self.extract_text_from_all_pages()
+        keyword_text = []
+        for line in extracted_text.split('\n'):
+            if keyword.lower() in line.lower():
+                keyword_text.append(line)
+        return "\n".join(keyword_text)
+
+    def save_extracted_text(self, output_path):
+        text = self.extract_text_from_all_pages()
+        with open(output_path, "w", encoding="utf-8") as file:
+            file.write(text)
+
+    def extract_text_from_images_in_pdf(self):
+        pdf_document = fitz.open(self.pdf_path)
+        extracted_text = []
+
+        for page_num in range(len(pdf_document)):
+            page = pdf_document.load_page(page_num)
+            images = page.get_images(full=True)
+
+            for img_index, img in enumerate(images):
+                xref = img[0]
+                base_image = pdf_document.extract_image(xref)
+                image_bytes = base_image["image"]
+                image = Image.open(io.BytesIO(image_bytes))
+                text = pytesseract.image_to_string(image)
+                extracted_text.append(text)
+
+        return "\n".join(extracted_text)
+
+    def clean_text(self, text):
+        text = re.sub(r'\s+', ' ', text)  # Replace multiple spaces with a single space
+        text = re.sub(r'\n+', '\n', text)  # Replace multiple newlines with a single newline
+        text = text.strip()  # Remove leading and trailing whitespace
+        return text
+
+    def extract_all_text_with_sections(self):
+        extracted_data = []
+        for page_num in range(self.pdf_reader.numPages):
+            page_text = self.extract_text_from_page(page_num)
+            cleaned_text = self.clean_text(page_text)
+            sections = self._split_into_sections(cleaned_text)
+            extracted_data.append({
+                "page": page_num + 1,
+                "sections": sections
+            })
+        return extracted_data
+
+    def _split_into_sections(self, text):
+        # Simple heuristic to split text into sections based on headings
+        sections = []
+        lines = text.split('\n')
+        current_section = {"title": "Introduction", "content": ""}
+        for line in lines:
+            if line.isupper():  # Assuming headings are in uppercase
+                if current_section["content"]:
+                    sections.append(current_section)
+                current_section = {"title": line, "content": ""}
+            else:
+                current_section["content"] += line + " "
+        if current_section["content"]:
+            sections.append(current_section)
+        return sections
+
+    def output_to_json(self, extracted_data, output_path):
+        with open(output_path, "w", encoding="utf-8") as file:
+            json.dump(extracted_data, file, indent=4)
+
+    def output_to_markdown(self, extracted_data, output_path):
+        with open(output_path, "w", encoding="utf-8") as file:
+            for page in extracted_data:
+                file.write(f"# Page {page['page']}\n")
+                for section in page["sections"]:
+                    file.write(f"## {section['title']}\n")
+                    file.write(f"{section['content']}\n\n")
+
+# Example usage
+pdf_path = "example.pdf"
+json_output_path = "extracted_text.json"
+markdown_output_path = "extracted_text.md"
+
+pdf_extractor = PDFTextExtractor(pdf_path)
+extracted_data = pdf_extractor.extract_all_text_with_sections()
+pdf_extractor.output_to_json(extracted_data, json_output_path)
+pdf_extractor.output_to_markdown(extracted_data, markdown_output_path)
+
+print("Extraction complete. Data saved in JSON and Markdown formats.")
 
 if __name__ == "__main__":
     # Example usage:
