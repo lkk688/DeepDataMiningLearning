@@ -109,37 +109,85 @@ Python data apps based on streamlit:
       * Support Vector Machines introduction, SVM for Breast Cancer Dataset, SVM for Face Recognition
       * SVM for MNIST in Pytorch, Neural Network MNIST Pytorch
 
-## Deep Learning
-Deep learning notebooks (colab link is better)
-* Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./notebooks/CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
-* Pytorch introduction code: 
+## Deep Learning based on Pytorch (new)
+Pytorch Tutorial Series Sample Code with [ReadtheDocs](https://deepdatamininglearning.readthedocs.io/en/latest/):
+* Pytorch Tutorial1: [CMPE_pytorch1](./docs/notebooks/CMPE_pytorch1_2024Fall.ipynb)
+   * Pytorch installation, Tensors, Tensor functions, Arithmetic operations
+* Pytorch Tutorial2: [CMPE_pytorch2](./docs/notebooks/CMPE_pytorch2_2024Fall.ipynb)
+   * Fit a third order polynomial to sine function via numpy and pytorch
+   * PyTorch Linear Regression, PyTorch Regression via SKLearn dataset
+   * Binary Classification, PyTorch Logistic Regression, Pytorch Multi-class Classification via SKLearn dataset
+* Pytorch Tutorial3: [CMPE_pytorch3_autograd](./docs/notebooks/CMPE_pytorch3_2024Fall.ipynb)
+   * Autograd, Computing Gradients, Fitting sine wave example
+   * Pytorch NN package, Optim package, Using nn.Module
+* Pytorch Tutorial4: [CMPE_pytorch4_MNIST](./docs/notebooks/CMPE_pytorch4_2024Fall.ipynb)
+   * Pytorch MNIST Dataset,Torch NN Module and torch.nn.functional module
+   * nn.Sequential and nn.Sequential with OrderedDict
+   * Training Neural Networks via nn.NLLLoss
+   * L1 norm, L2 norm, and Elastic Net (L1+L2) Regularization with PyTorch
+   * MNIST with NLLLoss and weight_decay
+   * MNIST with CrossEntropyLoss
+* Pytorch Tutorial5: [CMPE_pytorch5_imageclassification](./docs/notebooks/CMPE_pytorch5_2024Fall_imageclassification.ipynb)
+   * MLP for MNIST and FashionMNIST Data
+   * CNN Filters for Image
+   * CNN for CIFAR Dataset
+* Pytorch Tutorial6: [CMPE_pytorch6_mlp2resnet](./docs/notebooks/CMPE_pytorch6_2024Fall_mlp2resnet.ipynb) 
+   * Multilayer Perceptron for image classification
+   * LeNet for image classification
+   * AlexNet for Image Classification
+   * VGG for Image Classification
+   * ResNet for Image Classification
+* Pytorch Tutorial7: [CMPE_pytorch7_torchvision](./docs/notebooks/CMPE_pytorch7_2024Fall_torchvision.ipynb)
+   * Download Flower dataset, Pytorch Data Processing
+   * VGGNet Transfer Learning for Flowers
+   * Torchvision, pretrained Torchvision model (EfficientNet, resnet, densenet121, vit)
+   * Freeze EfficientNet backbone and revise header, Train and test the model
+* Pytorch Tutorial8: [CMPE_pytorch8_timm.ipynb](./docs/notebooks/CMPE_pytorch8_2024Fall_timm.ipynb)
+   * Download Oxford-IIT Pet Dataset, Download Imagenette
+   * TIMM Datasets
+   * TIMM, Customizing models, Modify the classifier and pooling layers, Feature Extraction, Using FX to access intermediate layers
+   * Train TIMM Model
+   * Data Augmentation (RandAugment, CutMix and Mixup), create dataloader
+   * Optimizers and Schedulers, Adjusting Learning rate schedules
+   * Apply new data augmentation, optimizers and schedulers in Training
+   * Exponential Moving Average Model
+* Pytorch Tutorial9: [CMPE_pytorch9_inferenceoptimization.ipynb](./docs/notebooks/CMPE_pytorch7_2024Fall_inferenceoptimization.ipynb)
+   * Model Exporting to TorchScript
+   * libtorch Install
+   * TIMM to TorchScript
+   * Exporting to ONNX
+* Pytorch Tutorial10: [CMPE_pytorch10_huggingfaceimage.ipynb](./docs/notebooks/CMPE_pytorch7_2024Fall_huggingfaceimage.ipynb)
+   * Huggingface Image
+   * Training for Huggingface Food-101 dataset, CIFAR10 dataset, Flower dataset
+
+
+* Pytorch introduction code (archived): 
    * Pytorch Introductions, Tensors, and Autograd: [colablink](https://colab.research.google.com/drive/1_B7F59i51IlQoZPy_v85ux2WRucIRfWo?usp=sharing)
    * Pytorch Regression and Logistic Regression: [colablink](https://colab.research.google.com/drive/17KgzFzRx6BwsEC6iATLSqOczT_EwcSlb?usp=sharing)
    * Pytorch Simple Neural Networks: [colab](https://colab.research.google.com/drive/1HeZT2QphKO5c2gTtE6_TqYXfDzxcsJGc?usp=sharing)
    * Pytorch NN modules: [pytorch_nn.ipynb](notebooks/pytorch_nn.ipynb)
-* Tensorflow image classification:
-   * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
-   * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
-* Pytorch image classification:
+
+* Pytorch advanced image classification:
    * Pytorch image classification introduction (MNIST, CNN filters, CIFAR, VGGNet, Flowers): [colablink](https://colab.research.google.com/drive/19Lhu8vM-3PwDc-suNhFvIrmTM-ji-qwe?usp=sharing)
    * Pytorch Single GPU image classification with/without automatic mixed precision (AMP) training: [singleGPU](DeepDataMiningLearning/singleGPU.py)
    * Pytorch Multi-GPU image classification: [multiGPU](DeepDataMiningLearning/multiGPU.py)
+   * Pytorch Multi-GPU DDP test: [testTorchDDP](DeepDataMiningLearning/testTorchDDP.py)
    * Pytorch Torchvision image classification (Efficientnet) notebook on HPC: [torchvisionHPC.ipynb](DeepDataMiningLearning/torchvisionHPC.ipynb)
    * Pytorch Torchvision vision transformer (ViT) notebook on HPC: [torchvisionvitHPC.ipynb](DeepDataMiningLearning/torchvisionvitHPC.ipynb)
+   * Pytorch ViT implement from scratch on HPC: [ViTHPC.ipynb](DeepDataMiningLearning/ViTHPC.ipynb)
    * Pytorch ImageNet classification example: [imagenet](DeepDataMiningLearning/imagenet.py)
    * Pytorch inference example for top-k class: [inference.py](DeepDataMiningLearning/inference.py)
    * TIMM models: [testtimm.ipynb](DeepDataMiningLearning/testtimm.ipynb)
    * Huggingface Transformers for Image: [hfvisionmain.py](DeepDataMiningLearning/hfvisionmain.py)
+   * Huggingface Images via Transformers: [huggingfaceimage.ipynb](DeepDataMiningLearning/huggingfaceimage.ipynb)
+
 * Advanced Multi-Modal Image Classification: [githubrepo](https://github.com/lkk688/MultiModalClassifier)
    * General purpose framework for all-in-one image classification for Tensorflow and Pytorch
    * Support for multiple datasets: imagenet_blurred, tiny-imagenet-200, hymenoptera_data, CIFAR10, MNIST, flower_photos
    * Support for multiple custom models ('mlpmodel1', 'lenet', 'alexnet', 'resnetmodel1', 'customresnet', 'vggmodel1', 'vggcustom', 'cnnmodel1'), all models from Torchvision and TorchHub
    * Support HPC training and evaluation
-  
-New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMiningLearning")
-* Pytorch Multi-GPU DDP test: [testTorchDDP](DeepDataMiningLearning/testTorchDDP.py)
-* Pytorch ViT implement from scratch on HPC: [ViTHPC.ipynb](DeepDataMiningLearning/ViTHPC.ipynb)
-* Huggingface Images via Transformers: [huggingfaceimage.ipynb](DeepDataMiningLearning/huggingfaceimage.ipynb)
+
+Other Deep Learning sample code based on Pytorch (under the folder of "DeepDataMiningLearning")
 * Siamese network: [siamese_network](DeepDataMiningLearning/siamese_network.py)
 * TensorRT example: [tensorrt.ipynb](DeepDataMiningLearning/tensorrt.ipynb)
 * Object detection (other repo)
@@ -152,6 +200,15 @@ New Deep Learning sample code based on Pytorch (under the folder of "DeepDataMin
       * [WaymoCOCODetectron2train.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/WaymoCOCODetectron2train.py): WaymoCOCO training based on Detectron2
       * [mymmdetection2dtrain.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/mymmdetection2dtrain.py): Object Detection training and evaluation based on MMdetection2D
    * [CustomDetectron2](https://github.com/lkk688/CustomDetectron2)
+
+
+## Deep Learning based on Tensorflow (archived)
+Deep learning notebooks (colab link is better)
+* Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./notebooks/CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
+
+* Tensorflow image classification:
+   * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
+   * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
 
 ## Unsupervised Learning
 * Unsupervised Learning Jupyter notebooks
