@@ -59,6 +59,8 @@ conda search python #check existing python versions
 % python -V
 % conda deactivate 
 conda info --envs #check existing conda environment
+% conda env list
+% conda env remove --name myenv
 ```
 
 A Minimal Setup for Data science:
@@ -145,3 +147,47 @@ In your local Mac, enter `zrok access private gdjf3oz1pudh`, it will show `tcp:/
 
 ## Problems
 * "torchvision.ops box_ops Couldn't load custom C++ ops.": upgrade torch and torchvision to the same version.
+
+## Ollama
+Download Ollama for Mac, Once the download is complete, locate the .zip file and extract its contents. This should create Ollama.app. Drag Ollama.app to your Applications folder. Open the Applications folder and double-click on Ollama.app. Follow the setup wizard to complete the installation. The wizard will prompt you to install the command line version (ollama). Verify Olllama and make sure its working
+```bash
+  % ollama --version
+  ollama version is 0.5.7
+  % ollama run llama3.2
+  >>> /bye
+  % ollama show llama3.2
+  % ollama list #List models on your computer
+  % ollama ps
+  % ollama stop llama3.2
+```
+
+Try accessing it as well : http://127.0.0.1:11434/
+
+https://github.com/ollama/ollama
+
+https://ollama.com/library/deepseek-r1
+
+Install OpenWebui: https://github.com/open-webui/open-webui
+```bash
+% conda create --name mypy311 python=3.11
+% conda activate mypy311
+pip install open-webui
+pip install ollama
+% open-webui serve                   
+Loading WEBUI_SECRET_KEY from file, not provided as an environment variable.
+Generating a new secret key and saving it to /Users/kaikailiu/.webui_secret_key
+Loading WEBUI_SECRET_KEY from /Users/kaikailiu/.webui_secret_key
+```
+
+To manage your Ollama instance in Open WebUI, Go to Admin Settings in Open WebUI. Navigate to Connections > Ollama > Manage (click the wrench icon).
+
+```bash
+ollama run deepseek-r1:32b --verbose
+(base) kaikailiu@Kaikais-MacBook-Pro ~ % ollama ps                 
+NAME               ID              SIZE     PROCESSOR    UNTIL              
+deepseek-r1:32b    38056bbcbb2d    21 GB    100% GPU     4 minutes from now
+```
+
+On Mac, the models will be download to ~/.ollama/models; On Linux (or WSL), the models will be stored at /usr/share/ollama/.ollama/models
+
+Ollama with Langchain: https://python.langchain.com/docs/integrations/chat/ollama/
