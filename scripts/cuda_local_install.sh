@@ -3,8 +3,9 @@
 #   EXPORT_TO_BASH in {0, 1} with 0=False and 1=True
 
 # For example, the following installs CUDA 12.6 to ~/nvidia/cuda-12.6 and exports the path to your .bashrc
-
-#bash install_cuda.sh 126 ~/nvidia 1
+#chmod +x cuda_local_install.sh
+#bash cuda_local_install.sh 126 ~/nvidia 1
+#source ~/.bashrc
 
 URL110=https://developer.download.nvidia.com/compute/cuda/11.0.3/local_installers/cuda_11.0.3_450.51.06_linux.run
 URL111=https://developer.download.nvidia.com/compute/cuda/11.1.1/local_installers/cuda_11.1.1_455.32.00_linux.run

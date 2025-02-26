@@ -96,3 +96,31 @@ sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-13 13
 gcc --version
 gcc (Ubuntu 13.1.0-8ubuntu1~22.04) 13.1.0
 ```
+
+Install Cuda 12.6
+```bash
+(base) lkk@lkk-intel13rack:~/MyRepo/DeepDataMiningLearning$ cd scripts/
+chmod +x cuda_local_install.sh
+bash cuda_local_install.sh 126 ~/nvidia 1
+source ~/.bashrc
+$ nvcc -V
+nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2024 NVIDIA Corporation
+Built on Fri_Jun_14_16:34:21_PDT_2024
+Cuda compilation tools, release 12.6, V12.6.20
+Build cuda_12.6.r12.6/compiler.34431801_0
+$ which nvcc
+/home/lkk/nvidia/cuda-12.6/bin/nvcc
+$ sudo mkdir -p /usr/local/cuda/bin
+$ sudo ln -s /home/lkk/nvidia/cuda-12.6/bin/nvcc /usr/local/cuda/bin/nvcc
+export CPATH=$CPATH:/home/lkk/nvidia/cuda-12.6/include
+#test cuda
+(base) lkk@lkk-intel13rack:~/nvidia$ git clone https://github.com/NVIDIA/cuda-samples.git
+(base) lkk@lkk-intel13rack:~/nvidia/cuda-samples$ mkdir build && cd build
+sudo apt  install cmake
+(base) lkk@lkk-intel13rack:~/nvidia/cuda-samples/build$ cmake ..
+cd ~/nvidia/cuda/samples/1_Utilities/deviceQuery
+make
+#find / -name deviceQuery
+./deviceQuery
+```
