@@ -23,12 +23,14 @@ inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
 # Generate output
 outputs = model.generate(**inputs, max_length=512, do_sample=True, top_p=0.95, top_k=40, temperature=0.8)
-
+print(len(outputs))
 # Decode the output
 response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+batch_response = tokenizer.batch_decode(outputs, skip_special_tokens=True)[0]
 
 # Print the response
 print(response)
+print(batch_response)
 
 #Example of instruction format if using the instruct model, more detailed prompt.
 prompt = """
