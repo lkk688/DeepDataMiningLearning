@@ -12,8 +12,8 @@ import torch
 model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" #"deepseek-ai/DeepSeek-R1-Distill-Llama-70B" # or "deepseek-ai/deepseek-coder-70b-base-r1" for base model
 
 # Load tokenizer and model
-tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(model_name) #trust_remote_code=True
+model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16) #trust_remote_code=True
 
 # Example prompt (instruct format, if using the instruct model)
 prompt = "Write a Python function to reverse a string."
