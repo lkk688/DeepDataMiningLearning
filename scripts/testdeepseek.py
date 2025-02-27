@@ -7,7 +7,9 @@ import torch
 
 
 # Model and tokenizer names (DeepSeek-R1 70B)
-model_name = "deepseek-ai/DeepSeek-R1-Distill-Llama-70B" # or "deepseek-ai/deepseek-coder-70b-base-r1" for base model
+#(py312) [010796032@coe-hpc1 Develop]$ huggingface-cli download "deepseek-ai/DeepSeek-R1-Distill-Llama-70B"
+#huggingface-cli download "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" #"deepseek-ai/DeepSeek-R1-Distill-Llama-70B" # or "deepseek-ai/deepseek-coder-70b-base-r1" for base model
 
 # Load tokenizer and model
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
