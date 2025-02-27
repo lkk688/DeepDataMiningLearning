@@ -115,6 +115,9 @@ $ sudo mkdir -p /usr/local/cuda/bin
 $ sudo ln -s /home/lkk/nvidia/cuda-12.6/bin/nvcc /usr/local/cuda/bin/nvcc
 export CPATH=$CPATH:/home/lkk/nvidia/cuda-12.6/include
 #test cuda
+(base) lkk@lkk-intel13rack:~/nvidia$ nvcc testcuda.cu -o testcuda
+(base) lkk@lkk-intel13rack:~/nvidia$ ./testcuda
+#the following cuda sample has problems
 (base) lkk@lkk-intel13rack:~/nvidia$ git clone https://github.com/NVIDIA/cuda-samples.git
 (base) lkk@lkk-intel13rack:~/nvidia/cuda-samples$ mkdir build && cd build
 sudo apt  install cmake
@@ -123,4 +126,29 @@ cd ~/nvidia/cuda/samples/1_Utilities/deviceQuery
 make
 #find / -name deviceQuery
 ./deviceQuery
+```
+
+Create Conda virtual environment
+```bash
+conda create --name py312 python=3.12
+conda activate py312
+conda info --envs #check existing conda environment
+% conda env list
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+```
+
+Install Squid:
+```bash
+(base) lkk@lkk-intel13rack:~$ sudo apt install squid
+sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.bak
+sudo nano /etc/squid/squid.conf
+#add the following
+    acl localnet src 172.16.1.0/24
+    http_access allow localnet
+$ sudo systemctl restart squid
+#Enable squid to start on boot:
+sudo systemctl enable squid
+#configure internal server
+export http_proxy="http://10.31.81.70:3128"
+export https_proxy="http://10.31.81.70:3128"
 ```
