@@ -1,5 +1,5 @@
 from datasets import load_dataset
-from datasets import load_metric
+#from datasets import load_metric #removed in datasets3.0
 import torch
 import json
 from pathlib import Path
