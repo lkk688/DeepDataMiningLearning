@@ -907,7 +907,7 @@ def trainmain():
                 data_collator=collate_fn,
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
-                tokenizer=image_processor,
+                processing_class=image_processor,
             )
         else:
             # Initialize our trainer
@@ -917,7 +917,7 @@ def trainmain():
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 compute_metrics=metriceval.compute_metrics,
-                tokenizer=image_processor,
+                processing_class=image_processor,
                 data_collator=collate_fn,
             )
         checkpoint = load_hfcheckpoint(args.resume_from_checkpoint)
