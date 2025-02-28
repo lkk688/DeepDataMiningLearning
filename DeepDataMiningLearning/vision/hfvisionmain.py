@@ -33,6 +33,7 @@ from torchvision.transforms import (
 )
 import requests
 from PIL import Image, ImageDraw
+import io
 from tqdm.auto import tqdm
 import numpy as np
 from sklearn.metrics import classification_report
@@ -46,7 +47,8 @@ import cv2
 import albumentations#pip install albumentations
 from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, check_boxsize
 from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
-
+#from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
+from DeepDataMiningLearning.vision.hfutil import load_hfcheckpoint
 logger = get_logger(__name__)
 
 #The PYTORCH_USE_CUDA_DSA environment variable is used to enable the use of the CUDA Direct Storage API (DSA) in PyTorch. DSA is a new API that allows PyTorch to directly access data on the GPU without having to copy it to the CPU first.
@@ -254,7 +256,12 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     #By default the ClassLabel fields are encoded into integers
     if task == "image-classification":
         classlabel = split_datasets["train"].features[label_column_name] #ClassLabel(num_classes=x, names=[''], id=None)
-        labels = classlabel.names
+        #print("classlabel:", classlabel)
+        if hasattr(classlabel, "names"):
+            labels = classlabel.names
+        else:
+            labels = split_datasets["train"].unique(label_column_name)
+        print(f'Number of Labels: {len(labels)}, all labels: {labels}')
         label2id = {label: str(i) for i, label in enumerate(labels)}
         id2label = {str(i): label for i, label in enumerate(labels)}
             #add testing code to fetch one sample data from dataset and print the shape of data
@@ -359,19 +366,47 @@ def dataset_preprocessing(image_processor, task, size, format='coco', image_colu
                 normalize,
             ]
         )
+        def readimg2PILRGB(example_batch_imgs):
+            processed_images = []
+            for image_data in example_batch_imgs:
+                if isinstance(image_data, Image.Image):
+                    # Image is already a PIL Image object
+                    image = image_data
+                else:
+                    try:
+                        # Attempt to open image from bytes
+                        image = Image.open(io.BytesIO(image_data['bytes']))
+                    except Exception as e:
+                        print(f"Error opening image: {e}")
+                        #Handle the error. Either skip, or provide a default image.
+                        #Example, skipping the image:
+                        continue
+                        #Or return a default image, for example a blank white image:
+                        #image = Image.new('RGB', (1, 1), color = 'white')
+                processed_images.append(image.convert("RGB"))
+            return processed_images
+            
         def preprocess_train(example_batch):
             """Apply _train_transforms across a batch."""
+            processed_images = readimg2PILRGB(example_batch[image_column_name])
             #PIL image to RGB
+            # example_batch["pixel_values"] = [
+            #     train_transforms(image.convert("RGB")) for image in example_batch[image_column_name]
+            # ]
             example_batch["pixel_values"] = [
-                train_transforms(image.convert("RGB")) for image in example_batch[image_column_name]
+                train_transforms(image) for image in processed_images
             ]
             del example_batch[image_column_name]
             return example_batch
 
         def preprocess_val(example_batch):
             """Apply _val_transforms across a batch."""
+            processed_images = readimg2PILRGB(example_batch[image_column_name])
+            # example_batch["pixel_values"] = [
+            #     val_transforms(image.convert("RGB")) for image in example_batch[image_column_name]
+            # ]
             example_batch["pixel_values"] = [
-                val_transforms(image.convert("RGB")) for image in example_batch[image_column_name]
+                val_transforms(image) for image in processed_images
             ]
             del example_batch[image_column_name]
             return example_batch
@@ -506,6 +541,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         cache_dir=mycache_dir,
         trust_remote_code=trust_remote_code,
     )
+    print("Config:", config)
     if task == "image-classification":
         model = AutoModelForImageClassification.from_pretrained(
             model_name_or_path,
@@ -806,7 +842,7 @@ def trainmain():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=True, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
+    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
     model.config.id2label = id2label
 
     # Preprocessing the datasets
@@ -849,7 +885,7 @@ def trainmain():
         training_args = TrainingArguments(
             output_dir=args.output_dir,
             remove_unused_columns=False,
-            evaluation_strategy="no", #"epoch",
+            eval_strategy="epoch", #"no", #,
             save_strategy="epoch",
             learning_rate=5e-5,
             per_device_train_batch_size=args.per_device_train_batch_size, #16,
@@ -870,6 +906,7 @@ def trainmain():
                 args=training_args,
                 data_collator=collate_fn,
                 train_dataset=train_dataset,
+                eval_dataset=eval_dataset,
                 tokenizer=image_processor,
             )
         else:
@@ -883,7 +920,6 @@ def trainmain():
                 tokenizer=image_processor,
                 data_collator=collate_fn,
             )
-        from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
         checkpoint = load_hfcheckpoint(args.resume_from_checkpoint)
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()
