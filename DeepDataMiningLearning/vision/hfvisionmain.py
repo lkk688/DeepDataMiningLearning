@@ -849,7 +849,7 @@ def trainmain():
         training_args = TrainingArguments(
             output_dir=args.output_dir,
             remove_unused_columns=False,
-            evaluation_strategy="epoch",
+            evaluation_strategy="no", #"epoch",
             save_strategy="epoch",
             learning_rate=5e-5,
             per_device_train_batch_size=args.per_device_train_batch_size, #16,
