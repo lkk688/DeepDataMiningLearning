@@ -1012,17 +1012,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fine-tune a Transformers model on an image classification dataset")
     parser.add_argument('--traintag', type=str, default="hfimage0309",
                     help='Name the current training')
-    parser.add_argument('--hubname', type=str, default="detr-resnet-50_finetuned_coco",
+    parser.add_argument('--hubname', type=str, default="",
                     help='Name the share name in huggingface hub')
     # parser.add_argument(
     #     "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
     # )
-    parser.add_argument('--trainmode', default="NoTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        default="lkk688/detr-resnet-50_finetuned_cppe5", #"emre/detr-resnet-50_finetuned_cppe5", #"output/cppe-5_hfimage0306/epoch_18",#,
+        default="google/vit-base-patch16-224", #"lkk688/detr-resnet-50_finetuned_cppe5", #"emre/detr-resnet-50_finetuned_cppe5", #"output/cppe-5_hfimage0306/epoch_18",#,
         help="Path to pretrained model or model identifier from huggingface.co/models: facebook/detr-resnet-50, google/vit-base-patch16-224-in21k, ",
     )
     parser.add_argument('--usehpc', default=True, action='store_true',
@@ -1031,9 +1031,9 @@ def parse_args():
     parser.add_argument('--useamp', default=True, action='store_true',
                     help='Use pytorch amp in training')
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
-    parser.add_argument('--task', type=str, default="object-detection",
+    parser.add_argument('--task', type=str, default="image-classification",
                     help='tasks: image-classification, object-detection')
-    parser.add_argument('--data_name', type=str, default="cppe-5",
+    parser.add_argument('--data_name', type=str, default="pcuenq/oxford-pets",
                     help='data name: detection-datasets/coco, food101, beans, cats_vs_dogs,cppe-5')
     parser.add_argument('--datasplit', type=str, default='train',
                     help='dataset split name in huggingface dataset')
@@ -1167,7 +1167,7 @@ def parse_args():
     parser.add_argument(
         "--label_column_name",
         type=str,
-        default="labels",
+        default="label", #"labels",
         help="The name of the dataset column containing the labels. Defaults to 'label'.",
     )
     args = parser.parse_args()
