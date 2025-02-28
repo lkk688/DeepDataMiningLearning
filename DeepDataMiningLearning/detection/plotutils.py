@@ -306,10 +306,22 @@ def draw_objectdetection_predboxes(image, pred_boxes, scores, labels, id2label, 
 def draw_objectdetection_results(image, results, id2label, save_path="output/Imageresultplot.png"): #model.config.id2label
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
         box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
-        print(
-            f"Detected {id2label[label.item()]} with confidence "
-            f"{round(score.item(), 3)} at location {box}"
-        )
+        label_id = label.item()
+        if label_id in id2label:
+            class_name = id2label[label_id]
+            print(
+                f"Detected {class_name} with confidence "
+                f"{round(score.item(), 3)} at location {box}"
+            )
+        else:
+            print(
+                f"Detected unknown class ID {label_id} with confidence "
+                f"{round(score.item(), 3)} at location {box}"
+            )
+        # print(
+        #     f"Detected {id2label[label.item()]} with confidence "
+        #     f"{round(score.item(), 3)} at location {box}"
+        # )
     
     draw = ImageDraw.Draw(image)
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
