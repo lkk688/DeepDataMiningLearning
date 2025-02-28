@@ -40,7 +40,7 @@ from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassi
     AutoModelForDepthEstimation, AutoModelForObjectDetection, SchedulerType, get_scheduler
 from transformers import DefaultDataCollator, Trainer, TrainingArguments
 from time import perf_counter
-from DeepDataMiningLearning.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
+from DeepDataMiningLearning.Utils.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
 import requests
 import cv2
 import albumentations#pip install albumentations
