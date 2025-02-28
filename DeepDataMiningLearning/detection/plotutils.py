@@ -357,7 +357,9 @@ def draw2pil(image, bbox, category, categories, bbox_format='coco', filepath=Non
         boxes_new = box_convert(boxes_in, 'xywh', 'xyxy') #['xyxy', 'xywh', 'cxcywh']
     elif bbox_format=='pascal_voc':
         boxes_new = boxes_in
-    labels = [categories.int2str(x) for x in category] #annotations['category']
+    #labels = [categories.int2str(x) for x in category] #annotations['category']
+    labels = [categories.int2str(int(x)) if isinstance(x, (int, float)) else str(x) for x in category]
+
     image_annoted=to_pil_image(
         draw_bounding_boxes(
             image,
