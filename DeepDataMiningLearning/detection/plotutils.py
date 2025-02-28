@@ -304,20 +304,20 @@ def draw_objectdetection_predboxes(image, pred_boxes, scores, labels, id2label, 
         image.save(save_path)
 
 def draw_objectdetection_results(image, results, id2label, save_path="output/Imageresultplot.png"): #model.config.id2label
-    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
-        label_id = label.item()
-        if label_id in id2label:
-            class_name = id2label[label_id]
-            print(
-                f"Detected {class_name} with confidence "
-                f"{round(score.item(), 3)} at location {box}"
-            )
-        else:
-            print(
-                f"Detected unknown class ID {label_id} with confidence "
-                f"{round(score.item(), 3)} at location {box}"
-            )
+    # for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+    #     box = [round(i, 2) for i in box.tolist()] #[471.16, 209.09, 536.17, 347.85]#[xmin, ymin, xmax, ymax]
+    #     label_id = label.item()
+    #     if label_id in id2label:
+    #         class_name = id2label[label_id]
+    #         print(
+    #             f"Detected {class_name} with confidence "
+    #             f"{round(score.item(), 3)} at location {box}"
+    #         )
+    #     else:
+    #         print(
+    #             f"Detected unknown class ID {label_id} with confidence "
+    #             f"{round(score.item(), 3)} at location {box}"
+    #         )
         # print(
         #     f"Detected {id2label[label.item()]} with confidence "
         #     f"{round(score.item(), 3)} at location {box}"
@@ -325,10 +325,22 @@ def draw_objectdetection_results(image, results, id2label, save_path="output/Ima
     
     draw = ImageDraw.Draw(image)
     for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-        box = [round(i, 2) for i in box.tolist()]
-        x, y, x2, y2 = tuple(box)
-        draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
-        draw.text((x, y), id2label[label.item()], fill="white")
+        label_id = label.item()
+        if label_id in id2label:
+            class_name = id2label[label_id]
+            print(
+                f"Detected {class_name} with confidence "
+                f"{round(score.item(), 3)} at location {box}"
+            )
+            box = [round(i, 2) for i in box.tolist()]
+            x, y, x2, y2 = tuple(box)
+            draw.rectangle((x, y, x2, y2), outline="red", width=1) #[xmin, ymin, xmax, ymax]
+            draw.text((x, y), id2label[label_id], fill="white")
+        else:
+            print(
+                f"Detected unknown class ID {label_id} with confidence "
+                f"{round(score.item(), 3)} at location {box}"
+            )
     if save_path:
         image.save(save_path)
 
