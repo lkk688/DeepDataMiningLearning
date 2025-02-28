@@ -410,6 +410,8 @@ def dataset_preprocessing(image_processor, task, size, label2id=None, format='co
             example_batch["pixel_values"] = [
                 val_transforms(image) for image in processed_images
             ]
+            if label2id is not None and (not isinstance(example_batch[label_column_name][0], int)):
+                example_batch[label_column_name] = [int(label2id[y]) for y in example_batch[label_column_name]]
             del example_batch[image_column_name]
             return example_batch
     
