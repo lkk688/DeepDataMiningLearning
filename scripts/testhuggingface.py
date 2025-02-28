@@ -33,14 +33,25 @@ results = classifier(["We are very happy to show you the 🤗 Transformers libra
 for result in results:
     print(f"label: {result['label']}, with score: {round(result['score'], 4)}")
 
+from transformers import AutoModel, AutoImageProcessor
+model = AutoModel.from_pretrained("google/vit-base-patch16-224")
+image_processor = AutoImageProcessor.from_pretrained(
+        "google/vit-base-patch16-224",
+        trust_remote_code=True,
+    )
+
 from datasets import load_dataset
 imdb_dataset = load_dataset("imdb")
 print(imdb_dataset)
 
-eli5 = load_dataset("eli5")
-print(eli5)
+# eli5 = load_dataset("eli5")
+# print(eli5)
 
 import evaluate
 metric = evaluate.load("sacrebleu") #pip install sacrebleu
 metric = evaluate.load("accuracy") #save to /data/cmpe249-fa23/Huggingfacecache/metrics
 metric = evaluate.load("squad")
+
+# from huggingface_hub import delete_cache
+# delete_cache()
+

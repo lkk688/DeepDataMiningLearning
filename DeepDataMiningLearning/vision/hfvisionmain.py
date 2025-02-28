@@ -36,7 +36,7 @@ from PIL import Image, ImageDraw
 import io
 from tqdm.auto import tqdm
 import numpy as np
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report #pip install scikit-learn
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, \
     AutoModelForDepthEstimation, AutoModelForObjectDetection, SchedulerType, get_scheduler
 from transformers import DefaultDataCollator, Trainer, TrainingArguments
@@ -283,7 +283,7 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
 
     #The Datasets library is made for processing data very easily. We can write custom functions, 
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
-    return split_datasets, labels, id2label, image_column_name, label_column_name
+    return split_datasets, labels, id2label, label2id, image_column_name, label_column_name
 
 
 def dataset_objectdetection_select(dataset, data_index, id2label, categories, format='coco', image_column_name='image', label_column_name='objects', output_folder="output/"):
@@ -341,7 +341,7 @@ def formatted_anns(image_id, category, area, bbox):#category/area/bbox list inpu
     return annotations #list of dicts
 
 
-def dataset_preprocessing(image_processor, task, size, format='coco', image_column_name='image', label_column_name='labels'):
+def dataset_preprocessing(image_processor, task, size, label2id=None, format='coco', image_column_name='image', label_column_name='labels'):
     image_mean = [0.485, 0.456, 0.406 ]
     image_std = [0.229, 0.224, 0.225]
     normalize = (
@@ -396,6 +396,8 @@ def dataset_preprocessing(image_processor, task, size, format='coco', image_colu
             example_batch["pixel_values"] = [
                 train_transforms(image) for image in processed_images
             ]
+            if label2id is not None and (not isinstance(example_batch[label_column_name][0], int)):
+                example_batch[label_column_name] = [int(label2id[y]) for y in example_batch[label_column_name]]
             del example_batch[image_column_name]
             return example_batch
 
@@ -487,12 +489,26 @@ def dataset_preprocessing(image_processor, task, size, format='coco', image_colu
 
 
 def get_collate_fn(task, image_processor, label_column_name=None):
+    def get_labelslist(examples):
+        labels_list = []
+        for example in examples:
+            label = example[label_column_name]
+            if not isinstance(label, int):
+                #print(f"Error: Label '{label}' in example is not an integer.")
+                #return None  # Return None if a non-integer label is found
+                labels_list.append(int(label))
+            else:
+                labels_list.append(label)
+        return labels_list
+    
     if task == "image-classification":
         # DataLoaders creation:
         #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
         def collate_fn(examples):
             pixel_values = torch.stack([example["pixel_values"] for example in examples])
-            labels = torch.tensor([example[label_column_name] for example in examples])
+            labels_list=get_labelslist(examples)
+            labels = torch.tensor(labels_list)
+            #labels = torch.tensor([example[label_column_name] for example in examples])
             return {"pixel_values": pixel_values, "labels": labels}
         #similar to 
         #collate_fn = DefaultDataCollator()
@@ -531,14 +547,14 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             num_labels=len(labels),
             i2label=id2label,
             label2id=label2id,
-            cache_dir=mycache_dir,  
+            #cache_dir=mycache_dir,  
             finetuning_task=task, #"image-classification",
             trust_remote_code=trust_remote_code,
         )
 
     image_processor = AutoImageProcessor.from_pretrained(
         model_name_or_path,
-        cache_dir=mycache_dir,
+        #cache_dir=mycache_dir,
         trust_remote_code=trust_remote_code,
     )
     print("Config:", config)
@@ -546,7 +562,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         model = AutoModelForImageClassification.from_pretrained(
             model_name_or_path,
             config=config,
-            cache_dir=mycache_dir,
+            #cache_dir=mycache_dir,
             ignore_mismatched_sizes=ignore_mismatched_sizes,
             trust_remote_code=trust_remote_code,
         )
@@ -554,7 +570,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         model = AutoModelForDepthEstimation.from_pretrained(
             model_name_or_path, 
             config=config,
-            cache_dir=mycache_dir,
+            #cache_dir=mycache_dir,
             ignore_mismatched_sizes=ignore_mismatched_sizes,
             trust_remote_code=trust_remote_code,
         )
@@ -562,7 +578,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
         model = AutoModelForObjectDetection.from_pretrained(
             model_name_or_path, 
             config=config,
-            cache_dir=mycache_dir,
+            #cache_dir=mycache_dir,
             ignore_mismatched_sizes=ignore_mismatched_sizes,
             trust_remote_code=trust_remote_code,
         )
@@ -833,16 +849,17 @@ def trainmain():
 
     #load dataset
     with accelerator.main_process_first():
-        dataset, labels, id2label, args.image_column_name, args.label_column_name = load_visiondataset(data_name=args.data_name, \
-                                    split=args.datasplit, train_dir=args.train_dir, validation_dir=args.validation_dir, \
-                                    task=args.task, format=args.format, max_train_samples = args.max_train_samples, train_val_split=args.train_val_split, \
-                                    image_column_name=args.image_column_name, label_column_name=args.label_column_name, mycache_dir=mycache_dir)
+        dataset, labels, id2label, label2id, args.image_column_name, args.label_column_name \
+            = load_visiondataset(data_name=args.data_name, \
+                split=args.datasplit, train_dir=args.train_dir, validation_dir=args.validation_dir, \
+                task=args.task, format=args.format, max_train_samples = args.max_train_samples, train_val_split=args.train_val_split, \
+                image_column_name=args.image_column_name, label_column_name=args.label_column_name, mycache_dir=mycache_dir)
 
     # Load pretrained model and image processor
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
+    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=True, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
     model.config.id2label = id2label
 
     # Preprocessing the datasets
@@ -853,7 +870,7 @@ def trainmain():
         size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
     
     with accelerator.main_process_first():
-        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
+        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, label2id=label2id, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)
         #train_dataset = dataset["train"].map(preprocess_train)
