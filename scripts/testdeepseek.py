@@ -153,9 +153,11 @@ def generate_chat_response(
 def main():
     """Orchestrate the loop"""
     print("Chat with DeepSeek R1! Type 'exit' to end the chat.")
+    
+    model_name = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
     # Load the model and tokenizer
-    tokenizer, model = load_model()
+    tokenizer, model = load_model(model_name)
 
     while True:
         user_input = input("\nYou: ")
