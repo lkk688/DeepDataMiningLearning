@@ -573,7 +573,7 @@ def trainmain():
 
     collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
 
-    metriceval = myEvaluator(task=args.task, useHFevaluator=True, dualevaluator=False, \
+    metriceval = myEvaluator(task=args.task, useHFevaluator=args.useHFevaluator, dualevaluator=False, \
                             processor=image_processor, coco=coco, mycache_dir=mycache_dir)
 
     
