@@ -604,7 +604,7 @@ def custom_train(args, model, image_processor, train_dataloader, eval_dataloader
             "weight_decay": 0.0,
         },
     ]
-    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate)
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=float(args.learning_rate))
 
     # Scheduler and math around the number of training steps.
     overrode_max_train_steps = False
