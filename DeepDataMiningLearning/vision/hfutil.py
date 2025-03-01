@@ -36,3 +36,14 @@ def load_hfcheckpoint(checkpoint_dir, overwrite_output_dir=False):
                 "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
             )
     return last_checkpoint
+
+def freeze_model(model, partname='classifier'):
+    for name,p in model.named_parameters():
+        if not name.startswith(partname):
+            p.requires_grad = False
+
+def calculate_params(model):
+    num_params = sum([p.numel() for p in model.parameters()])
+    trainable_params = sum([p.numel() for p in model.parameters() if p.requires_grad])
+
+    print(f"{num_params = :,} | {trainable_params = :,}")

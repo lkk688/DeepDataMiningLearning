@@ -861,7 +861,7 @@ def trainmain():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=True, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
+    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
     model.config.id2label = id2label
 
     # Preprocessing the datasets
@@ -956,7 +956,7 @@ def trainmain():
         #print(test_data["pixel_values"].shape) #[1, 3, 800, 1066]
         #print(test_data["pixel_mask"].shape) #[1, 800, 1066]
         if args.trainmode == 'CustomTrain':
-            custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator, do_evaluate=False)
+            custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator, do_evaluate=True)
         else:
             evaluate_dataset(model, eval_dataloader, args.task, metriceval, device, image_processor=image_processor, accelerator=accelerator)
     
@@ -1042,7 +1042,7 @@ def parse_args():
     # parser.add_argument(
     #     "--hub_model_id", type=str, help="The name of the repository to keep in sync with the local `output_dir`."
     # )
-    parser.add_argument('--trainmode', default="HFTrainer", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
+    parser.add_argument('--trainmode', default="CustomTrain", choices=['HFTrainer','CustomTrain', 'NoTrain'], help='Training mode')
     #vocab_path
     parser.add_argument(
         "--model_name_or_path",
