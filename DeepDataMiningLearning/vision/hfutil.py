@@ -2,6 +2,7 @@ import os
 import shutil
 import re
 import json
+import yaml
 import logging
 #creates a logger for the current module
 logger = logging.getLogger(__name__)
@@ -47,3 +48,58 @@ def calculate_params(model):
     trainable_params = sum([p.numel() for p in model.parameters() if p.requires_grad])
 
     print(f"{num_params = :,} | {trainable_params = :,}")
+    
+def load_config(config_path):
+    """Loads configuration parameters from a YAML file.
+
+    Args:
+        config_path (str): Path to the YAML configuration file.
+
+    Returns:
+        dict: A dictionary containing the configuration parameters.
+    """
+    try:
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+        return config
+    except FileNotFoundError:
+        print(f"Error: Configuration file not found at {config_path}")
+        return None
+    except yaml.YAMLError as e:
+        print(f"Error: Invalid YAML format in {config_path}: {e}")
+        return None
+
+def load_config_relativefolder(filename="config.yaml"):
+    """
+    Loads configuration parameters from a YAML file.
+
+    Args:
+        filename (str): The name or path of the YAML file to load.
+
+    Returns:
+        dict: A dictionary containing the configuration parameters, or None if an error occurs.
+    """
+    try:
+        # Check if the filename is a path
+        if os.path.isabs(filename) or os.path.exists(filename):
+            config_path = filename
+        else:
+            # Get the directory of the current script and combine with the filename
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            if not filename.lower().endswith(".yaml"):
+                filename += ".yaml"
+            config_path = os.path.join(script_dir, "configs", filename)
+
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+        return config
+
+    except FileNotFoundError:
+        print(f"Error: Configuration file not found at {config_path}")
+        return None
+    except yaml.YAMLError as e:
+        print(f"Error: Invalid YAML format in {config_path}: {e}")
+        return None
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        return None
