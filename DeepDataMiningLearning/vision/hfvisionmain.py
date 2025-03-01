@@ -490,6 +490,8 @@ def dataset_preprocessing(image_processor, task, size, label2id=None, format='co
     return preprocess_train, preprocess_val
 
 
+#For pixel_values, the input shape for the model should be (batch, channels, height, width) and \
+    # for labels, the shape should be (batch,)
 def get_collate_fn(task, image_processor, label_column_name=None):
     def get_labelslist(examples):
         labels_list = []
@@ -802,8 +804,6 @@ def custom_train(args, model, image_processor, train_dataloader, eval_dataloader
 
 def trainmain():
     args = parse_args()
-    requests.get("https://huggingface.co", timeout=5)
-    #dataset = load_dataset("lhoestq/demo1")
 
     trainoutput=os.path.join(args.output_dir, args.data_name+'_'+args.traintag)
     os.makedirs(trainoutput, exist_ok=True)
@@ -953,8 +953,8 @@ def trainmain():
 
         test_data = next(iter(eval_dataloader))
         print(test_data.keys()) #['pixel_values', 'pixel_mask', 'labels'] 'labels' is list of dicts
-        print(test_data["pixel_values"].shape) #[1, 3, 800, 1066]
-        print(test_data["pixel_mask"].shape) #[1, 800, 1066]
+        #print(test_data["pixel_values"].shape) #[1, 3, 800, 1066]
+        #print(test_data["pixel_mask"].shape) #[1, 800, 1066]
         if args.trainmode == 'CustomTrain':
             custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator, do_evaluate=False)
         else:

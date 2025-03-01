@@ -1,5 +1,6 @@
 #from huggingface_hub import model_info; 
 #print(model_info('gpt2'))
+#requests.get("https://huggingface.co", timeout=5)
 import transformers
 print(transformers.__version__)
 #update transformer via: pip install -U transformers --upgrade
