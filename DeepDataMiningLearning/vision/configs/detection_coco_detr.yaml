@@ -1,0 +1,43 @@
+# config.yaml
+# Configuration file for fine-tuning a Transformers model on an image classification dataset
+
+# Training parameters
+traintag: "hfimage0309"  # Name the current training
+hubname: ""  # Name the share name in huggingface hub
+trainmode: "CustomTrain"  # Training mode: HFTrainer, CustomTrain, NoTrain
+model_name_or_path: "facebook/detr-resnet-50"  # Path to pretrained model or model identifier from huggingface.co/models
+usehpc: true  # Use HPC
+data_path: ""  # Huggingface data cache folder
+useamp: true  # Use pytorch amp in training
+gpuid: 0  # GPU id
+task: "object-detection"  # Tasks: image-classification, object-detection
+data_name: "detection-datasets/coco"  # Data name: detection-datasets/coco, food101, beans, cats_vs_dogs, cppe-5
+datasplit: "train"  # Dataset split name in huggingface dataset
+datatype: "huggingface"  # Data type: huggingface, torch
+format: "coco"  # Dataset bbox format: pascal_voc, coco
+train_dir: null  # A folder containing the training data.
+validation_dir: null  # A folder containing the validation data.
+max_train_samples: -1  # For debugging purposes or quicker training, truncate the number of training examples to this value if set. -1 means all data.
+train_val_split: 0.15  # Percent to split off of train for validation
+per_device_train_batch_size: 16  # Batch size (per device) for the training dataloader.
+per_device_eval_batch_size: 1  # Batch size (per device) for the evaluation dataloader.
+learning_rate: 5e-5  # Initial learning rate (after the potential warmup period) to use.
+weight_decay: 0.0  # Weight decay to use.
+num_train_epochs: 20  # Total number of training epochs to perform.
+max_train_steps: null  # Total number of training steps to perform. If provided, overrides num_train_epochs.
+gradient_accumulation_steps: 1  # Number of updates steps to accumulate before performing a backward/update pass.
+lr_scheduler_type: "linear"  # The scheduler type to use: linear, cosine, cosine_with_restarts, polynomial, constant, constant_with_warmup
+num_warmup_steps: 0  # Number of steps for the warmup in the lr scheduler.
+output_dir: "./output"  # Where to store the final model.
+seed: null  # A seed for reproducible training.
+push_to_hub: false  # Whether or not to push the model to the Hub.
+hub_token: null  # The token to use to push to the Model Hub.
+trust_remote_code: false  # Whether or not to allow for custom models defined on the Hub in their own modeling files.
+checkpointing_steps: "epoch"  # Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch.
+saving_everynsteps: 2  # Save everying 'epoch' for each epoch.
+resume_from_checkpoint: null  # If the training should continue from a checkpoint folder.
+with_tracking: false  # Whether to enable experiment trackers for logging.
+report_to: "all"  # The integration to report the results and logs to: tensorboard, wandb, comet_ml, clearml, all.
+ignore_mismatched_sizes: false  # Whether or not to enable to load a pretrained model whose head dimensions are different.
+image_column_name: "image"  # The name of the dataset column containing the image data. Defaults to 'image'.
+label_column_name: "labels"  # The name of the dataset column containing the labels. Defaults to 'label'.

@@ -3,6 +3,8 @@ import shutil
 import re
 import json
 import yaml
+from huggingface_hub import Repository, create_repo
+from pathlib import Path
 import logging
 #creates a logger for the current module
 logger = logging.getLogger(__name__)
@@ -103,3 +105,19 @@ def load_config_relativefolder(filename="config.yaml"):
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
         return None
+
+def pushtohub(hub_model_id, output_dir, hub_token):
+    # Retrieve of infer repo_name
+    repo_name = hub_model_id
+    if repo_name is None:
+        repo_name = Path(output_dir).absolute().name
+    # Create repo and retrieve repo_id
+    repo_id = create_repo(repo_name, exist_ok=True, token=hub_token).repo_id
+    # Clone repo locally
+    repo = Repository(output_dir, clone_from=repo_id, token=hub_token)
+
+    with open(os.path.join(output_dir, ".gitignore"), "w+") as gitignore:
+        if "step_*" not in gitignore:
+            gitignore.write("step_*\n")
+        if "epoch_*" not in gitignore:
+            gitignore.write("epoch_*\n")
