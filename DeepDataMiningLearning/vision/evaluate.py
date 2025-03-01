@@ -57,6 +57,8 @@ class myEvaluator:
             #     print("Classification report", classification_report(references, predictions, target_names=self.labels))
         elif self.metricname == "mse": #mse
             eval_result = ((predictions - references) ** 2).mean().item()
+        else:
+            eval_result = None
         results = {self.metricname: eval_result}
         return results
     
