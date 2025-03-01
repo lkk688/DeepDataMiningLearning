@@ -78,7 +78,7 @@ class myEvaluator:
             self.HFmetric = evaluate.load("ybelkada/cocoevaluate", coco=coco) #test_ds_coco_format.coco)
         elif self.useHFevaluator:
             # Load the accuracy metric from the datasets package
-            self.HFmetric = evaluate.load(self.metricname, cache_dir=mycache_dir) #evaluate.load("mse")
+            self.HFmetric = evaluate.load(self.metricname) #evaluate.load("mse")
             
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with
