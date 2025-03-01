@@ -19,7 +19,7 @@ train_dir: null  # A folder containing the training data.
 validation_dir: null  # A folder containing the validation data.
 max_train_samples: -1  # For debugging purposes or quicker training, truncate the number of training examples to this value if set. -1 means all data.
 train_val_split: 0.15  # Percent to split off of train for validation
-per_device_train_batch_size: 16  # Batch size (per device) for the training dataloader.
+per_device_train_batch_size: 128  # Batch size (per device) for the training dataloader.
 per_device_eval_batch_size: 1  # Batch size (per device) for the evaluation dataloader.
 learning_rate: 5e-5  # Initial learning rate (after the potential warmup period) to use.
 weight_decay: 0.0  # Weight decay to use.
