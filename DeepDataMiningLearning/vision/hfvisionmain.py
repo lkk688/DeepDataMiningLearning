@@ -975,14 +975,20 @@ def evaluate_dataset(model, val_dataloader, task, metriceval, device, image_proc
     model = model.eval().to(device)
     for step, batch in enumerate(tqdm(val_dataloader)):
         pixel_values = batch["pixel_values"].to(device)#[8, 3, 840, 1333]
-        pixel_mask = batch["pixel_mask"].to(device)#[8, 840, 1333]
+        if "pixel_mask" in batch:
+            pixel_mask = batch["pixel_mask"].to(device)#[8, 840, 1333]
+        else:
+            pixel_mask = None
         #batch = {k: v.to(device) for k, v in batch.items()}
         #"pixel_values" [8, 3, 840, 1333]
         #"pixel_mask" [8, 840, 1333]
         # "labels" 
         with torch.no_grad():
             #outputs = model(**batch)
-            outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask) #DetrObjectDetectionOutput
+            if pixel_mask is None:
+                outputs = model(pixel_values=pixel_values)
+            else:
+                outputs = model(pixel_values=pixel_values, pixel_mask=pixel_mask) #DetrObjectDetectionOutput
         
         if task == "image-classification":
             predictions = outputs.logits.argmax(dim=-1)
