@@ -14,7 +14,7 @@ task: "object-detection"  # Tasks: image-classification, object-detection
 data_name: "detection-datasets/coco"  # Data name: detection-datasets/coco, food101, beans, cats_vs_dogs, cppe-5
 datasplit: "train"  # Dataset split name in huggingface dataset
 datatype: "huggingface"  # Data type: huggingface, torch
-format: "coco"  # Dataset bbox format: pascal_voc, coco
+format: "pascal_voc"  # Dataset bbox format: pascal_voc, coco
 train_dir: null  # A folder containing the training data.
 validation_dir: null  # A folder containing the validation data.
 max_train_samples: -1  # For debugging purposes or quicker training, truncate the number of training examples to this value if set. -1 means all data.
