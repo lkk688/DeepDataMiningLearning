@@ -359,7 +359,7 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             trust_remote_code=trust_remote_code,
         )
     else:
-        MAX_SIZE = max(int(image_maxsize), 28)
+        MAX_SIZE = max(image_maxsize, 28)
         image_processor = AutoImageProcessor.from_pretrained(
             model_name_or_path,
             do_resize=True,
