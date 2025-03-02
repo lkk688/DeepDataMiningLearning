@@ -456,7 +456,7 @@ def trainmain():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    image_maxsize = [args.image_maxsize if hasattr(args, "image_maxsize") else None]
+    image_maxsize = args.image_maxsize if hasattr(args, "image_maxsize") else None
     model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, image_maxsize=image_maxsize, trust_remote_code=True)
     model.config.id2label = id2label
 
