@@ -48,7 +48,7 @@ import albumentations#pip install albumentations
 from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, check_boxsize
 from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
 #from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
-from DeepDataMiningLearning.vision.hfutil import load_hfcheckpoint
+from DeepDataMiningLearning.vision.util import load_hfcheckpoint
 logger = get_logger(__name__)
 
 #The PYTORCH_USE_CUDA_DSA environment variable is used to enable the use of the CUDA Direct Storage API (DSA) in PyTorch. DSA is a new API that allows PyTorch to directly access data on the GPU without having to copy it to the CPU first.

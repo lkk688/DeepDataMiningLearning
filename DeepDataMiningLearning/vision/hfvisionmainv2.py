@@ -30,6 +30,8 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
+from functools import partial
+from pprint import pprint
 import requests
 from PIL import Image, ImageDraw
 import io
@@ -47,7 +49,8 @@ import albumentations#pip install albumentations
 from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, check_boxsize
 from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
 #from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
-from DeepDataMiningLearning.vision.hfutil import load_hfcheckpoint, load_config_relativefolder
+from DeepDataMiningLearning.vision.util import readimg2PILRGB, load_hfcheckpoint, \
+    load_config_relativefolder, get_data_transform, get_collate_fn, compute_mapmetrics
 from DeepDataMiningLearning.vision.evaluate import myEvaluator, evaluate_dataset
 from DeepDataMiningLearning.vision.customtrain import custom_train
 
@@ -233,51 +236,9 @@ def formatted_anns(image_id, category, area, bbox):#category/area/bbox list inpu
     return annotations #list of dicts
 
 
-def dataset_preprocessing(image_processor, task, size, label2id=None, format='coco', image_column_name='image', label_column_name='labels'):
-    image_mean = [0.485, 0.456, 0.406 ]
-    image_std = [0.229, 0.224, 0.225]
-    normalize = (
-            Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
-            if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
-            else Normalize(mean=image_mean, std=image_std) #Lambda(lambda x: x)
-        )
+def dataset_preprocessing(image_processor, task, label2id=None, format='coco', image_column_name='image', label_column_name='labels'):
     if task =="image-classification":
-        train_transforms = Compose(
-            [
-                RandomResizedCrop(size),
-                RandomHorizontalFlip(),
-                ToTensor(),
-                normalize,
-            ]
-        )
-        val_transforms = Compose(
-            [
-                Resize(size),
-                CenterCrop(size),
-                ToTensor(),
-                normalize,
-            ]
-        )
-        def readimg2PILRGB(example_batch_imgs):
-            processed_images = []
-            for image_data in example_batch_imgs:
-                if isinstance(image_data, Image.Image):
-                    # Image is already a PIL Image object
-                    image = image_data
-                else:
-                    try:
-                        # Attempt to open image from bytes
-                        image = Image.open(io.BytesIO(image_data['bytes']))
-                    except Exception as e:
-                        print(f"Error opening image: {e}")
-                        #Handle the error. Either skip, or provide a default image.
-                        #Example, skipping the image:
-                        continue
-                        #Or return a default image, for example a blank white image:
-                        #image = Image.new('RGB', (1, 1), color = 'white')
-                processed_images.append(image.convert("RGB"))
-            return processed_images
-            
+        train_transforms, val_transforms = get_data_transform(image_processor=image_processor, has_boundingbox=False)
         def preprocess_train(example_batch):
             """Apply _train_transforms across a batch."""
             processed_images = readimg2PILRGB(example_batch[image_column_name])
@@ -308,22 +269,7 @@ def dataset_preprocessing(image_processor, task, size, label2id=None, format='co
             return example_batch
     
     elif task =="object-detection":
-        if not isinstance(size, tuple):
-            size = (size, size)
-        train_transforms = albumentations.Compose(
-            [
-                albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
-                albumentations.HorizontalFlip(p=1.0),
-                albumentations.RandomBrightnessContrast(p=1.0),
-            ],
-            bbox_params=albumentations.BboxParams(format=format, min_area=1024, min_visibility=0.1, label_fields=["category"]),
-        )
-        val_transforms = albumentations.Compose(
-            [
-                albumentations.Resize(height=size[0], width=size[1]), #(480, 480),
-            ],
-            bbox_params=albumentations.BboxParams(format=format, min_area=1024, min_visibility=0.1, label_fields=["category"]),
-        )
+        train_transforms, val_transforms = get_data_transform(image_processor=image_processor, has_boundingbox=True)
         #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
         #where each dictionary is a COCO object annotation.
         # transforming a batch
@@ -331,7 +277,8 @@ def dataset_preprocessing(image_processor, task, size, label2id=None, format='co
             image_ids = examples["image_id"]
             images, bboxes, area, categories = [], [], [], []
             for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
-                image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
+                #image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC,, BGR?
+                image = np.array(image.convert("RGB"))
                 height, width, channel = image.shape
                 # if format != 'coco':
                 #     bbox_new = convert_bbbox2coco(objects["bbox"], source_format=format) #[x_min, y_min, width, height]
@@ -364,7 +311,8 @@ def dataset_preprocessing(image_processor, task, size, label2id=None, format='co
             image_ids = examples["image_id"]
             images, bboxes, area, categories = [], [], [], []
             for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
-                image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
+                #image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC
+                image = np.array(image.convert("RGB"))
                 out = val_transforms(image=image, bboxes=objects["bbox"], category=objects["category"])#bbox size changed
 
                 area.append(objects["area"])
@@ -381,52 +329,8 @@ def dataset_preprocessing(image_processor, task, size, label2id=None, format='co
         
     return preprocess_train, preprocess_val
 
-
-#For pixel_values, the input shape for the model should be (batch, channels, height, width) and \
-    # for labels, the shape should be (batch,)
-def get_collate_fn(task, image_processor, label_column_name=None):
-    def get_labelslist(examples):
-        labels_list = []
-        for example in examples:
-            label = example[label_column_name]
-            if not isinstance(label, int):
-                #print(f"Error: Label '{label}' in example is not an integer.")
-                #return None  # Return None if a non-integer label is found
-                labels_list.append(int(label))
-            else:
-                labels_list.append(label)
-        return labels_list
-    
-    if task == "image-classification":
-        # DataLoaders creation:
-        #used to batch examples together. Each batch consists of 2 keys, namely pixel_values and labels.
-        def collate_fn(examples):
-            pixel_values = torch.stack([example["pixel_values"] for example in examples])
-            labels_list=get_labelslist(examples)
-            labels = torch.tensor(labels_list)
-            #labels = torch.tensor([example[label_column_name] for example in examples])
-            return {"pixel_values": pixel_values, "labels": labels}
-        #similar to 
-        #collate_fn = DefaultDataCollator()
-        return collate_fn
-    elif task == "object-detection":
-        # batch images together. Pad images (which are now pixel_values) to the largest image in a batch, 
-        #and create a corresponding pixel_mask to indicate which pixels are real (1) and which are padding (0).
-        def object_detection_collate_fn(batch):#batch is a list input
-            pixel_values = [item["pixel_values"] for item in batch] #list of [3,800,800]
-            #'DetrImageProcessor' object has no attribute 'pad_and_create_pixel_mask'
-            #encoding = image_processor.pad_and_create_pixel_mask(pixel_values, return_tensors="pt")
-            encoding = image_processor.pad(pixel_values, return_tensors="pt")
-            labels = [item["labels"] for item in batch]#pixel_values [8,3,800,800]
-            batch = {} #keep the other keys in the batch
-            batch["pixel_values"] = encoding["pixel_values"]
-            batch["pixel_mask"] = encoding["pixel_mask"] #[8,800,800]
-            batch["labels"] = labels #8 dict items
-            return batch
-        return object_detection_collate_fn
-
 #tasks: "depth-estimation", "image-classification", "object-detection"
-def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, mycache_dir=None, trust_remote_code=True):
+def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, image_maxsize=None, trust_remote_code=True):
     if load_only:#only load the model
         ignore_mismatched_sizes = False
         config = None
@@ -448,11 +352,22 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             trust_remote_code=trust_remote_code,
         )
 
-    image_processor = AutoImageProcessor.from_pretrained(
-        model_name_or_path,
-        #cache_dir=mycache_dir,
-        trust_remote_code=trust_remote_code,
-    )
+    if image_maxsize is None:
+        image_processor = AutoImageProcessor.from_pretrained(
+            model_name_or_path,
+            #cache_dir=mycache_dir,
+            trust_remote_code=trust_remote_code,
+        )
+    else:
+        MAX_SIZE = max(int(image_maxsize), 28)
+        image_processor = AutoImageProcessor.from_pretrained(
+            model_name_or_path,
+            do_resize=True,
+            size={"max_height": MAX_SIZE, "max_width": MAX_SIZE},
+            do_pad=True,
+            pad_size={"height": MAX_SIZE, "width": MAX_SIZE},
+        )
+        
     print("Config:", config)
     if task == "image-classification":
         model = AutoModelForImageClassification.from_pretrained(
@@ -541,18 +456,15 @@ def trainmain():
     #
     # In distributed training, the .from_pretrained methods guarantee that only one local process can concurrently
     # download model & vocab.
-    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, mycache_dir=mycache_dir, trust_remote_code=True)
+    image_maxsize = [args.image_maxsize if hasattr(args, "image_maxsize") else None]
+    model, image_processor = load_visionmodel(args.model_name_or_path, task=args.task, load_only=False, labels=labels, image_maxsize=image_maxsize, trust_remote_code=True)
     model.config.id2label = id2label
 
     # Preprocessing the datasets
     # Define torchvision transforms to be applied to each image.
-    if "shortest_edge" in image_processor.size:
-        size = image_processor.size["shortest_edge"]
-    else:
-        size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
-    
+
     with accelerator.main_process_first():
-        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, size=size, label2id=label2id, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
+        preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, label2id=label2id, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)
         #train_dataset = dataset["train"].map(preprocess_train)
@@ -570,8 +482,7 @@ def trainmain():
             onehfcoco = next(iter(eval_dataset)) #'pixel_values'[3, 800, 1066] 'labels'
             #print(onehfcoco)
 
-
-    collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name)
+    collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name, require_padding=False)
 
     metriceval = myEvaluator(task=args.task, useHFevaluator=args.useHFevaluator, dualevaluator=False, \
                             processor=image_processor, coco=coco, mycache_dir=mycache_dir)
@@ -600,6 +511,9 @@ def trainmain():
             push_to_hub=False,
         )
         if args.task == "object-detection":
+            eval_compute_metrics_fn = partial(
+                compute_mapmetrics, image_processor=image_processor, id2label=id2label, threshold=0.0
+            )
             trainer = Trainer(
                 model=model,
                 args=training_args,
@@ -607,6 +521,7 @@ def trainmain():
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 processing_class=image_processor,
+                compute_metrics=eval_compute_metrics_fn,
             )
         else:
             # Initialize our trainer
@@ -625,6 +540,8 @@ def trainmain():
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
         trainer.save_state()
+        metrics = trainer.evaluate(eval_dataset=eval_dataset, metric_key_prefix="test")
+        pprint(metrics)
         #trainer.push_to_hub()
     else:
         train_dataloader = DataLoader(
