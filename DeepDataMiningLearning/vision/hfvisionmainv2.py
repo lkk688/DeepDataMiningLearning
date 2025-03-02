@@ -521,7 +521,7 @@ def trainmain():
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 processing_class=image_processor,
-                compute_metrics=eval_compute_metrics_fn,
+                #compute_metrics=eval_compute_metrics_fn,
             )
         else:
             # Initialize our trainer
