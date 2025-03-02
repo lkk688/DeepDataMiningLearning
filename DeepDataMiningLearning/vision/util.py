@@ -257,19 +257,24 @@ def readimg2PILRGB(example_batch_imgs):
     return processed_images
 
 def get_data_transform(image_processor, has_boundingbox=False, image_maxsize=None):
-    if "shortest_edge" in image_processor.size:
-        size = image_processor.size["shortest_edge"]
-    else:
-        size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
-    
-    image_mean = [0.485, 0.456, 0.406 ]
-    image_std = [0.229, 0.224, 0.225]
-    normalize = (
-            Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
-            if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
-            else Normalize(mean=image_mean, std=image_std) #Lambda(lambda x: x)
-        )
+
     if has_boundingbox == False:
+        if image_maxsize:
+            size = (image_maxsize, image_maxsize)
+        elif "shortest_edge" in image_processor.size:
+            size = image_processor.size["shortest_edge"]
+        elif "height" in image_processor.size:
+            size = (image_processor.size["height"], image_processor.size["width"]) #(224, 224)
+        else:
+            size = (224, 224)
+        
+        image_mean = [0.485, 0.456, 0.406 ]
+        image_std = [0.229, 0.224, 0.225]
+        normalize = (
+                Normalize(mean=image_processor.image_mean, std=image_processor.image_std)
+                if hasattr(image_processor, "image_mean") and hasattr(image_processor, "image_std")
+                else Normalize(mean=image_mean, std=image_std) #Lambda(lambda x: x)
+            )
         train_transforms = Compose(
             [
                 RandomResizedCrop(size),
