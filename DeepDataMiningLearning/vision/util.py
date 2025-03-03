@@ -28,6 +28,7 @@ import numpy as np
 from dataclasses import dataclass
 from torchmetrics.detection.mean_ap import MeanAveragePrecision
 from transformers.image_transforms import center_to_corners_format
+from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
 
 def convert_bbox_yolo_to_pascal(boxes, image_size):
     """
@@ -378,3 +379,147 @@ def get_collate_fn(task, image_processor, label_column_name=None, require_paddin
             return object_detection_collate_fn_padding
         else:
             return object_detection_collate_fn
+
+
+def dataset_objectdetection_select(dataset, data_index, labels, format='coco', image_column_name='image', label_column_name='objects', output_folder="output/"):
+    image = dataset[data_index][image_column_name]#PIL image in RGB mode 
+    annotations = dataset[data_index][label_column_name] 
+    #['id'] ['area'] ['bbox'](4,4)list ['category']
+    #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
+    #bounding box in [x_min, y_min, width, height]
+    filepath = os.path.join(output_folder, "dataset_objectdetection_select.png")
+    image_annoted = draw2pil(image, annotations['bbox'], labels, format, filepath)
+    print(f"Test image id:{data_index} saved in {filepath}")
+
+    transform = A.Compose([
+        A.Resize(480, 480),
+        A.HorizontalFlip(p=1.0),
+        A.RandomBrightnessContrast(p=1.0),
+    ], bbox_params=A.BboxParams(format=format,  label_fields=['category']))
+    image_np = np.array(image) #HWC
+    out = transform(
+        image=image_np,
+        bboxes=annotations['bbox'],
+        category=annotations['category'],
+    )
+    print(out.keys()) #['image', 'bboxes', 'category']
+
+    image = torch.tensor(out['image']).permute(2, 0, 1) #HWC->CHW
+    boxes_xywh = torch.stack([torch.tensor(x) for x in out['bboxes']])
+    #pil_image=Image.fromarray(np.uint8(out['image']))
+    filepath = os.path.join(output_folder, "dataset_objectdetection_transform.png")
+    image_annoted = draw2pil(image, boxes_xywh, labels, format, filepath)
+    print(f"Test image id:{data_index} transformed saved in {filepath}")
+    # boxes_xyxy = box_convert(boxes_xywh, 'xywh', 'xyxy')
+    # labels = [categories.int2str(x) for x in out['category']]
+    # to_pil_image(
+    #     draw_bounding_boxes(
+    #         image,
+    #         boxes_xyxy,
+    #         colors='red',
+    #         labels=labels
+    #     )
+    # )
+
+       # dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, categories=categories, format=format, image_column_name=image_column_name, label_column_name=label_column_name, output_folder="output/")
+
+def checkimage_aftertransform(dataset, train_dataset, labels=None, data_index=0, format='coco', image_column_name='image', label_column_name='objects', output_folder="output/"):
+    image = dataset["train"][data_index][image_column_name]#PIL image in RGB mode 
+    annotations = dataset["train"][data_index][label_column_name] 
+    #['id'] ['area'] ['bbox'](4,4)list ['category']
+    #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
+    #bounding box in unnormalized [x_min, y_min, width, height]
+    filepath = os.path.join(output_folder, "dataset_objectdetection_sample.png")
+    image_annoted = draw2pil(image, annotations['bbox'], labels, format, filepath)
+    print(f"Test image id:{data_index} saved in {filepath}")
+
+    #train_dataset = dataset["train"].map(preprocess_train)
+    #eval_dataset = dataset[valkey].map(preprocess_val)
+    oneexample = train_dataset[data_index] #perform preprocessing
+    print(oneexample.keys()) 
+    #'pixel_values'[3, 800, 800], 'pixel_mask'[800,800], 'labels'dict of 'boxes'[2,4] (center_x, center_y, width, height) normalized
+
+    filepath = os.path.join(output_folder, "dataset_objectdetection_transform.png")
+    anno = oneexample['labels']
+    #image is PIL, anno has keys of size (480, 480), image_id, class_labels, boxes (normalized) in tensor
+    #boxes (normalized) in tensor (center_x, center_y, width, height) normalized
+    image_annoted = draw2pil(oneexample['pixel_values'], anno['boxes'], labels, bbox_format=None, filepath=filepath)
+    print(f"Test image id:{data_index} saved in {filepath}")
+
+from DeepDataMiningLearning.detection.dataset_hf import check_boxsize
+def preprocessimage_objectdetection_old(examples, image_transforms, image_column_name, label_column_name):
+    images, bboxes, area, categories = [], [], [], []
+    for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
+        #image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC,, BGR?
+        image = np.array(image.convert("RGB"))
+        height, width, channel = image.shape
+        # if format != 'coco':
+        #     bbox_new = convert_bbbox2coco(objects["bbox"], source_format=format) #[x_min, y_min, width, height]
+        # else:
+        #     bbox_new = objects["bbox"]
+        
+        bbox_new = objects["bbox"]
+        newbbox, errbox = check_boxsize(bbox_new, height=height, width=width, format=format)
+        if errbox:
+            print(bbox_new)
+        out = image_transforms(image=image, bboxes=newbbox, category=objects["category"])#already consider format bbox size changed
+        
+        area.append(objects["area"])
+        images.append(out[image_column_name]) #(480, 480, 3)
+        bboxes.append(out["bboxes"])#resized [x_min, y_min, width, height]
+        categories.append(out["category"])#category become integer list [4]
+    return images, bboxes, area, categories
+
+def format_image_annotations_as_coco(image_id, categories, areas, bboxes):
+    """Format one set of image annotations to the COCO format
+
+    Args:
+        image_id (str): image id. e.g. "0001"
+        categories (List[int]): list of categories/class labels corresponding to provided bounding boxes
+        areas (List[float]): list of corresponding areas to provided bounding boxes
+        bboxes (List[Tuple[float]]): list of bounding boxes provided in COCO format
+            ([center_x, center_y, width, height] in absolute coordinates)
+
+    Returns:
+        dict: {
+            "image_id": image id,
+            "annotations": list of formatted annotations
+        }
+    """
+    annotations = []
+    for category, area, bbox in zip(categories, areas, bboxes):
+        formatted_annotation = {
+            "image_id": image_id,
+            "category_id": category,
+            "iscrowd": 0,
+            "area": area,
+            "bbox": list(bbox),
+        }
+        annotations.append(formatted_annotation)
+
+    return {
+        "image_id": image_id,
+        "annotations": annotations,
+    }
+
+def preprocessimage_objectdetection(examples, image_transforms, image_column_name, label_column_name):
+    """Apply augmentations and format annotations in COCO format for object detection task"""
+    images = []
+    annotations = []
+    print(type(examples["image_id"]), examples["image_id"])
+    print(type(examples["image"]), examples["image"])
+    print(type(examples["objects"]), examples["objects"])
+
+    for image_id, image, objects in zip(examples["image_id"], examples["image"], examples["objects"]):
+        image = np.array(image.convert("RGB")) #HWC format
+
+        # apply augmentations
+        output = image_transforms(image=image, bboxes=objects["bbox"], category=objects["category"])
+        images.append(output["image"])
+
+        # format annotations in COCO format
+        formatted_annotations = format_image_annotations_as_coco(
+            image_id, output["category"], objects["area"], output["bboxes"]
+        )
+        annotations.append(formatted_annotations)
+    return images, annotations

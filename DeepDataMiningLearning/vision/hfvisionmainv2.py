@@ -47,10 +47,9 @@ import requests
 import cv2
 import albumentations#pip install albumentations
 from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, check_boxsize
-from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
 #from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
 from DeepDataMiningLearning.vision.util import readimg2PILRGB, load_hfcheckpoint, \
-    load_config_relativefolder, get_data_transform, get_collate_fn, compute_mapmetrics
+    load_config_relativefolder, get_data_transform, get_collate_fn, compute_mapmetrics, checkimage_aftertransform, preprocessimage_objectdetection
 from DeepDataMiningLearning.vision.evaluate import myEvaluator, evaluate_dataset
 from DeepDataMiningLearning.vision.customtrain import custom_train
 
@@ -64,8 +63,7 @@ os.environ["PYTORCH_USE_CUDA_DSA"] = "1"
 
 valkey='test' #"validation"
 #data_name list: food101, 
-def load_visiondataset(data_name=None, split="train", train_dir=None, validation_dir=None, task="image-classification", format='coco', max_train_samples = 2000, train_val_split=0.15, \
-                       image_column_name='image', label_column_name='labels', mycache_dir=None):
+def load_visiondataset(data_name=None, split="train", train_dir=None, validation_dir=None, task="image-classification", format='coco', max_train_samples = 2000, train_val_split=0.15, image_column_name='image', label_column_name='labels', mycache_dir=None):
     if data_name is not None:
         if max_train_samples and max_train_samples>0 and split is not None:
             data_split=f"{split}[:{max_train_samples}]" #"train+validation"
@@ -118,20 +116,20 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
     dataset_column_names = split_datasets["train"].column_names if "train" in split_datasets else split_datasets[valkey].column_names
     #'image': PIL image object, 'labels': int, 'image_file_path': path
     
-    if task == "object-detection":
-        image_column_name = "image"
-        label_column_name = "objects" #for object detection
-        # remove_idx = [590, 821, 822, 875, 876, 878, 879]
-        # keep = [i for i in range(len(split_datasets["train"])) if i not in remove_idx]
-        # split_datasets["train"] = split_datasets["train"].select(keep)
-    elif task == "image-classification":
-        #some datset the labels name is different
-        if data_name == "food101": #https://huggingface.co/datasets/food101
-            image_column_name = "image"
-            label_column_name = "label"
-        elif 'cats_vs_dogs' in data_name:
-            image_column_name = "image"
-            label_column_name = "labels"
+    # if task == "object-detection":
+    #     image_column_name = "image"
+    #     label_column_name = "objects" #for object detection
+    #     # remove_idx = [590, 821, 822, 875, 876, 878, 879]
+    #     # keep = [i for i in range(len(split_datasets["train"])) if i not in remove_idx]
+    #     # split_datasets["train"] = split_datasets["train"].select(keep)
+    # elif task == "image-classification":
+    #     #some datset the labels name is different
+    #     if data_name == "food101": #https://huggingface.co/datasets/food101
+    #         image_column_name = "image"
+    #         label_column_name = "label"
+    #     elif 'cats_vs_dogs' in data_name:
+    #         image_column_name = "image"
+    #         label_column_name = "labels"
 
     if image_column_name not in dataset_column_names:
         raise ValueError(
@@ -172,54 +170,11 @@ def load_visiondataset(data_name=None, split="train", train_dir=None, validation
         labels = categories.names #list of str names
         id2label = {index: x for index, x in enumerate(labels, start=0)}
         label2id = {v: k for k, v in id2label.items()}
-        dataset_objectdetection_select(split_datasets["train"], data_index=0, id2label=id2label, categories=categories, format=format, \
-                                       image_column_name=image_column_name, label_column_name=label_column_name, output_folder="output/")
-
 
     #The Datasets library is made for processing data very easily. We can write custom functions, 
     #which can then be applied on an entire dataset (either using .map() or .set_transform()).
-    return split_datasets, labels, id2label, label2id, image_column_name, label_column_name
+    return split_datasets, labels, id2label, label2id
 
-
-def dataset_objectdetection_select(dataset, data_index, id2label, categories, format='coco', image_column_name='image', label_column_name='objects', output_folder="output/"):
-    image = dataset[data_index][image_column_name]#PIL image in RGB mode 
-    annotations = dataset[data_index][label_column_name] 
-    #['id'] ['area'] ['bbox'](4,4)list ['category']
-    #in coco format https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation/#coco
-    #bounding box in [x_min, y_min, width, height]
-    filepath = os.path.join(output_folder, "dataset_objectdetection_select.png")
-    image_annoted = draw2pil(image, annotations['bbox'], annotations['category'], categories, format, filepath)
-    print(f"Test image id:{data_index} saved in {filepath}")
-
-    transform = albumentations.Compose([
-        albumentations.Resize(480, 480),
-        albumentations.HorizontalFlip(p=1.0),
-        albumentations.RandomBrightnessContrast(p=1.0),
-    ], bbox_params=albumentations.BboxParams(format=format,  label_fields=['category']))
-    image_np = np.array(image) #HWC
-    out = transform(
-        image=image_np,
-        bboxes=annotations['bbox'],
-        category=annotations['category'],
-    )
-    print(out.keys()) #['image', 'bboxes', 'category']
-
-    image = torch.tensor(out['image']).permute(2, 0, 1) #HWC->CHW
-    boxes_xywh = torch.stack([torch.tensor(x) for x in out['bboxes']])
-    #pil_image=Image.fromarray(np.uint8(out['image']))
-    filepath = os.path.join(output_folder, "dataset_objectdetection_transform.png")
-    image_annoted = draw2pil(image, boxes_xywh, out['category'], categories, format, filepath)
-    print(f"Test image id:{data_index} transformed saved in {filepath}")
-    # boxes_xyxy = box_convert(boxes_xywh, 'xywh', 'xyxy')
-    # labels = [categories.int2str(x) for x in out['category']]
-    # to_pil_image(
-    #     draw_bounding_boxes(
-    #         image,
-    #         boxes_xyxy,
-    #         colors='red',
-    #         labels=labels
-    #     )
-    # )
 
 def formatted_anns(image_id, category, area, bbox):#category/area/bbox list input
     annotations = []
@@ -273,29 +228,10 @@ def dataset_preprocessing(image_processor, task, label2id=None, format='coco', i
         #The image_processor expects the annotations to be in the following format: {'image_id': int, 'annotations': List[Dict]}, 
         #where each dictionary is a COCO object annotation.
         # transforming a batch
-        def preprocess_train(examples):#can handle batch
+        def preprocess_train_old(examples):#can handle batch
             image_ids = examples["image_id"]
-            images, bboxes, area, categories = [], [], [], []
-            for image, objects in zip(examples[image_column_name], examples[label_column_name]): #label_column_name="objects"
-                #image = np.array(image.convert("RGB"))[:, :, ::-1] #(720, 1280, 3)HWC,, BGR?
-                image = np.array(image.convert("RGB"))
-                height, width, channel = image.shape
-                # if format != 'coco':
-                #     bbox_new = convert_bbbox2coco(objects["bbox"], source_format=format) #[x_min, y_min, width, height]
-                # else:
-                #     bbox_new = objects["bbox"]
-                
-                bbox_new = objects["bbox"]
-                newbbox, errbox = check_boxsize(bbox_new, height=height, width=width, format=format)
-                if errbox:
-                    print(bbox_new)
-                out = train_transforms(image=image, bboxes=newbbox, category=objects["category"])#already consider format bbox size changed
-                
-                area.append(objects["area"])
-                images.append(out[image_column_name]) #(480, 480, 3)
-                bboxes.append(out["bboxes"])#resized [x_min, y_min, width, height]
-                categories.append(out["category"])#category become integer list [4]
 
+            images, bboxes, area, categories =preprocessimage_objectdetection(examples, train_transforms, image_column_name, label_column_name)
             targets = [
                 {"image_id": id_, "annotations": formatted_anns(id_, cat_, ar_, box_)}
                 for id_, cat_, ar_, box_ in zip(image_ids, categories, area, bboxes)
@@ -307,6 +243,12 @@ def dataset_preprocessing(image_processor, task, label2id=None, format='coco', i
             #input_data_format: "channels_first" CHW, "channels_last" HWC
             #If unset, the channel dimension format is inferred from the input image.
         
+        def preprocess_train(examples):
+            images, annotations =preprocessimage_objectdetection(examples, train_transforms, image_column_name, label_column_name)
+            # Apply the image processor transformations: resizing, rescaling, normalization
+            result = image_processor(images=images, annotations=annotations, return_tensors="pt")
+            return result
+
         def preprocess_val(examples):#can handle batch
             image_ids = examples["image_id"]
             images, bboxes, area, categories = [], [], [], []
@@ -446,8 +388,7 @@ def trainmain():
 
     #load dataset
     with accelerator.main_process_first():
-        dataset, labels, id2label, label2id, args.image_column_name, args.label_column_name \
-            = load_visiondataset(data_name=args.data_name, \
+        dataset, labels, id2label, label2id = load_visiondataset(data_name=args.data_name, \
                 split=args.datasplit, train_dir=args.train_dir, validation_dir=args.validation_dir, \
                 task=args.task, format=args.format, max_train_samples = args.max_train_samples, train_val_split=args.train_val_split, \
                 image_column_name=args.image_column_name, label_column_name=args.label_column_name, mycache_dir=mycache_dir)
@@ -467,10 +408,9 @@ def trainmain():
         preprocess_train, preprocess_val = dataset_preprocessing(image_processor=image_processor, task=args.task, label2id=label2id, format=args.format, image_column_name=args.image_column_name, label_column_name=args.label_column_name)
         #The transforms are applied on the fly when you load an element of the dataset:
         train_dataset = dataset["train"].with_transform(preprocess_train)
-        #train_dataset = dataset["train"].map(preprocess_train)
-        #eval_dataset = dataset[valkey].map(preprocess_val)
-        oneexample = train_dataset[15]
-        print(oneexample.keys()) #'pixel_values'[3, 800, 800], 'pixel_mask'[800,800], 'labels'dict of 'boxes'[2,4] (center_x, center_y, width, height) normalized
+
+        checkimage_aftertransform(dataset, train_dataset, labels=labels, data_index=0, format='coco', image_column_name=args.image_column_name, label_column_name=args.label_column_name, output_folder="output/")
+        
         if args.task == "image-classification":
             eval_dataset = dataset[valkey].with_transform(preprocess_val)
             coco = None
@@ -573,7 +513,7 @@ def trainmain():
 #huggingface-cli login
 def parse_args():
     parser = argparse.ArgumentParser(description="HuggingFace Vision Training")
-    parser.add_argument('--config', type=str, default="classify_pets_vit.yaml",
+    parser.add_argument('--config', type=str, default="detection_cppe_detr.yaml",
                     help='Name the current training')
     args = parser.parse_args()
     

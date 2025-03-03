@@ -40,6 +40,6 @@ with_tracking: false  # Whether to enable experiment trackers for logging.
 report_to: "all"  # The integration to report the results and logs to: tensorboard, wandb, comet_ml, clearml, all.
 ignore_mismatched_sizes: false  # Whether or not to enable to load a pretrained model whose head dimensions are different.
 image_column_name: "image"  # The name of the dataset column containing the image data. Defaults to 'image'.
-label_column_name: "labels"  # The name of the dataset column containing the labels. Defaults to 'label'.
+label_column_name: "objects" #for object detection  # The name of the dataset column containing the labels. Defaults to 'label'.
 useHFevaluator: false
 image_maxsize: 480

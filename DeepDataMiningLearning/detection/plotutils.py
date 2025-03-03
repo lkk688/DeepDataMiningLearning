@@ -362,6 +362,59 @@ def draw_annobox2image(image, annotations, id2label=None, save_path="output/Imag
         image.save(save_path)
     return image
 
+
+import torch
+from collections import Counter
+def check_bounding_box_format_and_normalization(bboxes):
+    """
+    Determines the format and normalization status for a tensor of bounding boxes.
+    Each bounding box is represented as a row in the tensor.
+    
+    Args:
+        bboxes (torch.Tensor): A tensor of bounding boxes with shape (N, 4),
+                               where N is the number of boxes.
+    
+    Returns:
+        list: Detected bounding box formats ("xyxy", "cxcywh", or "xywh") for each box.
+        list: Boolean values indicating whether each bounding box is normalized.
+    """
+    if not isinstance(bboxes, torch.Tensor):
+        raise TypeError("Bounding boxes must be a torch.Tensor.")
+    
+    if bboxes.ndimension() != 2 or bboxes.size(1) != 4:
+        raise ValueError("Bounding boxes tensor must have shape (N, 4), where N is the number of boxes.")
+    
+    formats = []
+    is_normalized_list = []
+
+    for bbox in bboxes:
+        x1, y1, x2, y2 = bbox
+
+        # Check bounding box format
+        if x1 < x2 and y1 < y2:  # [x_min, y_min, x_max, y_max]
+            format_type = "xyxy"
+        elif x2 > 0 and y2 > 0:  # [x_center, y_center, width, height]
+            format_type = "cxcywh"
+        elif x1 < x2 and y2 > 0:  # [x_min, y_min, width, height]
+            format_type = "xywh"
+        else:
+            raise ValueError(f"Unable to determine bounding box format for bbox: {bbox.tolist()}")
+
+        # Check if the bounding box is normalized
+        is_normalized = (0.0 <= bbox).all() and (bbox <= 1.0).all()
+
+        formats.append(format_type)
+        is_normalized_list.append(is_normalized)
+    
+    # Determine the majority format and normalization status
+    majority_format = Counter(formats).most_common(1)[0][0]  # Most common format
+    majority_normalization = Counter(is_normalized_list).most_common(1)[0][0]  # Majority normalization status
+
+    return majority_format, majority_normalization
+    #return formats, is_normalized_list
+
+
+
 #https://albumentations.ai/docs/getting_started/bounding_boxes_augmentation
 #"coco": [x_min, y_min, width, height] in pixels 
 #pascal_voc: [x_min, y_min, x_max, y_max] in pixels
@@ -370,25 +423,55 @@ def draw_annobox2image(image, annotations, id2label=None, save_path="output/Imag
 #torchvision 'xyxy' box_convert ['xyxy', 'xywh', 'cxcywh']
 from torchvision.transforms.functional import pil_to_tensor, to_pil_image
 from torchvision.ops import box_convert
-def draw2pil(image, bbox, category, categories, bbox_format='coco', filepath=None):
+def draw2pil(image, bbox, labels=None, bbox_format='coco', filepath=None):
     if not torch.is_tensor(image):
         image = pil_to_tensor(image)
+    if image.dtype == torch.float32:
+        # Scale from [0, 1] to [0, 255] and convert to torch.uint8
+        image = (image * 255).clamp(0, 255).to(torch.uint8)
+    dimensions = image.shape
+    if dimensions[0] == 3:  # Assuming 3 channels (RGB) for CHW format
+        format_type = "CHW"
+        height, width = dimensions[1], dimensions[2]
+    elif dimensions[2] == 3:  # Assuming 3 channels (RGB) for HWC format
+        format_type = "HWC"
+        height, width = dimensions[0], dimensions[1]
+        
     if not torch.is_tensor(bbox):
         boxes_in = torch.tensor(bbox) #annotations['bbox']
     else:
         boxes_in = bbox
-    if bbox_format=='coco': #'xywh':
-        boxes_new = box_convert(boxes_in, 'xywh', 'xyxy') #['xyxy', 'xywh', 'cxcywh']
-    elif bbox_format=='pascal_voc':
-        boxes_new = boxes_in
+    if bbox_format is None:
+        format_type, is_normalized = check_bounding_box_format_and_normalization(boxes_in)
+        if is_normalized:
+            boxes_in[:, [0, 2]] *= width  # Scale 
+            boxes_in[:, [1, 3]] *= height  # Scale 
+        boxes_new = box_convert(boxes_in, format_type, 'xyxy')
+    else:
+        if bbox_format=='coco': #'xywh':
+            boxes_new = box_convert(boxes_in, 'xywh', 'xyxy') #['xyxy', 'xywh', 'cxcywh']
+        elif bbox_format=='pascal_voc':
+            boxes_new = boxes_in
+        elif bbox_format=='yolo':
+            pixel_boxes = boxes_in.clone() #[x_center, y_center, width, height]
+            pixel_boxes[:, [0, 2]] *= width  # Scale x_min and x_max
+            pixel_boxes[:, [1, 3]] *= height  # Scale y_min and y_max
+            boxes_new = box_convert(boxes_in, 'cxcywh', 'xyxy')
+        elif bbox_format=='albumentations': 
+            pixel_boxes = boxes_in.clone() #[x_min, y_min, x_max, y_max] normalized
+            pixel_boxes[:, [0, 2]] *= width  # Scale x_min and x_max
+            pixel_boxes[:, [1, 3]] *= height  # Scale y_min and y_max
+            boxes_new = box_convert(boxes_in, 'xyxy', 'xyxy')
+        else:
+            boxes_new = boxes_in
     #labels = [categories.int2str(x) for x in category] #annotations['category']
-    labels = [categories.int2str(int(x)) if isinstance(x, (int, float)) else str(x) for x in category]
+    #labels = [categories.int2str(int(x)) if isinstance(x, (int, float)) else str(x) for x in category]
 
     image_annoted=to_pil_image(
         draw_bounding_boxes(
-            image,
-            boxes_new, #Boxes need to be in (xmin, ymin, xmax, ymax)
-            colors="red",
+            image, #(C x H x W) and dtype uint8
+            boxes_new, #Boxes need to be in (xmin, ymin, xmax, ymax) absolute coordinates
+            colors="red", #By default, random colors are generated for boxes.
             labels=labels,
         )
     )
