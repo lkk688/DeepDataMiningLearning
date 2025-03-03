@@ -415,18 +415,20 @@ def trainmain():
             eval_dataset = dataset[valkey].with_transform(preprocess_val)
             coco = None
         elif args.task == "object-detection":
-            coco_datafolder = os.path.join(mycache_dir, 'coco_converted', args.data_name)
-            eval_dataset = HFCOCODataset(dataset[valkey], id2label, dataset_folder=coco_datafolder, coco_anno_json=None, data_type=args.datatype, format=args.format, image_processor=image_processor)
-            coco = eval_dataset.coco
-            eval_dataset.test_cocodataset(10)
-            onehfcoco = next(iter(eval_dataset)) #'pixel_values'[3, 800, 1066] 'labels'
-            #print(onehfcoco)
+            eval_dataset = dataset[valkey].with_transform(preprocess_val)
+            # coco_datafolder = os.path.join(mycache_dir, 'coco_converted', args.data_name)
+            # eval_dataset = HFCOCODataset(dataset[valkey], id2label, dataset_folder=coco_datafolder, coco_anno_json=None, data_type=args.datatype, format=args.format, image_processor=image_processor)
+            # coco = eval_dataset.coco
+            # eval_dataset.test_cocodataset(10)
+            # onehfcoco = next(iter(eval_dataset)) #'pixel_values'[3, 800, 1066] 'labels'
+            # #print(onehfcoco)
 
     collate_fn = get_collate_fn(args.task, image_processor, args.label_column_name, require_padding=False)
 
+    #metriceval = myEvaluator(task=args.task, useHFevaluator=args.useHFevaluator, dualevaluator=False, \
+    #                        processor=image_processor, coco=coco, mycache_dir=mycache_dir)
     metriceval = myEvaluator(task=args.task, useHFevaluator=args.useHFevaluator, dualevaluator=False, \
-                            processor=image_processor, coco=coco, mycache_dir=mycache_dir)
-
+                            processor=image_processor, coco=ModuleNotFoundError, mycache_dir=mycache_dir)
     
     # using now() to get current time
     starting_time = datetime.datetime.now()
@@ -461,7 +463,7 @@ def trainmain():
                 train_dataset=train_dataset,
                 eval_dataset=eval_dataset,
                 processing_class=image_processor,
-                #compute_metrics=eval_compute_metrics_fn,
+                compute_metrics=eval_compute_metrics_fn,
             )
         else:
             # Initialize our trainer

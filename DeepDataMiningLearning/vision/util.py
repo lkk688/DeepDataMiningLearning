@@ -506,15 +506,21 @@ def preprocessimage_objectdetection(examples, image_transforms, image_column_nam
     """Apply augmentations and format annotations in COCO format for object detection task"""
     images = []
     annotations = []
-    print(type(examples["image_id"]), examples["image_id"])
-    print(type(examples["image"]), examples["image"])
-    print(type(examples["objects"]), examples["objects"])
+    # print(type(examples["image_id"]), examples["image_id"])
+    # print(type(examples["image"]), examples["image"])
+    # print(type(examples["objects"]), examples["objects"])
 
     for image_id, image, objects in zip(examples["image_id"], examples["image"], examples["objects"]):
         image = np.array(image.convert("RGB")) #HWC format
+        height, width, channel = image.shape
+
+        bbox_new = objects["bbox"]
+        newbbox, errbox = check_boxsize(bbox_new, height=height, width=width, format="coco")
+        if errbox:
+            print("Detected errbox:",bbox_new)
 
         # apply augmentations
-        output = image_transforms(image=image, bboxes=objects["bbox"], category=objects["category"])
+        output = image_transforms(image=image, bboxes=newbbox, category=objects["category"])
         images.append(output["image"])
 
         # format annotations in COCO format

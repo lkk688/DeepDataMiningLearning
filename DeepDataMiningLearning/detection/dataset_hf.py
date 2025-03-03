@@ -54,14 +54,16 @@ def check_boxsize(bbox, height=None, width=None, format='coco'):
         if ymin+h>height:
             h = max(height - ymin, 1)
             errobox = True
-        if errobox:
-            box=[xmin, ymin, w, h]
-        if xmin > width or ymin > height:
-            box=[0, 0, 1, 1]
-        if format=='coco':
+        # if errobox:
+        #     box=[xmin, ymin, w, h]
+        # if xmin > width or ymin > height:
+        #     box=[0, 0, 1, 1]
+        # if format=='coco':
+        #     newbbox.append(box)
+        # else:
+        #     newbbox.append([xmin, ymin, xmin+w, ymin+h])
+        if errobox ==False:
             newbbox.append(box)
-        else:
-            newbbox.append([xmin, ymin, xmin+w, ymin+h])
     return newbbox, errobox
 
 def save_coco_annotation_file_images(dataset, id2label, path_output, path_anno, format='coco', json_only=False):
