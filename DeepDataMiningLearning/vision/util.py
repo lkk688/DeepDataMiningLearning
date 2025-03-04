@@ -296,7 +296,8 @@ def get_data_transform(image_processor, has_boundingbox=False, image_maxsize=Non
         train_transforms = A.Compose(
             [
                 #A.Perspective(p=0.1),
-                A.HorizontalFlip(p=0.5),
+                A.Resize(640,640),
+		A.HorizontalFlip(p=0.5),
                 A.RandomBrightnessContrast(p=0.5),
                 A.HueSaturationValue(p=0.1),
             ],
