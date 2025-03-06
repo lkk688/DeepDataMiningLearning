@@ -1,4 +1,4 @@
-import evaluate
+#import DeepDataMiningLearning.vision.myevaluate as myevaluate
 import numpy as np
 from tqdm.auto import tqdm
 from DeepDataMiningLearning.detection.plotutils import draw2pil, pixel_values2img, draw_objectdetection_predboxes, draw_objectdetection_results
@@ -27,10 +27,10 @@ class myEvaluator:
             self.metricname = "accuracy"
         self.LOmetric = None
         if self.useHFevaluator and self.task=="object-detection":
-            self.HFmetric = evaluate.load("ybelkada/cocoevaluate", coco=coco) #test_ds_coco_format.coco)
+            self.HFmetric = myevaluate.load("ybelkada/cocoevaluate", coco=coco) #test_ds_coco_format.coco)
         elif self.useHFevaluator:
             # Load the accuracy metric from the datasets package
-            self.HFmetric = evaluate.load(self.metricname) #evaluate.load("mse")
+            self.HFmetric = myevaluate.load(self.metricname) #evaluate.load("mse")
             
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with

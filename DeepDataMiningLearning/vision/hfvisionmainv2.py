@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import datetime
 import datasets
-import evaluate
+import DeepDataMiningLearning.vision.myevaluate as myevaluate
 import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -50,7 +50,7 @@ from DeepDataMiningLearning.detection.dataset_hf import HFCOCODataset, check_box
 #from DeepDataMiningLearning.hfaudio.hfmodels import load_hfcheckpoint
 from DeepDataMiningLearning.vision.util import readimg2PILRGB, load_hfcheckpoint, \
     load_config_relativefolder, get_data_transform, get_collate_fn, compute_mapmetrics, checkimage_aftertransform, preprocessimage_objectdetection
-from DeepDataMiningLearning.vision.evaluate import myEvaluator, evaluate_dataset
+from DeepDataMiningLearning.vision.myevaluate import myEvaluator, evaluate_dataset
 from DeepDataMiningLearning.vision.customtrain import custom_train
 
 logger = get_logger(__name__)

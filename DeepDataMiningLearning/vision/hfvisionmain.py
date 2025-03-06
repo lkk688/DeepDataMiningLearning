@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import datetime
 import datasets
-import evaluate
+import DeepDataMiningLearning.vision.myevaluate as myevaluate
 import torch
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -75,10 +75,10 @@ class myEvaluator:
             self.metricname = "accuracy"
         self.LOmetric = None
         if self.useHFevaluator and self.task=="object-detection":
-            self.HFmetric = evaluate.load("ybelkada/cocoevaluate", coco=coco) #test_ds_coco_format.coco)
+            self.HFmetric = myevaluate.load("ybelkada/cocoevaluate", coco=coco) #test_ds_coco_format.coco)
         elif self.useHFevaluator:
             # Load the accuracy metric from the datasets package
-            self.HFmetric = evaluate.load(self.metricname) #evaluate.load("mse")
+            self.HFmetric = myevaluate.load(self.metricname) #evaluate.load("mse")
             
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with

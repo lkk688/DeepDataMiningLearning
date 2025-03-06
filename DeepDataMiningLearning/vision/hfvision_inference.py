@@ -6,7 +6,7 @@ import requests
 import numpy as np
 import cv2 #pip install opencv-python
 import os
-import evaluate
+import DeepDataMiningLearning.vision.myevaluate as myevaluate
 import math
 import torch
 from torch.utils.data import DataLoader
@@ -584,7 +584,7 @@ def test_dataset_objectdetection(mycache_dir):
         draw.text((x, y), id2label[class_idx], fill='white')
     image.save("output/ImageDrawcoco.png")
 
-    module = evaluate.load("ybelkada/cocoevaluate", coco=test_ds_coco_format.coco)
+    module = myevaluate.load("ybelkada/cocoevaluate", coco=test_ds_coco_format.coco)
     val_dataloader = torch.utils.data.DataLoader(
         test_ds_coco_format, batch_size=8, shuffle=False, num_workers=1, collate_fn=collate_fn)
     test_data = next(iter(val_dataloader))

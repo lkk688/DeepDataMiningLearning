@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from DeepDataMiningLearning.vision.evaluate import evaluate_dataset
+from DeepDataMiningLearning.vision.myevaluate import evaluate_dataset
 
 def custom_train(args, model, image_processor, train_dataloader, eval_dataloader, metriceval, device, accelerator=None, do_evaluate=False, logger=None):
     # Optimizer
