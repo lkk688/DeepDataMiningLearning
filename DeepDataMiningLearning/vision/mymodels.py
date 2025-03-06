@@ -103,9 +103,15 @@ def load_mymodel(model_name, num_classes, source="torchvision"):
         elif model_name == "deit":
             model = ViTForImageClassification.from_pretrained("facebook/deit-base-patch16-224")
             model.classifier = nn.Linear(model.config.hidden_size, num_classes)  # Adjust output layer
+        elif "vit" in model_name:
+            config = ViTForImageClassification.from_pretrained(model_name).config
+            #config.id2label = id2label
+            #config.label2id = label2id
+            config.num_labels=num_classes
+            model=ViTForImageClassification(config)
         else:
             try:
-                model = AutoModelForImageClassification.from_pretrained(model_name)
+                model = AutoModelForImageClassification.from_pretrained(model_name,num_classes=num_classes)
             except Exception as e:
                 print(f"Error loading model from Hugging Face: {e}")
                 raise ValueError(f"Unsupported Hugging Face model: {model_name}")
@@ -129,6 +135,7 @@ def test_model_loading():
     model = load_mymodel("vit", num_classes=10, source="huggingface")
     print(f"Model architecture: {model}")
     print(f"Output layer: {model.classifier}")
+
 
 if __name__ == "__main__":
     test_model_loading()

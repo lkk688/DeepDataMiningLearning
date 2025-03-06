@@ -124,9 +124,78 @@ def train_torch(teacher_model, student_model, train_loader, optimizer, epoch, te
 
     print(f"Epoch [{epoch+1}], Average Loss: {running_loss / len(train_loader):.4f}")
 
+from transformers import TrainingArguments, Trainer
+class ImageDistilTrainer2(Trainer):
+    def __init__(self, teacher_model=None, temperature=4.0, alpha=0.5, *args, **kwargs):
+        """
+        Custom Trainer for Knowledge Distillation.
+
+        Args:
+            teacher_model (nn.Module): Pre-trained teacher model.
+            temperature (float): Temperature for softening logits.
+            alpha (float): Weight for distillation loss vs. student loss.
+            *args, **kwargs: Arguments for the parent Trainer class.
+        """
+        super().__init__(*args, **kwargs)
+        self.teacher_model = teacher_model
+        self.temperature = temperature
+        self.alpha = alpha
+        if self.teacher_model:
+            self.teacher_model.eval()  # Freeze the teacher model
+
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+        """
+        Compute the combined loss for Knowledge Distillation.
+
+        Args:
+            model (nn.Module): Student model.
+            inputs (dict): Input data (e.g., pixel_values, labels).
+            return_outputs (bool): Whether to return model outputs.
+            **kwargs: Additional arguments passed by the parent Trainer.
+
+        Returns:
+            loss (torch.Tensor): Combined loss.
+            outputs (dict): Model outputs (if return_outputs is True).
+        """
+        # Get labels
+        labels = inputs.pop("labels")
+
+        # Forward pass with student model
+        outputs = model(**inputs)
+        student_logits = outputs.logits if hasattr(outputs, "logits") else outputs
+
+        # Forward pass with teacher model
+        if self.teacher_model:
+            with torch.no_grad():
+                teacher_outputs = self.teacher_model(**inputs)
+                teacher_logits = teacher_outputs.logits if hasattr(teacher_outputs, "logits") else teacher_outputs
+        else:
+            teacher_logits = student_logits  # If no teacher model, use student logits
+
+        # Compute losses
+        loss_ce = nn.CrossEntropyLoss()(student_logits, labels)  # Standard cross-entropy loss
+        loss_kd = nn.KLDivLoss(reduction='batchmean')(
+            F.log_softmax(student_logits / self.temperature, dim=1),
+            F.softmax(teacher_logits / self.temperature, dim=1)
+        )  # Distillation loss
+
+        # Combined loss
+        loss = self.alpha * loss_ce + (1 - self.alpha) * loss_kd
+
+        # Return outputs if needed
+        if return_outputs:
+            return loss, outputs
+        return loss
+    
 # Hugging Face Trainer setup
-def train_huggingface(model, train_dataset, test_dataset, args):
+def train_huggingface(model, teacher_model, train_dataset, test_dataset, args, distil=True):
     accuracy = evaluate.load("accuracy")
+
+    def collate_fn(batch):
+        return {
+            'pixel_values': torch.cat([x['pixel_values'].unsqueeze(dim=0) for x in batch], dim=0),
+            'labels': torch.tensor([x['label'] for x in batch])
+        }
 
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
@@ -146,26 +215,44 @@ def train_huggingface(model, train_dataset, test_dataset, args):
         fp16=False,  # Enable mixed precision training, requires GPU
     )
     
-    data_collator = DefaultDataCollator()
+    data_collator = collate_fn #DefaultDataCollator()
     
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        eval_dataset=test_dataset,
-        data_collator=data_collator,
-        compute_metrics=compute_metrics,
-    )
+    if distil == False or teacher_model == None:
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=test_dataset,
+            data_collator=data_collator,
+            compute_metrics=compute_metrics,
+        )
+    else:
+        trainer = ImageDistilTrainer2(
+            teacher_model=teacher_model,
+            temperature=4.0,
+            alpha=0.5,
+            model=model,
+            args=training_args,
+            compute_metrics=compute_metrics,
+            train_dataset=train_dataset,
+            eval_dataset=test_dataset,
+        )
     
     trainer.train()
-    trainer.evaluate()
+    trainer.evaluate(test_dataset)
 
 
 def main():
     args = parse_args()
     # Load dataset
     train_dataset, test_dataset, num_classes, id2label, label2id = load_mydataset(args.dataset, args.data_dir, source=args.data_source, trainer=args.trainer, model_name=args.student_model)
-    
+    if args.data_source == "huggingface":
+        print(f"Train dataset size: {len(train_dataset)}")
+        print(f"Test dataset size: {len(test_dataset)}")
+        print(f"Number of classes: {num_classes}")
+        print(f"Sample image shape: {train_dataset[0]['pixel_values'].shape}")
+        print(f"Sample label: {train_dataset[0]['label']}")
+
     # Device configuration
     device, useamp = get_device()
     # Load models
@@ -182,7 +269,7 @@ def main():
             train_torch(teacher_model, student_model, train_loader, optimizer, epoch, args.temperature, args.alpha, device)
             test(student_model, test_loader)
     elif args.trainer == "huggingface":
-        train_huggingface(student_model, train_dataset, test_dataset, args)
+        train_huggingface(student_model, teacher_model, train_dataset, test_dataset, args)
     else:
         raise ValueError(f"Unsupported trainer: {args.trainer}")
 

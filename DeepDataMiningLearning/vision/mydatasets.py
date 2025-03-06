@@ -5,7 +5,7 @@ from torchvision import transforms
 from torchvision import datasets as torchdatasets
 from torch.utils.data import DataLoader
 from datasets import Dataset as HuggingFaceDataset
-from datasets import DatasetInfo, Features, Image as ImageFeature, ClassLabel
+from datasets import DatasetInfo, DatasetDict, Features, Image as ImageFeature, ClassLabel
 from datasets import load_dataset as hf_load_dataset
 from transformers import default_data_collator, AutoImageProcessor, AutoConfig
 import torch
@@ -289,8 +289,8 @@ def load_mydataset(dataset_name, data_dir, source="torchvision", trainer="huggin
             inputs = processor(example['image'], return_tensors='pt')
 
             # Add to example
-            example['pixel_values'] = inputs['pixel_values'].squeeze()
-            example['label'] = label2id[example['label']]
+            example['pixel_values'] = inputs['pixel_values'].squeeze() #[1, 3, 224, 224]=>[3,244,244]
+            example['label'] = label2id[example['label']] # int
             return example
         
         if source == "huggingface" and processor:
@@ -299,13 +299,30 @@ def load_mydataset(dataset_name, data_dir, source="torchvision", trainer="huggin
             #dataset = dataset.map(hfpreprocess_fn, batched=True, remove_columns=["img"])
         else:
             dataset = dataset.map(apply_torchtransform, batched=True, remove_columns=["img"])
-        split_datasets = dataset["train"].train_test_split(test_size=0.15, seed=20)
+        
         if trainer == "huggingface":
-            train_dataset = split_datasets["train"]
-            test_dataset = split_datasets["test"]
+            dataset.set_format("pt", columns=["pixel_values"], output_all_columns=True)
         else:
-            train_dataset = split_datasets["train"].with_format("torch")
-            test_dataset = split_datasets["test"].with_format("torch")
+            dataset.with_format("torch")
+        #split_datasets = dataset["train"].train_test_split(test_size=0.15, seed=20)
+        train_test_dataset = dataset['train'].train_test_split(test_size=0.2)
+        train_val_dataset = train_test_dataset['train'].train_test_split(test_size=(0.1/0.8))
+        dataset_dict = DatasetDict({
+            'train': train_val_dataset['train'],
+            'valid': train_val_dataset['test'],
+            'test': train_test_dataset['test']
+        })
+        train_dataset = train_val_dataset['train']
+        test_dataset = train_test_dataset['test']
+        # if trainer == "huggingface":
+            
+        #     split_datasets = dataset["train"].train_test_split(test_size=0.15, seed=20)
+        #     train_dataset = split_datasets["train"]
+        #     test_dataset = split_datasets["test"]
+        # else:
+        #     split_datasets = dataset["train"].train_test_split(test_size=0.15, seed=20)
+        #     train_dataset = split_datasets["train"].with_format("torch")
+        #     test_dataset = split_datasets["test"].with_format("torch")
     
     else:
         raise ValueError(f"Unsupported dataset source: {source}")
