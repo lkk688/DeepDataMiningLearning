@@ -38,7 +38,9 @@ poetry run python label_studio/manage.py collectstatic
 
 # start the server in development mode at http://localhost:8080
 poetry run python label_studio/manage.py runserver
-
+#make it accessible externally, you need to bind it to 0.0.0.0, which means it will listen on all available network interfaces.
+poetry run python label_studio/manage.py runserver 0.0.0.0:8080
+#create account lkk688@gmail.com Liu123456
 #go to example folder:
 docker-compose up
 #Open your docker-compose.yml file
