@@ -39,6 +39,13 @@ poetry run python label_studio/manage.py collectstatic
 # start the server in development mode at http://localhost:8080
 poetry run python label_studio/manage.py runserver
 
+#go to example folder:
+docker-compose up
+#Open your docker-compose.yml file
+#Add the environment section to the service definition for your ML backend. Include the LABEL_STUDIO_API_KEY variable with your API key.
+#change LABEL_STUDIO_HOST address
+docker-compose down
+docker-compose up --build
 ```
 
 
