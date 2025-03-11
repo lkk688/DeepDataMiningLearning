@@ -14,6 +14,40 @@ xcode-select --install
 
 ## Brew
 Install [Brew](https://brew.sh/): package manager for Macs
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+The script will install Homebrew to the correct directory for Apple silicon, which is /opt/homebrew
+
+After the installation is complete, the terminal will give you next steps. The terminal will likely give you a line to add to your .zshrc file. To do this, open your .zshrc file in a text editor. 
+```bash
+echo >> /Users/kaikailiu/.zprofile
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> /Users/kaikailiu/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
+brew help #test brew
+```
+
+Install LLVM:
+```bash
+brew install llvm
+brew --prefix llvm
+```
+If you need to have llvm first in your PATH, run:
+  echo 'export PATH="/opt/homebrew/opt/llvm/bin:$PATH"' >> ~/.zshrc
+
+For compilers to find llvm you may need to set:
+  export LDFLAGS="-L/opt/homebrew/opt/llvm/lib"
+  export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"
+  
+Then append /lib/libLLVM.dylib to the output of that command.
+For example, if brew --prefix llvm outputs /usr/local/opt/llvm, then the full path would be /usr/local/opt/llvm/lib/libLLVM.dylib.
+
+Set the DRJIT_LIBLLVM_PATH Environment Variable:
+```bash
+export DRJIT_LIBLLVM_PATH=/path/to/libLLVM.dylib
+```
+Open the file in a text editor (e.g., nano ~/.zshrc).
+Add the line: export DRJIT_LIBLLVM_PATH=/path/to/libLLVM.dylib
 
 ## Python Environment
 To install conda environment in Mac, there are several options. You can install miniforge or miniconda.
