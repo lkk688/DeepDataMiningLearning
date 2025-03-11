@@ -158,12 +158,12 @@ class ImageDistilTrainer2(Trainer):
             outputs (dict): Model outputs (if return_outputs is True).
         """
         # Get labels
-        labels = inputs.pop("labels")
+        labels = inputs.pop("labels") #[16] tensor
 
         # Forward pass with student model
         outputs = model(**inputs)
         student_logits = outputs.logits if hasattr(outputs, "logits") else outputs
-
+        #[16, 37] output
         # Forward pass with teacher model
         if self.teacher_model:
             with torch.no_grad():
