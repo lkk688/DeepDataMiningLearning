@@ -86,6 +86,7 @@ def setup_grounding_dino():
 
 # Function to detect anomalies using Grounding DINO
 #ref: https://github.com/IDEA-Research/GroundingDINO
+#https://github.com/IDEA-Research/Grounded-SAM-2/tree/main
 def detect_anomalies(image_path, model):
     image_source, image = load_image(image_path)
     

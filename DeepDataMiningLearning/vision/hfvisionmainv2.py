@@ -336,6 +336,8 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             trust_remote_code=trust_remote_code,
         )
     elif task == "zeroshot-objectdetection":
+        #"google/owlvit-base-patch32" "google/owlv2-base-patch16-ensemble" "IDEA-Research/grounding-dino-tiny"
+        #https://huggingface.co/docs/transformers/v4.22.0/en/main_classes/model, torch_dtype=torch.float16
         model =  AutoModelForZeroShotObjectDetection.from_pretrained(
             model_name_or_path,
             config = config,
