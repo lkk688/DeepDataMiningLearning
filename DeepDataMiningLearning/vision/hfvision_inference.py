@@ -25,12 +25,12 @@ import albumentations#pip install albumentations
 from time import perf_counter
 
 from DeepDataMiningLearning.Utils.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
-from DeepDataMiningLearning.vision.hfvisionmain import load_visionmodel, load_dataset
+from DeepDataMiningLearning.vision.hfvisionmainv2 import load_visionmodel, load_dataset
 from DeepDataMiningLearning.detection.models import create_detectionmodel
 
-#tasks: "depth-estimation", "image-classification", "object-detection"
+#tasks: "depth-estimation", "image-classification", "object-detection", "zeroshot-objectdetection"
 class MyVisionInference():
-    def __init__(self, model_name, model_path="", model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0', scale='x') -> None:
+    def __init__(self, model_name, model_path="", model_type="huggingface", task="image-classification", cache_dir="./output", gpuid='0', scale='x', image_maxsize=None) -> None:
         self.cache_dir = cache_dir
         self.model_name = model_name
         self.model_type = model_type
@@ -48,7 +48,7 @@ class MyVisionInference():
                 model_name_or_path = model_path
             else:
                 model_name_or_path = model_name
-            self.model, self.image_processor = load_visionmodel(model_name_or_path = model_name_or_path, task=task, load_only=True, labels=None, mycache_dir=cache_dir, trust_remote_code=True)
+            self.model, self.image_processor = load_visionmodel(model_name_or_path = model_name_or_path, task=task, load_only=True, labels=None, image_maxsize=image_maxsize)
             self.id2label = self.model.config.id2label
         elif isinstance(model_name, str) and task=="image-classification":#torch model
             self.model = torch.hub.load('pytorch/vision:v0.6.0', model_name, pretrained=True) #'resnet18'
@@ -84,13 +84,16 @@ class MyVisionInference():
             inp = manual_transforms(inp).unsqueeze(0)
         return inp
 
-    def __call__(self, image):
+    def __call__(self, image, text=None):
         self.image, self.org_sizeHW = read_image(image, use_pil=True, use_cv2=False, output_format='numpy', plotfig=False)
         print(f"Shape of the NumPy array: {self.image.shape}")
         #HWC numpy (427, 640, 3)
         if self.image_processor is not None and self.model_type=="huggingface":
-            inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
-            print(inputs.shape) #torch.Size([1, 3, 224, 224]) [1, 3, 350, 518]
+            if text is None:
+                inputs = self.image_processor(self.image, return_tensors="pt").pixel_values
+                print(inputs.shape) #torch.Size([1, 3, 224, 224]) [1, 3, 350, 518]
+            else:
+                inputs = self.image_processor(text=text, images=self.image, return_tensors="pt")
         elif self.image_processor is not None:
             inputs = self.image_processor(self.image) #BCHW for tensor
         else:
@@ -100,7 +103,8 @@ class MyVisionInference():
 
         start_time = perf_counter()
         with torch.no_grad():
-            outputs = self.model(inputs) #output: [1, 84, 5880] 84=4(boxes)+80(classes)
+            #outputs = self.model(inputs) #output: [1, 84, 5880] 84=4(boxes)+80(classes)
+            outputs = self.model(**inputs)
         end_time = perf_counter()
         print(f'Elapsed inference time: {end_time-start_time:.3f}s')
         self.inputs = inputs
@@ -640,9 +644,24 @@ def MyVisionInferencetest(task="object-detection", mycache_dir=None):
     confidences = myinference(imagepath)
     print(confidences)
 
+def MyVisionInferencetest_zeroshot(task="zeroshot-objectdetection"):
+
+    url = 'https://huggingface.co/nielsr/convnext-tiny-finetuned-eurostat/resolve/main/forest.png'
+    image = Image.open(requests.get(url, stream=True).raw)
+    imagepath='./sampledata/bus.jpg'
+    #inference
+    im0 = cv2.imread(imagepath) #(1080, 810, 3)
+    imgs = [im0]
+
+    myinference = MyVisionInference(model_name="huggingface/yolov8-world-m", task=task, model_type="huggingface")
+    target_objects = ["person", "car", "bicycle", "motorcycle", "truck", "bus", "traffic light", "stop sign"]
+    confidences = myinference(image=imagepath, text=target_objects)
+    print(confidences)
+    
 if __name__ == "__main__":
     #"nielsr/convnext-tiny-finetuned-eurostat"
     #"google/bit-50"
     #"microsoft/resnet-50"
+    MyVisionInferencetest_zeroshot()
     MyVisionInferencetest(task="object-detection", mycache_dir=None)
     #test_inference()

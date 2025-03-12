@@ -39,7 +39,7 @@ from tqdm.auto import tqdm
 import numpy as np
 from sklearn.metrics import classification_report #pip install scikit-learn
 from transformers import AutoConfig, AutoImageProcessor, AutoModelForImageClassification, \
-    AutoModelForDepthEstimation, AutoModelForObjectDetection, SchedulerType, get_scheduler
+    AutoModelForDepthEstimation, AutoModelForObjectDetection, AutoModelForZeroShotObjectDetection, SchedulerType, get_scheduler
 from transformers import DefaultDataCollator, Trainer, TrainingArguments
 from time import perf_counter
 from DeepDataMiningLearning.Utils.visionutil import get_device, saveargs2file, load_ImageNetlabels, read_image
@@ -271,7 +271,7 @@ def dataset_preprocessing(image_processor, task, label2id=None, format='coco', i
         
     return preprocess_train, preprocess_val
 
-#tasks: "depth-estimation", "image-classification", "object-detection"
+#tasks: "depth-estimation", "image-classification", "object-detection", "zeroshot-objectdetection"
 def load_visionmodel(model_name_or_path, task="image-classification", load_only=True, labels=None, image_maxsize=None, trust_remote_code=True):
     if load_only:#only load the model
         ignore_mismatched_sizes = False
@@ -335,6 +335,11 @@ def load_visionmodel(model_name_or_path, task="image-classification", load_only=
             ignore_mismatched_sizes=ignore_mismatched_sizes,
             trust_remote_code=trust_remote_code,
         )
+    elif task == "zeroshot-objectdetection":
+        model =  AutoModelForZeroShotObjectDetection.from_pretrained(
+            model_name_or_path,
+            config = config,
+            ignore_mismatched_sizes=ignore_mismatched_sizes)
     #model.config.id2label
     return model, image_processor
 

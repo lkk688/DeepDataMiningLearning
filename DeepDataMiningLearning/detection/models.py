@@ -8,7 +8,7 @@ from torchvision.models.detection.rpn import AnchorGenerator
 from DeepDataMiningLearning.detection.modules.yolomodels import create_yolomodel, freeze_yolomodel
 #from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
 import os
-from modeling_rpnfasterrcnn import CustomRCNN
+from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
 
 try:
     from torchinfo import summary
