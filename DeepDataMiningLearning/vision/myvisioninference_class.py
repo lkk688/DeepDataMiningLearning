@@ -325,13 +325,26 @@ class MyVisionInference():
     
     def universalsegmentation_postprocessing(self, outputs):
         # model predicts class_queries_logits of shape `(batch_size, num_queries)`
-        # and masks_queries_logits of shape `(batch_size, num_queries, height, width)`
+        #These queries are learnable embeddings that the model uses to detect and segment objects.
+        #Each value in class_queries_logits represents the raw, unnormalized scores (logits) for the class of a corresponding object query.
         class_queries_logits = outputs.class_queries_logits
+        #Applies a softmax function and then argmax along the num_queries dimension to get predicted class indices.
+        predicted_classes = torch.nn.functional.softmax(class_queries_logits, dim=1)
+        predicted_class_indices = torch.argmax(predicted_classes, dim=1)
+        #the resulting tensor will have the shape of (batch_size,), as the num_queries dimension has been reduced to a single index per batch.
+    
+        #masks_queries_logits of shape `(batch_size, num_queries, height, width)`
+        #Each (height, width) slice within masks_queries_logits represents the raw, unnormalized scores (logits) for the segmentation mask of a corresponding object query.
         masks_queries_logits = outputs.masks_queries_logits
         
         result = self.image_processor.post_process_instance_segmentation(outputs, target_sizes=self.org_sizeHW)[0]
         print(result.keys())
         predicted_instance_map = result["segmentation"]
+        
+        class_names = list(self.id2label.values())
+        result_img = visualize_results(image=self.image, instance_seg=predicted_instance_map, \
+            class_names=class_names, output_path="output/segmentation_testresult1.jpg",
+            label_segments=True)
         
     def segmentation_postprocessing(self, outputs):
         if self.model_type=="huggingface":

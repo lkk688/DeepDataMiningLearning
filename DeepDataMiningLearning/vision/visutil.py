@@ -14,7 +14,7 @@ import torch
 
 def visualize_results(
     image,
-    boxes=None,
+    boxes=None, #boxes (np.ndarray or torch.Tensor, optional): Bounding boxes in format [x1, y1, x2, y2]
     labels=None,
     scores=None,
     semantic_seg=None,
