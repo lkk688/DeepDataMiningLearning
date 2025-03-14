@@ -11,10 +11,11 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import os
 import torch
+from matplotlib.colors import hsv_to_rgb
 
 def _process_panoptic_segment(segment_info, panoptic_seg_np, image_size, id2label=None):
     """Process a single panoptic segment and return its information."""
-    segment_id = segment_info["id"]
+    segment_id = segment_info["id"] #1
     label_id = segment_info["label_id"]
     score = segment_info.get("score", 1.0)
     was_fused = segment_info.get("was_fused", False)
@@ -26,7 +27,7 @@ def _process_panoptic_segment(segment_info, panoptic_seg_np, image_size, id2labe
         label = f"Class {label_id}"
     
     # Get binary mask and calculate area
-    binary_mask = (panoptic_seg_np == segment_id)
+    binary_mask = (panoptic_seg_np == segment_id) #(450, 800) True/False
     segment_area = np.sum(binary_mask)
     
     # Calculate bounding box
@@ -72,7 +73,7 @@ def _draw_panoptic_segment(draw, segment_data, color, font, alpha=0.5):
 
 def _create_panoptic_overlay(image_size, segments_data, colors):
     """Create the panoptic segmentation overlay."""
-    overlay = np.zeros((*image_size, 3), dtype=np.uint8)
+    overlay = np.zeros((*image_size, 3), dtype=np.uint8) #(450, 800, 3)
     
     for segment, color in zip(segments_data, colors):
         if segment is not None:
@@ -89,6 +90,8 @@ def visualize_results(
     semantic_seg=None,
     instance_seg=None,
     panoptic_seg=None,
+    draw_boxes=True, #for panoptic 
+    draw_masks=True,
     depth_map=None,
     class_names=None,
     colors=None,
@@ -163,18 +166,32 @@ def visualize_results(
         if semantic_seg is not None:
             max_classes = max(max_classes, np.max(semantic_seg) + 1)
         if panoptic_seg is not None and 'segments_info' in panoptic_seg:
-            max_classes = max(max_classes, max([s['category_id'] for s in panoptic_seg['segments_info']]) + 1)
+            #max_classes = max(max_classes, max([s['category_id'] for s in panoptic_seg['segments_info']]) + 1)
+            max_classes = max(max_classes, max([s['label_id'] for s in panoptic_seg['segments_info']]) + 1)
         
         # Ensure we have at least 10 colors even if max_classes is smaller
         max_classes = max(10, max_classes)
         
-        colors = {}
-        for i in range(max_classes):
-            colors[i] = (
-                int((i * 37 + 142) % 255),
-                int((i * 91 + 89) % 255),
-                int((i * 173 + 127) % 255)
-            )
+        # colors = {}
+        # for i in range(max_classes):
+        #     colors[i] = (
+        #         int((i * 37 + 142) % 255),
+        #         int((i * 91 + 89) % 255),
+        #         int((i * 173 + 127) % 255)
+        #     )
+        # Generate random colors for segmentation masks
+        def get_random_colors(n):
+            colors = []
+            for i in range(n):
+                # Use HSV color space for better visual distinction
+                hue = i / n
+                saturation = 0.9
+                value = 0.9
+                rgb = hsv_to_rgb((hue, saturation, value))
+                colors.append((int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)))
+            return colors
+        
+        colors = get_random_colors(max_classes)
     
     # Handle different segmentation types
     segmentation_overlay = None
@@ -327,25 +344,11 @@ def visualize_results(
     #     else:
     #         segmentation_overlay = panoptic_overlay
     # Process panoptic segmentation
+        # Process panoptic segmentation
     if panoptic_seg is not None and 'panoptic_seg' in panoptic_seg and 'segments_info' in panoptic_seg:
-        # Try to load font
-        try:
-            font = ImageFont.truetype("arial.ttf", text_size)
-        except:
-            font = ImageFont.load_default()
-        
-        draw = ImageDraw.Draw(result_img)
+        # Process all segments
         panoptic_seg_np = panoptic_seg['panoptic_seg']
         segments_info = panoptic_seg['segments_info']
-        
-        # Generate colors for segments
-        if colors is None:
-            colors = [
-                (int((i * 37 + 142) % 255), int((i * 91 + 89) % 255), int((i * 173 + 127) % 255))
-                for i in range(len(segments_info))
-            ]
-        
-        # Process all segments
         id2label = {str(i): label for i, label in enumerate(labels)} if labels is not None else None
         segments_data = [
             _process_panoptic_segment(
@@ -357,20 +360,27 @@ def visualize_results(
             for segment_info in segments_info
         ]
         
-        # Create overlay
-        overlay = _create_panoptic_overlay(
-            (result_img.height, result_img.width),
-            segments_data,
-            colors
-        )
-        
-        # Draw segments
-        for segment, color in zip(segments_data, colors):
-            if segment is not None:
-                _draw_panoptic_segment(draw, segment, color, font, alpha)
-        
-        # Blend overlay with original image
-        result_img = Image.blend(result_img, overlay, alpha)
+        # Create overlay if masks should be drawn
+        if draw_masks:
+            overlay = _create_panoptic_overlay(
+                (result_img.height, result_img.width),
+                segments_data,
+                colors
+            )
+            # Convert overlay to PIL Image and store as segmentation_overlay
+            if segmentation_overlay is not None:
+                # Blend with existing overlay
+                panoptic_overlay = overlay
+                segmentation_overlay = Image.blend(segmentation_overlay, panoptic_overlay, 0.5)
+            else:
+                segmentation_overlay = overlay
+        segmentation_overlay.save("output/testseg.png")
+        # Draw bounding boxes and labels if requested
+        if draw_boxes:
+            draw = ImageDraw.Draw(result_img)
+            for segment, color in zip(segments_data, colors):
+                if segment is not None:
+                    _draw_panoptic_segment(draw, segment, color, font, alpha)
 
 
     # Apply segmentation overlay

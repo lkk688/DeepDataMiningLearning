@@ -548,38 +548,46 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
         
         # Prepare visualization inputs
         panoptic_result = {
-            "panoptic_seg": result["segmentation"],
+            "panoptic_seg": result["segmentation"].cpu().numpy(),
             "segments_info": result["segments_info"]
         }
         
         # Use visualize_results for different visualization types
         from visutil import visualize_results
         
+        # Create output paths
+        bbox_path = os.path.join(output_dir, f"{base_name}_bbox.jpg")
+        mask_path = os.path.join(output_dir, f"{base_name}_mask.jpg")
+        combined_path = os.path.join(output_dir, f"{base_name}_combined.jpg")
+        
         # Visualize bounding boxes only
         bbox_img = visualize_results(
-            image=input_image,
+            image=input_image.copy(),  # Use a copy to prevent modifications
             panoptic_seg=panoptic_result,
             draw_boxes=True,
-            draw_masks=False,
-            output_path=os.path.join(output_dir, f"{base_name}_bbox.jpg")
+            draw_masks=True,
+            alpha=0.5,
+            output_path=bbox_path
         )
         
         # Visualize masks only
         mask_img = visualize_results(
-            image=input_image,
+            image=input_image.copy(),
             panoptic_seg=panoptic_result,
             draw_boxes=False,
             draw_masks=True,
-            output_path=os.path.join(output_dir, f"{base_name}_mask.jpg")
+            alpha=0.7,  # Increased alpha for better mask visibility
+            output_path=mask_path
         )
         
         # Visualize combined (boxes + masks)
         combined_img = visualize_results(
-            image=input_image,
+            image=input_image.copy(),
             panoptic_seg=panoptic_result,
             draw_boxes=True,
             draw_masks=True,
-            output_path=os.path.join(output_dir, f"{base_name}_combined.jpg")
+            alpha=0.5,
+            output_path=combined_path
         )
         
         # Save segmentation metadata
@@ -614,7 +622,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Extract key frames and perform panoptic segmentation')
     parser.add_argument('--video_path', type=str, default='data/SJSU_Sample_Video.mp4', help='Path to the input video file')
-    parser.add_argument('--frames_dir', type=str, default='output/extracted_frames_frames_20250312_181159', help='Directory containing already extracted frames (skip video extraction)')
+    parser.add_argument('--frames_dir', type=str, default='output/extracted_frames_frames_20250313_173155', help='Directory containing already extracted frames (skip video extraction)')
     parser.add_argument('--output_dir', type=str, default='output/extracted_frames', help='Directory to save extracted frames')
     parser.add_argument('--max_width', type=int, default=800, help='Maximum width to resize frames to')
     parser.add_argument('--max_height', type=int, default=800, help='Maximum height to resize frames to')
