@@ -134,19 +134,19 @@ NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/cont
     && sudo systemctl --now enable docker
 
     #https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user
-	sudo usermod -aG docker $USERv
+	sudo usermod -aG docker $USER
 	Log out and log back in so that your group membership is re-evaluated.
 	lkk@lkk-intel12:~$ newgrp docker
 	lkk@lkk-intel12:~$ docker run hello-world
 
-    distribution=$(. /etc/os-release;echo $ID$VERSION_ID) \
-        && curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
-        && curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
-                sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-                sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-            
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+  && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
     sudo apt-get update
-    sudo apt-get install -y nvidia-docker2
+    sudo apt-get install -y nvidia-container-toolkit
+    sudo nvidia-ctk runtime configure --runtime=docker
     sudo systemctl restart docker
 
     sudo docker run --rm --gpus all nvidia/cuda:11.7.1-devel-ubuntu22.04 nvidia-smi

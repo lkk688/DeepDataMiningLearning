@@ -11,7 +11,7 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
 import glob
-from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation
+from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation, AutoModelForZeroShotObjectDetection
 
 def extract_metadata(video_path):
     """Extract metadata including GPS information from video file using ffprobe."""
@@ -516,6 +516,20 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
     processor = AutoImageProcessor.from_pretrained(model_name)
     model = AutoModelForUniversalSegmentation.from_pretrained(model_name).to(device)
     
+    # Print the id2label mapping
+    id2label = None
+    labels = None
+    if hasattr(processor, 'id2label'):
+        print("ID to Label Mapping:")
+        id2label = processor.id2label
+    elif hasattr(model.config, 'id2label'):
+        id2label=model.config.id2label
+    else:
+        print("No id2label mapping found in processor")
+    if id2label is not None:
+        labels = list(id2label.values())
+        for id, label in id2label.items():
+            print(f"  {id}: {label}")
     # Get all image files
     image_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
     print(f"Found {len(image_files)} images to process")
@@ -565,7 +579,8 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
             image=input_image.copy(),  # Use a copy to prevent modifications
             panoptic_seg=panoptic_result,
             draw_boxes=True,
-            draw_masks=True,
+            draw_masks=False,
+            labels=labels,
             alpha=0.5,
             output_path=bbox_path
         )
@@ -576,6 +591,7 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
             panoptic_seg=panoptic_result,
             draw_boxes=False,
             draw_masks=True,
+            labels=labels,
             alpha=0.7,  # Increased alpha for better mask visibility
             output_path=mask_path
         )
@@ -586,6 +602,7 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
             panoptic_seg=panoptic_result,
             draw_boxes=True,
             draw_masks=True,
+            labels=labels,
             alpha=0.5,
             output_path=combined_path
         )
@@ -596,7 +613,7 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
             segment_data = {
                 "id": segment_info["id"],
                 "label_id": segment_info["label_id"],
-                "label": processor.id2label[segment_info["label_id"]],
+                "label": id2label[segment_info["label_id"]],
                 "score": float(segment_info.get("score", 1.0)),
                 "was_fused": segment_info.get("was_fused", False)
             }
@@ -617,19 +634,264 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
     
     print(f"Segmentation complete. Processed {len(image_files)} images.")
 
+def perform_grounding_segmentation(frames_dir, output_dir, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 
+                                  box_threshold=0.35, text_threshold=0.25):
+    """
+    Perform object detection using GroundingDINO and segmentation using Segment Anything Model (SAM).
+    
+    Parameters:
+    - frames_dir: Directory containing extracted frames
+    - output_dir: Directory to save segmentation results
+    - text_prompt: Text prompt describing objects to detect (comma-separated)
+    - box_threshold: Confidence threshold for bounding box predictions
+    - text_threshold: Confidence threshold for text-to-box associations
+    """
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Create subdirectories for different visualization types
+    bbox_dir = os.path.join(output_dir, "bboxes")
+    mask_dir = os.path.join(output_dir, "masks")
+    combined_dir = os.path.join(output_dir, "combined")
+    
+    for directory in [bbox_dir, mask_dir, combined_dir]:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+    
+    # Load GroundingDINO model
+    print("Loading GroundingDINO model...")
+    from transformers import AutoProcessor, AutoModelForObjectDetection
+    
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    
+    # Load GroundingDINO model and processor
+    grounding_processor = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained("IDEA-Research/grounding-dino-base").to(device)
+    
+    # Load SAM model
+    print("Loading Segment Anything Model...")
+    from transformers import SamProcessor, SamModel
+    
+    sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
+    sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(device)
+    
+    # Get all image files
+    image_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+    print(f"Found {len(image_files)} images to process")
+    
+    # Generate random colors for visualization
+    def get_random_colors(n):
+        colors = []
+        for i in range(n):
+            # Use HSV color space for better visual distinction
+            hue = i / n
+            saturation = 0.9
+            value = 0.9
+            rgb = hsv_to_rgb((hue, saturation, value))
+            colors.append((int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)))
+        return colors
+    
+    # Process each image
+    for img_path in image_files:
+        base_filename = os.path.basename(img_path)
+        base_name = os.path.splitext(base_filename)[0]
+        print(f"Processing {base_filename}...")
+        
+        # Load image and metadata
+        image = Image.open(img_path)
+        input_image = np.array(image)  # Convert to numpy array for visualization
+        
+        json_path = os.path.join(frames_dir, base_name + ".json")
+        frame_meta = {}
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                frame_meta = json.load(f)
+        
+        # Step 1: Object detection with GroundingDINO
+        #https://huggingface.co/IDEA-Research/grounding-dino-base
+        
+        grounding_inputs = grounding_processor(text=text_prompt, images=image, return_tensors="pt").to(device)
+        print(grounding_inputs.keys()) #['input_ids', 'token_type_ids', 'attention_mask', 'pixel_values', 'pixel_mask']
+        #pixel_values: [1, 3, 750, 1333]
+        with torch.no_grad():
+            grounding_outputs = grounding_model(**grounding_inputs)
+        
+        # Convert outputs to COCO format
+        target_sizes = torch.tensor([image.size[::-1]])
+        #Converts the raw output of [`GroundingDinoForObjectDetection`] into final bounding boxes in (top_left_x, top_left_y,
+        #bottom_right_x, bottom_right_y) format and get the associated text label.
+        results = grounding_processor.post_process_grounded_object_detection(
+            outputs=grounding_outputs,
+            input_ids= grounding_inputs.input_ids,
+            text_threshold=0.3,
+            threshold=box_threshold
+        )[0]
+        print(results.keys()) #['scores', 'boxes', 'text_labels', 'labels']
+        
+        # Create visualization images
+        bbox_image = image.copy()
+        mask_image = Image.new("RGB", image.size, (0, 0, 0))
+        combined_image = image.copy()
+        
+        draw_bbox = ImageDraw.Draw(bbox_image)
+        
+        # Try to load font, use default if not available
+        try:
+            font = ImageFont.truetype("arial.ttf", 12)
+        except:
+            font = ImageFont.load_default()
+        
+        # Store detected objects
+        segments = []
+        
+        # Generate random colors for each detected box
+        random_colors = get_random_colors(len(results["boxes"]))
+        
+        # Process each detected box
+        for i, (box, label, score) in enumerate(zip(results["boxes"], results["labels"], results["scores"])):
+            if score >= text_threshold:
+                # Convert box from center format to corner format
+                box = box.cpu().numpy()
+                x_min, y_min, x_max, y_max = box
+                
+                # Draw bounding box
+                color = random_colors[i]
+                draw_bbox.rectangle([x_min, y_min, x_max, y_max], outline=color, width=2)
+                label_text = f"{label}: {score:.2f}"
+                draw_bbox.text((x_min, y_min - 12), label_text, fill=color, font=font)
+                
+                # Step 2: Generate segmentation mask with SAM
+                # Convert box to SAM format [x1, y1, x2, y2]
+                #box_for_sam = torch.tensor([[x_min, y_min, x_max, y_max]]).to(device)
+                box_for_sam = torch.tensor([[[x_min, y_min, x_max, y_max]]])
+                
+                # Prepare SAM inputs
+                sam_inputs = sam_processor(
+                    image, 
+                    input_boxes=box_for_sam, 
+                    return_tensors="pt"
+                ).to(device)
+                
+                # Generate mask
+                with torch.no_grad():
+                    sam_outputs = sam_model(**sam_inputs)
+                
+                # Get mask predictions
+                masks = sam_processor.image_processor.post_process_masks(
+                    sam_outputs.pred_masks.cpu(),
+                    sam_inputs["original_sizes"].cpu(),
+                    sam_inputs["reshaped_input_sizes"].cpu()
+                )
+                
+                # Get the best mask (highest IoU with the box)
+                # Fix: mask shape is [C, H, W] not [H, W]
+                mask = masks[0][0].numpy()  # Shape: [C, H, W]
+                
+                # Convert mask to binary [H, W] format if it's in [C, H, W] format
+                if len(mask.shape) == 3:
+                    # Take the first channel or average across channels
+                    mask = mask[0]  # Now shape is [H, W]
+                
+                # Ensure mask has the correct dimensions
+                if mask.shape[0] != image.height or mask.shape[1] != image.width:
+                    print(f"Warning: Mask shape {mask.shape} doesn't match image size {image.size}")
+                    # Resize mask to match image dimensions if needed
+                    mask_img = Image.fromarray((mask * 255).astype(np.uint8))
+                    mask_img = mask_img.resize(image.size)
+                    mask = np.array(mask_img) > 0
+                    
+                # Calculate mask area
+                mask_area = np.sum(mask)
+                
+                # Store segment information
+                segment_data = {
+                    "id": i,
+                    "label": label,
+                    "score": float(score),
+                    "bbox": [float(x_min), float(y_min), float(x_max), float(y_max)],
+                    "area": int(mask_area),
+                    "is_thing": True  # All detected objects are "things"
+                }
+                segments.append(segment_data)
+                
+                # Draw mask on mask image
+                mask_data = np.zeros((image.height, image.width, 3), dtype=np.uint8)
+                mask_data[mask > 0] = color
+                mask_img = Image.fromarray(mask_data)
+                mask_image = Image.alpha_composite(
+                    mask_image.convert('RGBA'), 
+                    Image.blend(Image.new('RGBA', mask_image.size, (0, 0, 0, 0)), 
+                               mask_img.convert('RGBA'), 
+                               alpha=1)
+                ).convert('RGB')
+                
+                # Draw combined visualization (transparent mask over image)
+                overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+                overlay_draw = ImageDraw.Draw(overlay)
+                mask_color = color + (64,)  # Add alpha value
+                
+                # Create mask from binary array - more efficient approach
+                mask_indices = np.where(mask > 0)
+                for y, x in zip(mask_indices[0], mask_indices[1]):
+                    if 0 <= y < image.height and 0 <= x < image.width:
+                        overlay_draw.point((x, y), fill=mask_color)
+                
+                # Composite the overlay onto the combined image
+                combined_image = Image.alpha_composite(
+                    combined_image.convert('RGBA'),
+                    overlay
+                ).convert('RGB')
+                
+                # Draw bounding box on combined image with thicker lines for visibility
+                draw_combined = ImageDraw.Draw(combined_image)
+                draw_combined.rectangle([x_min, y_min, x_max, y_max], outline=color, width=3)
+                draw_combined.text((x_min, y_min - 12), label_text, fill=color, font=font)
+        
+        # Save visualization results
+        bbox_image.save(os.path.join(bbox_dir, f"{base_name}_bbox.jpg"))
+        mask_image.save(os.path.join(mask_dir, f"{base_name}_mask.jpg"))
+        combined_image.save(os.path.join(combined_dir, f"{base_name}_combined.jpg"))
+        
+        # Save segmentation metadata
+        seg_meta = {
+            "original_frame": base_filename,
+            "segments": segments,
+            "frame_metadata": frame_meta,
+            "model": "GroundingDINO + SAM",
+            "text_prompt": text_prompt,
+            "box_threshold": box_threshold,
+            "text_threshold": text_threshold,
+            "segmentation_time": datetime.datetime.now().isoformat()
+        }
+        
+        with open(os.path.join(output_dir, f"{base_name}_segmentation.json"), 'w') as f:
+            json.dump(seg_meta, f, indent=4)
+        
+        print(f"Saved segmentation results for {base_filename}")
+    
+    print(f"Segmentation complete. Processed {len(image_files)} images.")
+    
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Extract key frames and perform panoptic segmentation')
     parser.add_argument('--video_path', type=str, default='data/SJSU_Sample_Video.mp4', help='Path to the input video file')
     parser.add_argument('--frames_dir', type=str, default='output/extracted_frames_frames_20250313_173155', help='Directory containing already extracted frames (skip video extraction)')
-    parser.add_argument('--output_dir', type=str, default='output/extracted_frames', help='Directory to save extracted frames')
+    parser.add_argument('--output_dir', type=str, default='output/output_frames', help='Directory to save extracted frames')
     parser.add_argument('--max_width', type=int, default=800, help='Maximum width to resize frames to')
     parser.add_argument('--max_height', type=int, default=800, help='Maximum height to resize frames to')
     parser.add_argument('--method', type=str, default='both', choices=['scene_change', 'interval', 'both'], 
                         help='Method to extract frames: scene_change, interval, or both')
     parser.add_argument('--segmentation_model', type=str, default='facebook/mask2former-swin-large-cityscapes-panoptic',
                         help='HuggingFace model to use for panoptic segmentation, facebook/mask2former-swin-large-cityscapes-panoptic, facebook/mask2former-swin-large-coco-panoptic')
+    parser.add_argument('--segmentation_type', type=str, default='grounding', 
+                    choices=['panoptic', 'grounding'], 
+                    help='Type of segmentation to perform')
+    parser.add_argument('--text_prompt', type=str, 
+                    default='person, car, bicycle, motorcycle, truck, traffic light', 
+                    help='Text prompt for GroundingDINO (comma-separated objects)')
     parser.add_argument('--skip_extraction', default=True, help='Skip video extraction and use existing frames') #action='store_true'
     parser.add_argument('--skip_segmentation', action='store_true', help='Skip segmentation and only extract frames')
     
@@ -653,8 +915,12 @@ if __name__ == "__main__":
     # Perform segmentation if not skipped
     if not args.skip_segmentation:
         seg_output_dir = f"{args.output_dir}_segmentation_{timestamp}"
-        perform_panoptic_segmentation2(
-            frames_dir,
-            seg_output_dir,
-            model_name=args.segmentation_model
-        )
+        if args.segmentation_type == "panoptic":
+            perform_panoptic_segmentation2(
+                frames_dir,
+                seg_output_dir,
+                model_name=args.segmentation_model
+            )
+        else:
+            perform_grounding_segmentation(frames_dir, seg_output_dir, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 
+                                  box_threshold=0.35, text_threshold=0.25)

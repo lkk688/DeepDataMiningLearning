@@ -162,7 +162,7 @@ def visualize_results(
     if colors is None and (labels is not None or semantic_seg is not None or instance_seg is not None or panoptic_seg is not None):
         max_classes = 0
         if labels is not None:
-            max_classes = max(max_classes, np.max(labels) + 1)
+            max_classes = max(max_classes, len(labels) + 1)
         if semantic_seg is not None:
             max_classes = max(max_classes, np.max(semantic_seg) + 1)
         if panoptic_seg is not None and 'segments_info' in panoptic_seg:
@@ -374,7 +374,7 @@ def visualize_results(
                 segmentation_overlay = Image.blend(segmentation_overlay, panoptic_overlay, 0.5)
             else:
                 segmentation_overlay = overlay
-        segmentation_overlay.save("output/testseg.png")
+        #segmentation_overlay.save("output/testseg.png")
         # Draw bounding boxes and labels if requested
         if draw_boxes:
             draw = ImageDraw.Draw(result_img)
