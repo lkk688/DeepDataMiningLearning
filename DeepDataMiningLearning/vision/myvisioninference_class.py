@@ -324,27 +324,100 @@ class MyVisionInference():
         return pilimage
     
     def universalsegmentation_postprocessing(self, outputs):
-        # model predicts class_queries_logits of shape `(batch_size, num_queries)`
+        # model predicts class_queries_logits of shape # [batch_size, num_queries, num_classes]
         #These queries are learnable embeddings that the model uses to detect and segment objects.
         #Each value in class_queries_logits represents the raw, unnormalized scores (logits) for the class of a corresponding object query.
-        class_queries_logits = outputs.class_queries_logits
+        class_queries_logits = outputs.class_queries_logits #[1, 200, 9]
         #Applies a softmax function and then argmax along the num_queries dimension to get predicted class indices.
-        predicted_classes = torch.nn.functional.softmax(class_queries_logits, dim=1)
-        predicted_class_indices = torch.argmax(predicted_classes, dim=1)
+        predicted_classes = torch.nn.functional.softmax(class_queries_logits, dim=1) #[1, 200, 9]
+        predicted_class_indices = torch.argmax(predicted_classes, dim=1) #[1, 9]
         #the resulting tensor will have the shape of (batch_size,), as the num_queries dimension has been reduced to a single index per batch.
     
         #masks_queries_logits of shape `(batch_size, num_queries, height, width)`
         #Each (height, width) slice within masks_queries_logits represents the raw, unnormalized scores (logits) for the segmentation mask of a corresponding object query.
-        masks_queries_logits = outputs.masks_queries_logits
+        masks_queries_logits = outputs.masks_queries_logits # [batch_size, num_queries, height, width] [1, 200, 120, 120]
         
-        result = self.image_processor.post_process_instance_segmentation(outputs, target_sizes=self.org_sizeHW)[0]
-        print(result.keys())
-        predicted_instance_map = result["segmentation"]
+        # Post-process to get instance segmentation results
+        #https://github.com/huggingface/transformers/blob/main/src/transformers/models/mask2former/image_processing_mask2former.py
+        # Post-process to get instance segmentation results
+        results = self.image_processor.post_process_instance_segmentation(
+            outputs,
+            threshold=0.5,  # confidence threshold for predictions
+            mask_threshold=0.5,  # binary mask threshold
+            overlap_mask_area_threshold=0.8,  # threshold for overlapping masks
+            target_sizes=[self.org_sizeHW],  # resize predictions to original image size
+            return_binary_maps=True  # return binary mask maps
+        )[0]
+        print(results.keys())
+        # Extract instance segmentation results
+        segments_info = results["segments_info"]#list of 7 dicts
+        instance_map = results["segmentation"].cpu().numpy() #(7, 415, 612)
         
-        class_names = list(self.id2label.values())
-        result_img = visualize_results(image=self.image, instance_seg=predicted_instance_map, \
-            class_names=class_names, output_path="output/segmentation_testresult1.jpg",
-            label_segments=True)
+        # class_names = list(self.id2label.values())
+        # result_img = visualize_results(image=self.image, instance_seg=predicted_instance_map, \
+        #     class_names=class_names, output_path="output/segmentation_testresult1.jpg",
+        #     label_segments=True)
+        # Prepare visualization
+        image_with_instances = self.image.copy()
+        
+        # Create unique colors for each instance
+        num_instances = len(segments_info)
+        colors = plt.cm.rainbow(np.linspace(0, 1, num_instances))
+        
+        # Draw instances and boxes
+        for idx, segment in enumerate(segments_info):
+            # Get instance mask
+            instance_id = segment["id"]
+            label_id = segment["label_id"]
+            score = segment["score"]
+            # Find which layer contains this instance
+            instance_layers = np.where(instance_map == instance_id)
+            instance_layer = instance_layers[0][0]  # Get the layer index 0
+            mask = instance_map[instance_layer] == instance_id  # Get the binary mask for this instance (415, 612)
+            
+            # Create colored mask
+            color = colors[idx][:3]
+            colored_mask = np.zeros_like(self.image, dtype=np.float32) #(415, 612, 3)
+            colored_mask[mask] = color
+            
+            # Overlay mask on image
+            alpha = 0.5
+            image_with_instances = np.where(
+                mask[:, :, None],
+                image_with_instances * (1 - alpha) + colored_mask * 255 * alpha,
+                image_with_instances
+            )
+            
+            # Draw bounding box if available
+            if "bbox" in segment:
+                x, y, w, h = segment["bbox"]
+                cv2.rectangle(
+                    image_with_instances,
+                    (int(x), int(y)),
+                    (int(x + w), int(y + h)),
+                    color=tuple(int(c * 255) for c in color),
+                    thickness=2
+                )
+                
+                # Add label
+                label = f"{self.id2label[label_id]}: {score:.2f}"
+                cv2.putText(
+                    image_with_instances,
+                    label,
+                    (int(x), int(y - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    tuple(int(c * 255) for c in color),
+                    2
+                )
+        
+        # Convert to uint8 for saving
+        image_with_instances = image_with_instances.astype(np.uint8)
+        
+        # Save result
+        output_path = "output/instance_segmentation_result.jpg"
+        cv2.imwrite(output_path, cv2.cvtColor(image_with_instances, cv2.COLOR_RGB2BGR))
+        return image_with_instances
         
     def segmentation_postprocessing(self, outputs):
         if self.model_type=="huggingface":
@@ -465,6 +538,7 @@ def MyVisionInferencetest_zeroshot(task="zeroshot-objectdetection"):
     print(confidences)
     
 if __name__ == "__main__":
+    MyVisionInferencetest_instanceseg()
     MyVisionInferencetest_seg()
     MyVisionInferencetest_objectdetection()
     #MyVisionInferencetest_zeroshot()

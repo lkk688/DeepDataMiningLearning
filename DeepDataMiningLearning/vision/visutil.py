@@ -12,6 +12,75 @@ import matplotlib.cm as cm
 import os
 import torch
 
+def _process_panoptic_segment(segment_info, panoptic_seg_np, image_size, id2label=None):
+    """Process a single panoptic segment and return its information."""
+    segment_id = segment_info["id"]
+    label_id = segment_info["label_id"]
+    score = segment_info.get("score", 1.0)
+    was_fused = segment_info.get("was_fused", False)
+    
+    # Get label
+    if id2label is not None and label_id in id2label:
+        label = id2label[label_id]
+    else:
+        label = f"Class {label_id}"
+    
+    # Get binary mask and calculate area
+    binary_mask = (panoptic_seg_np == segment_id)
+    segment_area = np.sum(binary_mask)
+    
+    # Calculate bounding box
+    y_indices, x_indices = np.where(binary_mask)
+    if len(y_indices) == 0 or len(x_indices) == 0:
+        return None
+        
+    bbox = [
+        int(np.min(x_indices)), 
+        int(np.min(y_indices)), 
+        int(np.max(x_indices)), 
+        int(np.max(y_indices))
+    ]
+    
+    # Determine if this is a "thing" or "stuff"
+    is_thing = segment_area <= (image_size[0] * image_size[1] * 0.4)
+    
+    return {
+        "id": segment_id,
+        "label_id": label_id,
+        "label": label,
+        "score": float(score) if isinstance(score, (int, float, np.number)) else None,
+        "area": int(segment_area),
+        "bbox": bbox,
+        "is_thing": is_thing,
+        "was_fused": was_fused,
+        "binary_mask": binary_mask
+    }
+
+def _draw_panoptic_segment(draw, segment_data, color, font, alpha=0.5):
+    """Draw a single panoptic segment on the image."""
+    x_min, y_min, x_max, y_max = segment_data["bbox"]
+    
+    # Draw bounding box for "thing" instances
+    if segment_data["is_thing"]:
+        draw.rectangle([x_min, y_min, x_max, y_max], outline=color, width=2)
+        
+        # Draw label
+        label_text = segment_data["label"]
+        if segment_data["score"] is not None:
+            label_text += f" {segment_data['score']:.2f}"
+        draw.text((x_min, y_min - 12), label_text, fill=color, font=font)
+
+def _create_panoptic_overlay(image_size, segments_data, colors):
+    """Create the panoptic segmentation overlay."""
+    overlay = np.zeros((*image_size, 3), dtype=np.uint8)
+    
+    for segment, color in zip(segments_data, colors):
+        if segment is not None:
+            mask = segment["binary_mask"]
+            overlay[mask] = color
+            
+    return Image.fromarray(overlay)
+
 def visualize_results(
     image,
     boxes=None, #boxes (np.ndarray or torch.Tensor, optional): Bounding boxes in format [x1, y1, x2, y2]
@@ -212,52 +281,98 @@ def visualize_results(
             segmentation_overlay = Image.fromarray(instance_colored)
     
     # Panoptic Segmentation
+    # if panoptic_seg is not None and 'panoptic_seg' in panoptic_seg and 'segments_info' in panoptic_seg:
+    #     panoptic_colored = np.zeros((panoptic_seg['panoptic_seg'].shape[0], panoptic_seg['panoptic_seg'].shape[1], 3), dtype=np.uint8)
+        
+    #     for segment in panoptic_seg['segments_info']:
+    #         segment_id = segment['id']
+    #         category_id = segment['category_id']
+    #         mask = panoptic_seg['panoptic_seg'] == segment_id
+            
+    #         # Get color for this category
+    #         color = colors.get(category_id, (255, 255, 255))
+            
+    #         # Color the mask
+    #         panoptic_colored[mask] = color
+            
+    #         # Store segment centroid for labeling
+    #         if label_segments:
+    #             y_indices, x_indices = np.where(mask)
+    #             if len(y_indices) > 0:
+    #                 center_x = int(np.mean(x_indices))
+    #                 center_y = int(np.mean(y_indices))
+                    
+    #                 # Get category name
+    #                 if class_names is not None and category_id < len(class_names):
+    #                     label_text = class_names[category_id]
+    #                 else:
+    #                     label_text = f"Category {category_id}"
+                    
+    #                 # Add instance ID for things (not stuff)
+    #                 if 'isthing' in segment and segment['isthing']:
+    #                     label_text = f"{label_text} {segment_id}"
+                    
+    #                 segment_centroids.append({
+    #                     'x': center_x,
+    #                     'y': center_y,
+    #                     'label': label_text,
+    #                     'color': color
+    #                 })
+        
+    #     panoptic_overlay = Image.fromarray(panoptic_colored)
+        
+    #     # If we already have other segmentation, blend them
+    #     if segmentation_overlay is not None:
+    #         segmentation_overlay = Image.blend(segmentation_overlay, panoptic_overlay, 0.5)
+    #     else:
+    #         segmentation_overlay = panoptic_overlay
+    # Process panoptic segmentation
     if panoptic_seg is not None and 'panoptic_seg' in panoptic_seg and 'segments_info' in panoptic_seg:
-        panoptic_colored = np.zeros((panoptic_seg['panoptic_seg'].shape[0], panoptic_seg['panoptic_seg'].shape[1], 3), dtype=np.uint8)
+        # Try to load font
+        try:
+            font = ImageFont.truetype("arial.ttf", text_size)
+        except:
+            font = ImageFont.load_default()
         
-        for segment in panoptic_seg['segments_info']:
-            segment_id = segment['id']
-            category_id = segment['category_id']
-            mask = panoptic_seg['panoptic_seg'] == segment_id
-            
-            # Get color for this category
-            color = colors.get(category_id, (255, 255, 255))
-            
-            # Color the mask
-            panoptic_colored[mask] = color
-            
-            # Store segment centroid for labeling
-            if label_segments:
-                y_indices, x_indices = np.where(mask)
-                if len(y_indices) > 0:
-                    center_x = int(np.mean(x_indices))
-                    center_y = int(np.mean(y_indices))
-                    
-                    # Get category name
-                    if class_names is not None and category_id < len(class_names):
-                        label_text = class_names[category_id]
-                    else:
-                        label_text = f"Category {category_id}"
-                    
-                    # Add instance ID for things (not stuff)
-                    if 'isthing' in segment and segment['isthing']:
-                        label_text = f"{label_text} {segment_id}"
-                    
-                    segment_centroids.append({
-                        'x': center_x,
-                        'y': center_y,
-                        'label': label_text,
-                        'color': color
-                    })
+        draw = ImageDraw.Draw(result_img)
+        panoptic_seg_np = panoptic_seg['panoptic_seg']
+        segments_info = panoptic_seg['segments_info']
         
-        panoptic_overlay = Image.fromarray(panoptic_colored)
+        # Generate colors for segments
+        if colors is None:
+            colors = [
+                (int((i * 37 + 142) % 255), int((i * 91 + 89) % 255), int((i * 173 + 127) % 255))
+                for i in range(len(segments_info))
+            ]
         
-        # If we already have other segmentation, blend them
-        if segmentation_overlay is not None:
-            segmentation_overlay = Image.blend(segmentation_overlay, panoptic_overlay, 0.5)
-        else:
-            segmentation_overlay = panoptic_overlay
-    
+        # Process all segments
+        id2label = {str(i): label for i, label in enumerate(labels)} if labels is not None else None
+        segments_data = [
+            _process_panoptic_segment(
+                segment_info, 
+                panoptic_seg_np, 
+                (result_img.height, result_img.width),
+                id2label
+            )
+            for segment_info in segments_info
+        ]
+        
+        # Create overlay
+        overlay = _create_panoptic_overlay(
+            (result_img.height, result_img.width),
+            segments_data,
+            colors
+        )
+        
+        # Draw segments
+        for segment, color in zip(segments_data, colors):
+            if segment is not None:
+                _draw_panoptic_segment(draw, segment, color, font, alpha)
+        
+        # Blend overlay with original image
+        result_img = Image.blend(result_img, overlay, alpha)
+
+
     # Apply segmentation overlay
     if segmentation_overlay is not None:
         # Resize if needed

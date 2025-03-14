@@ -499,6 +499,116 @@ def perform_panoptic_segmentation(frames_dir, output_dir, model_name="facebook/m
     
     print(f"Segmentation complete. Processed {len(image_files)} images.")
 
+
+def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/mask2former-swin-large-coco-panoptic"):
+    """
+    Perform panoptic segmentation on extracted frames and save visualizations.
+    """
+    # Create output directory if it doesn't exist
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Load model and processor
+    print(f"Loading model: {model_name}")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    
+    processor = AutoImageProcessor.from_pretrained(model_name)
+    model = AutoModelForUniversalSegmentation.from_pretrained(model_name).to(device)
+    
+    # Get all image files
+    image_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+    print(f"Found {len(image_files)} images to process")
+    
+    for img_path in image_files:
+        base_filename = os.path.basename(img_path)
+        base_name = os.path.splitext(base_filename)[0]
+        print(f"Processing {base_filename}...")
+        
+        # Load image and metadata
+        image = Image.open(img_path)
+        input_image = np.array(image)  # Convert to numpy array for visualization
+        
+        json_path = os.path.join(frames_dir, base_name + ".json")
+        frame_meta = {}
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as f:
+                frame_meta = json.load(f)
+        
+        # Preprocess and generate predictions
+        inputs = processor(images=image, return_tensors="pt").to(device)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        
+        # Post-process results
+        result = processor.post_process_panoptic_segmentation(
+            outputs, 
+            target_sizes=[image.size[::-1]]
+        )[0]
+        
+        # Prepare visualization inputs
+        panoptic_result = {
+            "panoptic_seg": result["segmentation"],
+            "segments_info": result["segments_info"]
+        }
+        
+        # Use visualize_results for different visualization types
+        from visutil import visualize_results
+        
+        # Visualize bounding boxes only
+        bbox_img = visualize_results(
+            image=input_image,
+            panoptic_seg=panoptic_result,
+            draw_boxes=True,
+            draw_masks=False,
+            output_path=os.path.join(output_dir, f"{base_name}_bbox.jpg")
+        )
+        
+        # Visualize masks only
+        mask_img = visualize_results(
+            image=input_image,
+            panoptic_seg=panoptic_result,
+            draw_boxes=False,
+            draw_masks=True,
+            output_path=os.path.join(output_dir, f"{base_name}_mask.jpg")
+        )
+        
+        # Visualize combined (boxes + masks)
+        combined_img = visualize_results(
+            image=input_image,
+            panoptic_seg=panoptic_result,
+            draw_boxes=True,
+            draw_masks=True,
+            output_path=os.path.join(output_dir, f"{base_name}_combined.jpg")
+        )
+        
+        # Save segmentation metadata
+        segments = []
+        for segment_info in result["segments_info"]:
+            segment_data = {
+                "id": segment_info["id"],
+                "label_id": segment_info["label_id"],
+                "label": processor.id2label[segment_info["label_id"]],
+                "score": float(segment_info.get("score", 1.0)),
+                "was_fused": segment_info.get("was_fused", False)
+            }
+            segments.append(segment_data)
+        
+        seg_meta = {
+            "original_frame": base_filename,
+            "segments": segments,
+            "frame_metadata": frame_meta,
+            "model": model_name,
+            "segmentation_time": datetime.datetime.now().isoformat()
+        }
+        
+        with open(os.path.join(output_dir, f"{base_name}_segmentation.json"), 'w') as f:
+            json.dump(seg_meta, f, indent=4)
+        
+        print(f"Saved segmentation results for {base_filename}")
+    
+    print(f"Segmentation complete. Processed {len(image_files)} images.")
+
 if __name__ == "__main__":
     import argparse
     
@@ -535,7 +645,7 @@ if __name__ == "__main__":
     # Perform segmentation if not skipped
     if not args.skip_segmentation:
         seg_output_dir = f"{args.output_dir}_segmentation_{timestamp}"
-        perform_panoptic_segmentation(
+        perform_panoptic_segmentation2(
             frames_dir,
             seg_output_dir,
             model_name=args.segmentation_model
