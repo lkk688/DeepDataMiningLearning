@@ -150,9 +150,10 @@ NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/cont
     sudo systemctl restart docker
 
     sudo docker run --rm --gpus all nvidia/cuda:11.7.1-devel-ubuntu22.04 nvidia-smi
-
+    
     docker pull nvidia/cuda:11.7.1-devel-ubuntu22.04
     docker pull nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+    docker run --rm --runtime=nvidia --gpus all nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 nvidia-smi
     #https://hub.docker.com/r/nvidia/cuda
     docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 nvidia-smi
 
@@ -423,6 +424,8 @@ Access a colab instance in a remote machine
     $ ssh lkk@lkk-intel12 #ssh into that remote machine
     # run a colab docker image
     $ docker run --gpus=all -p 127.0.0.1:9000:8080 us-docker.pkg.dev/colab-images/public/runtime
+    docker run -p 0.0.0.0:9000:8080 us-docker.pkg.dev/colab-images/public/runtime
+    #127.0.0.1 (localhost)  0.0.0.0 (all interfaces):When you bind a port to 0.0.0.0, the service becomes accessible from any machine that can reach your machine's IP address
     # check the output jupyter link with token. 
     # Create a new terminal in your local machine, create ssh tunnel to the remote machine
     ssh -L 9000:localhost:9000 lkk@lkk-intel12

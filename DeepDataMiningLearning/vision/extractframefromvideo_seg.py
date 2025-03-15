@@ -11,7 +11,51 @@ import torch
 import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
 import glob
-from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation, AutoModelForZeroShotObjectDetection
+from transformers import AutoProcessor, AutoImageProcessor, AutoModelForUniversalSegmentation, AutoModelForZeroShotObjectDetection
+
+from collections import defaultdict
+import matplotlib.pyplot as plt
+from matplotlib import cm
+import matplotlib.patches as mpatches
+from matplotlib.colors import ListedColormap, LinearSegmentedColormap
+
+#draw_panoptic_segmentation(**panoptic_segmentation)
+def draw_panoptic_segmentation(segmentation, segments_info, id2label):
+    segmentation = segmentation.cpu()
+    # get the used color map
+    viridis = cm.get_cmap('viridis', torch.max(segmentation))
+    fig, ax = plt.subplots()
+    ax.imshow(segmentation) #[450, 800]
+    instances_counter = defaultdict(int)
+    handles = []
+    # for each segment, draw its legend
+    for segment in segments_info:
+        segment_id = segment['id'] #1
+        segment_label_id = segment['label_id'] #
+        segment_label = id2label[segment_label_id] #'car'
+        label = f"{segment_label}-{instances_counter[segment_label_id]}"
+        instances_counter[segment_label_id] += 1
+        color = viridis(segment_id)
+        handles.append(mpatches.Patch(color=color, label=label))
+        
+    ax.legend(handles=handles)
+    plt.savefig('output/panoptic_test1.png')
+
+def draw_semantic_segmentation(segmentation, id2label):
+    segmentation = segmentation.cpu()
+    # get the used color map
+    viridis = cm.get_cmap('viridis', torch.max(segmentation))
+    # get all the unique numbers
+    labels_ids = torch.unique(segmentation).tolist()
+    fig, ax = plt.subplots()
+    ax.imshow(segmentation)
+    handles = []
+    for label_id in labels_ids:
+        label = model.config.id2label[label_id]
+        color = viridis(label_id)
+        handles.append(mpatches.Patch(color=color, label=label))
+    ax.legend(handles=handles)
+    plt.savefig('output/semantic_test1.png')
 
 def extract_metadata(video_path):
     """Extract metadata including GPS information from video file using ffprobe."""
@@ -500,7 +544,7 @@ def perform_panoptic_segmentation(frames_dir, output_dir, model_name="facebook/m
     print(f"Segmentation complete. Processed {len(image_files)} images.")
 
 
-def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/mask2former-swin-large-coco-panoptic"):
+def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/mask2former-swin-large-coco-panoptic", task='panoptic'):
     """
     Perform panoptic segmentation on extracted frames and save visualizations.
     """
@@ -513,7 +557,8 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
-    processor = AutoImageProcessor.from_pretrained(model_name)
+    #processor = AutoImageProcessor.from_pretrained(model_name)
+    processor = AutoProcessor.from_pretrained(model_name)
     model = AutoModelForUniversalSegmentation.from_pretrained(model_name).to(device)
     
     # Print the id2label mapping
@@ -550,20 +595,50 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
                 frame_meta = json.load(f)
         
         # Preprocess and generate predictions
-        inputs = processor(images=image, return_tensors="pt").to(device)
+        if "oneformer" in model_name:
+            inputs = processor(images=image, task_inputs=[task], return_tensors="pt").to(device)
+            #decode the task inputs back to text:
+            checktask=processor.tokenizer.batch_decode(inputs.task_inputs) #task_inputs: [1, 77]
+            print("Decode task is: ", checktask)
+        else:
+            inputs = processor(images=image, return_tensors="pt").to(device)
+        
+        for k,v in inputs.items():
+            print(k,v.shape) 
+        #pixel_values:[1, 3, 749, 1333], 
+        # pixel_mask: [1, 749, 1333], 
+        # task_inputs: [1, 77]
+  
         with torch.no_grad():
             outputs = model(**inputs)
         
         # Post-process results
-        result = processor.post_process_panoptic_segmentation(
-            outputs, 
-            target_sizes=[image.size[::-1]]
-        )[0]
+        target_size=[image.size[::-1]]
+        if task == "panoptic":
+            result = processor.post_process_panoptic_segmentation(
+                outputs, 
+                target_sizes=target_size
+            )[0]
+            print(result.keys()) #['segmentation', 'segments_info']
+        elif task == "semantic":
+            result = processor.post_process_semantic_segmentation(
+                outputs,
+                target_sizes=target_size
+            )[0]
+            #[450, 800] tensor
+        elif task == "instance":
+            result = processor.post_process_instance_segmentation(
+                outputs,
+                target_sizes=target_size
+            )[0]
+        else:
+            raise ValueError(f"Unknown task: {task}")
         
+        draw_panoptic_segmentation(result["segmentation"], result["segments_info"], id2label)
         # Prepare visualization inputs
         panoptic_result = {
-            "panoptic_seg": result["segmentation"].cpu().numpy(),
-            "segments_info": result["segments_info"]
+            "panoptic_seg": result["segmentation"].cpu().numpy(), #(450, 800)
+            "segments_info": result["segments_info"] #list of dict
         }
         
         # Use visualize_results for different visualization types
@@ -884,11 +959,14 @@ if __name__ == "__main__":
     parser.add_argument('--max_height', type=int, default=800, help='Maximum height to resize frames to')
     parser.add_argument('--method', type=str, default='both', choices=['scene_change', 'interval', 'both'], 
                         help='Method to extract frames: scene_change, interval, or both')
-    parser.add_argument('--segmentation_model', type=str, default='facebook/mask2former-swin-large-cityscapes-panoptic',
+    parser.add_argument('--segmentation_model', type=str, default="shi-labs/oneformer_coco_swin_large",
                         help='HuggingFace model to use for panoptic segmentation, facebook/mask2former-swin-large-cityscapes-panoptic, facebook/mask2former-swin-large-coco-panoptic')
-    parser.add_argument('--segmentation_type', type=str, default='grounding', 
-                    choices=['panoptic', 'grounding'], 
+    parser.add_argument('--segmentation_type', type=str, default='universal', 
+                    choices=['universal', 'grounding'], 
                     help='Type of segmentation to perform')
+    parser.add_argument('--task', type=str, default='semantic', 
+                    choices=['semantic', 'instance', 'panoptic'], 
+                    help='Type of tasks to perform')#task = "semantic" #task_inputs=["panoptic"], "instance" semantic
     parser.add_argument('--text_prompt', type=str, 
                     default='person, car, bicycle, motorcycle, truck, traffic light', 
                     help='Text prompt for GroundingDINO (comma-separated objects)')
@@ -915,11 +993,12 @@ if __name__ == "__main__":
     # Perform segmentation if not skipped
     if not args.skip_segmentation:
         seg_output_dir = f"{args.output_dir}_segmentation_{timestamp}"
-        if args.segmentation_type == "panoptic":
+        if args.segmentation_type == "universal":
             perform_panoptic_segmentation2(
                 frames_dir,
                 seg_output_dir,
-                model_name=args.segmentation_model
+                model_name=args.segmentation_model,
+                task=args.task
             )
         else:
             perform_grounding_segmentation(frames_dir, seg_output_dir, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 

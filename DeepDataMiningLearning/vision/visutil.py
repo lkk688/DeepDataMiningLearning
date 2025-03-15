@@ -16,13 +16,13 @@ from matplotlib.colors import hsv_to_rgb
 def _process_panoptic_segment(segment_info, panoptic_seg_np, image_size, id2label=None):
     """Process a single panoptic segment and return its information."""
     segment_id = segment_info["id"] #1
-    label_id = segment_info["label_id"]
+    label_id = segment_info["label_id"] #2
     score = segment_info.get("score", 1.0)
     was_fused = segment_info.get("was_fused", False)
     
     # Get label
     if id2label is not None and label_id in id2label:
-        label = id2label[label_id]
+        label = id2label[label_id] #'car'
     else:
         label = f"Class {label_id}"
     
@@ -347,9 +347,9 @@ def visualize_results(
         # Process panoptic segmentation
     if panoptic_seg is not None and 'panoptic_seg' in panoptic_seg and 'segments_info' in panoptic_seg:
         # Process all segments
-        panoptic_seg_np = panoptic_seg['panoptic_seg']
-        segments_info = panoptic_seg['segments_info']
-        id2label = {str(i): label for i, label in enumerate(labels)} if labels is not None else None
+        panoptic_seg_np = panoptic_seg['panoptic_seg'] #(450, 800)
+        segments_info = panoptic_seg['segments_info'] #list
+        id2label = {i: label for i, label in enumerate(labels)} if labels is not None else None
         segments_data = [
             _process_panoptic_segment(
                 segment_info, 
@@ -358,7 +358,7 @@ def visualize_results(
                 id2label
             )
             for segment_info in segments_info
-        ]
+        ] #get bbox
         
         # Create overlay if masks should be drawn
         if draw_masks:
