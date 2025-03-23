@@ -9,7 +9,13 @@
 ## Xcode Tools
 Install Xcode command-line tools (CLT), this includes all the useful open-source tools Unix developers expect, like git, clang, and more.
 ```bash
-xcode-select --install
+xcode-select --install #git will be installed
+```
+
+## Git
+```bash
+% git config --global user.email "kaikai.liu@sjsu.edu"
+% git config --global user.name "Kaikai Liu"
 ```
 
 ## Brew
