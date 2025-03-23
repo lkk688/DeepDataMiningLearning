@@ -12,12 +12,16 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import hsv_to_rgb
 import glob
 from transformers import AutoProcessor, AutoImageProcessor, AutoModelForUniversalSegmentation, AutoModelForZeroShotObjectDetection
+from transformers import AutoProcessor, AutoModelForObjectDetection
+from transformers import SamProcessor, SamModel
 
 from collections import defaultdict
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap, LinearSegmentedColormap
+# Use visualize_results for different visualization types
+from visutil import visualize_results
 
 #draw_panoptic_segmentation(**panoptic_segmentation)
 def draw_panoptic_segmentation(segmentation, segments_info, id2label):
@@ -641,9 +645,6 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
             "segments_info": result["segments_info"] #list of dict
         }
         
-        # Use visualize_results for different visualization types
-        from visutil import visualize_results
-        
         # Create output paths
         bbox_path = os.path.join(output_dir, f"{base_name}_bbox.jpg")
         mask_path = os.path.join(output_dir, f"{base_name}_mask.jpg")
@@ -709,7 +710,58 @@ def perform_panoptic_segmentation2(frames_dir, output_dir, model_name="facebook/
     
     print(f"Segmentation complete. Processed {len(image_files)} images.")
 
-def perform_grounding_segmentation(frames_dir, output_dir, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 
+from torchvision.utils import draw_bounding_boxes
+from torchvision.transforms.functional import to_pil_image, pil_to_tensor
+# Function to visualize the results with bounding boxes and segmentation masks
+def visualize_boxseg(image, boxes, masks, labels=None, scores=None, alpha=0.4):
+    # Convert PIL image to tensor if it's not already
+    if not isinstance(image, torch.Tensor):
+        image_tensor = pil_to_tensor(image)
+    else:
+        image_tensor = image
+    
+    # Draw bounding boxes on the image
+    if boxes is not None and len(boxes) > 0:
+        boxes = boxes.to(torch.int)
+        if labels is not None:
+            image_with_boxes = draw_bounding_boxes(
+                image_tensor, 
+                boxes=boxes,
+                labels=[f"{l}: {s:.2f}" for l, s in zip(labels, scores)] if scores is not None else labels,
+                colors="red",
+                width=4
+            )
+        else:
+            image_with_boxes = draw_bounding_boxes(image_tensor, boxes=boxes, colors="red", width=4)
+    else:
+        image_with_boxes = image_tensor
+    
+    # Convert to PIL for display
+    result_image = to_pil_image(image_with_boxes)
+    
+    # If we have masks, overlay them on the image
+    if masks is not None and len(masks) > 0:
+        result_image_np = np.array(result_image)
+        
+        # Create a colormap for the masks
+        colors = plt.cm.get_cmap('tab10', len(masks))
+        
+        # Create a blank mask with the same size as the image
+        colored_mask = np.zeros_like(result_image_np)
+        
+        # Fill in each mask with a different color
+        for i, mask in enumerate(masks):
+            color = (np.array(colors(i)[:3]) * 255).astype(np.uint8)
+            for c in range(3):
+                colored_mask[:, :, c] = np.where(mask == 1, color[c], colored_mask[:, :, c])
+        
+        # Blend the mask with the original image
+        result_image_np = (1 - alpha) * result_image_np + alpha * colored_mask
+        result_image = Image.fromarray(result_image_np.astype(np.uint8))
+    
+    return result_image
+
+def perform_box_segmentation(frames_dir, output_dir, model_name, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 
                                   box_threshold=0.35, text_threshold=0.25):
     """
     Perform object detection using GroundingDINO and segmentation using Segment Anything Model (SAM).
@@ -734,39 +786,29 @@ def perform_grounding_segmentation(frames_dir, output_dir, text_prompt="person, 
         if not os.path.exists(directory):
             os.makedirs(directory)
     
-    # Load GroundingDINO model
-    print("Loading GroundingDINO model...")
-    from transformers import AutoProcessor, AutoModelForObjectDetection
-    
+    # Load model
+    print("Loading model...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
     
-    # Load GroundingDINO model and processor
-    grounding_processor = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
-    grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained("IDEA-Research/grounding-dino-base").to(device)
+    if "yolo" in model_name:
+        # Load YOLOv12 model
+        from ultralytics import YOLO
+        yolo_model = YOLO(model_name)  # Use nano model, change to s/m/l/x for different sizes
+    else:
+        # Load GroundingDINO model and processor
+        grounding_processor = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+        grounding_model = AutoModelForZeroShotObjectDetection.from_pretrained("IDEA-Research/grounding-dino-base").to(device)
     
     # Load SAM model
     print("Loading Segment Anything Model...")
-    from transformers import SamProcessor, SamModel
-    
-    sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
-    sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(device)
+
+    sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base") #"facebook/sam-vit-base"
+    sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(device) #"facebook/sam2"
     
     # Get all image files
     image_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
     print(f"Found {len(image_files)} images to process")
-    
-    # Generate random colors for visualization
-    def get_random_colors(n):
-        colors = []
-        for i in range(n):
-            # Use HSV color space for better visual distinction
-            hue = i / n
-            saturation = 0.9
-            value = 0.9
-            rgb = hsv_to_rgb((hue, saturation, value))
-            colors.append((int(rgb[0] * 255), int(rgb[1] * 255), int(rgb[2] * 255)))
-        return colors
     
     # Process each image
     for img_path in image_files:
@@ -775,165 +817,94 @@ def perform_grounding_segmentation(frames_dir, output_dir, text_prompt="person, 
         print(f"Processing {base_filename}...")
         
         # Load image and metadata
-        image = Image.open(img_path)
-        input_image = np.array(image)  # Convert to numpy array for visualization
+        image = Image.open(img_path).convert("RGB")
         
-        json_path = os.path.join(frames_dir, base_name + ".json")
-        frame_meta = {}
-        if os.path.exists(json_path):
-            with open(json_path, 'r') as f:
-                frame_meta = json.load(f)
+        # Step 1: 
+        boxes = []
+        labels = []
+        scores = []
+        if "yolo" in model_name:
+            confidence=0.25
+            yolo_results = yolo_model(image, conf=confidence)
+            for result in yolo_results:
+                # Convert from YOLO format to list of boxes, labels, scores
+                if len(result.boxes) > 0:
+                    # Convert boxes from xywh to xyxy format
+                    boxes_tensor = result.boxes.xyxy
+                    boxes.append(boxes_tensor)
+                    
+                    # Get class labels
+                    cls_indices = result.boxes.cls.cpu().numpy()
+                    cls_names = [result.names[int(idx)] for idx in cls_indices]
+                    labels.extend(cls_names)
+                    
+                    # Get confidence scores
+                    scores.extend(result.boxes.conf.cpu().numpy())
+            # Convert list of tensors to single tensor
+            if boxes:
+                boxes = torch.cat(boxes, dim=0)
+            else:
+                boxes = torch.zeros((0, 4))  # Empty tensor if no detections
+        else:
+            # Object detection with GroundingDINO
+            #https://huggingface.co/IDEA-Research/grounding-dino-base
+            grounding_inputs = grounding_processor(text=text_prompt, images=image, return_tensors="pt").to(device)
+            print(grounding_inputs.keys()) #['input_ids', 'token_type_ids', 'attention_mask', 'pixel_values', 'pixel_mask']
+            #pixel_values: [1, 3, 750, 1333]
+            with torch.no_grad():
+                outputs = grounding_model(**grounding_inputs)
+            
+            # Process Grounding DINO results with the grounded method
+            target_sizes = torch.tensor([image.size[::-1]], device=device)
+            #https://github.com/huggingface/transformers/blob/main/src/transformers/models/grounding_dino/processing_grounding_dino.py
+            results = grounding_processor.post_process_grounded_object_detection(
+                outputs=outputs,
+                input_ids=grounding_inputs.input_ids,
+                target_sizes=target_sizes,
+                text_threshold=0.4,
+                threshold=0.3  # Adjust this threshold as needed
+            )[0]
+            print(results.keys()) #['scores', 'boxes', 'text_labels', 'labels']
+            
+            boxes = results["boxes"]
+            scores = results["scores"]
+            labels = results["labels"]  # These are now the actual text labels from the prompt
+            
+        # Step 2: Generate segmentation masks using SAM
+        segmentation_masks = []
         
-        # Step 1: Object detection with GroundingDINO
-        #https://huggingface.co/IDEA-Research/grounding-dino-base
-        
-        grounding_inputs = grounding_processor(text=text_prompt, images=image, return_tensors="pt").to(device)
-        print(grounding_inputs.keys()) #['input_ids', 'token_type_ids', 'attention_mask', 'pixel_values', 'pixel_mask']
-        #pixel_values: [1, 3, 750, 1333]
-        with torch.no_grad():
-            grounding_outputs = grounding_model(**grounding_inputs)
-        
-        # Convert outputs to COCO format
-        target_sizes = torch.tensor([image.size[::-1]])
-        #Converts the raw output of [`GroundingDinoForObjectDetection`] into final bounding boxes in (top_left_x, top_left_y,
-        #bottom_right_x, bottom_right_y) format and get the associated text label.
-        results = grounding_processor.post_process_grounded_object_detection(
-            outputs=grounding_outputs,
-            input_ids= grounding_inputs.input_ids,
-            text_threshold=0.3,
-            threshold=box_threshold
-        )[0]
-        print(results.keys()) #['scores', 'boxes', 'text_labels', 'labels']
-        
-        # Create visualization images
-        bbox_image = image.copy()
-        mask_image = Image.new("RGB", image.size, (0, 0, 0))
-        combined_image = image.copy()
-        
-        draw_bbox = ImageDraw.Draw(bbox_image)
-        
-        # Try to load font, use default if not available
-        try:
-            font = ImageFont.truetype("arial.ttf", 12)
-        except:
-            font = ImageFont.load_default()
-        
-        # Store detected objects
-        segments = []
-        
-        # Generate random colors for each detected box
-        random_colors = get_random_colors(len(results["boxes"]))
-        
-        # Process each detected box
-        for i, (box, label, score) in enumerate(zip(results["boxes"], results["labels"], results["scores"])):
-            if score >= text_threshold:
-                # Convert box from center format to corner format
-                box = box.cpu().numpy()
-                x_min, y_min, x_max, y_max = box
+        if len(boxes) > 0:
+            for box in boxes:
+                # Process the image and bounding box with SAM
+                sam_inputs = sam_processor(image, input_boxes=[[box.tolist()]], return_tensors="pt").to(device)
                 
-                # Draw bounding box
-                color = random_colors[i]
-                draw_bbox.rectangle([x_min, y_min, x_max, y_max], outline=color, width=2)
-                label_text = f"{label}: {score:.2f}"
-                draw_bbox.text((x_min, y_min - 12), label_text, fill=color, font=font)
-                
-                # Step 2: Generate segmentation mask with SAM
-                # Convert box to SAM format [x1, y1, x2, y2]
-                #box_for_sam = torch.tensor([[x_min, y_min, x_max, y_max]]).to(device)
-                box_for_sam = torch.tensor([[[x_min, y_min, x_max, y_max]]])
-                
-                # Prepare SAM inputs
-                sam_inputs = sam_processor(
-                    image, 
-                    input_boxes=box_for_sam, 
-                    return_tensors="pt"
-                ).to(device)
-                
-                # Generate mask
                 with torch.no_grad():
                     sam_outputs = sam_model(**sam_inputs)
                 
-                # Get mask predictions
-                masks = sam_processor.image_processor.post_process_masks(
+                # Get predicted segmentation mask
+                masks = sam_processor.post_process_masks(
                     sam_outputs.pred_masks.cpu(),
                     sam_inputs["original_sizes"].cpu(),
                     sam_inputs["reshaped_input_sizes"].cpu()
                 )
-                
-                # Get the best mask (highest IoU with the box)
-                # Fix: mask shape is [C, H, W] not [H, W]
-                mask = masks[0][0].numpy()  # Shape: [C, H, W]
-                
-                # Convert mask to binary [H, W] format if it's in [C, H, W] format
-                if len(mask.shape) == 3:
-                    # Take the first channel or average across channels
-                    mask = mask[0]  # Now shape is [H, W]
-                
-                # Ensure mask has the correct dimensions
-                if mask.shape[0] != image.height or mask.shape[1] != image.width:
-                    print(f"Warning: Mask shape {mask.shape} doesn't match image size {image.size}")
-                    # Resize mask to match image dimensions if needed
-                    mask_img = Image.fromarray((mask * 255).astype(np.uint8))
-                    mask_img = mask_img.resize(image.size)
-                    mask = np.array(mask_img) > 0
-                    
-                # Calculate mask area
-                mask_area = np.sum(mask)
-                
-                # Store segment information
-                segment_data = {
-                    "id": i,
-                    "label": label,
-                    "score": float(score),
-                    "bbox": [float(x_min), float(y_min), float(x_max), float(y_max)],
-                    "area": int(mask_area),
-                    "is_thing": True  # All detected objects are "things"
-                }
-                segments.append(segment_data)
-                
-                # Draw mask on mask image
-                mask_data = np.zeros((image.height, image.width, 3), dtype=np.uint8)
-                mask_data[mask > 0] = color
-                mask_img = Image.fromarray(mask_data)
-                mask_image = Image.alpha_composite(
-                    mask_image.convert('RGBA'), 
-                    Image.blend(Image.new('RGBA', mask_image.size, (0, 0, 0, 0)), 
-                               mask_img.convert('RGBA'), 
-                               alpha=1)
-                ).convert('RGB')
-                
-                # Draw combined visualization (transparent mask over image)
-                overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
-                overlay_draw = ImageDraw.Draw(overlay)
-                mask_color = color + (64,)  # Add alpha value
-                
-                # Create mask from binary array - more efficient approach
-                mask_indices = np.where(mask > 0)
-                for y, x in zip(mask_indices[0], mask_indices[1]):
-                    if 0 <= y < image.height and 0 <= x < image.width:
-                        overlay_draw.point((x, y), fill=mask_color)
-                
-                # Composite the overlay onto the combined image
-                combined_image = Image.alpha_composite(
-                    combined_image.convert('RGBA'),
-                    overlay
-                ).convert('RGB')
-                
-                # Draw bounding box on combined image with thicker lines for visibility
-                draw_combined = ImageDraw.Draw(combined_image)
-                draw_combined.rectangle([x_min, y_min, x_max, y_max], outline=color, width=3)
-                draw_combined.text((x_min, y_min - 12), label_text, fill=color, font=font)
-        
-        # Save visualization results
-        bbox_image.save(os.path.join(bbox_dir, f"{base_name}_bbox.jpg"))
-        mask_image.save(os.path.join(mask_dir, f"{base_name}_mask.jpg"))
-        combined_image.save(os.path.join(combined_dir, f"{base_name}_combined.jpg"))
-        
+                segmentation_masks.append(masks[0][0][0].numpy())
+
+        # Visualize results
+        boxes_tensor = torch.tensor(boxes) if not isinstance(boxes, torch.Tensor) else boxes
+        result_image = visualize_boxseg(
+            image, 
+            boxes_tensor, 
+            segmentation_masks, 
+            labels=labels,
+            scores=scores
+        )
+        result_image.save("output/segmentation_result.png")
+
         # Save segmentation metadata
         seg_meta = {
             "original_frame": base_filename,
-            "segments": segments,
-            "frame_metadata": frame_meta,
+            "segments": segmentation_masks,
+            #"frame_metadata": frame_meta,
             "model": "GroundingDINO + SAM",
             "text_prompt": text_prompt,
             "box_threshold": box_threshold,
@@ -947,13 +918,13 @@ def perform_grounding_segmentation(frames_dir, output_dir, text_prompt="person, 
         print(f"Saved segmentation results for {base_filename}")
     
     print(f"Segmentation complete. Processed {len(image_files)} images.")
-    
+
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Extract key frames and perform panoptic segmentation')
     parser.add_argument('--video_path', type=str, default='data/SJSU_Sample_Video.mp4', help='Path to the input video file')
-    parser.add_argument('--frames_dir', type=str, default='output/extracted_frames_frames_20250313_173155', help='Directory containing already extracted frames (skip video extraction)')
+    parser.add_argument('--frames_dir', type=str, default='output/extracted_frames_frames_20250312_181159', help='Directory containing already extracted frames (skip video extraction)')
     parser.add_argument('--output_dir', type=str, default='output/output_frames', help='Directory to save extracted frames')
     parser.add_argument('--max_width', type=int, default=800, help='Maximum width to resize frames to')
     parser.add_argument('--max_height', type=int, default=800, help='Maximum height to resize frames to')
@@ -961,7 +932,7 @@ if __name__ == "__main__":
                         help='Method to extract frames: scene_change, interval, or both')
     parser.add_argument('--segmentation_model', type=str, default="shi-labs/oneformer_coco_swin_large",
                         help='HuggingFace model to use for panoptic segmentation, facebook/mask2former-swin-large-cityscapes-panoptic, facebook/mask2former-swin-large-coco-panoptic')
-    parser.add_argument('--segmentation_type', type=str, default='universal', 
+    parser.add_argument('--segmentation_type', type=str, default='grounding', 
                     choices=['universal', 'grounding'], 
                     help='Type of segmentation to perform')
     parser.add_argument('--task', type=str, default='semantic', 
@@ -1001,5 +972,5 @@ if __name__ == "__main__":
                 task=args.task
             )
         else:
-            perform_grounding_segmentation(frames_dir, seg_output_dir, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 
+            perform_box_segmentation(frames_dir, seg_output_dir, model_name='yolov8n.pt', text_prompt="a person. a car. a bicycle. a motorcycle. a truck. traffic light", 
                                   box_threshold=0.35, text_threshold=0.25)
