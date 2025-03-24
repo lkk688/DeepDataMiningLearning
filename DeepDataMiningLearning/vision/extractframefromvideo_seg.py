@@ -1013,6 +1013,316 @@ def perform_box_segmentation(frames_dir, output_dir, model_name, text_prompt="pe
     
     print(f"Segmentation complete. Processed {len(image_files)} images.")
 
+def generate_label_studio_predictions(frames_dir, output_file, model_name, text_prompt="person, car, bicycle, motorcycle, truck, traffic light", 
+                                     confidence_threshold=0.25, include_masks=False):
+    """
+    Generate pre-annotations in Label Studio format from object detection results. https://labelstud.io/guide/predictions
+    
+    Parameters:
+    - frames_dir: Directory containing extracted frames
+    - output_file: Path to save the Label Studio predictions JSON file
+    - model_name: Name of the model to use for detection (e.g., 'yolov8n.pt')
+    - text_prompt: Text prompt for GroundingDINO (if used)
+    - confidence_threshold: Minimum confidence score for detections
+    - include_masks: Whether to include segmentation masks (if available)
+    """
+    # Load model
+    print("Loading model...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Using device: {device}")
+    
+    if "yolo" in model_name:
+        # Load YOLO model
+        from ultralytics import YOLO
+        model = YOLO(model_name)
+    else:
+        # Load GroundingDINO model and processor
+        grounding_processor = AutoProcessor.from_pretrained("IDEA-Research/grounding-dino-base")
+        model = AutoModelForZeroShotObjectDetection.from_pretrained("IDEA-Research/grounding-dino-base").to(device)
+    
+    # Load SAM model if including masks
+    if include_masks:
+        print("Loading Segment Anything Model...")
+        sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-base")
+        sam_model = SamModel.from_pretrained("facebook/sam-vit-base").to(device)
+    
+    # Get all image files
+    image_files = sorted(glob.glob(os.path.join(frames_dir, "*.jpg")))
+    print(f"Found {len(image_files)} images to process")
+    
+    # Prepare Label Studio predictions
+    predictions = []
+    
+    # Process each image
+    for img_path in image_files:
+        base_filename = os.path.basename(img_path)
+        print(f"Processing {base_filename}...")
+        
+        # Load image
+        image = Image.open(img_path).convert("RGB")
+        image_width, image_height = image.size
+        
+        # Get image file size
+        file_size = os.path.getsize(img_path)
+        
+        # Create task entry for this image
+        task = {
+            "data": {
+                "image": base_filename,
+                "width": image_width,
+                "height": image_height,
+                "file_size": file_size
+            },
+            "predictions": []
+        }
+        
+        # Detect objects
+        boxes = []
+        labels = []
+        scores = []
+        
+        if "yolo" in model_name:
+            # YOLO detection
+            yolo_results = model(image, conf=confidence_threshold)
+            
+            # Create prediction entry
+            prediction = {
+                "model_version": model_name,
+                "score": 1.0,  # Overall prediction score
+                "result": []
+            }
+            
+            for result in yolo_results:
+                if len(result.boxes) > 0:
+                    # Get boxes, labels, and scores
+                    boxes_tensor = result.boxes.xyxy.cpu()
+                    cls_indices = result.boxes.cls.cpu().numpy()
+                    cls_names = [result.names[int(idx)] for idx in cls_indices]
+                    confidence_scores = result.boxes.conf.cpu().numpy()
+                    
+                    # Process each detection
+                    for i, (box, label, score) in enumerate(zip(boxes_tensor, cls_names, confidence_scores)):
+                        if score >= confidence_threshold:
+                            x1, y1, x2, y2 = box.tolist()
+                            
+                            # Calculate normalized coordinates for Label Studio
+                            width = x2 - x1
+                            height = y2 - y1
+                            
+                            # Create annotation result
+                            annotation = {
+                                "id": f"{base_filename}_{i}",
+                                "type": "rectanglelabels",
+                                "from_name": "label",
+                                "to_name": "image",
+                                "original_width": image_width,
+                                "original_height": image_height,
+                                "image_rotation": 0,
+                                "value": {
+                                    "rotation": 0,
+                                    "x": 100 * x1 / image_width,
+                                    "y": 100 * y1 / image_height,
+                                    "width": 100 * width / image_width,
+                                    "height": 100 * height / image_height,
+                                    "rectanglelabels": [label]
+                                },
+                                "score": float(score)
+                            }
+                            
+                            # Add segmentation mask if requested
+                            if include_masks:
+                                # Process the image and bounding box with SAM
+                                sam_inputs = sam_processor(image, input_boxes=[[box.tolist()]], return_tensors="pt").to(device)
+                                
+                                with torch.no_grad():
+                                    sam_outputs = sam_model(**sam_inputs)
+                                
+                                # Get predicted segmentation mask
+                                masks = sam_processor.post_process_masks(
+                                    sam_outputs.pred_masks.cpu(),
+                                    sam_inputs["original_sizes"].cpu(),
+                                    sam_inputs["reshaped_input_sizes"].cpu()
+                                )
+                                
+                                # Convert mask to polygon points for Label Studio
+                                mask = masks[0][0][0].numpy()
+                                from skimage import measure
+                                
+                                # Find contours at a constant value of 0.5
+                                contours = measure.find_contours(mask, 0.5)
+                                
+                                # Select the largest contour
+                                if contours:
+                                    contour = sorted(contours, key=lambda x: len(x))[-1]
+                                    
+                                    # Convert to Label Studio polygon format (normalized coordinates)
+                                    polygon_points = []
+                                    for point in contour:
+                                        y, x = point
+                                        polygon_points.append([
+                                            100 * x / image_width,
+                                            100 * y / image_height
+                                        ])
+                                    
+                                    # Add polygon annotation
+                                    polygon_annotation = {
+                                        "id": f"{base_filename}_{i}_mask",
+                                        "type": "polygonlabels",
+                                        "from_name": "polygon",
+                                        "to_name": "image",
+                                        "original_width": image_width,
+                                        "original_height": image_height,
+                                        "value": {
+                                            "points": polygon_points,
+                                            "polygonlabels": [label]
+                                        },
+                                        "score": float(score)
+                                    }
+                                    
+                                    prediction["result"].append(polygon_annotation)
+                            
+                            prediction["result"].append(annotation)
+            
+            task["predictions"].append(prediction)
+            
+        else:
+            # GroundingDINO detection
+            grounding_inputs = grounding_processor(text=text_prompt, images=image, return_tensors="pt").to(device)
+            
+            with torch.no_grad():
+                outputs = model(**grounding_inputs)
+            
+            # Process results
+            target_sizes = torch.tensor([image.size[::-1]], device=device)
+            results = grounding_processor.post_process_grounded_object_detection(
+                outputs=outputs,
+                input_ids=grounding_inputs.input_ids,
+                target_sizes=target_sizes,
+                text_threshold=confidence_threshold,
+                threshold=confidence_threshold
+            )[0]
+            
+            # Create prediction entry
+            prediction = {
+                "model_version": "GroundingDINO",
+                "score": 1.0,
+                "result": []
+            }
+            
+            # Process each detection
+            for i, (box, label, score) in enumerate(zip(results["boxes"], results["labels"], results["scores"])):
+                if score >= confidence_threshold:
+                    x1, y1, x2, y2 = box.cpu().tolist()
+                    
+                    # Calculate normalized coordinates for Label Studio
+                    width = x2 - x1
+                    height = y2 - y1
+                    
+                    # Create annotation result
+                    annotation = {
+                        "id": f"{base_filename}_{i}",
+                        "type": "rectanglelabels",
+                        "from_name": "label",
+                        "to_name": "image",
+                        "original_width": image_width,
+                        "original_height": image_height,
+                        "image_rotation": 0,
+                        "value": {
+                            "rotation": 0,
+                            "x": 100 * x1 / image_width,
+                            "y": 100 * y1 / image_height,
+                            "width": 100 * width / image_width,
+                            "height": 100 * height / image_height,
+                            "rectanglelabels": [label]
+                        },
+                        "score": float(score)
+                    }
+                    
+                    prediction["result"].append(annotation)
+                    
+                    # Add segmentation mask if requested
+                    if include_masks:
+                        # Similar SAM processing as in YOLO case
+                        sam_inputs = sam_processor(image, input_boxes=[[box.cpu().tolist()]], return_tensors="pt").to(device)
+                        
+                        with torch.no_grad():
+                            sam_outputs = sam_model(**sam_inputs)
+                        
+                        masks = sam_processor.post_process_masks(
+                            sam_outputs.pred_masks.cpu(),
+                            sam_inputs["original_sizes"].cpu(),
+                            sam_inputs["reshaped_input_sizes"].cpu()
+                        )
+                        
+                        # Convert mask to polygon points
+                        mask = masks[0][0][0].numpy()
+                        from skimage import measure
+                        
+                        contours = measure.find_contours(mask, 0.5)
+                        
+                        if contours:
+                            contour = sorted(contours, key=lambda x: len(x))[-1]
+                            
+                            polygon_points = []
+                            for point in contour:
+                                y, x = point
+                                polygon_points.append([
+                                    100 * x / image_width,
+                                    100 * y / image_height
+                                ])
+                            
+                            polygon_annotation = {
+                                "id": f"{base_filename}_{i}_mask",
+                                "type": "polygonlabels",
+                                "from_name": "polygon",
+                                "to_name": "image",
+                                "original_width": image_width,
+                                "original_height": image_height,
+                                "value": {
+                                    "points": polygon_points,
+                                    "polygonlabels": [label]
+                                },
+                                "score": float(score)
+                            }
+                            
+                            prediction["result"].append(polygon_annotation)
+            
+            task["predictions"].append(prediction)
+        
+        predictions.append(task)
+    
+    # Save predictions to file
+    with open(output_file, 'w') as f:
+        json.dump(predictions, f, indent=2)
+    
+    print(f"Saved Label Studio predictions for {len(predictions)} images to {output_file}")
+    
+    # Print example Label Studio configuration
+    print("\nExample Label Studio configuration:")
+    print("""
+    <View>
+      <Image name="image" value="$image"/>
+      <RectangleLabels name="label" toName="image">
+        <Label value="person" background="#FF0000"/>
+        <Label value="car" background="#00FF00"/>
+        <Label value="bicycle" background="#0000FF"/>
+        <Label value="motorcycle" background="#FFFF00"/>
+        <Label value="truck" background="#00FFFF"/>
+        <Label value="traffic light" background="#FF00FF"/>
+      </RectangleLabels>
+      <PolygonLabels name="polygon" toName="image">
+        <Label value="person" background="#FF0000"/>
+        <Label value="car" background="#00FF00"/>
+        <Label value="bicycle" background="#0000FF"/>
+        <Label value="motorcycle" background="#FFFF00"/>
+        <Label value="truck" background="#00FFFF"/>
+        <Label value="traffic light" background="#FF00FF"/>
+      </PolygonLabels>
+    </View>
+    """)
+    
+    return predictions
+
 if __name__ == "__main__":
     import argparse
     
@@ -1056,6 +1366,14 @@ if __name__ == "__main__":
     else:
         frames_dir = args.frames_dir
     
+    # For YOLO model without masks
+    generate_label_studio_predictions(
+        frames_dir=frames_dir, 
+        output_file="output/label_studio_predictions.json",
+        model_name="yolov8n.pt",
+        confidence_threshold=0.3,
+        include_masks=False
+    )
     # Perform segmentation if not skipped
     if not args.skip_segmentation:
         seg_output_dir = f"{args.output_dir}_segmentation_{timestamp}"
