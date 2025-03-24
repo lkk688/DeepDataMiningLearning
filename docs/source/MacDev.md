@@ -9,7 +9,13 @@
 ## Xcode Tools
 Install Xcode command-line tools (CLT), this includes all the useful open-source tools Unix developers expect, like git, clang, and more.
 ```bash
-xcode-select --install
+xcode-select --install #git will be installed
+```
+
+## Git
+```bash
+% git config --global user.email "kaikai.liu@sjsu.edu"
+% git config --global user.name "Kaikai Liu"
 ```
 
 ## Brew
@@ -54,11 +60,25 @@ To install conda environment in Mac, there are several options. You can install 
 
 ### Install python via miniforge
 
-Miniforge is a minimal installer for Conda that works well with Apple Silicon. You can download it from [miniforge](https://github.com/conda-forge/miniforge).
+Miniforge is a minimal installer for Conda that works well with Apple Silicon. You can download it from [miniforge](https://conda-forge.org/download/). [Miniforge](https://github.com/conda-forge/miniforge) is a community-driven, minimal Conda installer focused on the conda-forge channel. 
 
 ```bash
-bash Miniforge3-latest-MacOSX-arm64.sh
+% bash Miniforge3-MacOSX-arm64.sh #installed to default location: /Users/xxx/miniforge3
 #bash Miniforge3-MacOSX-x86_64.sh #if you are using Intel CPU
+% source ~/miniforge3/bin/activate
+% conda init bash #restart the terminal
+```
+If you'd prefer that conda's base environment not be activated on startup, run the following command when conda is activated: `conda config --set auto_activate_base false`
+
+Install Python packages in Macbook Pro M4Pro:
+```bash
+(base) kaikai@MacBook-Pro ~ % conda create --name py312 python=3.12
+conda activate py312
+conda install pandas numpy matplotlib seaborn scikit-learn jupyter
+conda install -y Pillow scipy pyyaml scikit-image 
+pip install opencv-python-headless
+pip install PyQt5
+pip3 install torch torchvision torchaudio
 ```
 
 Follow the installation guide, and do not forget to restart your terminal after it is completed.
