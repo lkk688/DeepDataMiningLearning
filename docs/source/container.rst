@@ -15,6 +15,41 @@ Install Docker: https://docs.docker.com/engine/install/ubuntu/ and follow Post-i
 
 Setup Docker and nvidia container runtime via nvidiacontainer: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html, https://docs.nvidia.com/dgx/nvidia-container-runtime-upgrade/index.html
 
+NVIDIA docker installation: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+
+.. code-block:: console
+
+    sudo snap install curl
+    curl https://get.docker.com | sh \
+    && sudo systemctl --now enable docker
+
+    #https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user
+	sudo usermod -aG docker $USER
+	Log out and log back in so that your group membership is re-evaluated.
+	lkk@lkk-intel12:~$ newgrp docker
+	lkk@lkk-intel12:~$ docker run hello-world
+
+    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg \
+  && curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+    sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+    sudo apt-get update
+    sudo apt-get install -y nvidia-container-toolkit
+    sudo nvidia-ctk runtime configure --runtime=docker
+    sudo systemctl restart docker
+
+    sudo docker run --rm --gpus all nvidia/cuda:11.7.1-devel-ubuntu22.04 nvidia-smi
+    
+    docker pull nvidia/cuda:11.7.1-devel-ubuntu22.04
+    docker pull nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+    docker run --gpus all -it nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+    docker run --rm --runtime=nvidia --gpus all nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 nvidia-smi
+    #https://hub.docker.com/r/nvidia/cuda
+    docker run --rm --gpus all nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04 nvidia-smi
+    #run a google colab container
+     docker run --runtime=nvidia --gpus all -p 127.0.0.1:9000:8080 us-docker.pkg.dev/colab-images/public/runtime
+
 
 After you build the container, you can check the new container via "docker images", note down the image id, and run this image:
 
