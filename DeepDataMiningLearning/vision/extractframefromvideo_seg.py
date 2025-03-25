@@ -1323,19 +1323,21 @@ def generate_label_studio_predictions(frames_dir, output_file, model_name, text_
     
     return predictions
 
+#pip install ultralytics #for yolo
+#pip install transformers #for groundingdino
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description='Extract key frames and perform panoptic segmentation')
     parser.add_argument('--video_path', type=str, default='data/SJSU_Sample_Video.mp4', help='Path to the input video file')
-    parser.add_argument('--frames_dir', type=str, default='output/extracted_frames_frames_20250312_181159', help='Directory containing already extracted frames (skip video extraction)')
+    parser.add_argument('--frames_dir', type=str, default='output/extracted', help='Directory containing already extracted frames (skip video extraction)')
     parser.add_argument('--output_dir', type=str, default='output/output_frames', help='Directory to save extracted frames')
     parser.add_argument('--max_width', type=int, default=800, help='Maximum width to resize frames to')
     parser.add_argument('--max_height', type=int, default=800, help='Maximum height to resize frames to')
     parser.add_argument('--method', type=str, default='both', choices=['scene_change', 'interval', 'both'], 
                         help='Method to extract frames: scene_change, interval, or both')
-    parser.add_argument('--segmentation_model', type=str, default="shi-labs/oneformer_coco_swin_large",
-                        help='HuggingFace model to use for panoptic segmentation, facebook/mask2former-swin-large-cityscapes-panoptic, facebook/mask2former-swin-large-coco-panoptic')
+    parser.add_argument('--model_name_path', type=str, default="yolov8n.pt",
+                        help='Model to use for object detection, panoptic segmentation: yolo, shi-labs/oneformer_coco_swin_large, facebook/mask2former-swin-large-cityscapes-panoptic, facebook/mask2former-swin-large-coco-panoptic')
     parser.add_argument('--segmentation_type', type=str, default='grounding', 
                     choices=['universal', 'grounding'], 
                     help='Type of segmentation to perform')
@@ -1345,9 +1347,10 @@ if __name__ == "__main__":
     parser.add_argument('--text_prompt', type=str, 
                     default='person, car, bicycle, motorcycle, truck, traffic light', 
                     help='Text prompt for GroundingDINO (comma-separated objects)')
-    parser.add_argument('--skip_extraction', default=True, help='Skip video extraction and use existing frames') #action='store_true'
+    parser.add_argument('--skip_extraction', default=False, help='Skip video extraction and use existing frames') #action='store_true'
     parser.add_argument('--privacy_blur', default=True, help='Blur face and license plate number')
-    parser.add_argument('--skip_segmentation', action='store_true', help='Skip segmentation and only extract frames')
+    parser.add_argument('--output_labelstudio', default=True, action='store_true', help='output results to label studio')
+    parser.add_argument('--include_masks', default=False, action='store_true', help='Skip segmentation and only extract frames')
     
     args = parser.parse_args()
     
@@ -1366,24 +1369,25 @@ if __name__ == "__main__":
     else:
         frames_dir = args.frames_dir
     
-    # For YOLO model without masks
-    generate_label_studio_predictions(
-        frames_dir=frames_dir, 
-        output_file="output/label_studio_predictions.json",
-        model_name="yolov8n.pt",
-        confidence_threshold=0.3,
-        include_masks=False
-    )
-    # Perform segmentation if not skipped
-    if not args.skip_segmentation:
+    if args.output_labelstudio:
+        labelstudio_output_dir = f"{frames_dir}/labelstudio_predictions.json"
+        generate_label_studio_predictions(
+            frames_dir=frames_dir, 
+            output_file=labelstudio_output_dir, #"output/label_studio_predictions.json",
+            model_name=args.model_name_path, #"yolov8n.pt",
+            confidence_threshold=0.3,
+            include_masks=args.include_masks
+        )
+    else:
         seg_output_dir = f"{args.output_dir}_segmentation_{timestamp}"
         if args.segmentation_type == "universal":
             perform_panoptic_segmentation2(
                 frames_dir,
                 seg_output_dir,
-                model_name=args.segmentation_model,
+                model_name=args.model_name_path,
                 task=args.task
             )
         else:
-            perform_box_segmentation(frames_dir, seg_output_dir, model_name='yolov8n.pt', text_prompt="a person. a car. a bicycle. a motorcycle. a truck. traffic light", 
+            perform_box_segmentation(frames_dir, seg_output_dir, \
+                model_name=args.model_name_path, text_prompt="a person. a car. a bicycle. a motorcycle. a truck. traffic light", 
                                   box_threshold=0.35, text_threshold=0.25)
