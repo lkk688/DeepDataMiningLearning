@@ -18,8 +18,7 @@ from collections import defaultdict
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
-# Assuming the FCOS model implementation from previous code is available
-# from fcos_model import FCOS, ResNet50Backbone, FCOSLoss
+from modeling_fcos import FCOS, ResNet50Backbone, FCOSLoss
 
 class CocoDetection(torch.utils.data.Dataset):
     """
@@ -456,7 +455,7 @@ def evaluate_coco(model, data_loader, device, ann_file):
 
 def main():
     # Training parameters
-    data_dir = '/path/to/coco'  # Directory with 'train2017', 'val2017', 'annotations'
+    data_dir = 'data/COCOoriginal'  # Directory with 'train2017', 'val2017', 'annotations'
     train_ann_file = os.path.join(data_dir, 'annotations/instances_train2017.json')
     val_ann_file = os.path.join(data_dir, 'annotations/instances_val2017.json')
     train_img_dir = os.path.join(data_dir, 'train2017')

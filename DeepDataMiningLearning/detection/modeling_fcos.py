@@ -35,15 +35,14 @@ class FCOS(nn.Module):
         self.backbone = backbone
         self.num_classes = num_classes
         self.strides = strides
+
+        self.fpn = FPN(backbone.out_channels)  # FPN processes multi-level features
         
-        # Feature Pyramid Network (FPN) for multi-scale feature maps
-        self.fpn = FPN(backbone.out_channels)
-        
-        # FCOS heads for classification, box regression and center-ness
-        self.cls_head = FCOSHead(backbone.out_channels, num_classes)
-        self.bbox_head = FCOSHead(backbone.out_channels, 4)  # 4 for (l, t, r, b)
-        self.centerness_head = FCOSHead(backbone.out_channels, 1)  # 1 for center-ness
-        
+        # Heads now accept lists of channels
+        self.cls_head = FCOSHead(self.fpn.out_channels, num_classes)  # [256, 256, 256] for P3-P5
+        self.bbox_head = FCOSHead(self.fpn.out_channels, 4)  # 4 for (l, t, r, b)
+        self.centerness_head = FCOSHead(self.fpn.out_channels, 1)
+
         # Initialize weights
         self.init_weights()
         
@@ -226,33 +225,33 @@ class FCOS(nn.Module):
 
 class FPN(nn.Module):
     """
-    Feature Pyramid Network (FPN) for multi-scale feature extraction.
+    Feature Pyramid Network (FPN) implementation for FCOS.
+    Converts backbone features with different channels into multi-scale features with uniform channels.
     
-    Takes feature maps from different stages of the backbone and combines them
-    to create a pyramid of features with consistent channels.
+    Args:
+        in_channels_list (list[int]): Number of channels for each backbone output level
+        out_channels (int): Number of channels in output feature maps (default=256)
     """
-    
-    def __init__(self, in_channels: int, out_channels: int = 256):
+    def __init__(self, in_channels_list, out_channels=256):
         super().__init__()
-        self.in_channels = in_channels
         self.out_channels = out_channels
         
-        # Lateral connections (1x1 conv to reduce channel dimensions)
+        # Lateral connections (1x1 convs to match channels)
         self.lateral_convs = nn.ModuleList([
-            nn.Conv2d(channels, out_channels, kernel_size=1)
-            for channels in in_channels
+            nn.Conv2d(in_channels, out_channels, kernel_size=1)
+            for in_channels in in_channels_list
         ])
         
-        # Output convolutions (3x3 conv to smooth features after upsampling)
+        # Output convolutions (3x3 convs to smooth features)
         self.output_convs = nn.ModuleList([
             nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-            for _ in in_channels
+            for _ in in_channels_list
         ])
         
         # Extra layers for P6 and P7 (used in FCOS for larger objects)
         self.extra_convs = nn.ModuleList([
             nn.Sequential(
-                nn.Conv2d(in_channels[-1], out_channels, kernel_size=3, stride=2, padding=1),
+                nn.Conv2d(in_channels_list[-1], out_channels, kernel_size=3, stride=2, padding=1),
                 nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
             ),
             nn.Sequential(
@@ -260,30 +259,45 @@ class FPN(nn.Module):
                 nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
             )
         ])
-    
-    def forward(self, features: List[torch.Tensor]) -> List[torch.Tensor]:
+        
+        # Initialize weights
+        self._init_weights()
+
+    def _init_weights(self):
+        """Initialize weights for FPN layers."""
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, features):
         """
         Forward pass of FPN.
         
         Args:
-            features: List of feature maps from backbone at different scales
+            features (list[Tensor]): Feature maps from backbone at different scales
             
         Returns:
-            List of feature maps at different pyramid levels (P3-P7)
+            list[Tensor]: FPN feature maps [P3, P4, P5, P6, P7] with uniform channels
         """
-        # Process features through lateral connections
-        laterals = [lateral_conv(feature) 
-                   for lateral_conv, feature in zip(self.lateral_convs, features)]
+        # Process backbone features through lateral connections
+        laterals = [
+            lateral_conv(features[i])
+            for i, lateral_conv in enumerate(self.lateral_convs)
+        ]
         
-        # Build top-down path
+        # Build top-down path (starting from highest level)
         used_backbone_levels = len(laterals)
         for i in range(used_backbone_levels - 1, 0, -1):
             laterals[i - 1] += F.interpolate(
-                laterals[i], scale_factor=2, mode="nearest")
+                laterals[i], scale_factor=2, mode='nearest')
         
         # Process through output convolutions
-        features = [output_conv(lateral) 
-                   for output_conv, lateral in zip(self.output_convs, laterals)]
+        features = [
+            output_conv(laterals[i])
+            for i, output_conv in enumerate(self.output_convs)
+        ]
         
         # Add extra pyramid levels (P6, P7)
         for extra_conv in self.extra_convs:
@@ -299,31 +313,23 @@ class FCOSHead(nn.Module):
     Each head consists of 4 convolutional layers followed by a final prediction layer.
     """
     
-    def __init__(self, in_channels: int, out_channels: int):
-        """
-        Initialize FCOS head.
-        
-        Args:
-            in_channels: Number of input channels from FPN
-            out_channels: Number of output channels (classes*1 for cls, 4 for bbox, 1 for center-ness)
-        """
+    """Modified to handle lists of input channels."""
+    def __init__(self, in_channels_list, out_channels):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        
-        # Shared convolutional layers
-        convs = []
-        for _ in range(4):
-            convs.append(nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1))
-            convs.append(nn.GroupNorm(32, in_channels))
-            convs.append(nn.ReLU(inplace=True))
-        self.convs = nn.Sequential(*convs)
-        
-        # Final prediction layer
-        self.conv_cls = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
-        
+        self.heads = nn.ModuleList([
+            self._build_head(in_channels, out_channels)
+            for in_channels in in_channels_list
+        ])
         # Initialize weights
         self.init_weights()
+
+    def _build_head(self, in_channels, out_channels):
+        """Build a head for one FPN level."""
+        return nn.Sequential(
+            Conv(in_channels, in_channels, 3),
+            Conv(in_channels, in_channels, 3),
+            nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        )
     
     def init_weights(self):
         """
@@ -339,18 +345,21 @@ class FCOSHead(nn.Module):
         if self.conv_cls.bias is not None:
             nn.init.constant_(self.conv_cls.bias, 0)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of FCOS head.
+    # def forward(self, x: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Forward pass of FCOS head.
         
-        Args:
-            x: Input feature map from FPN
+    #     Args:
+    #         x: Input feature map from FPN
             
-        Returns:
-            Output predictions (classification, bbox, or center-ness)
-        """
-        x = self.convs(x)
-        return self.conv_cls(x)
+    #     Returns:
+    #         Output predictions (classification, bbox, or center-ness)
+    #     """
+        # x = self.convs(x)
+        # return self.conv_cls(x)
+    def forward(self, x):
+        """x is a list of features from different FPN levels."""
+        return [head(f) for head, f in zip(self.heads, x)]
 
 
 class FCOSLoss(nn.Module):

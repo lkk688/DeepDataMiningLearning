@@ -70,13 +70,13 @@ def collate_fn(batch):
 def get_model(model_name, num_classes=80):
     """Returns the selected model."""
     if model_name == "yolov8":
-        from yolov8_model import YOLOv8
+        from modeling_yolov8 import YOLOv8
         return YOLOv8(num_classes=num_classes).to(device)
-    elif model_name == "yolov12":
-        from yolov12_model import YOLOv12
-        return YOLOv12(num_classes=num_classes).to(device)
+    # elif model_name == "yolov12":
+    #     from yolov12_model import YOLOv12
+    #     return YOLOv12(num_classes=num_classes).to(device)
     elif model_name == "fcos":
-        from fcos_model import FCOS, ResNet50Backbone
+        from modeling_fcos import FCOS, ResNet50Backbone
         backbone = ResNet50Backbone().to(device)
         return FCOS(backbone, num_classes=num_classes).to(device)
     else:
@@ -135,8 +135,8 @@ def get_loss_fn(model_name):
     
 def main():
     parser = argparse.ArgumentParser(description="Train YOLOv8/YOLOv12/FCOS")
-    parser.add_argument("--model", type=str, choices=["yolov8", "yolov12", "fcos"], required=True)
-    parser.add_argument("--data_dir", type=str, default="data/coco")
+    parser.add_argument("--model", type=str, default="yolov8", choices=["yolov8", "yolov12", "fcos"])
+    parser.add_argument("--data_dir", type=str, default='data/COCOoriginal')
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--lr", type=float, default=0.01)

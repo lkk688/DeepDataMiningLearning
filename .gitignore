@@ -136,6 +136,7 @@ data/
 output/
 test-trainer/
 nlp/distilbert-base-uncased-finetuned-emotion
+Datasets/
 
 
 .ipynb_checkpoints
