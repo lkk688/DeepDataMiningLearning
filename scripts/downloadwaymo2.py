@@ -1,6 +1,6 @@
 import os
 import json
-from google.cloud import storage
+from google.cloud import storage#pip install --upgrade google-cloud-storage
 
 class WaymoDatasetDownloader:
     def __init__(self, bucket_name='waymo_open_dataset_v_2_0_1', 
@@ -122,7 +122,7 @@ def main():
     # Initialize the downloader
     downloader = WaymoDatasetDownloader(
         bucket_name='waymo_open_dataset_v_2_0_1',
-        destination_directory='waymo_dataset'
+        destination_directory='/mnt/e/Dataset/waymo_datasetv2'
     )
     
     # Example usage:
@@ -136,6 +136,8 @@ def main():
     # 3. Force redownload of specific folders
     # downloader.download_folders(['training'], force_redownload=True)
 
+import os
+#os.environ["GOOGLE_APPLICATION_CREDENTIALS"]="/mnt/d/cmpelkk-013fa149abab.json"
 if __name__ == '__main__':
     main()
 
@@ -147,4 +149,6 @@ if __name__ == '__main__':
 # - Create a service account in Google Cloud Console
 # - Download the JSON key file
 # - Set the GOOGLE_APPLICATION_CREDENTIALS environment variable
-#   export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+#   export GOOGLE_APPLICATION_CREDENTIALS="/mnt/d/sjsu-rf-ohana-f11181b36a10.json"
+
+#mkdir waymodata && gsutil -m cp -r gs://waymo_open_dataset_v_2_0_1/validation ./waymodata
