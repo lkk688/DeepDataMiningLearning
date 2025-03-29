@@ -16,6 +16,20 @@ import random
 from tqdm import tqdm
 import json
 from pathlib import Path
+
+# Add CUDA memory management configuration
+# This needs to be set before any CUDA operations
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"
+
+# Check if CUDA is available and initialize properly
+if torch.cuda.is_available():
+    try:
+        # Try initializing CUDA with default settings
+        torch.cuda.init()
+    except RuntimeError as e:
+        print(f"CUDA initialization warning: {e}")
+        print("Attempting to continue with CPU...")
+        
 # --------------------------
 # 1. Model Architecture
 # --------------------------
@@ -900,12 +914,11 @@ class YOLOv8Trainer:
         self.config = config
         self.device = torch.device(config["device"])
 
-        # Model selection
-        if config.get("model_type", "moe") == "traditional":
-            self.model = TraditionalYOLOv8(config["datasets"]).to(self.device)
-        else:
+        # Model selection 
+        if config["model_type"]=="moe":
             self.model = GeneralizedYOLOv8(config["datasets"]).to(self.device)
-        
+        else:
+            self.model = TraditionalYOLOv8(config["datasets"]).to(self.device)
         # Setup training components (optimizer, scheduler, etc.)
         self._setup_training()
         
@@ -2282,8 +2295,8 @@ config = {
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train YOLOv8 MoE on KITTI dataset")
-    parser.add_argument("--data_path", type=str, default="/DATA5T2/Dataset/Kitti", 
-                        help="Path to KITTI dataset")
+    parser.add_argument("--data_path", type=str, default="/mnt/e/Dataset/Kitti/", 
+                        help="Path to KITTI dataset, /mnt/e/Dataset/Kitti/, /DATA5T2/Dataset/Kitti")
     parser.add_argument("--epochs", type=int, default=50, 
                         help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=4, 
@@ -2294,7 +2307,7 @@ def parse_args():
                         help="Input image size")
     parser.add_argument("--output_dir", type=str, default="outputs/kitti", 
                         help="Directory to save model checkpoints")
-    parser.add_argument("--model_type", type=str, default="traditional", choices=["moe", "traditional"], 
+    parser.add_argument("--model_type", type=str, default="moe", choices=["moe", "traditional"], 
                         help="Model type: moe (with experts) or traditional")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     return parser.parse_args()
@@ -2307,6 +2320,8 @@ def main():
     
     # Start with the full configuration
     training_config = config.copy()
+    
+    training_config["model_type"] = args.model_type
     
     # Override resume path if specified in command line
     if args.resume:
@@ -2332,7 +2347,7 @@ def main():
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     
     # Initialize trainer
-    trainer = YOLOv8Trainer(config)
+    trainer = YOLOv8Trainer(training_config)
     
     # Train model
     trainer.train()
