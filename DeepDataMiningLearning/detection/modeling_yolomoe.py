@@ -393,30 +393,52 @@ class YOLOv8Head(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
+YOLO_IMPLEMENTATION='YoloDetectionModel'
 class TraditionalYOLOv8(nn.Module):
     """Traditional YOLOv8 model without MoE."""
     def __init__(self, datasets_config):
         super().__init__()
-        # Backbone and FPN (shared)
-        self.backbone = CSPDarknet()
-        self.neck = FPN()
         
         # Unified class space
         self.all_classes = self._get_unified_classes(datasets_config)
+        num_classes = len(self.all_classes)
         
-        # Traditional YOLOv8 heads
-        self.heads = nn.ModuleList([
-            YOLOv8Head(256, len(self.all_classes)),  # For p3_out (256 channels)
-            YOLOv8Head(256, len(self.all_classes)),  # For p4_out (256 channels)
-            YOLOv8Head(512, len(self.all_classes))   # For p5_out (512 channels)
-        ])
+        if YOLO_IMPLEMENTATION=='YoloDetectionModel':
+            # Initialize the YOLOv8 model from yolomodels.py
+            from DeepDataMiningLearning.detection.modeling_yolodetection import YoloDetectionModel
+            
+            # Use the appropriate YAML config based on scale
+            yaml_path = f"/SSD250G/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/configs/yolov8{scale}.yaml"
+            # Create the full model first
+            scale = datasets_config['scale']
+            yolo_model = YoloDetectionModel(cfg=yaml_path, scale=scale, ch=3, nc=num_classes)
+            
+            # Access components
+            self.backbone = yolo_model.backbone
+            self.neck = yolo_model.neck
+            self.heads = yolo_model.heads
+            
+            # Store the scale for reference
+            self.scale = scale
+        else:
+            # Backbone and FPN (shared)
+            self.backbone = CSPDarknet()
+            self.neck = FPN()
+    
+            #33 classes
+            # Traditional YOLOv8 heads
+            self.heads = nn.ModuleList([
+                YOLOv8Head(256, len(self.all_classes)),  # For p3_out (256 channels)
+                YOLOv8Head(256, len(self.all_classes)),  # For p4_out (256 channels)
+                YOLOv8Head(512, len(self.all_classes))   # For p5_out (512 channels)
+            ])
         
         # Dataset-specific class masks
         self.class_masks = {}
         for name, dataset_info in datasets_config.items():
             if "unified_class_mapping" in dataset_info:
                 # Get the unified classes that this dataset can detect
-                unified_classes_in_dataset = set(dataset_info["unified_class_mapping"].values())
+                unified_classes_in_dataset = set(dataset_info["unified_class_mapping"].values()) #24
                 # Create mask based on unified classes
                 self.class_masks[name] = torch.tensor([cls in unified_classes_in_dataset 
                                                      for cls in self.all_classes])
@@ -500,11 +522,21 @@ class TraditionalYOLOv8(nn.Module):
         return sorted(list(unified_classes))  # Sort for deterministic ordering
     
     def forward(self, x, dataset_name=None):
+        
+        # Forward pass through backbone
         features = self.backbone(x)
+        
+        # Forward pass through neck/FPN
         fpn_features = self.neck(features)
         
-        outputs = [head(feat) for head, feat in zip(self.heads, fpn_features)]
-        
+        # Forward pass through detection heads
+        outputs = []
+        for i, head in enumerate(self.heads):
+            # Get the appropriate feature map for this head
+            # The indexing might need adjustment based on the actual model structure
+            feat = fpn_features[i] if isinstance(fpn_features, list) else fpn_features
+            outputs.append(head(feat))
+            
         if dataset_name:
             # Apply class mask for dataset-specific training
             mask = self.class_masks[dataset_name].to(x.device)
@@ -919,6 +951,11 @@ class YOLOv8Trainer:
             self.model = GeneralizedYOLOv8(config["datasets"]).to(self.device)
         else:
             self.model = TraditionalYOLOv8(config["datasets"]).to(self.device)
+        
+        # Load pretrained weights if specified
+        if "pretrained_weights" in self.config and self.config["pretrained_weights"]:
+            self.load_pretrained_weights(self.config["pretrained_weights"])
+            
         # Setup training components (optimizer, scheduler, etc.)
         self._setup_training()
         
@@ -1559,6 +1596,112 @@ class YOLOv8Trainer:
         
         return image, targets
     
+    def load_pretrained_weights(self, weights_path):
+        """
+        Load pretrained YOLOv8 weights to initialize the backbone and parts of the model.
+        
+        Args:
+            weights_path: Path to the pretrained YOLOv8 weights (.pt file)
+        """
+        print(f"Loading pretrained weights from {weights_path}")
+        
+        try:
+            # First attempt: Try loading with weights_only=False (less secure but needed for ultralytics models)
+            pretrained_dict = torch.load(weights_path, map_location=self.device, weights_only=False)
+            print("Successfully loaded weights using weights_only=False")
+        except Exception as e:
+            print(f"Error loading weights with weights_only=False: {e}")
+            
+            try:
+                # Second attempt: Try loading with pickle module directly
+                import pickle
+                with open(weights_path, 'rb') as f:
+                    pretrained_dict = pickle.load(f)
+                print("Successfully loaded weights using pickle directly")
+            except Exception as e2:
+                print(f"Error loading weights with pickle: {e2}")
+                
+                # Third attempt: Try extracting just the state dict using a custom approach
+                try:
+                    # Try to load the file as a simple dictionary of tensors
+                    pretrained_dict = {}
+                    with open(weights_path, 'rb') as f:
+                        # Skip the header
+                        f.seek(0)
+                        # Try to load using torch's legacy loading
+                        pretrained_dict = torch._utils._load_tensor_dict(f, map_location=self.device)
+                    print("Successfully loaded weights using legacy tensor loading")
+                except Exception as e3:
+                    print(f"All loading methods failed. Final error: {e3}")
+                    print("Please convert the YOLOv8 weights to a compatible format first.")
+                    return
+        
+        # Check if it's a state_dict directly or inside a 'model' key (ultralytics format)
+        if isinstance(pretrained_dict, dict):
+            if 'model' in pretrained_dict and hasattr(pretrained_dict['model'], 'state_dict'):
+                pretrained_dict = pretrained_dict['model'].state_dict()
+            elif 'state_dict' in pretrained_dict:
+                pretrained_dict = pretrained_dict['state_dict']
+            elif 'weights' in pretrained_dict:
+                pretrained_dict = pretrained_dict['weights']
+        
+        # If we have a model object instead of a state dict
+        if hasattr(pretrained_dict, 'state_dict'):
+            pretrained_dict = pretrained_dict.state_dict()
+        
+        # Get the current model state dict
+        model_dict = self.model.state_dict()
+        
+        # Filter out unnecessary keys and those that don't match in shape
+        compatible_weights = {}
+        incompatible_shapes = []
+        
+        for k, v in pretrained_dict.items():
+            # Convert ultralytics model keys to our format if needed
+            # For example, convert 'model.0.conv.weight' to 'backbone.0.conv.weight'
+            if k.startswith('model.'):
+                new_k = k.replace('model.', 'backbone.', 1)
+            else:
+                new_k = k
+            
+            # Check if this key exists in our model
+            if new_k in model_dict:
+                # Check if shapes match
+                if v.shape == model_dict[new_k].shape:
+                    compatible_weights[new_k] = v
+                else:
+                    incompatible_shapes.append((new_k, v.shape, model_dict[new_k].shape))
+        
+        # Log statistics
+        print(f"Found {len(compatible_weights)} compatible weights out of {len(pretrained_dict)} pretrained weights")
+        if incompatible_shapes:
+            print(f"Found {len(incompatible_shapes)} incompatible shapes:")
+            for name, pretrained_shape, model_shape in incompatible_shapes[:10]:  # Show first 10
+                print(f"  {name}: pretrained={pretrained_shape}, model={model_shape}")
+            if len(incompatible_shapes) > 10:
+                print(f"  ... and {len(incompatible_shapes) - 10} more")
+        
+        # Update the model weights
+        model_dict.update(compatible_weights)
+        self.model.load_state_dict(model_dict, strict=False)
+        
+        print(f"Successfully loaded pretrained weights")
+    
+    def freeze_backbone(self):
+        """Freeze backbone layers to preserve pretrained features."""
+        for name, param in self.model.named_parameters():
+            if name.startswith('backbone'):
+                param.requires_grad = False
+        
+        print("Backbone frozen for initial training")
+
+    def unfreeze_backbone(self):
+        """Unfreeze backbone for fine-tuning."""
+        for name, param in self.model.named_parameters():
+            param.requires_grad = True
+        
+        print("Backbone unfrozen for fine-tuning")
+    
     def train_epoch(self, epoch):
         self.model.train()
         total_loss = 0
@@ -1572,11 +1715,26 @@ class YOLOv8Trainer:
                 images = images.to(self.device)
                 targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
                 
+                # Check for NaN values in input
+                if torch.isnan(images).any():
+                    print(f"Warning: NaN values detected in input images, skipping batch")
+                    continue
+                
+                # Check for empty targets
+                if all(len(t.get('boxes', [])) == 0 for t in targets):
+                    print(f"Warning: Empty targets in batch, skipping")
+                    continue
+                
                 # Mixed precision forward - update autocast to include device_type
                 with autocast(device_type='cuda', enabled=self.config["amp"]):
                     outputs = self.model(images, dataset_name)
                     loss_dict = self.loss_fn(outputs, targets, dataset_name)
                     loss = loss_dict["total_loss"] / self.config["gradient_accumulation"]
+                    
+                    # Check for NaN loss
+                    if torch.isnan(loss) or torch.isinf(loss) or loss > 1e5:
+                        print(f"Warning: Invalid loss value: {loss.item()}, skipping batch")
+                        continue
                     
                 # Backward
                 self.scaler.scale(loss).backward()
@@ -1742,6 +1900,13 @@ class YOLOv8Trainer:
                     # Post-process predictions for mAP calculation
                     batch_predictions = self._post_process_predictions(outputs, dataset_name)
                     
+                    # Debug: Visualize first few batches
+                    if batch_idx < 5:  # Only visualize first 5 batches to avoid too many images
+                        self.debug_visualize_predictions(
+                            images.cpu(), batch_predictions, targets, dataset_name, 
+                            self.start_epoch, batch_idx
+                        )
+                        
                     # Store predictions and targets for mAP calculation
                     for i, (preds, target) in enumerate(zip(batch_predictions, targets)):
                         img_id = f"{dataset_name}_{len(all_predictions[dataset_name])}"
@@ -1807,13 +1972,18 @@ class YOLOv8Trainer:
         batch_predictions = []
         
         # Get confidence threshold (can be configured per dataset)
-        conf_threshold = 0.25  # Default confidence threshold
-        nms_threshold = 0.45   # Default NMS threshold
+        conf_threshold = self.config.get("conf_threshold", 0.05)  # Lower threshold for debugging
+        nms_threshold = self.config.get("nms_threshold", 0.45)
+        
+        # Add debug info
+        print(f"Post-processing for {dataset_name}, conf_threshold={conf_threshold}, nms_threshold={nms_threshold}")
         
         # Process each image in the batch
         for img_idx, img_pred in enumerate(outputs):
             # Apply confidence threshold
             if isinstance(img_pred, torch.Tensor):
+                # Debug output shape
+                print(f"Output shape: {img_pred.shape}")
                 # Reshape predictions to [num_preds, 4+num_classes]
                 pred_shape = img_pred.shape
                 flattened_pred = img_pred.reshape(-1, pred_shape[-1])
@@ -1821,6 +1991,11 @@ class YOLOv8Trainer:
                 # Extract box coordinates and class scores
                 boxes = flattened_pred[:, :4]
                 scores = flattened_pred[:, 4:]
+                
+                # Debug box coordinates
+                if len(boxes) > 0:
+                    print(f"Sample boxes: {boxes[:3]}")
+                    print(f"Sample scores: {scores[:3]}")
                 
                 # Get confidence and class ID for each prediction
                 max_scores, class_ids = torch.max(scores, dim=1)
@@ -1831,10 +2006,18 @@ class YOLOv8Trainer:
                 filtered_scores = max_scores[mask]
                 filtered_class_ids = class_ids[mask]
                 
+                print(f"After filtering: {len(filtered_boxes)} boxes remain")
+                
+                # Skip NMS if no boxes remain
+                if len(filtered_boxes) == 0:
+                    batch_predictions.append([])
+                    continue
+                
                 # Apply NMS (Non-Maximum Suppression)
                 keep_indices = self._non_max_suppression(
                     filtered_boxes, filtered_scores, nms_threshold
                 )
+                print(f"After NMS: {len(keep_indices)} boxes remain")
                 
                 # Create final predictions
                 image_predictions = []
@@ -1843,15 +2026,21 @@ class YOLOv8Trainer:
                     score = filtered_scores[i].item()
                     class_id = filtered_class_ids[i].item()
                     
+                    # Ensure box coordinates are valid
+                    x1, y1, x2, y2 = box
+                    if x2 <= x1 or y2 <= y1:
+                        continue  # Skip invalid boxes
+                    
                     image_predictions.append([
-                        box[0], box[1], box[2], box[3],  # bbox
-                        score,                           # confidence
-                        class_id                         # class_id
+                        float(x1), float(y1), float(x2), float(y2),  # bbox
+                        float(score),                                # confidence
+                        int(class_id)                                # class_id
                     ])
                 
                 batch_predictions.append(image_predictions)
             else:
                 # Handle case where output is not a tensor
+                print(f"Warning: Output is not a tensor: {type(img_pred)}")
                 batch_predictions.append([])
         
         return batch_predictions
@@ -1910,6 +2099,80 @@ class YOLOv8Trainer:
         
         return keep
     
+    def debug_visualize_predictions(self, images, predictions, targets, dataset_name, epoch, batch_idx=0):
+        """Visualize predictions for debugging purposes."""
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+        
+        # Create output directory if it doesn't exist
+        debug_dir = Path(f"debug_output/{dataset_name}/epoch_{epoch}")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get class names for this dataset
+        class_names = self.config["datasets"][dataset_name]["classes"]
+        
+        # Process each image in the batch
+        for img_idx, (img, preds, target) in enumerate(zip(images, predictions, targets)):
+            # Convert tensor to numpy for visualization
+            if isinstance(img, torch.Tensor):
+                img_np = img.permute(1, 2, 0).cpu().numpy()  # CHW -> HWC
+                # Denormalize if needed
+                if img_np.max() <= 1.0:
+                    img_np = (img_np * 255).astype(np.uint8)
+            else:
+                img_np = img.copy()
+            
+            # Create figure and axis
+            fig, ax = plt.subplots(1, figsize=(12, 12))
+            ax.imshow(img_np)
+            
+            # Draw ground truth boxes (green)
+            if 'boxes' in target and len(target['boxes']) > 0:
+                for box_idx, box in enumerate(target['boxes']):
+                    x1, y1, x2, y2 = box.cpu().numpy()
+                    width, height = x2 - x1, y2 - y1
+                    
+                    # Draw rectangle
+                    rect = patches.Rectangle(
+                        (x1, y1), width, height, 
+                        linewidth=2, edgecolor='g', facecolor='none'
+                    )
+                    ax.add_patch(rect)
+                    
+                    # Add label
+                    class_id = target['labels'][box_idx].item()
+                    class_name = class_names[class_id] if class_id < len(class_names) else f"Class {class_id}"
+                    ax.text(
+                        x1, y1 - 5, class_name,
+                        color='g', fontsize=10, backgroundcolor='w'
+                    )
+            
+            # Draw predicted boxes (red)
+            for pred in preds:
+                x1, y1, x2, y2, score, class_id = pred
+                width, height = x2 - x1, y2 - y1
+                
+                # Draw rectangle
+                rect = patches.Rectangle(
+                    (x1, y1), width, height, 
+                    linewidth=2, edgecolor='r', facecolor='none'
+                )
+                ax.add_patch(rect)
+                
+                # Add label with confidence
+                class_name = class_names[int(class_id)] if int(class_id) < len(class_names) else f"Class {int(class_id)}"
+                ax.text(
+                    x1, y1 - 5, f"{class_name}: {score:.2f}",
+                    color='r', fontsize=10, backgroundcolor='w'
+                )
+            
+            # Save figure
+            plt.title(f"Image {img_idx} - Green: GT, Red: Pred")
+            plt.axis('off')
+            plt.tight_layout()
+            plt.savefig(debug_dir / f"batch_{batch_idx}_img_{img_idx}.jpg")
+            plt.close(fig)
+            
     def _calculate_mAP(self, predictions, targets, dataset_name):
         """Calculate mean Average Precision using COCO-style evaluation.
         
@@ -2206,6 +2469,8 @@ config = {
     # Model
     # Model
     "model_type": "traditional",  # "moe" or "traditional"
+    "pretrained_weights": "../modelzoo/yolov8s_statedicts.pt",  # or yolov8s.pt, yolov8m.
+    "scale": "s",
     "datasets": {
         "coco": {
             "enabled": True,
@@ -2295,11 +2560,11 @@ config = {
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train YOLOv8 MoE on KITTI dataset")
-    parser.add_argument("--data_path", type=str, default="/mnt/e/Dataset/Kitti/", 
+    parser.add_argument("--data_path", type=str, default="/DATA5T2/Dataset/Kitti", 
                         help="Path to KITTI dataset, /mnt/e/Dataset/Kitti/, /DATA5T2/Dataset/Kitti")
-    parser.add_argument("--epochs", type=int, default=50, 
+    parser.add_argument("--epochs", type=int, default=10, 
                         help="Number of training epochs")
-    parser.add_argument("--batch_size", type=int, default=4, 
+    parser.add_argument("--batch_size", type=int, default=16, 
                         help="Batch size for training")
     parser.add_argument("--lr", type=float, default=1e-4, 
                         help="Learning rate")
@@ -2307,7 +2572,7 @@ def parse_args():
                         help="Input image size")
     parser.add_argument("--output_dir", type=str, default="outputs/kitti", 
                         help="Directory to save model checkpoints")
-    parser.add_argument("--model_type", type=str, default="moe", choices=["moe", "traditional"], 
+    parser.add_argument("--model_type", type=str, default="traditional", choices=["moe", "traditional"], 
                         help="Model type: moe (with experts) or traditional")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     return parser.parse_args()
