@@ -396,21 +396,20 @@ class YOLOv8Head(nn.Module):
 YOLO_IMPLEMENTATION='YoloDetectionModel'
 class TraditionalYOLOv8(nn.Module):
     """Traditional YOLOv8 model without MoE."""
-    def __init__(self, datasets_config):
+    def __init__(self, datasets_config, scale='s'):
         super().__init__()
         
         # Unified class space
         self.all_classes = self._get_unified_classes(datasets_config)
-        num_classes = len(self.all_classes)
+        num_classes = len(self.all_classes) #33
         
         if YOLO_IMPLEMENTATION=='YoloDetectionModel':
             # Initialize the YOLOv8 model from yolomodels.py
             from DeepDataMiningLearning.detection.modeling_yolodetection import YoloDetectionModel
             
             # Use the appropriate YAML config based on scale
-            yaml_path = f"/SSD250G/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/configs/yolov8{scale}.yaml"
+            yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"# f"/SSD250G/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/configs/yolov8.yaml"
             # Create the full model first
-            scale = datasets_config['scale']
             yolo_model = YoloDetectionModel(cfg=yaml_path, scale=scale, ch=3, nc=num_classes)
             
             # Access components
@@ -524,18 +523,36 @@ class TraditionalYOLOv8(nn.Module):
     def forward(self, x, dataset_name=None):
         
         # Forward pass through backbone
-        features = self.backbone(x)
-        
-        # Forward pass through neck/FPN
-        fpn_features = self.neck(features)
-        
-        # Forward pass through detection heads
-        outputs = []
-        for i, head in enumerate(self.heads):
-            # Get the appropriate feature map for this head
-            # The indexing might need adjustment based on the actual model structure
-            feat = fpn_features[i] if isinstance(fpn_features, list) else fpn_features
-            outputs.append(head(feat))
+        if YOLO_IMPLEMENTATION == 'YoloDetectionModel':
+            # For YoloDetectionModel implementation
+            features = self.backbone(x)
+            
+            # Forward pass through neck/FPN
+            if isinstance(features, list):
+                fpn_features = self.neck(features)
+            else:
+                # If backbone output is not a list, wrap it in a list before passing to neck
+                # This ensures the neck receives the expected format
+                fpn_features = self.neck([features])
+            
+            # Forward pass through detection heads
+            outputs = []
+            for i, head in enumerate(self.heads):
+                # Get the appropriate feature map for this head
+                if isinstance(fpn_features, list) and i < len(fpn_features):
+                    feat = fpn_features[i]
+                else:
+                    # If fpn_features is not a list or index out of range, use the last feature
+                    feat = fpn_features[-1] if isinstance(fpn_features, list) else fpn_features
+                
+                # Apply the head and collect output
+                output = head(feat)
+                outputs.append(output)
+        else:
+            # Original implementation
+            features = self.backbone(x)
+            fpn_features = self.neck(features)
+            outputs = [head(feat) for head, feat in zip(self.heads, fpn_features)]
             
         if dataset_name:
             # Apply class mask for dataset-specific training
@@ -950,7 +967,7 @@ class YOLOv8Trainer:
         if config["model_type"]=="moe":
             self.model = GeneralizedYOLOv8(config["datasets"]).to(self.device)
         else:
-            self.model = TraditionalYOLOv8(config["datasets"]).to(self.device)
+            self.model = TraditionalYOLOv8(config["datasets"], scale=config["scale"]).to(self.device)
         
         # Load pretrained weights if specified
         if "pretrained_weights" in self.config and self.config["pretrained_weights"]:
@@ -1149,6 +1166,122 @@ class YOLOv8Trainer:
             )
         
         return loaders
+    
+    def visualize_dataset_samples(self, dataset_name, split="train", num_samples=5):
+        """
+        Visualize samples from a specific dataset and save images with bounding boxes.
+        
+        Args:
+            dataset_name: Name of the dataset to visualize
+            split: Either 'train' or 'val'
+            num_samples: Number of samples to visualize
+        """
+        # Create output directory
+        output_dir = Path(f"visualization/{dataset_name}_{split}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        print(f"Visualizing {num_samples} samples from {dataset_name} {split} dataset...")
+        
+        # Get the dataloader
+        if split == "train":
+            if dataset_name not in self.train_loaders:
+                print(f"Dataset {dataset_name} not found in train loaders")
+                return
+            loader = self.train_loaders[dataset_name]
+        else:
+            if dataset_name not in self.val_loaders:
+                print(f"Dataset {dataset_name} not found in validation loaders")
+                return
+            loader = self.val_loaders[dataset_name]
+        
+        # Get class names for this dataset
+        dataset_config = self.config["datasets"][dataset_name]
+        class_map_inv = {}
+        for orig_cls, unified_cls in dataset_config.get("unified_class_mapping", {}).items():
+            class_idx = self.model.all_classes.index(unified_cls) if unified_cls in self.model.all_classes else -1
+            if class_idx >= 0:
+                class_map_inv[class_idx] = orig_cls
+        
+        # Get samples from the dataloader
+        samples_visualized = 0
+        for batch_idx, (images, targets) in enumerate(loader):
+            if samples_visualized >= num_samples:
+                break
+            
+            # Process each image in the batch
+            for img_idx, (image, target) in enumerate(zip(images, targets)):
+                if samples_visualized >= num_samples:
+                    break
+                
+                # Convert tensor to numpy for visualization
+                if isinstance(image, torch.Tensor):
+                    # Convert from CHW to HWC and scale to 0-255
+                    img_np = image.permute(1, 2, 0).cpu().numpy()
+                    img_np = (img_np * 255).astype(np.uint8)
+                else:
+                    img_np = image.copy()
+                
+                # Draw bounding boxes
+                img_with_boxes = img_np.copy()
+                
+                if 'boxes' in target and len(target['boxes']) > 0:
+                    boxes = target['boxes'].cpu().numpy()
+                    labels = target['labels'].cpu().numpy()
+                    
+                    # Draw each box
+                    for box_idx, (box, label) in enumerate(zip(boxes, labels)):
+                        x1, y1, x2, y2 = box.astype(int)
+                        
+                        # Generate a color based on class
+                        color = self._get_color_for_class(label)
+                        
+                        # Draw rectangle
+                        cv2.rectangle(img_with_boxes, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Get class name
+                        class_name = class_map_inv.get(label, f"class_{label}")
+                        
+                        # Draw label
+                        cv2.putText(
+                            img_with_boxes, 
+                            class_name, 
+                            (x1, y1 - 5), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 
+                            0.5, 
+                            color, 
+                            2
+                        )
+                
+                # Save the image
+                output_path = output_dir / f"sample_{batch_idx}_{img_idx}.jpg"
+                cv2.imwrite(str(output_path), cv2.cvtColor(img_with_boxes, cv2.COLOR_RGB2BGR))
+                
+                samples_visualized += 1
+                print(f"Saved visualization to {output_path}")
+        
+        print(f"Visualization complete. {samples_visualized} samples saved to {output_dir}")
+    
+    def _get_color_for_class(self, class_idx):
+        """Generate a consistent color for a class index."""
+        # List of distinct colors (BGR format for OpenCV)
+        colors = [
+            (255, 0, 0),    # Blue
+            (0, 255, 0),    # Green
+            (0, 0, 255),    # Red
+            (255, 255, 0),  # Cyan
+            (255, 0, 255),  # Magenta
+            (0, 255, 255),  # Yellow
+            (128, 0, 0),    # Dark blue
+            (0, 128, 0),    # Dark green
+            (0, 0, 128),    # Dark red
+            (128, 128, 0),  # Dark cyan
+            (128, 0, 128),  # Dark magenta
+            (0, 128, 128),  # Dark yellow
+            (192, 192, 192) # Light gray
+        ]
+        
+        # Use modulo to cycle through colors for classes beyond the list length
+        return colors[class_idx % len(colors)]
     
     def _get_train_transforms(self, dataset_name):
         """Get dataset-specific training transforms."""

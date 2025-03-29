@@ -223,21 +223,55 @@ class YoloDetectionModel(nn.Module):
         head_modules = list(self.model[self.neck_end:])
         return nn.ModuleList(head_modules)
     
-    def forward(self, x):
-        """Forward pass through the network."""
-        if self.training:
-            return self._predict_once(x)
-        else:
-            return self._predict_once(x)
+    def forward(self, x, *args, **kwargs):
+        """
+        Forward pass of the model on a single scale.
+        Wrapper for `_predict_once` method.
+
+        Args:
+            x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
+
+        Returns:
+            (torch.Tensor): The output of the network.
+        """
+        # model.train() self.training=True
+        # model.eval() self.training=False
+        if isinstance(x, dict):  # for cases of training and validating while training.
+            return self.loss(x, *args, **kwargs)
+        elif self.training:
+            preds = self._predict_once(x)  # tensor input
+            return preds  # training mode, direct output x (three items)
+        else:  # inference mode
+            preds = self._predict_once(x)  # tensor input
+            # In inference mode, _predict_once returns a tuple (preds, y)
+            if isinstance(preds, tuple):
+                return preds[0]  # Return just the predictions
+            return preds
     
-    def _predict_once(self, x):
-        """Perform a forward pass through the network."""
+    def _predict_once(self, x, profile=False, visualize=False):
+        """
+        Perform a forward pass through the network.
+
+        Args:
+            x (torch.Tensor): The input tensor to the model.
+            profile (bool): Print the computation time of each layer if True, defaults to False.
+            visualize (bool): Save the feature maps of the model if True, defaults to False.
+
+        Returns:
+            (torch.Tensor): The last output of the model.
+        """
         y = []
         for m in self.model:
-            if m.f != -1:
-                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
-            x = m(x)
-            y.append(x if m.i in self.save else None)
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            
+            x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+        
+        # In inference mode, return both the predictions and intermediate tensors
+        if not self.training:
+            return x, y
+        # In training mode, just return the predictions
         return x
     
     def forward_backbone(self, x):
