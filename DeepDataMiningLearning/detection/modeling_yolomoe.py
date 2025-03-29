@@ -5,6 +5,7 @@ from torch.optim import AdamW, SGD
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 from torch.utils.data import DataLoader, WeightedRandomSampler
 #from torch.cuda.amp import GradScaler, autocast
+from torch.amp import autocast
 from transformers import ViTModel  # For transformer experts
 from collections import defaultdict
 import os
@@ -13,6 +14,8 @@ import argparse
 import cv2
 import random 
 from tqdm import tqdm
+import json
+from pathlib import Path
 # --------------------------
 # 1. Model Architecture
 # --------------------------
@@ -896,43 +899,148 @@ class YOLOv8Trainer:
     def __init__(self, config):
         self.config = config
         self.device = torch.device(config["device"])
-        # self.scaler = GradScaler(enabled=config["amp"])
-        if hasattr(torch.amp, 'GradScaler'):  # Check if the new API is available
-            self.scaler = torch.amp.GradScaler('cuda', enabled=self.config["amp"])
-        else:
-            # Fallback to old API for backward compatibility
-            self.scaler = torch.cuda.amp.GradScaler(enabled=self.config["amp"])
-        
+
         # Model selection
         if config.get("model_type", "moe") == "traditional":
             self.model = TraditionalYOLOv8(config["datasets"]).to(self.device)
         else:
             self.model = GeneralizedYOLOv8(config["datasets"]).to(self.device)
         
-        # Optimizer
-        if config["optimizer"] == "adamw":
-            self.optimizer = AdamW(self.model.parameters(), lr=config["lr"], 
-                                 weight_decay=config["weight_decay"])
-        else:
-            self.optimizer = SGD(self.model.parameters(), lr=config["lr"], 
-                                momentum=0.9, weight_decay=config["weight_decay"])
-        
-        # Scheduler
-        if config["scheduler"] == "cosine":
-            self.scheduler = CosineAnnealingLR(
-                self.optimizer, T_max=config["epochs"], eta_min=1e-6)
-        else:
-            self.scheduler = OneCycleLR(
-                self.optimizer, max_lr=config["lr"], 
-                total_steps=config["epochs"] * len(self.train_loader))
-        
-        # Loss
-        self.loss_fn = MultiDatasetLoss(self.model.all_classes, config["datasets"])
+        # Setup training components (optimizer, scheduler, etc.)
+        self._setup_training()
         
         # Data loaders
         self.train_loaders = self._create_dataloaders("train")
         self.val_loaders = self._create_dataloaders("val")
+        
+        # Initialize training state
+        self.start_epoch = 0
+        self.best_val_map = 0.0
+        
+        # Resume from checkpoint if specified
+        if config.get("resume_from", None):
+            self._load_checkpoint(config["resume_from"])
 
+    def _setup_training(self):
+        """Set up training components."""
+        # Set up optimizer
+        self.optimizer = self._create_optimizer()
+        
+        # Set up learning rate scheduler
+        self.scheduler = self._create_scheduler()
+        
+        # Set up gradient scaler for mixed precision training
+        # Update GradScaler initialization to use the new format
+        if hasattr(torch.amp, 'GradScaler'):  # Check if the new API is available
+            self.scaler = torch.amp.GradScaler('cuda', enabled=self.config["amp"])
+        else:
+            # Fallback to old API for backward compatibility
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.config["amp"])
+        
+        # Set up loss function
+        #self.loss_fn = YOLOLoss(self.model.all_classes)
+        # Set up loss function
+        self.loss_fn = MultiDatasetLoss(self.model.all_classes, self.config["datasets"])
+    
+    def _create_optimizer(self):
+        """Create optimizer based on config."""
+        if self.config["optimizer"] == "adamw":
+            return AdamW(self.model.parameters(), lr=self.config["lr"], 
+                         weight_decay=self.config["weight_decay"])
+        else:
+            return SGD(self.model.parameters(), lr=self.config["lr"], 
+                       momentum=0.9, weight_decay=self.config["weight_decay"])
+    
+    def _create_scheduler(self):
+        """Create learning rate scheduler based on config."""
+        if self.config["scheduler"] == "cosine":
+            return CosineAnnealingLR(
+                self.optimizer, T_max=self.config["epochs"], eta_min=1e-6)
+        else:
+            # Calculate total steps based on all train loaders
+            total_steps = sum(len(loader) for loader in self.train_loaders.values()) * self.config["epochs"]
+            return OneCycleLR(
+                self.optimizer, max_lr=self.config["lr"], total_steps=total_steps)
+    
+    def _save_checkpoint(self, epoch, val_metrics=None, is_best=False):
+        """Save training checkpoint.
+        
+        Args:
+            epoch: Current epoch number
+            val_metrics: Validation metrics dictionary
+            is_best: Whether this is the best model so far
+        """
+        # Create checkpoint directory if it doesn't exist
+        checkpoint_dir = Path(self.config.get("checkpoint_dir", "checkpoints"))
+        checkpoint_dir.mkdir(exist_ok=True, parents=True)
+        
+        # Prepare checkpoint data
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'scheduler_state_dict': self.scheduler.state_dict(),
+            'scaler_state_dict': self.scaler.state_dict(),
+            'config': self.config,
+            'best_val_map': self.best_val_map,
+        }
+        
+        if val_metrics:
+            checkpoint['val_metrics'] = val_metrics
+        
+        # Save regular checkpoint
+        model_name = self.config.get("model_name", "yolomoe")
+        checkpoint_path = checkpoint_dir / f"{model_name}_epoch_{epoch}.pt"
+        torch.save(checkpoint, checkpoint_path)
+        print(f"Checkpoint saved to {checkpoint_path}")
+        
+        # Save latest checkpoint (for resuming)
+        latest_path = checkpoint_dir / f"{model_name}_latest.pt"
+        torch.save(checkpoint, latest_path)
+        
+        # Save best model if this is the best so far
+        if is_best:
+            best_path = checkpoint_dir / f"{model_name}_best.pt"
+            torch.save(checkpoint, best_path)
+            print(f"New best model saved to {best_path}")
+    
+    def _load_checkpoint(self, checkpoint_path):
+        """Load training checkpoint.
+        
+        Args:
+            checkpoint_path: Path to the checkpoint file
+        """
+        print(f"Resuming from checkpoint: {checkpoint_path}")
+        
+        # Load checkpoint on CPU to avoid GPU memory issues
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        
+        # Load model weights
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Load optimizer state
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Move optimizer state to correct device
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(self.device)
+        
+        # Load scheduler state
+        self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
+        # Load scaler state
+        if 'scaler_state_dict' in checkpoint:
+            self.scaler.load_state_dict(checkpoint['scaler_state_dict'])
+        
+        # Set starting epoch and best validation score
+        self.start_epoch = checkpoint['epoch'] + 1
+        self.best_val_map = checkpoint.get('best_val_map', 0.0)
+        
+        print(f"Resumed training from epoch {self.start_epoch}")
+        print(f"Previous best mAP: {self.best_val_map:.4f}")
+         
     def _create_dataloaders(self, split):
         """Create dataloaders for each dataset in the configuration.
         
@@ -1451,12 +1559,12 @@ class YOLOv8Trainer:
                 images = images.to(self.device)
                 targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
                 
-                # Mixed precision forward
-                with autocast(enabled=self.config["amp"]):
+                # Mixed precision forward - update autocast to include device_type
+                with autocast(device_type='cuda', enabled=self.config["amp"]):
                     outputs = self.model(images, dataset_name)
                     loss_dict = self.loss_fn(outputs, targets, dataset_name)
                     loss = loss_dict["total_loss"] / self.config["gradient_accumulation"]
-                
+                    
                 # Backward
                 self.scaler.scale(loss).backward()
                 
@@ -1542,6 +1650,47 @@ class YOLOv8Trainer:
         progress_bar.close()
         return total_loss / len(self.train_loaders)
 
+    def train(self):
+        """Train the model for the specified number of epochs."""
+        # Training loop
+        for epoch in range(self.start_epoch, self.config["epochs"]):
+            # Train for one epoch
+            train_loss = self.train_epoch(epoch)
+            
+            # Validate
+            val_metrics = self.validate()
+            
+            # Print metrics
+            print(f"Epoch {epoch+1}/{self.config['epochs']}")
+            print(f"Train Loss: {train_loss:.4f}")
+            
+            # Print validation metrics for each dataset
+            for dataset_name, metrics in val_metrics.items():
+                print(f"Validation metrics for {dataset_name}:")
+                for metric_name, value in metrics.items():
+                    print(f"  {metric_name}: {value:.4f}")
+            
+            # Calculate average mAP across all datasets
+            avg_map = np.mean([metrics.get("mAP", 0) for metrics in val_metrics.values()])
+            print(f"Average mAP: {avg_map:.4f}")
+            
+            # Check if this is the best model so far
+            is_best = avg_map > self.best_val_map
+            if is_best:
+                self.best_val_map = avg_map
+            
+            # Save checkpoint
+            self._save_checkpoint(epoch, val_metrics, is_best)
+            
+            # Early stopping
+            if self.config.get("early_stopping", False) and epoch > 10:
+                # Check if validation mAP has improved in the last N epochs
+                if avg_map < self.best_val_map * 0.95:  # 5% tolerance
+                    print(f"Early stopping triggered. No improvement for several epochs.")
+                    break
+        
+        print(f"Training completed. Best mAP: {self.best_val_map:.4f}")
+        
     def validate(self):
         self.model.eval()
         val_metrics = {}
@@ -1561,9 +1710,10 @@ class YOLOv8Trainer:
                     images = images.to(self.device)
                     targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
                     
-                    # Forward pass
-                    outputs = self.model(images, dataset_name)
-                    
+                    # Forward pass - update autocast to include device_type if used
+                    with autocast(device_type='cuda', enabled=self.config["amp"]):
+                        outputs = self.model(images, dataset_name)
+                        
                     # Calculate loss
                     loss_dict = self.loss_fn(outputs, targets, dataset_name)
                     
@@ -2146,6 +2296,7 @@ def parse_args():
                         help="Directory to save model checkpoints")
     parser.add_argument("--model_type", type=str, default="traditional", choices=["moe", "traditional"], 
                         help="Model type: moe (with experts) or traditional")
+    parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
     return parser.parse_args()
 
 def main():
@@ -2156,6 +2307,10 @@ def main():
     
     # Start with the full configuration
     training_config = config.copy()
+    
+    # Override resume path if specified in command line
+    if args.resume:
+        training_config["resume_from"] = args.resume
     
     # Update only the KITTI path and enable status
     training_config["datasets"]["kitti"]["path"] = args.data_path
@@ -2179,48 +2334,8 @@ def main():
     # Initialize trainer
     trainer = YOLOv8Trainer(config)
     
-    # Training loop
-    best_val_loss = float('inf')
+    # Train model
+    trainer.train()
     
-    for epoch in range(config["epochs"]):
-        # Train for one epoch
-        train_loss = trainer.train_epoch(epoch)
-        
-        # Validate
-        val_metrics = trainer.validate()
-        
-        # Print metrics
-        print(f"Epoch {epoch+1}/{config['epochs']}:")
-        print(f"  Train Loss: {train_loss:.4f}")
-        
-        # Only KITTI metrics will be available
-        kitti_val_loss = val_metrics["kitti"]["total_loss"]
-        print(f"  KITTI Val Loss: {kitti_val_loss:.4f}")
-        
-        # Save checkpoint
-        checkpoint_path = os.path.join(args.output_dir, f"yolomoe_kitti_epoch{epoch+1}.pt")
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': trainer.model.state_dict(),
-            'optimizer_state_dict': trainer.optimizer.state_dict(),
-            'val_loss': kitti_val_loss,
-            'config': config
-        }, checkpoint_path)
-        
-        # Save best model
-        if kitti_val_loss < best_val_loss:
-            best_val_loss = kitti_val_loss
-            best_model_path = os.path.join(args.output_dir, "yolomoe_kitti_best.pt")
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': trainer.model.state_dict(),
-                'optimizer_state_dict': trainer.optimizer.state_dict(),
-                'val_loss': kitti_val_loss,
-                'config': config
-            }, best_model_path)
-            print(f"  New best model saved with val loss: {kitti_val_loss:.4f}")
-    
-    print(f"Training completed. Best validation loss: {best_val_loss:.4f}")
-
 if __name__ == "__main__":
     main()
