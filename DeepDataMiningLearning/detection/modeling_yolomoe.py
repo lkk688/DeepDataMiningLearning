@@ -410,12 +410,12 @@ class TraditionalYOLOv8(nn.Module):
             # Use the appropriate YAML config based on scale
             yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"# f"/SSD250G/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/configs/yolov8.yaml"
             # Create the full model first
-            yolo_model = YoloDetectionModel(cfg=yaml_path, scale=scale, ch=3, nc=num_classes)
+            self.yolo_model = YoloDetectionModel(cfg=yaml_path, scale=scale, ch=3, nc=num_classes)
             
             # Access components
-            self.backbone = yolo_model.backbone
-            self.neck = yolo_model.neck
-            self.heads = yolo_model.heads
+            self.backbone = self.yolo_model.backbone
+            self.neck = self.yolo_model.neck
+            self.heads = self.yolo_model.heads
             
             # Store the scale for reference
             self.scale = scale
@@ -521,33 +521,28 @@ class TraditionalYOLOv8(nn.Module):
         return sorted(list(unified_classes))  # Sort for deterministic ordering
     
     def forward(self, x, dataset_name=None):
-        
+        #x is [16, 3, 640, 640]
         # Forward pass through backbone
         if YOLO_IMPLEMENTATION == 'YoloDetectionModel':
-            # For YoloDetectionModel implementation
-            features = self.backbone(x)
-            
-            # Forward pass through neck/FPN
-            if isinstance(features, list):
-                fpn_features = self.neck(features)
+            # During training, get raw predictions
+            if self.training:
+                outputs = self.yolo_model(x) #list of 3 tensors of size [16, 97, 80, 80], [16, 97, 40, 40], [16, 97, 20, 20]
             else:
-                # If backbone output is not a list, wrap it in a list before passing to neck
-                # This ensures the neck receives the expected format
-                fpn_features = self.neck([features])
-            
-            # Forward pass through detection heads
-            outputs = []
-            for i, head in enumerate(self.heads):
-                # Get the appropriate feature map for this head
-                if isinstance(fpn_features, list) and i < len(fpn_features):
-                    feat = fpn_features[i]
-                else:
-                    # If fpn_features is not a list or index out of range, use the last feature
-                    feat = fpn_features[-1] if isinstance(fpn_features, list) else fpn_features
+                # During validation/inference, ensure we get the processed predictions
+                # The YoloDetectionModel might return (pred, proto) or other formats during inference
+                outputs = self.yolo_model(x)
                 
-                # Apply the head and collect output
-                output = head(feat)
-                outputs.append(output)
+                # Handle the case where outputs is a tuple (during validation)
+                if isinstance(outputs, tuple):
+                    # Extract just the predictions part
+                    outputs = outputs[0]
+                
+                # Ensure outputs is in the expected format for _process_predictions
+                # If outputs is a single tensor, wrap it in a list
+                if isinstance(outputs, torch.Tensor) and len(outputs.shape) == 3:
+                    # This is likely a single prediction tensor with shape [batch_size, num_classes+4, num_anchors]
+                    # Reshape to match expected format if needed
+                    outputs = [outputs]
         else:
             # Original implementation
             features = self.backbone(x)
@@ -562,7 +557,7 @@ class TraditionalYOLOv8(nn.Module):
             for i, output in enumerate(outputs):
                 # Check dimensions to avoid errors
                 num_classes = output.shape[-1] - 4  # Subtract 4 for the box coordinates
-                
+                #num_classes=76, mask=33
                 if num_classes != len(mask):
                     # Fix the mask to match the output
                     if len(mask) < num_classes:
@@ -584,29 +579,56 @@ class TraditionalYOLOv8(nn.Module):
 # --------------------------
 
 class GeneralizedYOLOv8(nn.Module):
-    def __init__(self, datasets_config):
+    def __init__(self, datasets_config, scale='s'):
         super().__init__()
-        # Backbone and FPN (shared)
-        self.backbone = CSPDarknet()
-        self.neck = FPN()
         
         # Unified class space
-        self.all_classes = self._get_unified_classes(datasets_config) #39
+        self.all_classes = self._get_unified_classes(datasets_config)
+        num_classes = len(self.all_classes)
         
-        # MoE heads - Fix the channel dimensions to match FPN output
-        # The FPN returns [p3_out, p4_out, p5_out] with channels [256, 256, 512]
-        self.heads = nn.ModuleList([
-            MoEHead(256, len(self.all_classes), num_experts=4, transformer_experts=1),  # For p3_out (256 channels)
-            MoEHead(256, len(self.all_classes), num_experts=4, transformer_experts=1),  # For p4_out (256 channels)
-            MoEHead(512, len(self.all_classes), num_experts=4, transformer_experts=1)   # For p5_out (512 channels)
-        ])
+        if YOLO_IMPLEMENTATION == 'YoloDetectionModel':
+            # Initialize the YOLOv8 model from yolomodels.py
+            from DeepDataMiningLearning.detection.modeling_yolodetection import YoloDetectionModel
+            
+            # Use the appropriate YAML config based on scale
+            yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+            # Create the full model first
+            self.yolo_model = YoloDetectionModel(cfg=yaml_path, scale=scale, ch=3, nc=num_classes)
+            
+            # Access components
+            self.backbone = self.yolo_model.backbone
+            self.neck = self.yolo_model.neck
+            #self.heads = self.yolo_model.heads
+            
+            # Replace standard heads with MoE heads
+            # First, determine the input channels for each head from the neck outputs
+            neck_channels = [256, 256, 512]  # Typical channels for p3, p4, p5 outputs
+            
+            # Create MoE heads with the same input/output dimensions as the original heads
+            moe_heads = nn.ModuleList([
+                MoEHead(neck_channels[i], num_classes, num_experts=4, transformer_experts=1)
+                for i in range(len(self.yolo_model.heads))
+            ])
+            
+            # Replace the standard heads with MoE heads
+            self.heads = moe_heads
+            self.yolo_model.heads = moe_heads
+            
+            # Store the scale for reference
+            self.scale = scale
+        else:
+            # Backbone and FPN (shared)
+            self.backbone = CSPDarknet()
+            self.neck = FPN()
+            
+            # MoE heads - Fix the channel dimensions to match FPN output
+            # The FPN returns [p3_out, p4_out, p5_out] with channels [256, 256, 512]
+            self.heads = nn.ModuleList([
+                MoEHead(256, len(self.all_classes), num_experts=4, transformer_experts=1),  # For p3_out (256 channels)
+                MoEHead(256, len(self.all_classes), num_experts=4, transformer_experts=1),  # For p4_out (256 channels)
+                MoEHead(512, len(self.all_classes), num_experts=4, transformer_experts=1)   # For p5_out (512 channels)
+            ])
         
-        # Dataset-specific class masks
-        # self.class_masks = {
-        #     name: torch.tensor([cls in datasets_config[name]["classes"] 
-        #                       for cls in self.all_classes])
-        #     for name in datasets_config
-        # }
         # Dataset-specific class masks
         self.class_masks = {}
         for name, dataset_info in datasets_config.items():
@@ -618,16 +640,8 @@ class GeneralizedYOLOv8(nn.Module):
                                                      for cls in self.all_classes])
             else:
                 # Fallback for datasets without mapping
-                self.class_masks[name] = torch.tensor([cls in dataset_info.get("classes", [])] )
-
-    # def _get_unified_classes(self, datasets_config):
-    #     """Create a unified class space from all datasets, regardless of enabled status."""
-    #     all_classes = set()
-    #     for dataset_name, dataset_info in datasets_config.items():
-    #         # Include classes from all datasets, even if not enabled for training
-    #         if "classes" in dataset_info:
-    #             all_classes.update(dataset_info["classes"])
-    #     return sorted(list(all_classes))  # Sort for deterministic ordering
+                self.class_masks[name] = torch.tensor([cls in dataset_info.get("classes", [])] 
+                                                     for cls in self.all_classes)
     
     def _get_unified_classes(self, datasets_config):
         """Create a unified class space from all datasets, combining similar classes."""
@@ -704,10 +718,31 @@ class GeneralizedYOLOv8(nn.Module):
         return sorted(list(unified_classes))  # Sort for deterministic ordering
     
     def forward(self, x, dataset_name=None):
-        features = self.backbone(x)
-        fpn_features = self.neck(features)
-        
-        outputs = [head(feat) for head, feat in zip(self.heads, fpn_features)]
+        # Forward pass through backbone
+        if YOLO_IMPLEMENTATION == 'YoloDetectionModel':
+            # During training, get raw predictions
+            if self.training:
+                outputs = self.yolo_model(x)
+            else:
+                # During validation/inference, ensure we get the processed predictions
+                outputs = self.yolo_model(x)
+                
+                # Handle the case where outputs is a tuple (during validation)
+                if isinstance(outputs, tuple):
+                    # Extract just the predictions part
+                    outputs = outputs[0]
+                
+                # Ensure outputs is in the expected format for _process_predictions
+                # If outputs is a single tensor, wrap it in a list
+                if isinstance(outputs, torch.Tensor) and len(outputs.shape) == 3:
+                    # This is likely a single prediction tensor with shape [batch_size, num_classes+4, num_anchors]
+                    # Reshape to match expected format if needed
+                    outputs = [outputs]
+        else:
+            # Original implementation
+            features = self.backbone(x)
+            fpn_features = self.neck(features)
+            outputs = [head(feat) for head, feat in zip(self.heads, fpn_features)]
         
         if dataset_name:
             # Apply class mask for dataset-specific training
@@ -719,7 +754,7 @@ class GeneralizedYOLOv8(nn.Module):
                 num_classes = output.shape[-1] - 4  # Subtract 4 for the box coordinates
                 
                 if num_classes != len(mask):
-                    # Instead of warning, let's fix the mask to match the output
+                    # Fix the mask to match the output
                     if len(mask) < num_classes:
                         # Pad mask with zeros
                         padded_mask = torch.zeros(num_classes, device=mask.device)
@@ -741,10 +776,11 @@ from torch.utils.data import Dataset
 class KITTIDetectionDataset(Dataset):
     """Dataset for KITTI object detection."""
     
-    def __init__(self, root_dir, transforms=None, class_map=None):
+    def __init__(self, root_dir, split_file=None, transforms=None, class_map=None):
         """
         Args:
             root_dir (string): Directory with KITTI data (images and labels)
+            split_file (string, optional): Path to a text file containing image IDs to use
             transforms (callable, optional): Optional transforms to be applied on a sample
             class_map (dict, optional): Mapping from KITTI class names to model class indices
         """
@@ -757,12 +793,27 @@ class KITTIDetectionDataset(Dataset):
         self.label_dir = os.path.join(root_dir, "label_2")
         
         # Get all image files
-        self.image_files = sorted([f for f in os.listdir(self.image_dir) 
-                                  if f.endswith('.png') or f.endswith('.jpg')])
+        all_image_files = sorted([f for f in os.listdir(self.image_dir) 
+                                if f.endswith('.png') or f.endswith('.jpg')])
         
+        # Filter by split file if provided
+        if split_file and os.path.exists(split_file):
+            with open(split_file, 'r') as f:
+                # Read image IDs from split file (one per line)
+                image_ids = [line.strip() for line in f.readlines()]
+                
+                # Filter image files to only include those in the split
+                self.image_files = [f for f in all_image_files 
+                                   if os.path.splitext(f)[0] in image_ids]
+                
+                print(f"Loaded {len(self.image_files)} images from split file {split_file}")
+        else:
+            self.image_files = all_image_files
+            
         # Cache class counts for balanced sampling
         self._cache_class_counts()
     
+    # Rest of the class remains unchanged
     def __len__(self):
         return len(self.image_files)
     
@@ -1177,7 +1228,7 @@ class YOLOv8Trainer:
             num_samples: Number of samples to visualize
         """
         # Create output directory
-        output_dir = Path(f"visualization/{dataset_name}_{split}")
+        output_dir = Path(f"output/visualization/{dataset_name}_{split}")
         output_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"Visualizing {num_samples} samples from {dataset_name} {split} dataset...")
@@ -1200,7 +1251,7 @@ class YOLOv8Trainer:
         for orig_cls, unified_cls in dataset_config.get("unified_class_mapping", {}).items():
             class_idx = self.model.all_classes.index(unified_cls) if unified_cls in self.model.all_classes else -1
             if class_idx >= 0:
-                class_map_inv[class_idx] = orig_cls
+                class_map_inv[class_idx] = orig_cls #6
         
         # Get samples from the dataloader
         samples_visualized = 0
@@ -1214,8 +1265,8 @@ class YOLOv8Trainer:
                     break
                 
                 # Convert tensor to numpy for visualization
-                if isinstance(image, torch.Tensor):
-                    # Convert from CHW to HWC and scale to 0-255
+                if isinstance(image, torch.Tensor): 
+                    # Convert from [3, 640, 640] CHW to HWC and scale to 0-255
                     img_np = image.permute(1, 2, 0).cpu().numpy()
                     img_np = (img_np * 255).astype(np.uint8)
                 else:
@@ -1334,7 +1385,7 @@ class YOLOv8Trainer:
         """Create KITTI dataset."""
         # Get the unified class mapping
         unified_mapping = self.config["datasets"]["kitti"].get("unified_class_mapping", {})
-        
+        #8
         # Map KITTI classes to unified class space
         class_map = {}
         for kitti_cls, cls_name in self.config["datasets"]["kitti"]["class_map"].items():
@@ -1343,15 +1394,55 @@ class YOLOv8Trainer:
             if unified_cls in self.model.all_classes:
                 class_map[kitti_cls] = self.model.all_classes.index(unified_cls)
         
+        # Check if ImageSets directory exists
+        imagesets_dir = Path(f"{path}/ImageSets")
+        split_file = f"{path}/ImageSets/{split}.txt"
+        
+        # Create split files if ImageSets directory doesn't exist
+        if not imagesets_dir.exists():
+            print(f"ImageSets directory not found at {imagesets_dir}. Creating train/val splits...")
+            
+            # Create the directory
+            imagesets_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Get all image files in the training/image_2 directory
+            image_dir = Path(f"{path}/training/image_2")
+            if not image_dir.exists():
+                raise FileNotFoundError(f"Image directory not found at {image_dir}")
+                
+            image_files = sorted([f.stem for f in image_dir.glob("*.png")])
+            if not image_files:
+                image_files = sorted([f.stem for f in image_dir.glob("*.jpg")])
+            
+            if not image_files:
+                raise FileNotFoundError(f"No image files found in {image_dir}")
+                
+            # Shuffle the files with a fixed seed for reproducibility
+            random.seed(42)
+            random.shuffle(image_files)
+            
+            # Split into train (80%) and val (20%)
+            split_idx = int(len(image_files) * 0.8)
+            train_files = image_files[:split_idx]
+            val_files = image_files[split_idx:]
+            
+            # Write train split file
+            with open(f"{imagesets_dir}/train.txt", "w") as f:
+                f.write("\n".join(train_files))
+                
+            # Write val split file
+            with open(f"{imagesets_dir}/val.txt", "w") as f:
+                f.write("\n".join(val_files))
+                
+            print(f"Created train split with {len(train_files)} samples and val split with {len(val_files)} samples")
+        
         # Return dataset with transforms and class mapping
-        if split == "train":
-            return KITTIDetectionDataset(
-                f"{path}/training", transforms=transforms, class_map=class_map
-            )
-        else:
-            return KITTIDetectionDataset(
-                f"{path}/testing", transforms=transforms, class_map=class_map
-            )
+        return KITTIDetectionDataset(
+            f"{path}/training",
+            split_file=split_file,
+            transforms=transforms,
+            class_map=class_map
+        )
     
     def _create_waymo_dataset(self, path, split, transforms):
         """Create Waymo dataset."""
@@ -1962,8 +2053,7 @@ class YOLOv8Trainer:
             train_loss = self.train_epoch(epoch)
             
             # Validate
-            val_metrics = self.validate()
-            
+            val_metrics = self.validate(epoch=epoch, debug_mode=True)
             # Print metrics
             print(f"Epoch {epoch+1}/{self.config['epochs']}")
             print(f"Train Loss: {train_loss:.4f}")
@@ -1995,103 +2085,226 @@ class YOLOv8Trainer:
         
         print(f"Training completed. Best mAP: {self.best_val_map:.4f}")
         
-    def validate(self):
+    #def validate(self, debug_mode=False):
+    def validate(self, epoch, debug_mode=False):
+        """Validate the model on the validation set."""
         self.model.eval()
-        val_metrics = {}
+        val_loss = 0.0
+        num_batches = 0
         
-        # For mAP calculation
-        all_predictions = defaultdict(list)
-        all_targets = defaultdict(list)
+        # Metrics for each dataset
+        metrics_by_dataset = {}
         
-        with torch.no_grad():
-            for dataset_name, loader in self.val_loaders.items():
-                dataset_metrics = defaultdict(float)
-                
-                # Create progress bar for validation
-                progress_bar = tqdm(loader, desc=f"Validating {dataset_name}")
-                
-                for images, targets in progress_bar:
-                    images = images.to(self.device)
-                    targets = [{k: v.to(self.device) for k, v in t.items()} for t in targets]
+        # Process each dataset
+        for dataset_name, val_loader in self.val_loaders.items():
+            print(f"Validating on {dataset_name}...")
+            dataset_loss = 0.0
+            dataset_batches = 0
+            
+            # Initialize metrics for this dataset
+            all_predictions = []
+            all_targets = []
+            
+            with torch.no_grad():
+                for batch_idx, (images, targets) in enumerate(tqdm(val_loader, desc=f"Validating {dataset_name}")):
+                    # Move data to device [16, 3, 640, 640]
+                    images = [img.to(self.device) for img in images] #16 list of [3, 640, 640]
+                    targets = [{k: v.to(self.device) if isinstance(v, torch.Tensor) else v 
+                            for k, v in t.items()} for t in targets]
                     
-                    # Forward pass - update autocast to include device_type if used
-                    with autocast(device_type='cuda', enabled=self.config["amp"]):
-                        outputs = self.model(images, dataset_name)
+                    # Forward pass
+                    try:
+                        predictions = self.model(torch.stack(images), dataset_name)
+                        #output: [16, 37, 8400]
+                        # Calculate loss
+                        loss_dict = self.loss_fn(predictions, targets, dataset_name)
+                        loss = sum(loss for loss in loss_dict.values())
                         
-                    # Calculate loss
-                    loss_dict = self.loss_fn(outputs, targets, dataset_name)
-                    
-                    # Store loss metrics
-                    for k, v in loss_dict.items():
-                        # Check if v is a tensor or a float
-                        if isinstance(v, torch.Tensor):
-                            dataset_metrics[k] += v.item() / len(loader)
-                        else:
-                            # If v is already a float, just add it
-                            dataset_metrics[k] += v / len(loader)
-                    
-                    # Post-process predictions for mAP calculation
-                    batch_predictions = self._post_process_predictions(outputs, dataset_name)
-                    
-                    # Debug: Visualize first few batches
-                    if batch_idx < 5:  # Only visualize first 5 batches to avoid too many images
-                        self.debug_visualize_predictions(
-                            images.cpu(), batch_predictions, targets, dataset_name, 
-                            self.start_epoch, batch_idx
-                        )
+                        # Check for NaN or inf values in loss
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            print(f"Warning: NaN or inf loss detected in batch {batch_idx}. Skipping batch.")
+                            continue
                         
-                    # Store predictions and targets for mAP calculation
-                    for i, (preds, target) in enumerate(zip(batch_predictions, targets)):
-                        img_id = f"{dataset_name}_{len(all_predictions[dataset_name])}"
+                        # Update metrics
+                        dataset_loss += loss.item()
+                        dataset_batches += 1
                         
-                        # Store predictions with image id
-                        for pred in preds:
-                            # Format: [image_id, x1, y1, x2, y2, confidence, class_id]
-                            all_predictions[dataset_name].append([
-                                img_id, 
-                                pred[0], pred[1], pred[2], pred[3],  # bbox
-                                pred[4],  # confidence
-                                pred[5]   # class_id
-                            ])
+                        # Store predictions and targets for mAP calculation
+                        # Convert predictions to the format expected by the mAP calculator
+                        processed_preds = self._process_predictions(predictions, images[0].shape[-2:])
+                        all_predictions.extend(processed_preds)
+                        all_targets.extend(targets)
                         
-                        # Store targets with image id
-                        if 'boxes' in target and len(target['boxes']) > 0:
-                            for box_idx, box in enumerate(target['boxes']):
-                                # Format: [image_id, x1, y1, x2, y2, class_id]
-                                all_targets[dataset_name].append([
-                                    img_id,
-                                    box[0].item(), box[1].item(), box[2].item(), box[3].item(),
-                                    target['labels'][box_idx].item()
-                                ])
+                        # Visualize a few batches for debugging
+                        if debug_mode and batch_idx % 10 == 0:
+                            self.debug_visualize_predictions(torch.stack(images), processed_preds, targets, dataset_name, epoch, batch_idx=0)
                     
-                    # Update progress bar with current loss
-                    if "total_loss" in loss_dict:
-                        current_loss = loss_dict["total_loss"]
-                        if isinstance(current_loss, torch.Tensor):
-                            current_loss = current_loss.item()
-                        progress_bar.set_postfix({"loss": f"{current_loss:.4f}"})
+                    except Exception as e:
+                        print(f"Error in validation batch {batch_idx}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
+            
+            # Calculate average loss for this dataset
+            if dataset_batches > 0:
+                avg_dataset_loss = dataset_loss / dataset_batches
+                val_loss += avg_dataset_loss
+                num_batches += 1
                 
-                # Calculate mAP for this dataset
-                if len(all_predictions[dataset_name]) > 0:
-                    mAP_metrics = self._calculate_mAP(
-                        all_predictions[dataset_name], 
-                        all_targets[dataset_name],
-                        dataset_name
-                    )
-                    
-                    # Add mAP metrics to dataset metrics
-                    for k, v in mAP_metrics.items():
-                        dataset_metrics[k] = v
-                
-                # Store all metrics for this dataset
-                val_metrics[dataset_name] = dict(dataset_metrics)
-                
-                # Close progress bar
-                progress_bar.close()
+                # Calculate mAP and other metrics
+                try:
+                    dataset_metrics = self._calculate_map(all_predictions, all_targets, dataset_name)
+                    metrics_by_dataset[dataset_name] = {
+                        "total_loss": avg_dataset_loss,
+                        **dataset_metrics
+                    }
+                except Exception as e:
+                    print(f"Error calculating metrics for {dataset_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    metrics_by_dataset[dataset_name] = {
+                        "total_loss": avg_dataset_loss,
+                        "mAP": 0.0,
+                        "mAP_50": 0.0,
+                        "mAP_75": 0.0,
+                        "mAP_small": 0.0,
+                        "mAP_medium": 0.0,
+                        "mAP_large": 0.0
+                    }
         
-        return val_metrics
+        # Calculate average validation loss
+        avg_val_loss = val_loss / max(num_batches, 1)
+        
+        # Calculate average mAP across datasets
+        avg_map = 0.0
+        num_datasets = 0
+        for dataset_name, metrics in metrics_by_dataset.items():
+            print(f"Validation metrics for {dataset_name}:")
+            for metric_name, metric_value in metrics.items():
+                print(f"  {metric_name}: {metric_value:.4f}")
+            avg_map += metrics.get("mAP", 0.0)
+            num_datasets += 1
+        
+        avg_map = avg_map / max(num_datasets, 1)
+        print(f"Average mAP: {avg_map:.4f}")
+        
+        # Return to training mode
+        self.model.train()
+        
+        return avg_val_loss, avg_map
+
+    def _process_predictions(self, predictions, image_size):
+        """Process model predictions into a format suitable for mAP calculation."""
+        processed_predictions = []
+        
+        # Check if predictions is a list or a single tensor
+        if not isinstance(predictions, list):
+            predictions = [predictions]
+        
+        # Get batch size - handle different prediction formats
+        if isinstance(predictions[0], torch.Tensor):
+            batch_size = predictions[0].shape[0]
+        else:
+            print(f"Warning: Unexpected prediction type: {type(predictions[0])}")
+            return []
+        
+        for batch_idx in range(batch_size):
+            # Extract predictions for this image from all feature levels
+            boxes_batch = []
+            scores_batch = []
+            labels_batch = []
+            
+            for pred in predictions:
+                # Extract predictions for this batch index
+                try:
+                    pred_img = pred[batch_idx].detach().cpu()
+                    
+                    # Check tensor dimensions and handle accordingly
+                    if len(pred_img.shape) == 1:
+                        # Skip 1D tensors or reshape if possible
+                        print(f"Warning: Skipping 1D tensor with shape {pred_img.shape}")
+                        continue
+                    
+                    # Print shape for debugging
+                    print(f"Processing prediction with shape: {pred_img.shape}")
+                    
+                    # Reshape if needed based on your model's output format
+                    if len(pred_img.shape) > 2:
+                        h, w, channels = pred_img.shape
+                        pred_flat = pred_img.reshape(-1, channels)
+                    else:
+                        pred_flat = pred_img
+                    
+                    # Check if pred_flat has enough dimensions for indexing
+                    if pred_flat.dim() < 2:
+                        print(f"Warning: pred_flat has insufficient dimensions: {pred_flat.shape}")
+                        continue
+                        
+                    # Check if pred_flat has enough columns
+                    if pred_flat.shape[1] <= 4:
+                        print(f"Warning: pred_flat has insufficient columns: {pred_flat.shape}")
+                        continue
+                    
+                    # Extract box coordinates and class scores
+                    boxes = pred_flat[:, :4]
+                    class_scores = pred_flat[:, 4:]
+                    
+                    # Get confidence scores and class IDs
+                    if class_scores.shape[1] > 0:  # Check if there are any classes
+                        confidences, class_ids = torch.max(class_scores, dim=1)
+                        
+                        # Filter by confidence threshold
+                        threshold = 0.1  # Lower threshold for validation
+                        mask = confidences > threshold
+                        
+                        filtered_boxes = boxes[mask]
+                        filtered_confidences = confidences[mask]
+                        filtered_class_ids = class_ids[mask]
+                        
+                        # Add to batch lists
+                        boxes_batch.append(filtered_boxes)
+                        scores_batch.append(filtered_confidences)
+                        labels_batch.append(filtered_class_ids)
+                except Exception as e:
+                    print(f"Error processing prediction: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    continue
+            
+            # Combine predictions from all feature levels
+            if boxes_batch:
+                try:
+                    boxes_combined = torch.cat(boxes_batch, dim=0)
+                    scores_combined = torch.cat(scores_batch, dim=0)
+                    labels_combined = torch.cat(labels_batch, dim=0)
+                    
+                    # Create prediction dictionary
+                    prediction = {
+                        'boxes': boxes_combined,
+                        'scores': scores_combined,
+                        'labels': labels_combined
+                    }
+                except Exception as e:
+                    print(f"Error combining predictions: {e}")
+                    # Empty prediction as fallback
+                    prediction = {
+                        'boxes': torch.zeros((0, 4)),
+                        'scores': torch.zeros(0),
+                        'labels': torch.zeros(0, dtype=torch.int64)
+                    }
+            else:
+                # Empty prediction
+                prediction = {
+                    'boxes': torch.zeros((0, 4)),
+                    'scores': torch.zeros(0),
+                    'labels': torch.zeros(0, dtype=torch.int64)
+                }
+            
+            processed_predictions.append(prediction)
+        
+        return processed_predictions
     
-    def _post_process_predictions(self, outputs, dataset_name):
+    def _post_process_predictions(self, outputs, dataset_name, debug_mode=False):
         """Post-process model outputs to get bounding boxes, confidence scores, and class IDs.
         
         Args:
@@ -2109,14 +2322,16 @@ class YOLOv8Trainer:
         nms_threshold = self.config.get("nms_threshold", 0.45)
         
         # Add debug info
-        print(f"Post-processing for {dataset_name}, conf_threshold={conf_threshold}, nms_threshold={nms_threshold}")
+        if debug_mode:
+            print(f"Post-processing for {dataset_name}, conf_threshold={conf_threshold}, nms_threshold={nms_threshold}")
         
         # Process each image in the batch
         for img_idx, img_pred in enumerate(outputs):
             # Apply confidence threshold
             if isinstance(img_pred, torch.Tensor):
-                # Debug output shape
-                print(f"Output shape: {img_pred.shape}")
+                if debug_mode:
+                    # Debug output shape
+                    print(f"Output shape: {img_pred.shape}")
                 # Reshape predictions to [num_preds, 4+num_classes]
                 pred_shape = img_pred.shape
                 flattened_pred = img_pred.reshape(-1, pred_shape[-1])
@@ -2126,7 +2341,7 @@ class YOLOv8Trainer:
                 scores = flattened_pred[:, 4:]
                 
                 # Debug box coordinates
-                if len(boxes) > 0:
+                if len(boxes) > 0 and debug_mode:
                     print(f"Sample boxes: {boxes[:3]}")
                     print(f"Sample scores: {scores[:3]}")
                 
@@ -2139,7 +2354,8 @@ class YOLOv8Trainer:
                 filtered_scores = max_scores[mask]
                 filtered_class_ids = class_ids[mask]
                 
-                print(f"After filtering: {len(filtered_boxes)} boxes remain")
+                if debug_mode:
+                    print(f"After filtering: {len(filtered_boxes)} boxes remain")
                 
                 # Skip NMS if no boxes remain
                 if len(filtered_boxes) == 0:
@@ -2150,7 +2366,8 @@ class YOLOv8Trainer:
                 keep_indices = self._non_max_suppression(
                     filtered_boxes, filtered_scores, nms_threshold
                 )
-                print(f"After NMS: {len(keep_indices)} boxes remain")
+                if debug_mode:
+                    print(f"After NMS: {len(keep_indices)} boxes remain")
                 
                 # Create final predictions
                 image_predictions = []
@@ -2233,78 +2450,94 @@ class YOLOv8Trainer:
         return keep
     
     def debug_visualize_predictions(self, images, predictions, targets, dataset_name, epoch, batch_idx=0):
-        """Visualize predictions for debugging purposes."""
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
+        """Visualize predictions for debugging."""
+        # Only visualize the first image in the batch
+        image = images[batch_idx].detach().cpu().numpy().transpose(1, 2, 0)
         
-        # Create output directory if it doesn't exist
-        debug_dir = Path(f"debug_output/{dataset_name}/epoch_{epoch}")
-        debug_dir.mkdir(parents=True, exist_ok=True)
+        # Denormalize image if needed
+        image = (image * 255).astype(np.uint8)
         
-        # Get class names for this dataset
-        class_names = self.config["datasets"][dataset_name]["classes"]
+        # Convert to BGR for OpenCV
+        image_cv = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
         
-        # Process each image in the batch
-        for img_idx, (img, preds, target) in enumerate(zip(images, predictions, targets)):
-            # Convert tensor to numpy for visualization
-            if isinstance(img, torch.Tensor):
-                img_np = img.permute(1, 2, 0).cpu().numpy()  # CHW -> HWC
-                # Denormalize if needed
-                if img_np.max() <= 1.0:
-                    img_np = (img_np * 255).astype(np.uint8)
+        # Get class mapping for this dataset
+        dataset_config = self.config["datasets"][dataset_name]
+        class_map = {i: cls for cls, i in dataset_config.get("class_map", {}).items()}
+        
+        # Draw ground truth boxes in green
+        target = targets[batch_idx]
+        for box, label in zip(target["boxes"].cpu().numpy(), target["labels"].cpu().numpy()):
+            x1, y1, x2, y2 = box.astype(int)
+            class_name = class_map.get(label, f"Class{label}")
+            cv2.rectangle(image_cv, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(image_cv, class_name, (x1, y1 - 10), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+        
+        # Process predictions
+        # Get the prediction for the first image in the batch from each scale
+        for pred_idx, pred in enumerate(predictions):
+            # Extract predictions for this image
+            pred_img = pred[batch_idx].detach().cpu().numpy()
+            
+            # Reshape if needed - depends on your model's output format
+            # For grid-based predictions, we need to extract boxes with confidence > threshold
+            
+            # For simplicity, let's assume pred_img has shape [H, W, 4+num_classes]
+            # where the first 4 channels are box coordinates
+            
+            # Flatten the spatial dimensions to get all predictions
+            if len(pred_img.shape) > 2:
+                h, w, channels = pred_img.shape
+                pred_flat = pred_img.reshape(-1, channels)
             else:
-                img_np = img.copy()
+                pred_flat = pred_img
             
-            # Create figure and axis
-            fig, ax = plt.subplots(1, figsize=(12, 12))
-            ax.imshow(img_np)
+            # Extract box coordinates and class scores
+            boxes = pred_flat[:, :4]
+            class_scores = pred_flat[:, 4:]
             
-            # Draw ground truth boxes (green)
-            if 'boxes' in target and len(target['boxes']) > 0:
-                for box_idx, box in enumerate(target['boxes']):
-                    x1, y1, x2, y2 = box.cpu().numpy()
-                    width, height = x2 - x1, y2 - y1
+            # Get confidence scores (max class probability)
+            confidences = np.max(class_scores, axis=1)
+            class_ids = np.argmax(class_scores, axis=1)
+            
+            # Filter by confidence threshold
+            threshold = 0.25  # Adjust as needed
+            mask = confidences > threshold
+            
+            filtered_boxes = boxes[mask]
+            filtered_confidences = confidences[mask]
+            filtered_class_ids = class_ids[mask]
+            
+            # Draw predicted boxes in red
+            for box, conf, cls_id in zip(filtered_boxes, filtered_confidences, filtered_class_ids):
+                # Skip if class_id is out of range (this could be causing the ghost detection)
+                if cls_id >= len(self.model.all_classes):
+                    continue
                     
-                    # Draw rectangle
-                    rect = patches.Rectangle(
-                        (x1, y1), width, height, 
-                        linewidth=2, edgecolor='g', facecolor='none'
-                    )
-                    ax.add_patch(rect)
+                # Skip if box coordinates are invalid
+                if any(np.isnan(box)) or any(np.isinf(box)):
+                    continue
+                
+                # Get class name
+                class_name = self.model.all_classes[cls_id] if cls_id < len(self.model.all_classes) else f"Class{cls_id}"
+                
+                # Draw box and label
+                x1, y1, x2, y2 = box.astype(int)
+                
+                # Skip boxes with invalid coordinates
+                if x1 < 0 or y1 < 0 or x2 >= image_cv.shape[1] or y2 >= image_cv.shape[0] or x2 <= x1 or y2 <= y1:
+                    continue
                     
-                    # Add label
-                    class_id = target['labels'][box_idx].item()
-                    class_name = class_names[class_id] if class_id < len(class_names) else f"Class {class_id}"
-                    ax.text(
-                        x1, y1 - 5, class_name,
-                        color='g', fontsize=10, backgroundcolor='w'
-                    )
-            
-            # Draw predicted boxes (red)
-            for pred in preds:
-                x1, y1, x2, y2, score, class_id = pred
-                width, height = x2 - x1, y2 - y1
+                cv2.rectangle(image_cv, (x1, y1), (x2, y2), (0, 0, 255), 2)
                 
-                # Draw rectangle
-                rect = patches.Rectangle(
-                    (x1, y1), width, height, 
-                    linewidth=2, edgecolor='r', facecolor='none'
-                )
-                ax.add_patch(rect)
-                
-                # Add label with confidence
-                class_name = class_names[int(class_id)] if int(class_id) < len(class_names) else f"Class {int(class_id)}"
-                ax.text(
-                    x1, y1 - 5, f"{class_name}: {score:.2f}",
-                    color='r', fontsize=10, backgroundcolor='w'
-                )
-            
-            # Save figure
-            plt.title(f"Image {img_idx} - Green: GT, Red: Pred")
-            plt.axis('off')
-            plt.tight_layout()
-            plt.savefig(debug_dir / f"batch_{batch_idx}_img_{img_idx}.jpg")
-            plt.close(fig)
+                # Only show class name without the confidence score to avoid the "Class31: 284.00" issue
+                label_text = f"{class_name}"
+                cv2.putText(image_cv, label_text, (x1, y1 - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+        
+        # Save the visualization
+        os.makedirs("output/debug_visualizations", exist_ok=True)
+        cv2.imwrite(f"output/debug_visualizations/epoch{epoch}_batch{batch_idx}_{dataset_name}.jpg", image_cv)
             
     def _calculate_mAP(self, predictions, targets, dataset_name):
         """Calculate mean Average Precision using COCO-style evaluation.
@@ -2747,7 +2980,11 @@ def main():
     # Initialize trainer
     trainer = YOLOv8Trainer(training_config)
     
+    #trainer.visualize_dataset_samples("coco", "train", num_samples=10)
+    trainer.visualize_dataset_samples("kitti", "val", num_samples=5)
+
     # Train model
+    trainer.validate()
     trainer.train()
     
 if __name__ == "__main__":
