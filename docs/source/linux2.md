@@ -87,3 +87,15 @@ $ conda install cuda -c nvidia/label/cuda-12.4
 #install pytorch 2.6 CUDA12.4
 pip3 install torch torchvision torchaudio
 ```
+
+# New Conda Setup in WSL of Alienware 3090
+```bash
+conda create --name py312 python=3.12
+conda activate py312
+conda info --envs #check existing conda environment
+$ conda install cuda -c nvidia/label/cuda-12.6
+#install pytorch 2.6 CUDA12.6
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install matplotlib
+pip install opencv-python
+```
