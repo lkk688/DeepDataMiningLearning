@@ -2223,104 +2223,117 @@ class YOLOv8Trainer:
         
         # Get batch size - handle different prediction formats
         if isinstance(predictions[0], torch.Tensor):
-            batch_size = predictions[0].shape[0] #16
+            batch_size = predictions[0].shape[0]
         else:
             print(f"Warning: Unexpected prediction type: {type(predictions[0])}")
             return []
         
-        for batch_idx in range(batch_size):
-            # Extract predictions for this image from all feature levels
-            boxes_batch = []
-            scores_batch = []
-            labels_batch = []
+        # Import non_max_suppression from modeling_yolodetection
+        from DeepDataMiningLearning.detection.modeling_yolodetection import non_max_suppression
+        
+        # Apply NMS to the predictions
+        try:
+            # Set confidence and IoU thresholds for validation
+            conf_thres = 0.1  # Lower threshold for validation
+            iou_thres = 0.45
             
-            for pred in predictions: #[16, 37, 8400]
-                # Extract predictions for this batch index
-                try:
-                    pred_img = pred[batch_idx].detach().cpu() #[37, 8400]
-                    
-                    # Check tensor dimensions and handle accordingly
-                    if len(pred_img.shape) == 1:
-                        # Skip 1D tensors or reshape if possible
-                        print(f"Warning: Skipping 1D tensor with shape {pred_img.shape}")
-                        continue
-                    
-                    # Print shape for debugging
-                    print(f"Processing prediction with shape: {pred_img.shape}")
-                    
-                    # Reshape if needed based on your model's output format
-                    if len(pred_img.shape) > 2:
-                        h, w, channels = pred_img.shape
-                        pred_flat = pred_img.reshape(-1, channels)
+            # Process each prediction tensor
+            for pred in predictions:
+                # Debug the prediction shape
+                print(f"Prediction shape: {pred.shape}")
+                
+                # Check if the prediction format needs to be transformed
+                # YOLOv8 format is typically [batch_size, num_classes+5, num_anchors]
+                # non_max_suppression expects [batch_size, num_anchors, num_classes+5]
+                if len(pred.shape) == 3 and pred.shape[1] < pred.shape[2]:
+                    # This is likely [batch_size, num_classes+5, num_anchors]
+                    # Transpose to [batch_size, num_anchors, num_classes+5]
+                    pred = pred.permute(0, 2, 1)
+                    print(f"Transposed prediction shape: {pred.shape}")
+                
+                # Apply non-maximum suppression
+                processed_outputs = non_max_suppression(
+                    pred,
+                    conf_thres=conf_thres,
+                    iou_thres=iou_thres
+                )
+                
+                print(f"NMS output length: {len(processed_outputs)}")
+                for i, det in enumerate(processed_outputs):
+                    if det is not None and len(det) > 0:
+                        print(f"Image {i}: Found {len(det)} detections")
                     else:
-                        pred_flat = pred_img
-                    
-                    # Check if pred_flat has enough dimensions for indexing
-                    if pred_flat.dim() < 2:
-                        print(f"Warning: pred_flat has insufficient dimensions: {pred_flat.shape}")
+                        print(f"Image {i}: No detections")
+                
+                # Process each image in the batch
+                for batch_idx in range(batch_size):
+                    # Get detections for this image
+                    if batch_idx >= len(processed_outputs):
+                        print(f"Warning: batch_idx {batch_idx} out of range for processed_outputs (len={len(processed_outputs)})")
                         continue
                         
-                    # Check if pred_flat has enough columns
-                    if pred_flat.shape[1] <= 4:
-                        print(f"Warning: pred_flat has insufficient columns: {pred_flat.shape}")
-                        continue
-                    
-                    # Extract box coordinates and class scores
-                    boxes = pred_flat[:, :4] #[37, 4]
-                    class_scores = pred_flat[:, 4:] #[37, 8396]
-                    
-                    # Get confidence scores and class IDs
-                    if class_scores.shape[1] > 0:  # Check if there are any classes
-                        confidences, class_ids = torch.max(class_scores, dim=1)
-                        
-                        # Filter by confidence threshold
-                        threshold = 0.1  # Lower threshold for validation
-                        mask = confidences > threshold
-                        
-                        filtered_boxes = boxes[mask]
-                        filtered_confidences = confidences[mask]
-                        filtered_class_ids = class_ids[mask]
-                        
-                        # Add to batch lists
-                        boxes_batch.append(filtered_boxes)
-                        scores_batch.append(filtered_confidences)
-                        labels_batch.append(filtered_class_ids)
-                except Exception as e:
-                    print(f"Error processing prediction: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    continue
-            
-            # Combine predictions from all feature levels
-            if boxes_batch:
-                try:
-                    boxes_combined = torch.cat(boxes_batch, dim=0)
-                    scores_combined = torch.cat(scores_batch, dim=0)
-                    labels_combined = torch.cat(labels_batch, dim=0)
+                    det = processed_outputs[batch_idx]
                     
                     # Create prediction dictionary
-                    prediction = {
-                        'boxes': boxes_combined,
-                        'scores': scores_combined,
-                        'labels': labels_combined
-                    }
-                except Exception as e:
-                    print(f"Error combining predictions: {e}")
-                    # Empty prediction as fallback
-                    prediction = {
-                        'boxes': torch.zeros((0, 4)),
-                        'scores': torch.zeros(0),
-                        'labels': torch.zeros(0, dtype=torch.int64)
-                    }
-            else:
-                # Empty prediction
-                prediction = {
-                    'boxes': torch.zeros((0, 4)),
-                    'scores': torch.zeros(0),
-                    'labels': torch.zeros(0, dtype=torch.int64)
-                }
+                    if batch_idx >= len(processed_predictions):
+                        # Initialize new prediction entry
+                        prediction = {
+                            'boxes': torch.zeros((0, 4), device=pred.device),
+                            'scores': torch.zeros(0, device=pred.device),
+                            'labels': torch.zeros(0, dtype=torch.int64, device=pred.device)
+                        }
+                        processed_predictions.append(prediction)
+                    
+                    # Skip if no detections
+                    if det is None or len(det) == 0:
+                        continue
+                    
+                    # Extract boxes, scores, and class IDs
+                    boxes = det[:, :4]
+                    scores = det[:, 4]
+                    labels = det[:, 5].int()
+                    
+                    # Add to existing predictions if any
+                    if len(processed_predictions[batch_idx]['boxes']) > 0:
+                        processed_predictions[batch_idx]['boxes'] = torch.cat([
+                            processed_predictions[batch_idx]['boxes'],
+                            boxes
+                        ], dim=0)
+                        processed_predictions[batch_idx]['scores'] = torch.cat([
+                            processed_predictions[batch_idx]['scores'],
+                            scores
+                        ], dim=0)
+                        processed_predictions[batch_idx]['labels'] = torch.cat([
+                            processed_predictions[batch_idx]['labels'],
+                            labels
+                        ], dim=0)
+                    else:
+                        processed_predictions[batch_idx]['boxes'] = boxes
+                        processed_predictions[batch_idx]['scores'] = scores
+                        processed_predictions[batch_idx]['labels'] = labels
+                        
+        except Exception as e:
+            print(f"Error in processing predictions: {e}")
+            import traceback
+            traceback.print_exc()
             
-            processed_predictions.append(prediction)
+            # Return empty predictions as fallback
+            processed_predictions = []
+            for _ in range(batch_size):
+                processed_predictions.append({
+                    'boxes': torch.zeros((0, 4), device=pred.device if 'pred' in locals() else 'cpu'),
+                    'scores': torch.zeros(0, device=pred.device if 'pred' in locals() else 'cpu'),
+                    'labels': torch.zeros(0, dtype=torch.int64, device=pred.device if 'pred' in locals() else 'cpu')
+                })
+        
+        # Ensure we have predictions for each image in the batch
+        while len(processed_predictions) < batch_size:
+            device = predictions[0].device if len(predictions) > 0 else 'cpu'
+            processed_predictions.append({
+                'boxes': torch.zeros((0, 4), device=device),
+                'scores': torch.zeros(0, device=device),
+                'labels': torch.zeros(0, dtype=torch.int64, device=device)
+            })
         
         return processed_predictions
     
@@ -3004,7 +3017,7 @@ def main():
     trainer.visualize_dataset_samples("kitti", "val", num_samples=5)
 
     # Train model
-    trainer.validate()
+    trainer.validate(debug_mode=True)
     trainer.train()
     
 if __name__ == "__main__":

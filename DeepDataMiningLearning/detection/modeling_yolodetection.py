@@ -7,6 +7,155 @@ import torch.nn as nn
 import yaml
 import re
 from typing import Dict, List, Optional, Tuple, Union
+import time
+import torchvision
+import os
+import json
+import glob
+from tqdm import tqdm
+from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval
+import numpy as np
+import cv2
+import torch
+from torch.utils.data import Dataset, DataLoader
+
+coco_names = {
+    0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane',
+    5: 'bus', 6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light',
+    10: 'fire hydrant', 11: 'stop sign', 12: 'parking meter', 13: 'bench',
+    14: 'bird', 15: 'cat', 16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow',
+    20: 'elephant', 21: 'bear', 22: 'zebra', 23: 'giraffe', 24: 'backpack',
+    25: 'umbrella', 26: 'handbag', 27: 'tie', 28: 'suitcase', 29: 'frisbee',
+    30: 'skis', 31: 'snowboard', 32: 'sports ball', 33: 'kite', 34: 'baseball bat',
+    35: 'baseball glove', 36: 'skateboard', 37: 'surfboard', 38: 'tennis racket',
+    39: 'bottle', 40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife',
+    44: 'spoon', 45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange',
+    50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut',
+    55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed',
+    60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse',
+    65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 69: 'oven',
+    70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 74: 'clock',
+    75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'
+}
+
+# KITTI to COCO class mapping
+kitti_to_coco = {
+    'Car': 2,           # car in COCO
+    'Van': 2,           # also car in COCO
+    'Truck': 7,         # truck in COCO
+    'Pedestrian': 0,    # person in COCO
+    'Person_sitting': 0,# also person in COCO
+    'Cyclist': 1,       # bicycle in COCO
+    'Tram': 6,          # train in COCO
+    'Misc': 0,          # default to person
+    'DontCare': -1      # ignore
+}
+
+def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, multi_label=False, max_det=300):
+    """
+    Performs Non-Maximum Suppression (NMS) on inference results
+    
+    Args:
+        prediction (torch.Tensor or list): Predictions tensor with shape [batch_size, num_boxes, num_classes + 5]
+                                          or list of tensors
+        conf_thres (float): Confidence threshold
+        iou_thres (float): IoU threshold
+        classes (List[int], optional): Filter by class, i.e. = [0, 15, 16] for COCO persons, cats and dogs
+        agnostic (bool): Class-agnostic NMS
+        multi_label (bool): Multiple labels per box
+        max_det (int): Maximum number of detections per image
+        
+    Returns:
+        List[torch.Tensor]: List of detections, on (n,6) tensor per image [xyxy, conf, cls]
+    """
+    # Handle case where prediction is a list
+    if isinstance(prediction, list):
+        return [non_max_suppression(p, conf_thres, iou_thres, classes, agnostic, multi_label, max_det)[0] 
+                if p is not None and len(p) > 0 else torch.zeros((0, 6), device=p.device if p is not None else 'cpu') 
+                for p in prediction]
+    
+    bs = prediction.shape[0]  # batch size
+    nc = prediction.shape[2] - 5  # number of classes
+    xc = prediction[..., 4] > conf_thres  # candidates
+    
+    # Settings
+    max_wh = 7680  # (pixels) maximum box width and height
+    max_nms = 30000  # maximum number of boxes into torchvision.ops.nms()
+    time_limit = 0.5 + 0.05 * bs  # seconds to quit after
+    redundant = True  # require redundant detections
+    multi_label &= nc > 1  # multiple labels per box (adds 0.5ms/img)
+    
+    t = time.time()
+    output = [torch.zeros((0, 6), device=prediction.device)] * bs
+    # Rest of the function remains the same...
+    for xi, x in enumerate(prediction):  # image index, image inference
+        # Apply constraints
+        x = x[xc[xi]]  # confidence
+        
+        # If none remain process next image
+        if not x.shape[0]:
+            continue
+            
+        # Compute conf
+        x[:, 5:] *= x[:, 4:5]  # conf = obj_conf * cls_conf
+        
+        # Box (center x, center y, width, height) to (x1, y1, x2, y2)
+        box = xywh2xyxy(x[:, :4])
+        
+        # Detections matrix nx6 (xyxy, conf, cls)
+        if multi_label:
+            i, j = (x[:, 5:] > conf_thres).nonzero(as_tuple=False).T
+            x = torch.cat((box[i], x[i, j + 5, None], j[:, None].float()), 1)
+        else:  # best class only
+            conf, j = x[:, 5:].max(1, keepdim=True)
+            x = torch.cat((box, conf, j.float()), 1)[conf.view(-1) > conf_thres]
+        
+        # Filter by class
+        if classes is not None:
+            x = x[(x[:, 5:6] == torch.tensor(classes, device=x.device)).any(1)]
+            
+        # Apply finite constraint
+        # if not torch.isfinite(x).all():
+        #     x = x[torch.isfinite(x).all(1)]
+            
+        # Check shape
+        n = x.shape[0]  # number of boxes
+        if not n:  # no boxes
+            continue
+        elif n > max_nms:  # excess boxes
+            x = x[x[:, 4].argsort(descending=True)[:max_nms]]  # sort by confidence
+            
+        # Batched NMS
+        c = x[:, 5:6] * (0 if agnostic else max_wh)  # classes
+        boxes, scores = x[:, :4] + c, x[:, 4]  # boxes (offset by class), scores
+        i = torchvision.ops.nms(boxes, scores, iou_thres)  # NMS
+        if i.shape[0] > max_det:  # limit detections
+            i = i[:max_det]
+            
+        output[xi] = x[i]
+        if (time.time() - t) > time_limit:
+            print(f'WARNING: NMS time limit {time_limit:.3f}s exceeded')
+            break  # time limit exceeded
+            
+    return output
+
+def xywh2xyxy(x):
+    """
+    Convert bounding box coordinates from (x, y, width, height) to (x1, y1, x2, y2) format
+    
+    Args:
+        x (torch.Tensor): Bounding box coordinates (x, y, width, height)
+        
+    Returns:
+        torch.Tensor: Bounding box coordinates (x1, y1, x2, y2)
+    """
+    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
+    y[:, 0] = x[:, 0] - x[:, 2] / 2  # top left x
+    y[:, 1] = x[:, 1] - x[:, 3] / 2  # top left y
+    y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
+    y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
+    return y
 
 # Utility functions
 def yaml_load(file='data.yaml', append_filename=True):
@@ -476,8 +625,13 @@ class YoloDetectionModel(nn.Module):
                 color = (0, 255, 0)  # Green color for bounding box
                 cv2.rectangle(img_orig, (x1, y1), (x2, y2), color, 2)
                 
-                # Add label and confidence
-                label_text = f"{label}: {score:.2f}"
+                # Add class name and confidence instead of label ID
+                # Try to get class name from model's names dictionary
+                class_name = self.names.get(int(label))
+                # If class name is not available, use COCO class names
+                if class_name is None or class_name == f"{int(label)}":
+                    class_name = coco_names.get(int(label), f"class_{label}")
+                label_text = f"{class_name}: {score:.2f}"
                 cv2.putText(img_orig, label_text, (x1, y1 - 10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
@@ -488,12 +642,545 @@ class YoloDetectionModel(nn.Module):
         
         return detections
 
-if __name__ == "__main__":
-# Example usage:
+# Create KITTI dataset class
+class KITTIDataset(Dataset):
+    def __init__(self, root_dir, img_size=640, split='training'):
+        self.root_dir = root_dir
+        self.img_size = img_size
+        self.split = split
+        
+        # Define paths
+        self.image_dir = os.path.join(root_dir, split, 'image_2')
+        self.label_dir = os.path.join(root_dir, split, 'label_2')
+        
+        # Get all image files
+        self.image_files = sorted(glob.glob(os.path.join(self.image_dir, '*.png')))
+        self.label_files = [os.path.join(self.label_dir, os.path.basename(f).replace('.png', '.txt')) 
+                           for f in self.image_files]
+    
+    def __len__(self):
+        return len(self.image_files)
+    
+    def letterbox(self, img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
+        # Resize and pad image while meeting stride-multiple constraints
+        shape = img.shape[:2]  # current shape [height, width]
+        if isinstance(new_shape, int):
+            new_shape = (new_shape, new_shape)
+
+        # Scale ratio (new / old)
+        r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+        if not scaleup:  # only scale down, do not scale up (for better test mAP)
+            r = min(r, 1.0)
+
+        # Compute padding
+        ratio = r, r  # width, height ratios
+        new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
+        dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
+        if auto:  # minimum rectangle
+            dw, dh = np.mod(dw, stride), np.mod(dh, stride)  # wh padding
+        elif scaleFill:  # stretch
+            dw, dh = 0.0, 0.0
+            new_unpad = (new_shape[1], new_shape[0])
+            ratio = new_shape[1] / shape[1], new_shape[0] / shape[0]  # width, height ratios
+
+        dw /= 2  # divide padding into 2 sides
+        dh /= 2
+
+        if shape[::-1] != new_unpad:  # resize
+            img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+        top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+        left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+        return img, ratio, (dw, dh)
+    
+    def __getitem__(self, idx):
+        # Load image
+        img_path = self.image_files[idx]
+        img = cv2.imread(img_path)
+        orig_shape = img.shape
+        
+        # Preprocess image with letterboxing
+        img_processed, ratio, pad = self.letterbox(img, new_shape=(self.img_size, self.img_size))
+        img_rgb = cv2.cvtColor(img_processed, cv2.COLOR_BGR2RGB)
+        img_tensor = torch.from_numpy(img_rgb.transpose(2, 0, 1)).float() / 255.0
+        
+        # Load labels
+        label_path = self.label_files[idx]
+        annotations = []
+        if os.path.exists(label_path):
+            with open(label_path, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    cls_name = parts[0]
+                    if cls_name in kitti_to_coco and kitti_to_coco[cls_name] != -1:
+                        # KITTI format: [type, truncated, occluded, alpha, x1, y1, x2, y2, h, w, l, x, y, z, ry]
+                        x1, y1, x2, y2 = float(parts[4]), float(parts[5]), float(parts[6]), float(parts[7])
+                        
+                        # Convert to COCO format (x, y, width, height)
+                        width = x2 - x1
+                        height = y2 - y1
+                        
+                        # Apply letterbox transformations
+                        # Scale coordinates by the resize ratio
+                        x1 = x1 * ratio[0]
+                        y1 = y1 * ratio[1]
+                        width = width * ratio[0]
+                        height = height * ratio[1]
+                        
+                        # Add padding offset
+                        x1 = x1 + pad[0]
+                        y1 = y1 + pad[1]
+                        
+                        # Ensure coordinates are within image bounds
+                        x1 = max(0, min(x1, self.img_size - 1))
+                        y1 = max(0, min(y1, self.img_size - 1))
+                        width = max(1, min(width, self.img_size - x1))
+                        height = max(1, min(height, self.img_size - y1))
+                        
+                        # Convert to COCO format
+                        coco_cls = kitti_to_coco[cls_name]
+                        annotations.append({
+                            'bbox': [x1, y1, width, height],  # COCO uses [x, y, width, height]
+                            'category_id': coco_cls
+                        })
+        
+        return {
+            'img': img_tensor,
+            'img_path': img_path,
+            'orig_shape': orig_shape,
+            'annotations': annotations
+        }
+            
+# # Validation code for COCO evaluation and mAP calculation on KITTI dataset
+# def validate_kitti(model, data_path, batch_size=8, img_size=640, conf_thres=0.25, iou_thres=0.45):
+#     """
+#     Validate model on KITTI dataset using COCO metrics
+    
+#     Args:
+#         model: YoloDetectionModel to evaluate
+#         data_path: Path to KITTI dataset
+#         batch_size: Batch size for validation
+#         img_size: Image size for validation
+#         conf_thres: Confidence threshold for detections
+#         iou_thres: IoU threshold for NMS
+        
+#     Returns:
+#         dict: Dictionary containing mAP metrics
+#     """
+    
+    
+    
+#     # Create dataset and dataloader
+#     dataset = KITTIDataset(data_path, img_size)
+    
+#     # Use a custom collate function to handle variable-sized annotations
+#     def collate_fn(batch):
+#         imgs = torch.stack([item['img'] for item in batch])
+#         img_paths = [item['img_path'] for item in batch]
+#         orig_shapes = [item['orig_shape'] for item in batch]
+#         annotations = [item['annotations'] for item in batch]
+#         return {
+#             'img': imgs,
+#             'img_path': img_paths,
+#             'orig_shape': orig_shapes,
+#             'annotations': annotations
+#         }
+#     dataloader = DataLoader(dataset, batch_size=batch_size, \
+#         shuffle=False, num_workers=4, collate_fn=collate_fn)
+    
+#     # Set model to evaluation mode
+#     model.eval()
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     model = model.to(device)
+    
+#     # Initialize COCO format results
+#     coco_results = []
+#     coco_gt = {
+#         "images": [],
+#         "annotations": [],
+#         "categories": [
+#             {"id": 0, "name": "person"},
+#             {"id": 1, "name": "bicycle"},
+#             {"id": 2, "name": "car"},
+#             {"id": 3, "name": "motorcycle"},
+#             {"id": 4, "name": "airplane"},
+#             {"id": 5, "name": "bus"},
+#             {"id": 6, "name": "train"},
+#             {"id": 7, "name": "truck"}
+#         ]
+#     }
+    
+#     # Create a directory to save visualization images
+#     vis_dir = os.path.join("output", "validation_vis")
+#     os.makedirs(vis_dir, exist_ok=True)
+#     # Save a few images with both ground truth and predictions for debugging
+#     print(f"Saving visualization images to {vis_dir}")
+#     vis_tofolder = True
+#     # Process each batch
+#     ann_id = 0
+#     with torch.no_grad():
+#         for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
+#             if batch_idx >= 20:  # Only visualize first 10 batches
+#                 vis_tofolder = False
+#             # Prepare input
+#             imgs = batch['img'].to(device) #[8, 3, 256, 640]
+#             img_paths = batch['img_path']
+#             orig_shapes = batch['orig_shape']
+            
+#             # Run inference
+#             detections = model(
+#                 imgs, 
+#                 postprocess=True,
+#                 orig_img_shapes=orig_shapes,
+#                 new_img_size=(img_size, img_size),
+#                 conf_thres=conf_thres,
+#                 iou_thres=iou_thres
+#             )#list of dicts
+            
+#             # Process detections and ground truth
+#             for i, (dets, img_path) in enumerate(zip(detections, img_paths)):
+#                 if vis_tofolder:
+#                     # Get original image
+#                     img_orig = cv2.imread(img_path)
+#                     # Create a copy for ground truth visualization
+#                     img_gt = img_orig.copy()
+            
+#                 # Add image to ground truth
+#                 img_id = batch_idx * batch_size + i
+#                 coco_gt["images"].append({
+#                     "id": img_id,
+#                     "file_name": os.path.basename(img_path)
+#                 })
+                
+#                 # Add ground truth annotations
+#                 for ann in batch['annotations'][i]:
+#                     ann_id += 1
+#                     x, y, w, h = ann['bbox']
+#                     # Skip invalid boxes
+#                     if w <= 0 or h <= 0:
+#                         continue
+#                     coco_gt["annotations"].append({
+#                         "id": ann_id,
+#                         "image_id": img_id,
+#                         "category_id": ann['category_id'],
+#                         "bbox": [x, y, w, h],
+#                         "area": w * h,
+#                         "iscrowd": 0
+#                     })
+                    
+#                     if vis_tofolder: #draw ground truth boxes (green)
+#                         # Convert to integer coordinates
+#                         x1, y1, x2, y2 = int(x), int(y), int(x + w), int(y + h)
+#                         category_id = ann['category_id']
+#                         # Draw bounding box
+#                         cv2.rectangle(img_gt, (x1, y1), (x2, y2), (0, 255, 0), 2)
+#                         # Add class name
+#                         class_name = next((cat["name"] for cat in coco_gt["categories"] if cat["id"] == category_id), f"class_{category_id}")
+#                         cv2.putText(img_gt, class_name, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                
+#                 # Add detections to results
+#                 boxes = dets["boxes"].cpu().numpy()
+#                 scores = dets["scores"].cpu().numpy()
+#                 labels = dets["labels"].cpu().numpy()
+                
+#                 for box, score, label in zip(boxes, scores, labels):
+#                     x1, y1, x2, y2 = box
+#                     w, h = x2 - x1, y2 - y1
+#                     if vis_tofolder: #draw predicted boxes (blue)
+#                         # Ensure coordinates are integers for cv2.rectangle
+#                         x1_int, y1_int, x2_int, y2_int = int(x1), int(y1), int(x2), int(y2)
+#                         cv2.rectangle(img_orig, (x1_int, y1_int), (x2_int, y2_int), (255, 0, 0), 2)
+#                         # Add class name and confidence
+#                         class_name = next((cat["name"] for cat in coco_gt["categories"] if cat["id"] == int(label)), f"class_{int(label)}")
+#                         label_text = f"{class_name}: {score:.2f}"
+#                         cv2.putText(img_orig, label_text, (x1_int, y1_int - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                    
+#                     coco_results.append({
+#                         "image_id": img_id,
+#                         "category_id": int(label),
+#                         "bbox": [float(x1), float(y1), float(w), float(h)],
+#                         "score": float(score)
+#                     })
+#                 if vis_tofolder:
+#                     # Save images
+#                     base_name = os.path.basename(img_path)
+#                     cv2.imwrite(os.path.join(vis_dir, f"{img_id}_gt_{base_name}"), img_gt)
+#                     cv2.imwrite(os.path.join(vis_dir, f"{img_id}_pred_{base_name}"), img_orig)
+    
+#     # Save results and ground truth
+#     results_file = os.path.join(data_path, "coco_results.json")
+#     gt_file = os.path.join(data_path, "coco_gt.json")
+    
+#     with open(results_file, 'w') as f:
+#         json.dump(coco_results, f)
+    
+#     with open(gt_file, 'w') as f:
+#         json.dump(coco_gt, f)
+    
+#     # Print statistics for debugging
+#     print(f"Number of ground truth annotations: {len(coco_gt['annotations'])}")
+#     print(f"Number of detection results: {len(coco_results)}")
+#     print(f"Number of images: {len(coco_gt['images'])}")
+    
+#     # Check if there are any annotations or results
+#     if len(coco_gt['annotations']) == 0:
+#         print("WARNING: No ground truth annotations found!")
+#         return {'mAP': 0, 'mAP_50': 0, 'mAP_75': 0, 'mAP_small': 0, 'mAP_medium': 0, 'mAP_large': 0}
+    
+#     if len(coco_results) == 0:
+#         print("WARNING: No detection results found!")
+#         return {'mAP': 0, 'mAP_50': 0, 'mAP_75': 0, 'mAP_small': 0, 'mAP_medium': 0, 'mAP_large': 0}
+    
+#     # Print sample annotations and detections for debugging
+#     print("\nSample ground truth annotation:")
+#     print(json.dumps(coco_gt['annotations'][0] if coco_gt['annotations'] else "No annotations", indent=2))
+    
+#     print("\nSample detection result:")
+#     print(json.dumps(coco_results[0] if coco_results else "No detections", indent=2))
+    
+#     # Evaluate using COCO API
+#     try:
+#         coco_gt_obj = COCO(gt_file)
+#         coco_dt_obj = coco_gt_obj.loadRes(results_file)
+#         coco_eval = COCOeval(coco_gt_obj, coco_dt_obj, 'bbox')
+#         coco_eval.evaluate()
+#         coco_eval.accumulate()
+#         coco_eval.summarize()
+        
+#         # Extract metrics
+#         metrics = {
+#             'mAP': coco_eval.stats[0],  # AP@IoU=0.50:0.95
+#             'mAP_50': coco_eval.stats[1],  # AP@IoU=0.50
+#             'mAP_75': coco_eval.stats[2],  # AP@IoU=0.75
+#             'mAP_small': coco_eval.stats[3],  # AP for small objects
+#             'mAP_medium': coco_eval.stats[4],  # AP for medium objects
+#             'mAP_large': coco_eval.stats[5],  # AP for large objects
+#         }
+#     except Exception as e:
+#         print(f"Error during COCO evaluation: {e}")
+#         metrics = {'mAP': 0, 'mAP_50': 0, 'mAP_75': 0, 'mAP_small': 0, 'mAP_medium': 0, 'mAP_large': 0}
+    
+#     print(f"Validation Results:")
+#     print(f"mAP@0.5:0.95: {metrics['mAP']:.4f}")
+#     print(f"mAP@0.5: {metrics['mAP_50']:.4f}")
+#     print(f"mAP@0.75: {metrics['mAP_75']:.4f}")
+    
+#     return metrics
+
+def validate_kitti(model, data_path, img_size=640, batch_size=4, conf_thres=0.25, iou_thres=0.45, vis_tofolder=True):
+    """Validate model on KITTI dataset."""
+    device = next(model.parameters()).device
+    
+    # Create dataset and dataloader
+    dataset = KITTIDataset(data_path, img_size=img_size, split='training')
+    # Define a custom collate function to handle variable-sized annotations
+    def collate_fn(batch):
+        imgs = torch.stack([item['img'] for item in batch])
+        img_paths = [item['img_path'] for item in batch]
+        orig_shapes = [item['orig_shape'] for item in batch]
+        annotations = [item['annotations'] for item in batch]
+        return {
+            'img': imgs,
+            'img_path': img_paths,
+            'orig_shape': orig_shapes,
+            'annotations': annotations
+        }
+    
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn)
+    # Initialize COCO format
+    coco_gt = {
+        "images": [],
+        "annotations": [],
+        "categories": [
+            {"id": coco_id, "name": name} for coco_id, name in coco_names.items()
+        ]
+    }
+    coco_results = []
+    
+    # Create a directory to save visualization images
+    if vis_tofolder:
+        vis_dir = os.path.join("output", "validation_vis")
+        os.makedirs(vis_dir, exist_ok=True)
+        print(f"Saving visualization images to {vis_dir}")
+    
+    # Process each batch
+    ann_id = 0
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Validating")):
+            # Prepare input
+            imgs = batch['img'].to(device)
+            img_paths = batch['img_path']
+            orig_shapes = batch['orig_shape']
+            
+            # Run inference with lower confidence threshold for visualization
+            outputs = model(imgs)
+            
+            # Check if outputs is a tuple (common in YOLOv8 models)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]  # Get the first element which is usually the predictions
+                #[4, 84, 2940]
+            # Post-process detections
+            processed_outputs = non_max_suppression(
+                outputs, 
+                conf_thres=conf_thres, 
+                iou_thres=iou_thres
+            )
+            
+            # Process detections and ground truth
+            for i, (det, img_path) in enumerate(zip(processed_outputs, img_paths)):
+                if vis_tofolder:
+                    # Get original image
+                    img_orig = cv2.imread(img_path)
+                    # Resize to match model input size for visualization
+                    img_orig = cv2.resize(img_orig, (img_size, img_size))
+                    # Create a copy for ground truth visualization
+                    img_gt = img_orig.copy()
+                    img_combined = np.hstack((img_gt, img_orig))
+            
+                # Add image to ground truth
+                img_id = batch_idx * batch_size + i
+                coco_gt["images"].append({
+                    "id": img_id,
+                    "file_name": os.path.basename(img_path)
+                })
+                
+                # Add ground truth annotations
+                for ann in batch['annotations'][i]:
+                    ann_id += 1
+                    x, y, w, h = ann['bbox']
+                    # Skip invalid boxes
+                    if w <= 0 or h <= 0:
+                        continue
+                    category_id = ann['category_id']
+                    coco_gt["annotations"].append({
+                        "id": ann_id,
+                        "image_id": img_id,
+                        "category_id": category_id,
+                        "bbox": [x, y, w, h],
+                        "area": w * h,
+                        "iscrowd": 0
+                    })
+                    
+                    if vis_tofolder: #draw ground truth boxes (green)
+                        # Convert to integer coordinates
+                        x1, y1, x2, y2 = int(x), int(y), int(x + w), int(y + h)
+                        
+                        # Draw bounding box
+                        cv2.rectangle(img_gt, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        # Add class name
+                        class_name = next((cat["name"] for cat in coco_gt["categories"] if cat["id"] == category_id), f"class_{category_id}")
+                        cv2.putText(img_gt, class_name, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Add detections to results
+                if det is not None and len(det) > 0:
+                    boxes = det[:, :4].cpu().numpy()
+                    scores = det[:, 4].cpu().numpy()
+                    labels = det[:, 5].cpu().numpy().astype(int)
+                    
+                    print(f"Image {img_id}: Found {len(boxes)} detections")
+                    
+                    for box, score, label in zip(boxes, scores, labels):
+                        x1, y1, x2, y2 = box
+                        w, h = x2 - x1, y2 - y1
+                        if vis_tofolder: #draw predicted boxes (blue)
+                            # Ensure coordinates are integers for cv2.rectangle
+                            x1_int, y1_int, x2_int, y2_int = int(x1), int(y1), int(x2), int(y2)
+                            cv2.rectangle(img_orig, (x1_int, y1_int), (x2_int, y2_int), (255, 0, 0), 2)
+                            # Add class name and confidence
+                            class_name = next((cat["name"] for cat in coco_gt["categories"] if cat["id"] == label), f"class_{label}")
+                            label_text = f"{class_name}: {score:.2f}"
+                            cv2.putText(img_orig, label_text, (x1_int, y1_int - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                        
+                        coco_results.append({
+                            "image_id": img_id,
+                            "category_id": int(label),
+                            "bbox": [float(x1), float(y1), float(w), float(h)],
+                            "score": float(score)
+                        })
+                else:
+                    print(f"Image {img_id}: No detections")
+                
+                if vis_tofolder:
+                    # Save images
+                    base_name = os.path.basename(img_path)
+                    cv2.imwrite(os.path.join(vis_dir, f"{img_id}_combined_{base_name}"), img_combined)
+    
+    # Save results and ground truth
+    results_file = os.path.join(data_path, "coco_results.json")
+    gt_file = os.path.join(data_path, "coco_gt.json")
+    
+    with open(results_file, 'w') as f:
+        json.dump(coco_results, f)
+    
+    with open(gt_file, 'w') as f:
+        json.dump(coco_gt, f)
+    
+    # Print statistics for debugging
+    print(f"Number of ground truth annotations: {len(coco_gt['annotations'])}")
+    print(f"Number of detection results: {len(coco_results)}")
+    print(f"Number of images: {len(coco_gt['images'])}")
+    
+    # Check if there are any annotations or results
+    if len(coco_gt['annotations']) == 0:
+        print("WARNING: No ground truth annotations found!")
+        return {'mAP': 0, 'mAP_50': 0, 'mAP_75': 0, 'mAP_small': 0, 'mAP_medium': 0, 'mAP_large': 0}
+    
+    if len(coco_results) == 0:
+        print("WARNING: No detection results found!")
+        return {'mAP': 0, 'mAP_50': 0, 'mAP_75': 0, 'mAP_small': 0, 'mAP_medium': 0, 'mAP_large': 0}
+    
+    # Evaluate using COCO API
+    try:
+        from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+        
+        coco_gt_obj = COCO(gt_file)
+        coco_dt_obj = coco_gt_obj.loadRes(results_file)
+        coco_eval = COCOeval(coco_gt_obj, coco_dt_obj, 'bbox')
+        coco_eval.evaluate()
+        coco_eval.accumulate()
+        coco_eval.summarize()
+        
+        # Extract metrics
+        metrics = {
+            'mAP': coco_eval.stats[0],  # AP@IoU=0.50:0.95
+            'mAP_50': coco_eval.stats[1],  # AP@IoU=0.50
+            'mAP_75': coco_eval.stats[2],  # AP@IoU=0.75
+            'mAP_small': coco_eval.stats[3],  # AP for small objects
+            'mAP_medium': coco_eval.stats[4],  # AP for medium objects
+            'mAP_large': coco_eval.stats[5],  # AP for large objects
+        }
+    except Exception as e:
+        print(f"Error during COCO evaluation: {e}")
+        metrics = {'mAP': 0, 'mAP_50': 0, 'mAP_75': 0, 'mAP_small': 0, 'mAP_medium': 0, 'mAP_large': 0}
+    
+    print(f"Validation Results:")
+    print(f"mAP@0.5:0.95: {metrics['mAP']:.4f}")
+    print(f"mAP@0.5: {metrics['mAP_50']:.4f}")
+    print(f"mAP@0.75: {metrics['mAP_75']:.4f}")
+    
+    return metrics
+
+import os
+def one_test():
     yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
     model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
     model.load_state_dict(torch.load("../modelzoo/yolov8s_statedicts.pt"))
     detections = model.inference_test('sampledata/bus.jpg')
+    
+    # Run validation if KITTI dataset path is provided
+    kitti_path = "/DATA5T2/Dataset/Kitti"
+    if os.path.exists(kitti_path):
+        print(f"Running validation on KITTI dataset at {kitti_path}")
+        metrics = validate_kitti(model, kitti_path)
+        print(f"Validation complete. mAP@0.5: {metrics['mAP_50']:.4f}")
+    else:
+        print(f"KITTI dataset not found at {kitti_path}. Skipping validation.")
+    
+if __name__ == "__main__":
+# Example usage:
+    one_test()
 
 # Example usage:
 # model = YoloDetectionModel(cfg='path/to/yolov8n.yaml', scale='n', nc=80)
