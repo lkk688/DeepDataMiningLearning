@@ -969,6 +969,234 @@ class KITTIDataset(Dataset):
 #     return metrics
 
 def validate_kitti(model, data_path, img_size=640, batch_size=4, conf_thres=0.25, iou_thres=0.45, vis_tofolder=True):
+    """Validate model on KITTI dataset using COCO evaluation metrics."""
+    import torch
+    import torchvision
+    from torch.utils.data import DataLoader
+    from tqdm import tqdm
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+    import numpy as np
+    import cv2
+    import os
+    import json
+    from DeepDataMiningLearning.detection.myevaluator import CocoEvaluator
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+    model.eval()
+    
+    # Create dataset and dataloader
+    dataset = KITTIDataset(data_path, img_size=img_size, split='training')
+    
+    # Define a custom collate function to handle variable-sized annotations
+    def collate_fn(batch):
+        imgs = torch.stack([item['img'] for item in batch])
+        img_paths = [item['img_path'] for item in batch]
+        orig_shapes = [item['orig_shape'] for item in batch]
+        annotations = [item['annotations'] for item in batch]
+        
+        # Create batch with image_id for COCO evaluation
+        image_ids = [i for i in range(len(batch))]
+        
+        return {
+            'img': imgs,
+            'img_path': img_paths,
+            'orig_shape': orig_shapes,
+            'annotations': annotations,
+            'image_id': image_ids
+        }
+    
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4, collate_fn=collate_fn)
+    
+    # Initialize COCO format for ground truth
+    coco_ds = COCO()
+    ann_id = 1
+    dataset_dict = {"images": [], "categories": [], "annotations": []}
+    
+    # Add COCO categories
+    for coco_id, name in coco_names.items():
+        dataset_dict["categories"].append({"id": coco_id, "name": name})
+    
+    # Create a directory to save visualization images
+    if vis_tofolder:
+        vis_dir = os.path.join('output', "validation_vis")
+        os.makedirs(vis_dir, exist_ok=True)
+        print(f"Saving visualization images to {vis_dir}")
+    
+    # Process ground truth annotations
+    print("Processing ground truth annotations...")
+    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Building COCO GT")):
+        for i, (img_path, annotations) in enumerate(zip(batch['img_path'], batch['annotations'])):
+            # Create image entry
+            image_id = batch_idx * batch_size + i
+            img_dict = {
+                "id": image_id,
+                "file_name": os.path.basename(img_path),
+                "height": batch['img'].shape[2],
+                "width": batch['img'].shape[3]
+            }
+            dataset_dict["images"].append(img_dict)
+            
+            # Process annotations
+            for ann in annotations:
+                x, y, w, h = ann['bbox']
+                # Skip invalid boxes
+                if w <= 0 or h <= 0:
+                    continue
+                
+                category_id = ann['category_id']
+                
+                # Add annotation to dataset
+                ann_dict = {
+                    "id": ann_id,
+                    "image_id": image_id,
+                    "category_id": category_id,
+                    "bbox": [float(x), float(y), float(w), float(h)],
+                    "area": float(w * h),
+                    "iscrowd": 0
+                }
+                dataset_dict["annotations"].append(ann_dict)
+                ann_id += 1
+    
+    # Create COCO ground truth object
+    gt_file = os.path.join(data_path, "coco_gt.json")
+    with open(gt_file, 'w') as f:
+        json.dump(dataset_dict, f)
+    
+    coco_gt = COCO(gt_file)
+    
+    # Initialize COCO evaluator
+    iou_types = ["bbox"]
+    coco_evaluator = CocoEvaluator(coco_gt, iou_types)
+    
+    # Run inference and collect predictions
+    print("Running model inference...")
+    predictions = {}
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(dataloader, desc="Evaluating")):
+            imgs = batch['img'].to(device)
+            img_paths = batch['img_path']
+            orig_shapes = batch['orig_shape']
+            
+            # Run inference
+            outputs = model(imgs)
+            
+            # Check if outputs is a tuple (common in YOLOv8 models)
+            if isinstance(outputs, tuple):
+                outputs = outputs[0]
+            
+            # Post-process detections
+            processed_outputs = non_max_suppression(
+                outputs, 
+                conf_thres=conf_thres, 
+                iou_thres=iou_thres
+            )
+            
+            # Process each image in the batch
+            for i, (det, img_path) in enumerate(zip(processed_outputs, img_paths)):
+                image_id = batch_idx * batch_size + i
+                
+                # Visualize if requested
+                if vis_tofolder:
+                    # Get original image
+                    img_orig = cv2.imread(img_path)
+                    img_orig = cv2.resize(img_orig, (img_size, img_size))
+                    img_vis = img_orig.copy()
+                
+                # Create prediction entry for this image
+                if det is not None and len(det) > 0:
+                    boxes = det[:, :4].cpu()
+                    scores = det[:, 4].cpu()
+                    labels = det[:, 5].cpu().int()
+                    
+                    # Format predictions in the way CocoEvaluator expects
+                    # CocoEvaluator expects a list of dictionaries with 'boxes', 'scores', 'labels' keys
+                    predictions[image_id] = {
+                        'boxes': boxes,
+                        'scores': scores,
+                        'labels': labels
+                    }
+                    
+                    # Visualize detection
+                    if vis_tofolder:
+                        for box_idx, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+                            x1, y1, x2, y2 = box.tolist()
+                            
+                            # Draw bounding box
+                            cv2.rectangle(img_vis, (int(x1), int(y1)), (int(x2), int(y2)), (255, 0, 0), 2)
+                            
+                            # Add class name and confidence
+                            class_name = coco_names.get(int(label), f"class_{label}")
+                            label_text = f"{class_name}: {score:.2f}"
+                            cv2.putText(img_vis, label_text, (int(x1), int(y1) - 5), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                else:
+                    # Empty predictions for this image
+                    predictions[image_id] = {
+                        'boxes': torch.zeros((0, 4)),
+                        'scores': torch.zeros(0),
+                        'labels': torch.zeros(0, dtype=torch.int64)
+                    }
+                
+                # Save visualization
+                if vis_tofolder:
+                    base_name = os.path.basename(img_path)
+                    cv2.imwrite(os.path.join(vis_dir, f"{image_id}_pred_{base_name}"), img_vis)
+                    
+    # Save predictions to file (for reference, not needed for CocoEvaluator)
+    results_file = os.path.join(data_path, "coco_results.json")
+    all_preds = []
+    for img_id, pred in predictions.items():
+        boxes = pred['boxes']
+        scores = pred['scores']
+        labels = pred['labels']
+        
+        for box_idx, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+            x1, y1, x2, y2 = box.tolist()
+            w, h = x2 - x1, y2 - y1
+            
+            all_preds.append({
+                "image_id": img_id,
+                "category_id": int(label),
+                "bbox": [float(x1), float(y1), float(w), float(h)],
+                "score": float(score)
+            })
+    
+    with open(results_file, 'w') as f:
+        json.dump(all_preds, f)
+    
+    # Update evaluator with predictions
+    coco_evaluator.update(predictions)
+    
+    # Calculate metrics
+    coco_evaluator.synchronize_between_processes()
+    coco_evaluator.accumulate()
+    coco_evaluator.summarize()
+    
+    # Extract metrics
+    coco_eval = coco_evaluator.coco_eval["bbox"]
+    metrics = {
+        'mAP': coco_eval.stats[0],      # AP@IoU=0.50:0.95
+        'mAP_50': coco_eval.stats[1],   # AP@IoU=0.50
+        'mAP_75': coco_eval.stats[2],   # AP@IoU=0.75
+        'mAP_small': coco_eval.stats[3],# AP for small objects
+        'mAP_medium': coco_eval.stats[4],# AP for medium objects
+        'mAP_large': coco_eval.stats[5] # AP for large objects
+    }
+    
+    print(f"Validation Results:")
+    print(f"mAP@0.5:0.95: {metrics['mAP']:.4f}")
+    print(f"mAP@0.5: {metrics['mAP_50']:.4f}")
+    print(f"mAP@0.75: {metrics['mAP_75']:.4f}")
+    
+    # Return to training mode
+    model.train()
+    
+    return metrics
+
+def validate_kitti_old(model, data_path, img_size=640, batch_size=4, conf_thres=0.25, iou_thres=0.45, vis_tofolder=True):
     """Validate model on KITTI dataset."""
     device = next(model.parameters()).device
     
@@ -1163,6 +1391,464 @@ def validate_kitti(model, data_path, img_size=640, batch_size=4, conf_thres=0.25
     return metrics
 
 import os
+def map_boxes_to_original_size(boxes, orig_shape, new_size):
+    """
+    Map bounding boxes from the model's input size back to the original image size.
+    
+    Args:
+        boxes (numpy.ndarray or torch.Tensor): Bounding boxes in format [x1, y1, x2, y2]
+        orig_shape (tuple): Original image shape (height, width, channels)
+        new_size (tuple): Size used for model input (height, width)
+        
+    Returns:
+        numpy.ndarray or torch.Tensor: Boxes mapped to original image coordinates
+    """
+    # Get original dimensions
+    orig_h, orig_w = orig_shape[:2]
+    new_h, new_w = new_size
+    
+    # Check if input is torch tensor
+    is_tensor = isinstance(boxes, torch.Tensor)
+    
+    # Convert to numpy if tensor
+    if is_tensor:
+        device = boxes.device
+        boxes_np = boxes.cpu().numpy()
+    else:
+        boxes_np = boxes.copy()
+    
+    # Calculate scaling factors
+    scale_w = orig_w / new_w
+    scale_h = orig_h / new_h
+    
+    # Apply scaling to coordinates
+    boxes_np[:, 0] = boxes_np[:, 0] * scale_w  # x1
+    boxes_np[:, 1] = boxes_np[:, 1] * scale_h  # y1
+    boxes_np[:, 2] = boxes_np[:, 2] * scale_w  # x2
+    boxes_np[:, 3] = boxes_np[:, 3] * scale_h  # y2
+    
+    # Convert back to tensor if input was tensor
+    if is_tensor:
+        return torch.from_numpy(boxes_np).to(device)
+    else:
+        return boxes_np
+
+def visualize_results(img, boxes, labels, scores, class_names, output_path):
+    """
+    Draw bounding boxes and labels on an image and save it.
+    
+    Args:
+        img: Image to draw on (should be in BGR format for OpenCV)
+        boxes: Bounding boxes in [x1, y1, x2, y2] format
+        labels: Class labels for each box
+        scores: Confidence scores for each box
+        class_names: Dictionary mapping class IDs to names
+        output_path: Path to save the output image
+    """
+    # Make a copy to avoid modifying the original
+    img_vis = img.copy()
+    
+    for k, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+        x1, y1, x2, y2 = map(int, box)
+        
+        # Draw bounding box
+        color = (0, 255, 0)  # Green color for bounding box
+        cv2.rectangle(img_vis, (x1, y1), (x2, y2), color, 2)
+        
+        # Add class name and confidence
+        class_name = class_names.get(int(label), f"class_{label}")
+        label_text = f"{class_name}: {score:.2f}"
+        cv2.putText(img_vis, label_text, (x1, y1 - 10), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    
+    # Save the output image
+    cv2.imwrite(output_path, img_vis)
+    return img_vis
+    
+def batch_inference(model_path=None, input_folder=None, output_folder=None, conf_thres=0.25, iou_thres=0.45, img_size=640, batch_size=8, use_fp16=True, drawto_originalsize=True):
+    """
+    Run inference on all images in a folder and save the detected images with bounding boxes to an output folder.
+    
+    Args:
+        model_path (str): Path to the model weights file. If None, uses the default YOLOv8s model.
+        input_folder (str): Path to the folder containing images. If None, prompts user to select.
+        output_folder (str): Path to save the output images. If None, creates a subfolder in the input folder.
+        conf_thres (float): Confidence threshold for detections.
+        iou_thres (float): IoU threshold for NMS.
+        img_size (int): Size to resize images to before inference.
+        batch_size (int): Number of images to process at once.
+        use_fp16 (bool): Whether to use FP16 precision for faster inference.
+        drawto_originalsize (bool): Whether to draw bounding boxes on original size image.
+        
+    Returns:
+        dict: Statistics about the processed images.
+    """
+    import os
+    import glob
+    import cv2
+    import torch
+    import numpy as np
+    from tqdm import tqdm
+    from pathlib import Path
+    import time
+    
+    # Handle input folder selection if not provided
+    if input_folder is None:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        input_folder = filedialog.askdirectory(title="Select folder with images")
+        if not input_folder:
+            print("No folder selected. Exiting.")
+            return
+    
+    # Create output folder if not provided
+    if output_folder is None:
+        output_folder = os.path.join(input_folder, "detections")
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if model_path is None:
+        # Use default YOLOv8s model
+        yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+        model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
+        model.load_state_dict(torch.load("../modelzoo/yolov8s_statedicts.pt"))
+    else:
+        # Load model from provided path
+        if model_path.endswith('.yaml'):
+            # Load from YAML config
+            model = YoloDetectionModel(cfg=model_path, scale='s', nc=80)
+            # Assume weights are in the same directory with .pt extension
+            weights_path = model_path.replace('.yaml', '.pt')
+            if os.path.exists(weights_path):
+                model.load_state_dict(torch.load(weights_path))
+        else:
+            # Load directly from weights file
+            yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+            model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
+            model.load_state_dict(torch.load(model_path))
+    
+    model = model.to(device)
+    model.eval()
+    
+    # Enable FP16 precision if requested
+    if use_fp16 and device.type == 'cuda':
+        model = model.half()
+        print("Using FP16 precision for faster inference")
+    
+    # Get all image files
+    image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tif', '*.tiff']
+    image_files = []
+    for ext in image_extensions:
+        image_files.extend(glob.glob(os.path.join(input_folder, ext)))
+        image_files.extend(glob.glob(os.path.join(input_folder, ext.upper())))
+    
+    if not image_files:
+        print(f"No images found in {input_folder}")
+        return
+    
+    print(f"Found {len(image_files)} images. Processing...")
+    
+    # Process images in batches
+    stats = {
+        'total_images': len(image_files),
+        'total_objects': 0,
+        'processing_time': 0
+    }
+    
+    # Process in batches
+    for i in tqdm(range(0, len(image_files), batch_size)):
+        batch_files = image_files[i:i+batch_size]
+        batch_imgs = []
+        batch_orig_imgs = []
+        batch_shapes = []
+        
+        # Prepare batch
+        for img_path in batch_files:
+            # Load and preprocess image
+            img_orig = cv2.imread(img_path)
+            if img_orig is None:
+                print(f"Warning: Could not read {img_path}, skipping")
+                continue
+                
+            # Store original image shape
+            orig_shape = img_orig.shape
+            batch_shapes.append(orig_shape)
+            batch_orig_imgs.append(img_orig)
+            
+            # Preprocess image - use the same preprocessing as in inference_test
+            img = cv2.cvtColor(img_orig, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (img_size, img_size))
+            img = img.transpose(2, 0, 1)  # HWC to CHW
+            img = np.ascontiguousarray(img)
+            img = torch.from_numpy(img).float()
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            
+            # Convert to FP16 if using half precision
+            if use_fp16 and device.type == 'cuda':
+                img = img.half()
+                
+            batch_imgs.append(img)
+        
+        if not batch_imgs:
+            continue
+            
+        # Stack images into a batch tensor
+        batch_tensor = torch.stack(batch_imgs).to(device)
+        
+        # Run inference with timing
+        start_time = time.time()
+        with torch.no_grad():
+            with torch.amp.autocast(device.type, enabled=use_fp16):
+                detections = model.forward(
+                    batch_tensor, 
+                    postprocess=True,
+                    orig_img_shapes=batch_shapes,
+                    new_img_size=(img_size, img_size),
+                    conf_thres=conf_thres,
+                    iou_thres=iou_thres
+                )
+        inference_time = time.time() - start_time
+        stats['processing_time'] += inference_time
+        
+        # Process detections and save images
+        for j, (img_path, det) in enumerate(zip(batch_files, detections)):
+            if j >= len(batch_orig_imgs):
+                continue
+                
+            img_orig = batch_orig_imgs[j].copy()
+            
+            # Get filename without extension
+            filename = Path(img_path).stem
+            output_path = os.path.join(output_folder, f"{filename}_detected.jpg")
+            
+            # Get detections
+            boxes = det["boxes"].cpu().numpy()
+            scores = det["scores"].cpu().numpy()
+            labels = det["labels"].cpu().numpy()
+            
+            stats['total_objects'] += len(boxes)
+            
+            # Draw boxes on the image
+            for k, (box, score, label) in enumerate(zip(boxes, scores, labels)):
+                x1, y1, x2, y2 = map(int, box)
+                
+                # Draw bounding box
+                color = (0, 255, 0)  # Green color for bounding box
+                cv2.rectangle(img_orig, (x1, y1), (x2, y2), color, 2)
+                
+                # Add class name and confidence
+                class_name = model.names.get(int(label))
+                if class_name is None or class_name == f"{int(label)}":
+                    class_name = coco_names.get(int(label), f"class_{label}")
+                label_text = f"{class_name}: {score:.2f}"
+                cv2.putText(img_orig, label_text, (x1, y1 - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Save the output image
+            cv2.imwrite(output_path, img_orig)
+    
+    # Calculate and print statistics
+    avg_time_per_image = stats['processing_time'] / stats['total_images'] if stats['total_images'] > 0 else 0
+    avg_objects_per_image = stats['total_objects'] / stats['total_images'] if stats['total_images'] > 0 else 0
+    
+    print(f"\nProcessing complete!")
+    print(f"Total images processed: {stats['total_images']}")
+    print(f"Total objects detected: {stats['total_objects']}")
+    print(f"Average objects per image: {avg_objects_per_image:.2f}")
+    print(f"Total processing time: {stats['processing_time']:.2f} seconds")
+    print(f"Average time per image: {avg_time_per_image*1000:.2f} ms")
+    print(f"Output saved to: {output_folder}")
+    
+    return stats
+
+def single_image_inference(model_path=None, image_path=None, output_folder="output/single_debug", conf_thres=0.25, iou_thres=0.45, img_size=640, use_fp16=True):
+    """
+    Run inference on a single image and save detailed debug information.
+    
+    Args:
+        model_path (str): Path to the model weights file. If None, uses the default YOLOv8s model.
+        image_path (str): Path to the input image. If None, prompts user to select.
+        output_folder (str): Path to save the output images and debug info.
+        conf_thres (float): Confidence threshold for detections.
+        iou_thres (float): IoU threshold for NMS.
+        img_size (int): Size to resize images to before inference.
+        use_fp16 (bool): Whether to use FP16 precision for faster inference.
+        
+    Returns:
+        dict: Detection results and debug information
+    """
+    import os
+    import cv2
+    import torch
+    import numpy as np
+    from pathlib import Path
+    import time
+    import json
+    
+    # Handle image selection if not provided
+    if image_path is None:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        image_path = filedialog.askopenfilename(title="Select image file", 
+                                               filetypes=[("Image files", "*.jpg;*.jpeg;*.png;*.bmp")])
+        if not image_path:
+            print("No image selected. Exiting.")
+            return
+    
+    # Create output folder
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if model_path is None:
+        # Use default YOLOv8s model
+        yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+        model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
+        model.load_state_dict(torch.load("../modelzoo/yolov8s_statedicts.pt"))
+    else:
+        # Load model from provided path
+        if model_path.endswith('.yaml'):
+            # Load from YAML config
+            model = YoloDetectionModel(cfg=model_path, scale='s', nc=80)
+            # Assume weights are in the same directory with .pt extension
+            weights_path = model_path.replace('.yaml', '.pt')
+            if os.path.exists(weights_path):
+                model.load_state_dict(torch.load(weights_path))
+        else:
+            # Load directly from weights file
+            yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+            model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
+            model.load_state_dict(torch.load(model_path))
+    
+    model = model.to(device)
+    model.eval()
+    
+    # Enable FP16 precision if requested
+    if use_fp16 and device.type == 'cuda':
+        model = model.half()
+        print("Using FP16 precision for inference")
+    
+    # Load and preprocess image
+    img_orig = cv2.imread(image_path)
+    if img_orig is None:
+        print(f"Error: Could not read image at {image_path}")
+        return
+    
+    # Save original image for reference
+    cv2.imwrite(os.path.join(output_folder, "original.jpg"), img_orig)
+    
+    # Store original image shape
+    orig_shape = img_orig.shape
+    print(f"Original image shape: {orig_shape}")
+    
+    # Preprocess image
+    img = cv2.cvtColor(img_orig, cv2.COLOR_BGR2RGB)
+    
+    # Save the RGB converted image
+    cv2.imwrite(os.path.join(output_folder, "rgb_converted.jpg"), cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+    
+    # Resize image
+    img_resized = cv2.resize(img, (img_size, img_size))
+    
+    # Save the resized image
+    cv2.imwrite(os.path.join(output_folder, "resized.jpg"), cv2.cvtColor(img_resized, cv2.COLOR_RGB2BGR))
+    
+    # Convert to CHW format
+    img_chw = img_resized.transpose(2, 0, 1)
+    img_tensor = torch.from_numpy(np.ascontiguousarray(img_chw)).float()
+    img_tensor /= 255.0  # Normalize to [0, 1]
+    
+    # Convert to FP16 if using half precision
+    if use_fp16 and device.type == 'cuda':
+        img_tensor = img_tensor.half()
+    
+    # Add batch dimension and move to device
+    img_batch = img_tensor.unsqueeze(0).to(device)
+    
+    # Run inference with timing
+    start_time = time.time()
+    with torch.no_grad():
+        with torch.amp.autocast(device.type, enabled=use_fp16):
+            # First, get the raw predictions without postprocessing
+            raw_preds = model(img_batch)
+            # Handle case where raw_preds is a tuple (common in YOLOv8 models)
+            if isinstance(raw_preds, tuple):
+                # Use the first element which typically contains the detection predictions
+                raw_preds = raw_preds[0]
+            
+            # Then manually handle the postprocessing for debugging
+            detections = non_max_suppression(
+                raw_preds, 
+                conf_thres=conf_thres, 
+                iou_thres=iou_thres
+            )
+    inference_time = time.time() - start_time
+    
+    # Get detections for the single image
+    det = detections[0]  # First image in batch
+    
+    # Create a copy of original image for visualization
+    img_vis = img_orig.copy()
+    
+    # Calculate scaling factors
+    scale_h, scale_w = orig_shape[0] / img_size, orig_shape[1] / img_size
+    
+    # Process and draw each detection
+    if len(det):
+        # Convert from xywh to xyxy format if needed (depends on your model output)
+        # det[:, :4] = xywh2xyxy(det[:, :4])
+        
+        # Scale coordinates to original image size
+        det[:, 0] *= scale_w  # x1
+        det[:, 1] *= scale_h  # y1
+        det[:, 2] *= scale_w  # x2
+        det[:, 3] *= scale_h  # y2
+        
+        # Save detection results as JSON for debugging
+        detection_results = {
+            "boxes": det[:, :4].cpu().numpy().tolist(),
+            "scores": det[:, 4].cpu().numpy().tolist(),
+            "labels": det[:, 5].cpu().numpy().tolist(),
+            "inference_time_ms": inference_time * 1000,
+            "original_shape": orig_shape,
+            "input_size": img_size,
+            "scale_factors": [scale_h, scale_w]
+        }
+        
+        with open(os.path.join(output_folder, "detection_results.json"), 'w') as f:
+            json.dump(detection_results, f, indent=2)
+        
+        # Draw bounding boxes
+        for *xyxy, conf, cls in det:
+            x1, y1, x2, y2 = map(int, xyxy)
+            
+            # Draw bounding box
+            color = (0, 255, 0)  # Green color for bounding box
+            cv2.rectangle(img_vis, (x1, y1), (x2, y2), color, 2)
+            
+            # Add class name and confidence
+            class_name = model.names.get(int(cls))
+            if class_name is None or class_name == f"{int(cls)}":
+                class_name = coco_names.get(int(cls), f"class_{cls}")
+            label_text = f"{class_name}: {conf:.2f}"
+            cv2.putText(img_vis, label_text, (x1, y1 - 10), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    
+    # Save visualization
+    cv2.imwrite(os.path.join(output_folder, "detection_result.jpg"), img_vis)
+    
+    print(f"\nProcessing complete!")
+    print(f"Number of objects detected: {len(det) if len(det) else 0}")
+    print(f"Inference time: {inference_time*1000:.2f} ms")
+    print(f"Output saved to: {output_folder}")
+    
+    return detection_results
+
 def one_test():
     yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
     model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
@@ -1180,7 +1866,10 @@ def one_test():
     
 if __name__ == "__main__":
 # Example usage:
-    one_test()
+    #one_test()
+    single_image_inference(image_path="/DATA5T2/Dataset/Kitti/testing/image_2/000001.png", 
+                          output_folder="output/debug_single")
+    batch_inference(input_folder="/DATA5T2/Dataset/Kitti/testing/image_2/", output_folder="output/kitti_testing/")
 
 # Example usage:
 # model = YoloDetectionModel(cfg='path/to/yolov8n.yaml', scale='n', nc=80)
