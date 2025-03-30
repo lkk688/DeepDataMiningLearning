@@ -520,7 +520,7 @@ class TraditionalYOLOv8(nn.Module):
         
         return sorted(list(unified_classes))  # Sort for deterministic ordering
     
-    def forward(self, x, dataset_name=None):
+    def forward(self, x, dataset_name=None, **kwargs):
         #x is [16, 3, 640, 640]
         # Forward pass through backbone
         if YOLO_IMPLEMENTATION == 'YoloDetectionModel':
@@ -536,6 +536,26 @@ class TraditionalYOLOv8(nn.Module):
                 if isinstance(outputs, tuple):
                     # Extract just the predictions part
                     outputs = outputs[0]
+                
+                # Apply postprocessing if needed
+                if kwargs.get('postprocess', False):
+                    # Get original image shapes if provided
+                    orig_img_shapes = kwargs.get('orig_img_shapes', None)
+                    # Get new image size after preprocessing
+                    new_img_size = kwargs.get('new_img_size', (640, 640))
+                    
+                    # Apply postprocessing using YoloDetectionModel's postprocess method
+                    processed_preds = self.yolo_model.postprocess(
+                        outputs, 
+                        new_img_size, 
+                        orig_img_shapes,
+                        conf_thres=kwargs.get('conf_thres', 0.25),
+                        iou_thres=kwargs.get('iou_thres', 0.45),
+                        classes=kwargs.get('classes', None),
+                        agnostic=kwargs.get('agnostic', False),
+                        max_det=kwargs.get('max_det', 300)
+                    )
+                    return processed_preds
                 
                 # Ensure outputs is in the expected format for _process_predictions
                 # If outputs is a single tensor, wrap it in a list
@@ -2086,7 +2106,7 @@ class YOLOv8Trainer:
         print(f"Training completed. Best mAP: {self.best_val_map:.4f}")
         
     #def validate(self, debug_mode=False):
-    def validate(self, epoch, debug_mode=False):
+    def validate(self, epoch=0, debug_mode=False):
         """Validate the model on the validation set."""
         self.model.eval()
         val_loss = 0.0
@@ -2115,7 +2135,7 @@ class YOLOv8Trainer:
                     # Forward pass
                     try:
                         predictions = self.model(torch.stack(images), dataset_name)
-                        #output: [16, 37, 8400]
+                        #output: list of one [16, 37, 8400]
                         # Calculate loss
                         loss_dict = self.loss_fn(predictions, targets, dataset_name)
                         loss = sum(loss for loss in loss_dict.values())
@@ -2203,7 +2223,7 @@ class YOLOv8Trainer:
         
         # Get batch size - handle different prediction formats
         if isinstance(predictions[0], torch.Tensor):
-            batch_size = predictions[0].shape[0]
+            batch_size = predictions[0].shape[0] #16
         else:
             print(f"Warning: Unexpected prediction type: {type(predictions[0])}")
             return []
@@ -2214,10 +2234,10 @@ class YOLOv8Trainer:
             scores_batch = []
             labels_batch = []
             
-            for pred in predictions:
+            for pred in predictions: #[16, 37, 8400]
                 # Extract predictions for this batch index
                 try:
-                    pred_img = pred[batch_idx].detach().cpu()
+                    pred_img = pred[batch_idx].detach().cpu() #[37, 8400]
                     
                     # Check tensor dimensions and handle accordingly
                     if len(pred_img.shape) == 1:
@@ -2246,8 +2266,8 @@ class YOLOv8Trainer:
                         continue
                     
                     # Extract box coordinates and class scores
-                    boxes = pred_flat[:, :4]
-                    class_scores = pred_flat[:, 4:]
+                    boxes = pred_flat[:, :4] #[37, 4]
+                    class_scores = pred_flat[:, 4:] #[37, 8396]
                     
                     # Get confidence scores and class IDs
                     if class_scores.shape[1] > 0:  # Check if there are any classes

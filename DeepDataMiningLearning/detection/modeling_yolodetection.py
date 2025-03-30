@@ -245,8 +245,107 @@ class YoloDetectionModel(nn.Module):
             preds = self._predict_once(x)  # tensor input
             # In inference mode, _predict_once returns a tuple (preds, y)
             if isinstance(preds, tuple):
+                # Apply postprocessing if needed
+                if kwargs.get('postprocess', False):
+                    # Get original image shapes if provided
+                    orig_img_shapes = kwargs.get('orig_img_shapes', None)
+                    # Get new image size after preprocessing
+                    new_img_size = kwargs.get('new_img_size', (640, 640))
+                    
+                    # Apply postprocessing similar to YoloTransform
+                    processed_preds = self.postprocess(preds[0], new_img_size, orig_img_shapes)
+                    return processed_preds
                 return preds[0]  # Return just the predictions
             return preds
+    
+    def loss(self, batch, preds=None):
+        """
+        Compute loss
+
+        Args:
+            batch (dict): Batch to compute loss on
+            preds (torch.Tensor | List[torch.Tensor]): Predictions.
+            
+        Returns:
+            tuple: (total_loss, loss_items) where loss_items is a dictionary of individual loss components
+        """
+        if not hasattr(self, 'criterion'):
+            self.criterion = self.init_criterion()
+
+        preds = self.forward(batch['img']) if preds is None else preds
+        return self.criterion(preds, batch)  # return losssum, lossitems
+    
+    def init_criterion(self):
+        """
+        Initialize the loss criterion based on model type.
+        
+        Returns:
+            nn.Module: Loss criterion
+        """
+        from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss
+        
+        # Get the last layer of the model to determine model type
+        m = self.model[-1]
+        
+        if isinstance(m, Detect):
+            # YOLOv8 detection loss
+            return myv8DetectionLoss(self.model[-1])
+        elif isinstance(m, IDetect):
+            # YOLOv7 detection loss
+            from DeepDataMiningLearning.detection.modules.lossv7 import myv7DetectionLoss
+            return myv7DetectionLoss(self.model[-1])
+        else:
+            raise NotImplementedError(f"Loss not implemented for model with final layer: {type(m)}")
+        
+    def postprocess(self, preds, new_img_size=(640, 640), orig_img_shapes=None, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False, max_det=300):
+        """
+        Post-process predictions to get final detection results.
+        
+        Args:
+            preds (torch.Tensor): Raw predictions from model
+            new_img_size (tuple): Size of preprocessed image (h, w)
+            orig_img_shapes (list): Original image shapes before preprocessing
+            conf_thres (float): Confidence threshold for filtering detections
+            iou_thres (float): IoU threshold for NMS
+            classes (list): Filter by class, i.e. = [0, 15, 16] for COCO persons, cats and dogs
+            agnostic (bool): Class-agnostic NMS
+            max_det (int): Maximum number of detections per image
+            
+        Returns:
+            list: List of processed predictions in the format expected by the trainer
+        """
+        from DeepDataMiningLearning.detection.modules.utils import yolov8_non_max_suppression, scale_boxes
+        
+        # Apply NMS
+        processed_preds = yolov8_non_max_suppression(
+            preds,
+            conf_thres=conf_thres,
+            iou_thres=iou_thres,
+            classes=classes,
+            agnostic=agnostic,
+            max_det=max_det
+        )
+        
+        # Scale boxes back to original image size if original shapes are provided
+        if orig_img_shapes is not None:
+            detections = []
+            for i, pred in enumerate(processed_preds):
+                if i < len(orig_img_shapes):  # Ensure we have the original shape
+                    orig_shape = orig_img_shapes[i]
+                    # Scale boxes to original image size
+                    pred[:, :4] = scale_boxes(new_img_size, pred[:, :4], orig_shape)
+                
+                # Format detections as expected by the trainer
+                detection = {
+                    "boxes": pred[:, :4].detach().cpu(),
+                    "scores": pred[:, 4].detach().cpu(),
+                    "labels": pred[:, 5].detach().cpu()
+                }
+                detections.append(detection)
+            return detections
+        
+        # If no original shapes provided, just return the processed predictions
+        return processed_preds
     
     def _predict_once(self, x, profile=False, visualize=False):
         """
@@ -300,6 +399,101 @@ class YoloDetectionModel(nn.Module):
         for head in self.heads:
             outputs.append(head(x))
         return outputs
+
+
+    def inference_test(self, image_path, conf_thres=0.25, iou_thres=0.45, max_det=300, visualize=True):
+        """
+        Run inference on a single image and optionally visualize the results.
+        
+        Args:
+            image_path (str): Path to the input image
+            conf_thres (float): Confidence threshold for detections
+            iou_thres (float): IoU threshold for NMS
+            max_det (int): Maximum number of detections
+            visualize (bool): Whether to visualize and save the results
+            
+        Returns:
+            dict: Dictionary containing the processed detections
+        """
+        import cv2
+        import numpy as np
+        from DeepDataMiningLearning.detection.modules.utils import scale_boxes
+        
+        # Load image
+        img_orig = cv2.imread(image_path)
+        if img_orig is None:
+            raise FileNotFoundError(f"Image not found at {image_path}")
+            
+        # Store original image shape
+        orig_shape = img_orig.shape #(1080, 810, 3)
+        
+        # Preprocess image
+        img = cv2.cvtColor(img_orig, cv2.COLOR_BGR2RGB)
+        img = cv2.resize(img, (640, 640))
+        img = img.transpose(2, 0, 1)  # HWC to CHW
+        img = np.ascontiguousarray(img)
+        img = torch.from_numpy(img).float()
+        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        
+        # Add batch dimension
+        if len(img.shape) == 3:
+            img = img.unsqueeze(0) #[1, 3, 640, 640]
+            
+        # Move to device
+        device = next(self.parameters()).device
+        img = img.to(device)
+        
+        # Set model to evaluation mode
+        self.eval()
+        
+        # Run inference with postprocessing
+        with torch.no_grad():
+            detections = self.forward(
+                img, 
+                postprocess=True,
+                orig_img_shapes=[orig_shape],
+                new_img_size=(640, 640),
+                conf_thres=conf_thres,
+                iou_thres=iou_thres,
+                max_det=max_det
+            )
+        
+        # Visualize results if requested
+        if visualize and len(detections) > 0:
+            # Get the first image's detections
+            det = detections[0]
+            boxes = det["boxes"].cpu().numpy()
+            scores = det["scores"].cpu().numpy()
+            labels = det["labels"].cpu().numpy()
+            
+            # Draw boxes on the image
+            for i, box in enumerate(boxes):
+                x1, y1, x2, y2 = map(int, box)
+                score = scores[i]
+                label = int(labels[i])
+                
+                # Draw bounding box
+                color = (0, 255, 0)  # Green color for bounding box
+                cv2.rectangle(img_orig, (x1, y1), (x2, y2), color, 2)
+                
+                # Add label and confidence
+                label_text = f"{label}: {score:.2f}"
+                cv2.putText(img_orig, label_text, (x1, y1 - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Save the output image
+            output_path = image_path.replace('.', '_detected.')
+            cv2.imwrite(output_path, img_orig)
+            print(f"Visualization saved to {output_path}")
+        
+        return detections
+
+if __name__ == "__main__":
+# Example usage:
+    yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+    model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80)
+    model.load_state_dict(torch.load("../modelzoo/yolov8s_statedicts.pt"))
+    detections = model.inference_test('sampledata/bus.jpg')
 
 # Example usage:
 # model = YoloDetectionModel(cfg='path/to/yolov8n.yaml', scale='n', nc=80)
