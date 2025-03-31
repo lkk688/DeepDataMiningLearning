@@ -21,15 +21,56 @@ import cv2
 import torch
 from torch.utils.data import Dataset, DataLoader
 
+# Import necessary modules from your project
+from DeepDataMiningLearning.detection.modules.block import (
+    AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
+    Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
+    Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC
+)
+from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
+#from DeepDataMiningLearning.detection.modules.utils import LOGGER
+from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
+
+# Define blocks that take two arguments
+twoargs_blocks = [
+    nn.Conv2d, Classify, Conv, ConvTranspose, GhostConv, RepConv, Bottleneck, GhostBottleneck, 
+    SPP, SPPF, SPPCSPC, DWConv, Focus, BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, 
+    nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3
+]
+
+coco_names = {
+    0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 4: 'airplane',
+    5: 'bus', 6: 'train', 7: 'truck', 8: 'boat', 9: 'traffic light',
+    10: 'fire hydrant', 11: 'stop sign', 12: 'parking meter', 13: 'bench',
+    14: 'bird', 15: 'cat', 16: 'dog', 17: 'horse', 18: 'sheep', 19: 'cow',
+    20: 'elephant', 21: 'bear', 22: 'zebra', 23: 'giraffe', 24: 'backpack',
+    25: 'umbrella', 26: 'handbag', 27: 'tie', 28: 'suitcase', 29: 'frisbee',
+    30: 'skis', 31: 'snowboard', 32: 'sports ball', 33: 'kite', 34: 'baseball bat',
+    35: 'baseball glove', 36: 'skateboard', 37: 'surfboard', 38: 'tennis racket',
+    39: 'bottle', 40: 'wine glass', 41: 'cup', 42: 'fork', 43: 'knife',
+    44: 'spoon', 45: 'bowl', 46: 'banana', 47: 'apple', 48: 'sandwich', 49: 'orange',
+    50: 'broccoli', 51: 'carrot', 52: 'hot dog', 53: 'pizza', 54: 'donut',
+    55: 'cake', 56: 'chair', 57: 'couch', 58: 'potted plant', 59: 'bed',
+    60: 'dining table', 61: 'toilet', 62: 'tv', 63: 'laptop', 64: 'mouse',
+    65: 'remote', 66: 'keyboard', 67: 'cell phone', 68: 'microwave', 69: 'oven',
+    70: 'toaster', 71: 'sink', 72: 'refrigerator', 73: 'book', 74: 'clock',
+    75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'
+}
+
 class YoloTransform:
     """
     Handles preprocessing and postprocessing for YOLO models.
     """
-    def __init__(self, min_size=640, max_size=640, device='cuda', fp16=False):
+    def __init__(self, min_size=640, max_size=640, device='cuda', fp16=False, use_letterbox=True):
         self.min_size = min_size
         self.max_size = max_size
         self.device = device
         self.fp16 = fp16
+        self.use_letterbox = use_letterbox
+        if use_letterbox:
+            # Initialize letterbox for better aspect ratio handling
+            from DeepDataMiningLearning.detection.modules.yolotransform import LetterBox
+            self.letterbox = LetterBox((min_size, max_size), auto=True, stride=32)
         
     def __call__(self, images):
         """
@@ -50,7 +91,11 @@ class YoloTransform:
             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             
             # Resize
-            img_resized = cv2.resize(img_rgb, (self.min_size, self.max_size))
+            if self.use_letterbox:
+                # Use letterbox instead of simple resize to maintain aspect ratio
+                img_resized = self.letterbox(image=img_rgb)
+            else:
+                img_resized = cv2.resize(img_rgb, (self.min_size, self.max_size))
             
             # Convert to CHW format
             img_chw = img_resized.transpose(2, 0, 1)
@@ -102,7 +147,13 @@ class YoloTransform:
             if i < len(orig_img_shapes):  # Ensure we have the original shape
                 orig_shape = orig_img_shapes[i]
                 # Scale boxes to original image size
-                pred[:, :4] = scale_boxes(img_size, pred[:, :4], orig_shape)
+                if self.use_letterbox:
+                    # Use the existing scale_boxes function which already handles letterbox
+                    pred[:, :4] = scale_boxes(img_size, pred[:, :4], orig_shape)
+                    #padding default is True , the function assumes the boxes are based on an image that was processed with letterbox padding
+                else:
+                    # Standard scaling for non-letterbox case (though scale_boxes would work here too)
+                    pred[:, :4] = scale_boxes(img_size, pred[:, :4], orig_shape, padding=False)
             
             # Format detections as expected by the trainer
             detection = {
@@ -114,10 +165,132 @@ class YoloTransform:
         
         return detections
 
+# Utility functions
+def yaml_load(file='data.yaml', append_filename=True):
+    """Load YAML data from a file."""
+    assert Path(file).suffix in ('.yaml', '.yml'), f'Attempting to load non-YAML file {file} with yaml_load()'
+    with open(file, errors='ignore', encoding='utf-8') as f:
+        s = f.read()
+        if not s.isprintable():
+            s = re.sub(r'[^\x09\x0A\x0D\x20-\x7E\x85\xA0-\uD7FF\uE000-\uFFFD\U00010000-\U0010ffff]+', '', s)
+        data = yaml.safe_load(s) or {}
+        if append_filename:
+            data['yaml_file'] = str(file)
+        return data
+
+def extract_filename(path):
+    """Extract filename from path without extension."""
+    return Path(path).stem
+
+def make_divisible(x, divisor):
+    """Return nearest x divisible by divisor."""
+    return int(np.ceil(x / divisor) * divisor)
+
+def initialize_weights(model):
+    """Initialize model weights to random values."""
+    for m in model.modules():
+        t = type(m)
+        if t is nn.Conv2d:
+            pass  # nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        elif t is nn.BatchNorm2d:
+            m.eps = 1e-3
+            m.momentum = 0.03
+        elif t in [nn.Hardswish, nn.LeakyReLU, nn.ReLU, nn.ReLU6, nn.SiLU]:
+            m.inplace = True
+
+# def intersect_dicts(da, db, exclude=()):
+#     """Returns a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values."""
+#     return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
+
+
+def parse_model(d, ch, verbose=True):
+    """Parse a YOLO model.yaml dictionary into a PyTorch model."""
+    import ast
+
+    # Args
+    max_channels = float('inf')
+    nc, act, scales = (d.get(x) for x in ('nc', 'activation', 'scales'))
+    depth, width, kpt_shape = (d.get(x, 1.0) for x in ('depth_multiple', 'width_multiple', 'kpt_shape'))
+    if scales:
+        scale = d.get('scale')
+        if not scale:
+            scale = tuple(scales.keys())[0]
+            print(f"WARNING ⚠️ no model scale passed. Assuming scale='{scale}'.")
+        depth, width, max_channels = scales[scale]
+    elif all(key in d for key in ('depth_multiple', 'width_multiple')):
+        depth = d['depth_multiple']
+        width = d['width_multiple']
+    
+    if "anchors" in d.keys():
+        anchors = d['anchors']
+        na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors
+        no = na * (nc + 5)
+    else:
+        no = nc
+   
+    if act:
+        Conv.default_act = eval(act)
+        # if verbose:
+        #     LOGGER.info(f"activation: {act}")
+
+    # if verbose:
+    #     LOGGER.info(f"\n{'':>3}{'from':>20}{'n':>3}{'params':>10}  {'module':<45}{'arguments':<30}")
+    ch = [ch]
+    layers, save, c2 = [], [], ch[-1]
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):
+        m = getattr(torch.nn, m[3:]) if 'nn.' in m else globals()[m]
+        for j, a in enumerate(args):
+            if isinstance(a, str):
+                with contextlib.suppress(ValueError):
+                    args[j] = locals()[a] if a in locals() else ast.literal_eval(a)
+
+        n = n_ = max(round(n * depth), 1) if n > 1 else n
+        if m in twoargs_blocks:
+            c1, c2 = ch[f], args[0]
+            if c2 != no:
+                c2 = make_divisible(min(c2, max_channels) * width, 8)
+
+            args = [c1, c2, *args[1:]]
+            if m in (BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, C3x, RepC3):
+                args.insert(2, n)
+                n = 1
+        elif m is AIFI:
+            args = [ch[f], *args]
+        elif m in (HGStem, HGBlock):
+            c1, cm, c2 = ch[f], args[0], args[1]
+            args = [c1, cm, c2, *args[2:]]
+            if m is HGBlock:
+                args.insert(4, n)
+                n = 1
+        elif m is nn.BatchNorm2d:
+            args = [ch[f]]
+        elif m is Concat:
+            c2 = sum(ch[x] for x in f)
+        elif m in (IDetect, Detect, Segment, Pose):
+            args.append([ch[x] for x in f])
+            if m is Segment:
+                args[2] = make_divisible(min(args[2], max_channels) * width, 8)
+        elif m is RTDETRDecoder:
+            args.insert(1, [ch[x] for x in f])
+        else:
+            c2 = ch[f]
+
+        m_ = nn.Sequential(*(m(*args) for _ in range(n))) if n > 1 else m(*args)
+        t = str(m)[8:-2].replace('__main__.', '')
+        m.np = sum(x.numel() for x in m_.parameters())
+        m_.i, m_.f, m_.type = i, f, t
+        # if verbose:
+        #     LOGGER.info(f'{i:>3}{str(f):>20}{n_:>3}{m.np:10.0f}  {t:<45}{str(args):<30}')
+        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)
+        layers.append(m_)
+        if i == 0:
+            ch = []
+        ch.append(c2)
+    return nn.Sequential(*layers), sorted(save)
 
 class YoloDetectionModel(nn.Module):
     """YOLOv8 detection model with HuggingFace-compatible interface."""
-    def __init__(self, cfg='yolov8n.yaml', scale='n', ch=3, nc=None, verbose=True):
+    def __init__(self, cfg='yolov8n.yaml', scale='n', ch=3, nc=None, device='cuda', use_fp16=False, min_size=640, max_size=640):
         super().__init__()
         self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)
         self.yaml['scale'] = scale
@@ -136,11 +309,11 @@ class YoloDetectionModel(nn.Module):
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)
         if nc and nc != self.yaml['nc']:
-            LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
+            print(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml['nc'] = nc
         
         # Parse model and get component indices based on scale
-        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)
+        self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=False)
         self.names = {i: f'{i}' for i in range(self.yaml['nc'])}
         self.inplace = self.yaml.get('inplace', True)
 
@@ -170,7 +343,7 @@ class YoloDetectionModel(nn.Module):
         initialize_weights(self)
         
         # Create transform for preprocessing and postprocessing
-        self.transform = YoloTransform(min_size=640, max_size=640)
+        self.transform = YoloTransform(min_size=min_size, max_size=max_size, device=device, fp16=use_fp16, use_letterbox=True)
     
     def _get_component_indices(self, scale):
         """Get indices to split model into backbone, neck, and head based on scale."""
@@ -368,9 +541,72 @@ class YoloDetectionModel(nn.Module):
             outputs.append(head(x))
         return outputs
 
-    def inference_test(self, image_path, conf_thres=0.25, iou_thres=0.45, max_det=300, visualize=True):
+    def inference_test(self, image_path, conf_thres=0.25, iou_thres=0.45, max_det=300, visualize=True, output_dir=None):
         """
-        Run inference on a single image and optionally visualize the results.
+        Run inference on a single image or all images in a folder and optionally visualize the results.
+        
+        Args:
+            image_path (str): Path to the input image or directory containing images
+            conf_thres (float): Confidence threshold for detections (0.0 to 1.0)
+            iou_thres (float): IoU threshold for NMS (0.0 to 1.0)
+            max_det (int): Maximum number of detections per image
+            visualize (bool): Whether to visualize and save the results with bounding boxes
+            output_dir (str, optional): Directory to save visualization results. If None, 
+                                        will save in the same directory as input images
+            
+        Returns:
+            dict or list: 
+                - For a single image: Dictionary containing the processed detections with keys:
+                  * "boxes": tensor of shape (num_detections, 4) with coordinates in (x1, y1, x2, y2) format
+                  * "scores": tensor of shape (num_detections,) with confidence scores
+                  * "labels": tensor of shape (num_detections,) with class indices
+                - For a directory: List of dictionaries, one for each image
+        """
+        # Check if image_path is a directory or a file
+        if os.path.isdir(image_path):
+            # Process all images in the directory
+            image_files = [os.path.join(image_path, f) for f in os.listdir(image_path) 
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'))]
+            
+            # Create output directory if specified
+            if output_dir:
+                os.makedirs(output_dir, exist_ok=True)
+                
+            # Process each image
+            results = []
+            for img_file in tqdm(image_files, desc="Processing images"):
+                try:
+                    # Process single image and append results
+                    detection = self._process_single_image(
+                        img_file, 
+                        conf_thres, 
+                        iou_thres, 
+                        max_det, 
+                        visualize, 
+                        output_dir
+                    )
+                    results.append({
+                        'file': img_file,
+                        'detections': detection
+                    })
+                except Exception as e:
+                    print(f"Error processing {img_file}: {e}")
+            
+            return results
+        else:
+            # Process a single image
+            return self._process_single_image(
+                image_path, 
+                conf_thres, 
+                iou_thres, 
+                max_det, 
+                visualize, 
+                output_dir
+            )
+    
+    def _process_single_image(self, image_path, conf_thres=0.25, iou_thres=0.45, max_det=300, visualize=True, output_dir=None):
+        """
+        Helper method to process a single image.
         
         Args:
             image_path (str): Path to the input image
@@ -378,6 +614,7 @@ class YoloDetectionModel(nn.Module):
             iou_thres (float): IoU threshold for NMS
             max_det (int): Maximum number of detections
             visualize (bool): Whether to visualize and save the results
+            output_dir (str, optional): Directory to save visualization results
             
         Returns:
             dict: Dictionary containing the processed detections
@@ -387,7 +624,7 @@ class YoloDetectionModel(nn.Module):
         if img_orig is None:
             raise FileNotFoundError(f"Image not found at {image_path}")
         
-        # Run inference using the new interface
+        # Run inference using the model's forward method
         detections = self.forward(
             img_orig,
             conf_thres=conf_thres,
@@ -397,7 +634,10 @@ class YoloDetectionModel(nn.Module):
         
         # Visualize results if requested
         if visualize and len(detections) > 0:
-            # Draw boxes on the image
+            # Create a copy of the image for visualization
+            img_vis = img_orig.copy()
+            
+            # Extract detection components
             boxes = detections["boxes"].numpy()
             scores = detections["scores"].numpy()
             labels = detections["labels"].numpy()
@@ -408,22 +648,49 @@ class YoloDetectionModel(nn.Module):
                 score = scores[i]
                 label = int(labels[i])
                 
+                # Generate a color based on the class label for better visualization
+                # This creates a unique color for each class
+                color_factor = (label * 50) % 255
+                color = (color_factor, 255 - color_factor, 128)
+                
                 # Draw bounding box
-                color = (0, 255, 0)  # Green color for bounding box
-                cv2.rectangle(img_orig, (x1, y1), (x2, y2), color, 2)
+                cv2.rectangle(img_vis, (x1, y1), (x2, y2), color, 2)
                 
                 # Add class name and confidence
                 class_name = self.names.get(int(label))
                 if class_name is None or class_name == f"{int(label)}":
-                    class_name = coco_names.get(int(label), f"class_{label}")
+                    # Try to get class name from COCO names if available
+                    try:
+                        #from DeepDataMiningLearning.detection.data.coco_names import COCO_NAMES as coco_names
+                        class_name = coco_names.get(int(label), f"class_{label}")
+                    except ImportError:
+                        class_name = f"class_{label}"
+                
                 label_text = f"{class_name}: {score:.2f}"
-                cv2.putText(img_orig, label_text, (x1, y1 - 10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                
+                # Add a filled rectangle behind text for better visibility
+                text_size, _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                cv2.rectangle(img_vis, (x1, y1 - text_size[1] - 10), (x1 + text_size[0], y1), color, -1)
+                
+                # Add text with white color for better contrast
+                cv2.putText(img_vis, label_text, (x1, y1 - 10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             
-            # Save the output image
-            output_path = image_path.replace('.', '_detected.')
-            cv2.imwrite(output_path, img_orig)
+            # Determine output path
+            if output_dir:
+                # Use the specified output directory
+                base_filename = os.path.basename(image_path)
+                output_path = os.path.join(output_dir, f"{os.path.splitext(base_filename)[0]}_detected{os.path.splitext(base_filename)[1]}")
+            else:
+                # Save in the same directory as the input image
+                output_path = image_path.replace('.', '_detected.')
+            
+            # Save the visualization
+            cv2.imwrite(output_path, img_vis)
             print(f"Visualization saved to {output_path}")
+            
+            # Add visualization path to detections
+            detections["visualization_path"] = output_path
         
         return detections
     
@@ -579,6 +846,27 @@ for score, label, box in zip(results["scores"], results["labels"], results["boxe
           f"{{round(score.item(), 3)}} at location {{box.tolist()}}")
 """
 
+def test_localmodel(use_fp16=True):
+    # Initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+    model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80, ch=3, \
+        device=device, use_fp16=use_fp16, min_size=640, max_size=640)
+    model.load_state_dict(torch.load("../modelzoo/yolov8s_statedicts.pt"))
+    model = model.to(device)
+    model.eval()
+    
+    # Enable FP16 precision if requested
+    if use_fp16 and device.type == 'cuda':
+        model = model.half()
+        print("Using FP16 precision for faster inference")
+    
+    model.inference_test(
+        image_path="/DATA5T2/Dataset/Kitti/testing/image_2",
+        visualize=True,
+        output_dir="output/"
+    )
+
 def testviaHF():
     import cv2
     import torch
@@ -618,3 +906,6 @@ def testviaHF():
     cv2.imwrite("result.jpg", image)
     cv2.imshow("Result", image)
     cv2.waitKey(0)
+
+if __name__ == "__main__":
+    test_localmodel()

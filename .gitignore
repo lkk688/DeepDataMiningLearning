@@ -137,7 +137,7 @@ output/
 test-trainer/
 nlp/distilbert-base-uncased-finetuned-emotion
 Datasets/
-
+myfasterrcnn-detector/
 
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
