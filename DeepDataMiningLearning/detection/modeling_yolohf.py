@@ -424,6 +424,236 @@ def register_yolo_architecture():
     MODEL_FOR_OBJECT_DETECTION_MAPPING.register(YoloConfig, YoloDetectionModel)
     
     print("YOLOv8 architecture registered successfully with Hugging Face transformers")
+
+def register_yolo_architecture2():
+    """
+    Register the YOLOv8 model architecture with the Hugging Face transformers library
+    for full integration with the transformers ecosystem.
+    """
+    from transformers import AutoConfig, AutoModel, AutoModelForObjectDetection
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    from transformers.models.auto.modeling_auto import MODEL_MAPPING, MODEL_FOR_OBJECT_DETECTION_MAPPING
+    from transformers.models.auto.processing_auto import PROCESSOR_MAPPING, AutoProcessor
+    
+    # Import the image processor
+    #from DeepDataMiningLearning.detection.image_processor import YoloImageProcessor
+    
+    # Register the config
+    CONFIG_MAPPING.register("yolov8", YoloConfig)
+    
+    # Register the model architecture
+    MODEL_MAPPING.register(YoloConfig, YoloDetectionModel)
+    MODEL_FOR_OBJECT_DETECTION_MAPPING.register(YoloConfig, YoloDetectionModel)
+    
+    # Register the image processor
+    PROCESSOR_MAPPING.register(YoloConfig, YoloImageProcessor)
+    
+    print("YOLOv8 architecture registered successfully with Hugging Face transformers")
+    
+from transformers import ImageProcessingMixin
+import numpy as np
+from PIL import Image
+import torch
+
+class YoloImageProcessor(ImageProcessingMixin):
+    """
+    Image processor for YOLO models.
+    
+    This processor handles image resizing, normalization, and formatting for YOLO models.
+    """
+    
+    model_input_names = ["pixel_values"]
+    
+    def __init__(
+        self,
+        do_resize=True,
+        size=640,
+        resample="bilinear",
+        do_normalize=True,
+        do_rescale=True,
+        rescale_factor=1/255.0,
+        do_pad=True,
+        pad_size_divisor=32,
+        pad_value=114,
+        do_convert_rgb=True,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.do_resize = do_resize
+        self.size = size if isinstance(size, dict) else {"height": size, "width": size}
+        self.resample = resample
+        self.do_normalize = do_normalize
+        self.do_rescale = do_rescale
+        self.rescale_factor = rescale_factor
+        self.do_pad = do_pad
+        self.pad_size_divisor = pad_size_divisor
+        self.pad_value = pad_value
+        self.do_convert_rgb = do_convert_rgb
+        
+    def resize(self, image, size, resample="bilinear"):
+        """
+        Resize an image to the given size.
+        """
+        if isinstance(image, np.ndarray):
+            # Convert numpy array to PIL Image
+            image = Image.fromarray(image)
+            
+        if isinstance(size, dict):
+            size = (size["height"], size["width"])
+        elif isinstance(size, int):
+            size = (size, size)
+            
+        resample_map = {
+            "bilinear": Image.BILINEAR,
+            "bicubic": Image.BICUBIC,
+            "nearest": Image.NEAREST,
+            "lanczos": Image.LANCZOS,
+        }
+        resample = resample_map.get(resample, Image.BILINEAR)
+        
+        return image.resize(size, resample)
+    
+    def pad(self, image, pad_size_divisor=32, pad_value=114):
+        """
+        Pad an image to make its dimensions divisible by pad_size_divisor.
+        """
+        if isinstance(image, Image.Image):
+            image = np.array(image)
+            
+        height, width = image.shape[:2]
+        new_height = int(np.ceil(height / pad_size_divisor) * pad_size_divisor)
+        new_width = int(np.ceil(width / pad_size_divisor) * pad_size_divisor)
+        
+        # Create padded image
+        padded_image = np.full((new_height, new_width, 3), pad_value, dtype=np.uint8)
+        padded_image[:height, :width] = image
+        
+        return padded_image
+    
+    def preprocess(
+        self,
+        images,
+        do_resize=None,
+        size=None,
+        resample=None,
+        do_normalize=None,
+        do_rescale=None,
+        rescale_factor=None,
+        do_pad=None,
+        pad_size_divisor=None,
+        pad_value=None,
+        do_convert_rgb=None,
+        return_tensors=None,
+        **kwargs
+    ):
+        """
+        Preprocess an image or batch of images for YOLO models.
+        """
+        do_resize = do_resize if do_resize is not None else self.do_resize
+        size = size if size is not None else self.size
+        resample = resample if resample is not None else self.resample
+        do_normalize = do_normalize if do_normalize is not None else self.do_normalize
+        do_rescale = do_rescale if do_rescale is not None else self.do_rescale
+        rescale_factor = rescale_factor if rescale_factor is not None else self.rescale_factor
+        do_pad = do_pad if do_pad is not None else self.do_pad
+        pad_size_divisor = pad_size_divisor if pad_size_divisor is not None else self.pad_size_divisor
+        pad_value = pad_value if pad_value is not None else self.pad_value
+        do_convert_rgb = do_convert_rgb if do_convert_rgb is not None else self.do_convert_rgb
+        
+        # Handle single image
+        if isinstance(images, (Image.Image, np.ndarray)):
+            images = [images]
+            
+        # Process each image
+        processed_images = []
+        for image in images:
+            # Convert to RGB if needed
+            if do_convert_rgb and isinstance(image, Image.Image) and image.mode != "RGB":
+                image = image.convert("RGB")
+                
+            # Resize if needed
+            if do_resize:
+                image = self.resize(image, size, resample)
+                
+            # Convert to numpy array if it's a PIL Image
+            if isinstance(image, Image.Image):
+                image = np.array(image)
+                
+            # Pad if needed
+            if do_pad:
+                image = self.pad(image, pad_size_divisor, pad_value)
+                
+            # Rescale if needed
+            if do_rescale:
+                image = image * rescale_factor
+                
+            # Normalize if needed
+            if do_normalize:
+                # YOLO models typically don't need normalization beyond rescaling
+                pass
+                
+            processed_images.append(image)
+            
+        # Convert to tensors if requested
+        if return_tensors == "pt":
+            processed_images = [torch.tensor(img).permute(2, 0, 1).float() for img in processed_images]
+            processed_images = torch.stack(processed_images)
+            
+        return {"pixel_values": processed_images}
+    
+    def post_process_object_detection(
+        self,
+        outputs,
+        threshold=0.5,
+        target_sizes=None,
+    ):
+        """
+        Post-process the raw outputs of the model for object detection.
+        """
+        # Get predictions
+        if isinstance(outputs, dict):
+            logits = outputs.get("logits", outputs.get("pred_logits"))
+            boxes = outputs.get("pred_boxes")
+        else:
+            logits, boxes = outputs
+            
+        # Convert to list of batches
+        results = []
+        
+        batch_size = logits.shape[0]
+        for i in range(batch_size):
+            # Get scores and labels
+            scores = torch.sigmoid(logits[i])
+            labels = torch.arange(scores.shape[1]).unsqueeze(0).expand_as(scores)
+            
+            # Apply threshold
+            mask = scores > threshold
+            scores = scores[mask]
+            labels = labels[mask]
+            boxes_i = boxes[i][mask.any(dim=1)]
+            
+            # Rescale boxes if target sizes provided
+            if target_sizes is not None:
+                orig_h, orig_w = target_sizes[i]
+                scale_x = orig_w / self.size["width"]
+                scale_y = orig_h / self.size["height"]
+                
+                boxes_i[:, [0, 2]] *= scale_x
+                boxes_i[:, [1, 3]] *= scale_y
+                
+                # Ensure boxes are within image boundaries
+                boxes_i[:, 0].clamp_(min=0, max=orig_w)
+                boxes_i[:, 1].clamp_(min=0, max=orig_h)
+                boxes_i[:, 2].clamp_(min=0, max=orig_w)
+                boxes_i[:, 3].clamp_(min=0, max=orig_h)
+            
+            results.append({
+                "scores": scores,
+                "labels": labels,
+                "boxes": boxes_i
+            })
+            
+        return results
     
 class YoloDetectionModel(nn.Module):
     """YOLOv8 detection model with HuggingFace-compatible interface."""
@@ -1119,7 +1349,125 @@ if __name__ == "__main__":
         # Clean up temporary directory
         shutil.rmtree(temp_dir)
         print(f"Cleaned up temporary directory: {temp_dir}")
+
+
+def upload_to_huggingface2(model, repo_id, token=None, commit_message="Upload model", 
+                         private=False, create_model_card=False, example_images=None,
+                         model_description=None):
+    """
+    Upload a model to the Hugging Face Hub.
     
+    Args:
+        model: The model to upload
+        repo_id: The repository ID on Hugging Face Hub
+        token: Hugging Face API token
+        commit_message: Commit message for the upload
+        private: Whether the repository should be private
+        create_model_card: Whether to create a model card
+        example_images: List of example image paths to include in the model card
+        model_description: Custom description for the model card
+    """
+    import tempfile
+    import os
+    import shutil
+    import json
+    from transformers import PretrainedConfig
+    
+    # Create a temporary directory to save the model files
+    temp_dir = tempfile.mkdtemp()
+    print(f"Created temporary directory: {temp_dir}")
+    
+    try:
+        # Save the model state dict
+        model_path = os.path.join(temp_dir, "pytorch_model.bin")
+        torch.save(model.state_dict(), model_path)
+        print(f"Saved model state dict to {model_path}")
+        
+        # Create and save the config
+        if hasattr(model, 'config') and isinstance(model.config, PretrainedConfig):
+            config = model.config
+        else:
+            # Create a config object if the model doesn't have one
+            from transformers import PretrainedConfig
+            config_dict = {
+                "model_type": "yolov8",
+                "architectures": ["YoloDetectionModel"],
+                "scale": model.scale,
+                "num_classes": model.yaml.get('nc', 80),
+                "image_size": 640,
+                "confidence_threshold": 0.25,
+                "iou_threshold": 0.45,
+                "max_detections": 300
+            }
+            config = PretrainedConfig.from_dict(config_dict)
+        
+        # Save the config
+        config_path = os.path.join(temp_dir, "config.json")
+        with open(config_path, 'w') as f:
+            f.write(config.to_json_string())
+        print(f"Saved config to {config_path}")
+        
+        # Add image processor config
+        processor_config = {
+            "image_processor_type": "YoloImageProcessor",
+            "do_normalize": True,
+            "do_resize": True,
+            "do_rescale": True,
+            "do_pad": True,
+            "size": {
+                "height": 640,
+                "width": 640
+            },
+            "resample": "bilinear",
+            "rescale_factor": 0.00392156862745098,  # 1/255
+            "do_convert_rgb": True,
+            "pad_size_divisor": 32,
+            "pad_value": 114
+        }
+        
+        # Save the image processor config
+        processor_config_path = os.path.join(temp_dir, "preprocessor_config.json")
+        with open(processor_config_path, 'w') as f:
+            json.dump(processor_config, f, indent=2)
+        print(f"Saved image processor config to {processor_config_path}")
+        
+        # Create a model card if requested
+        if create_model_card:
+            model_name = f"YOLOv8 {model.scale.upper()}"
+            readme_path = os.path.join(temp_dir, "README.md")
+            create_yolo_model_card(
+                model_name=model_name,
+                scale=model.scale,
+                num_classes=model.yaml.get('nc', 80),
+                repo_id=repo_id,
+                output_path=readme_path,
+                example_images=example_images,
+                description=model_description
+            )
+            print(f"Created model card at {readme_path}")
+        
+        # Upload to Hugging Face Hub
+        from huggingface_hub import HfApi
+        api = HfApi()
+        
+        # Create the repository if it doesn't exist
+        api.create_repo(repo_id=repo_id, private=private, exist_ok=True)
+        print(f"Created/verified repository: {repo_id}")
+        
+        # Upload the files
+        api.upload_folder(
+            folder_path=temp_dir,
+            repo_id=repo_id,
+            commit_message=commit_message,
+            token=token
+        )
+        print(f"Uploaded model to {repo_id}")
+        
+    finally:
+        # Clean up the temporary directory
+        shutil.rmtree(temp_dir)
+        print(f"Cleaned up temporary directory: {temp_dir}")
+        
 import os
 
 def create_yolo_model_card(model_name, scale, num_classes, repo_id, output_path="README.md", 
@@ -1316,7 +1664,7 @@ def upload_onetype_model(scale='s'):
                     'l' (large), or 'x' (xlarge)
     """
     # Register the YOLO architecture with Transformers
-    register_yolo_architecture()
+    register_yolo_architecture2()
     
     # Initialize model with the specified scale
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -1373,7 +1721,7 @@ def upload_onetype_model(scale='s'):
     
     # Upload the model with model card creation
     try:
-        upload_to_huggingface(
+        upload_to_huggingface2(
             model=model,
             repo_id=repo_id,
             token=None,  # use system token, login in terminal
@@ -1394,7 +1742,7 @@ def test_model_loading(repo_id):
     print(f"Testing model loading from {repo_id}...")
     
     # Register the model first
-    register_yolo_architecture()
+    register_yolo_architecture2()
     
     # Try to load the model
     try:
