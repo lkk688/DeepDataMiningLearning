@@ -31,26 +31,42 @@ COCO_INSTANCE_CATEGORY_NAMES = [
 # 1. Custom Config Class
 # ======================
 class FasterRCNNConfig(PretrainedConfig):
+    """
+    Configuration class for FasterRCNN model.
+    """
     model_type = "fasterrcnn"
     
     def __init__(
         self,
-        num_classes=5,
+        num_classes=91,  # COCO has 91 classes (including background)
+        backbone_type="resnet50_fpn",
         min_size=800,
         max_size=1333,
-        backbone_type='resnet50_fpn_v2',  # Options: 'mobilenet_v2', 'resnet50_fpn_v2'
-        use_pretrained_model=False,    # Whether to use pretrained model directly
+        box_score_thresh=0.05,
+        box_nms_thresh=0.5,
+        box_detections_per_img=100,
+        use_pretrained_model=True,
         **kwargs
     ):
         super().__init__(**kwargs)
         self.num_classes = num_classes
+        self.backbone_type = backbone_type
         self.min_size = min_size
         self.max_size = max_size
-        self.backbone_type = backbone_type
+        self.box_score_thresh = box_score_thresh
+        self.box_nms_thresh = box_nms_thresh
+        self.box_detections_per_img = box_detections_per_img
         self.use_pretrained_model = use_pretrained_model
-        self.id2label = {i: f"class_{i}" for i in range(num_classes)}
-        self.label2id = {f"class_{i}": i for i in range(num_classes)}
-
+        
+        # Create id2label and label2id mappings for COCO classes
+        if num_classes == 91:  # COCO
+            self.id2label = {i: COCO_INSTANCE_CATEGORY_NAMES[i] for i in range(len(COCO_INSTANCE_CATEGORY_NAMES))}
+            self.label2id = {v: k for k, v in self.id2label.items()}
+        else:
+            # Generic class names
+            self.id2label = {i: f"class_{i}" for i in range(num_classes)}
+            self.label2id = {v: k for k, v in self.id2label.items()}
+            
 # ======================
 # 2. Custom Model Class
 # ======================
@@ -163,6 +179,11 @@ class FasterRCNNModel(PreTrainedModel):
         if isinstance(outputs, list):
             # Convert torchvision format to transformers format
             batch_size = len(outputs)
+            
+            # Debug the raw outputs
+            print(f"Raw torchvision outputs: {[list(out.keys()) for out in outputs]}")
+            
+            # Convert torchvision format to transformers format
             pred_boxes = []
             pred_scores = []
             pred_labels = []
@@ -198,13 +219,19 @@ class FasterRCNNModel(PreTrainedModel):
             
             # Return as an object that supports both dictionary and attribute access
             # IMPORTANT: Include both original scores and labels directly, not just logits
+            # return DictWithAttributes({
+            #     "boxes": pred_boxes,
+            #     "scores": pred_scores,
+            #     "labels": pred_labels,
+            #     "pred_boxes": pred_boxes,
+            #     "pred_scores": pred_scores,
+            #     "pred_labels": pred_labels
+            # })
+            # Return as an object that supports both dictionary and attribute access
             return DictWithAttributes({
                 "boxes": pred_boxes,
                 "scores": pred_scores,
-                "labels": pred_labels,
-                "pred_boxes": pred_boxes,
-                "pred_scores": pred_scores,
-                "pred_labels": pred_labels
+                "labels": pred_labels
             })
         
         return outputs
@@ -214,6 +241,154 @@ class FasterRCNNModel(PreTrainedModel):
 # 3. Preprocessing Utilities
 # ======================
 class FasterRCNNProcessor:
+    def __init__(self, config):
+        self.config = config
+        self.size_divisibility = 32
+        
+        # Define normalization parameters (ImageNet mean and std)
+        self.mean = [0.485, 0.456, 0.406]
+        self.std = [0.229, 0.224, 0.225]
+        
+        # Set to use torchvision preprocessing by default
+        self.use_torchvision = True
+        self.use_hf_processor = False
+        
+        # Create torchvision transform
+        self.transform = torchvision.transforms.Compose([
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize(mean=self.mean, std=self.std)
+        ])
+        
+    def __call__(self, images: List[Image.Image]):
+        if self.use_torchvision:
+            # Use torchvision's preprocessing
+            processed_images = []
+            for image in images:
+                # Handle different image modes
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                
+                # Apply torchvision transform
+                image_tensor = self.transform(image)
+                processed_images.append(image_tensor)
+            
+            # Stack tensors if more than one image
+            if len(processed_images) > 1:
+                return {"pixel_values": torch.stack(processed_images)}
+            else:
+                return {"pixel_values": processed_images[0].unsqueeze(0)}
+        else:
+            # Fallback to custom implementation
+            # Convert images to tensors and normalize
+            processed_images = []
+            for image in images:
+                # Handle different image modes
+                if image.mode != "RGB":
+                    image = image.convert("RGB")
+                
+                # Convert to numpy array and normalize
+                image_np = np.array(image).astype(np.float32) / 255.0
+                
+                # Apply normalization
+                for i in range(3):
+                    image_np[:, :, i] = (image_np[:, :, i] - self.mean[i]) / self.std[i]
+                
+                # Convert to tensor with correct channel order
+                image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).float()
+                processed_images.append(image_tensor)
+            
+            # Create image tensors with padding
+            images_tensor = self.batch_images(processed_images)
+            return {"pixel_values": images_tensor}
+        
+    def post_process_object_detection(self, outputs, threshold=0.5, target_sizes=None):
+        """
+        Use torchvision-style post-processing for object detection
+        """
+        # Extract predictions directly from model outputs
+        if isinstance(outputs, dict):
+            # Try to get direct outputs from our model format
+            pred_boxes = outputs.get("boxes", outputs.get("pred_boxes", None))
+            pred_scores = outputs.get("scores", outputs.get("pred_scores", None))
+            pred_labels = outputs.get("labels", outputs.get("pred_labels", None))
+        else:
+            # Extract from object attributes
+            pred_boxes = getattr(outputs, "boxes", getattr(outputs, "pred_boxes", None))
+            pred_scores = getattr(outputs, "scores", getattr(outputs, "pred_scores", None))
+            pred_labels = getattr(outputs, "labels", getattr(outputs, "pred_labels", None))
+        
+        if pred_boxes is None or pred_scores is None or pred_labels is None:
+            raise ValueError("Model outputs don't contain required detection information")
+        
+        # Process each image in the batch
+        results = []
+        
+        # Handle case where predictions are for a single image (not batched)
+        if len(pred_boxes.shape) == 2:  # [num_detections, 4]
+            pred_boxes = pred_boxes.unsqueeze(0)
+            pred_scores = pred_scores.unsqueeze(0)
+            pred_labels = pred_labels.unsqueeze(0)
+        
+        # Debug information
+        print(f"Processing detection results: boxes shape={pred_boxes.shape}, scores shape={pred_scores.shape}")
+        
+        for i, (boxes, scores, labels) in enumerate(zip(pred_boxes, pred_scores, pred_labels)):
+            # Filter by threshold
+            keep = scores > threshold
+            filtered_boxes = boxes[keep].cpu()
+            filtered_scores = scores[keep].cpu()
+            filtered_labels = labels[keep].cpu()
+            
+            # Debug information
+            print(f"Image {i}: Found {len(filtered_boxes)} detections above threshold {threshold}")
+            
+            # Skip if no detections
+            if len(filtered_boxes) == 0:
+                results.append([])
+                continue
+            
+            # Convert to expected format
+            image_predictions = []
+            for box, score, label in zip(filtered_boxes, filtered_scores, filtered_labels):
+                # Get box coordinates
+                x1, y1, x2, y2 = box.tolist()
+                width = x2 - x1
+                height = y2 - y1
+                
+                # Get label as string
+                label_idx = int(label.item())
+                if hasattr(self, 'config') and hasattr(self.config, 'id2label'):
+                    label_str = self.config.id2label.get(label_idx, f"class_{label_idx}")
+                else:
+                    # Fallback to COCO labels if using a pretrained model
+                    if 0 <= label_idx < len(COCO_INSTANCE_CATEGORY_NAMES):
+                        label_str = COCO_INSTANCE_CATEGORY_NAMES[label_idx]
+                    else:
+                        label_str = f"class_{label_idx}"
+                
+                # Create prediction entry
+                image_predictions.append({
+                    "score": float(score),
+                    "label": label_str,
+                    "box": {
+                        "xmin": float(x1),
+                        "ymin": float(y1),
+                        "xmax": float(x2),
+                        "ymax": float(y2),
+                        "width": float(width),
+                        "height": float(height)
+                    }
+                })
+                # Debug information
+                print(f"  Detection: {label_str} (score={float(score):.3f}) at box={x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}")
+            
+            # Sort by score (highest first)
+            image_predictions.sort(key=lambda x: x["score"], reverse=True)
+            results.append(image_predictions)
+        
+        return results
+    
+class FasterRCNNProcessor_hf:
     def __init__(self, config):
         self.config = config
         self.size_divisibility = 32
@@ -609,6 +784,7 @@ def inference_image(model_path, image_path, model_type="huggingface", output_pat
         
         # Create processor
         processor = FasterRCNNProcessor(model.config)
+        processor.use_torchvision = True  # Ensure we use torchvision preprocessing
         
         # Preprocess image
         inputs = processor([image])
