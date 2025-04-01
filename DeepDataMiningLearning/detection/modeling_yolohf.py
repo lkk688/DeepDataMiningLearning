@@ -57,6 +57,88 @@ coco_names = {
     75: 'vase', 76: 'scissors', 77: 'teddy bear', 78: 'hair drier', 79: 'toothbrush'
 }
 
+"""
+YOLOv8 model configuration as a Python dictionary.
+This module replaces the need to load the YAML file at runtime.
+"""
+
+# YOLOv8 configuration dictionary
+YOLOV8_CONFIG = {
+    # Parameters
+    "nc": 80,  # number of classes
+    "scales": {
+        # [depth, width, max_channels]
+        "n": [0.33, 0.25, 1024],  # YOLOv8n summary: 225 layers,  3157200 parameters,  3157184 gradients,   8.9 GFLOPs
+        "s": [0.33, 0.50, 1024],  # YOLOv8s summary: 225 layers, 11166560 parameters, 11166544 gradients,  28.8 GFLOPs
+        "m": [0.67, 0.75, 768],   # YOLOv8m summary: 295 layers, 25902640 parameters, 25902624 gradients,  79.3 GFLOPs
+        "l": [1.00, 1.00, 512],   # YOLOv8l summary: 365 layers, 43691520 parameters, 43691504 gradients, 165.7 GFLOPs
+        "x": [1.00, 1.25, 512],   # YOLOv8x summary: 365 layers, 68229648 parameters, 68229632 gradients, 258.5 GFLOPs
+    },
+
+    # YOLOv8.0n backbone
+    "backbone": [
+        # [from, repeats, module, args]
+        [-1, 1, "Conv", [64, 3, 2]],  # 0-P1/2
+        [-1, 1, "Conv", [128, 3, 2]],  # 1-P2/4
+        [-1, 3, "C2f", [128, True]],
+        [-1, 1, "Conv", [256, 3, 2]],  # 3-P3/8
+        [-1, 6, "C2f", [256, True]],
+        [-1, 1, "Conv", [512, 3, 2]],  # 5-P4/16
+        [-1, 6, "C2f", [512, True]],
+        [-1, 1, "Conv", [1024, 3, 2]],  # 7-P5/32
+        [-1, 3, "C2f", [1024, True]],
+        [-1, 1, "SPPF", [1024, 5]],  # 9
+    ],
+
+    # YOLOv8.0n head
+    "head": [
+        [-1, 1, "nn.Upsample", [None, 2, "nearest"]],
+        [[-1, 6], 1, "Concat", [1]],  # cat backbone P4
+        [-1, 3, "C2f", [512]],  # 12
+
+        [-1, 1, "nn.Upsample", [None, 2, "nearest"]],
+        [[-1, 4], 1, "Concat", [1]],  # cat backbone P3
+        [-1, 3, "C2f", [256]],  # 15 (P3/8-small)
+
+        [-1, 1, "Conv", [256, 3, 2]],
+        [[-1, 12], 1, "Concat", [1]],  # cat head P4
+        [-1, 3, "C2f", [512]],  # 18 (P4/16-medium)
+
+        [-1, 1, "Conv", [512, 3, 2]],
+        [[-1, 9], 1, "Concat", [1]],  # cat head P5
+        [-1, 3, "C2f", [1024]],  # 21 (P5/32-large)
+
+        [[15, 18, 21], 1, "Detect", ["nc"]],  # Detect(P3, P4, P5)
+    ],
+    
+    # Additional parameters
+    "inplace": True,
+    "ch": 3
+}
+
+def get_yolo_config(scale='s', nc=80, ch=3):
+    """
+    Get a copy of the YOLO configuration with the specified scale, number of classes, and channels.
+    
+    Args:
+        scale (str): Model scale - 'n', 's', 'm', 'l', or 'x'
+        nc (int): Number of classes
+        ch (int): Number of input channels
+        
+    Returns:
+        dict: YOLO configuration dictionary
+    """
+    # Create a deep copy to avoid modifying the original
+    import copy
+    config = copy.deepcopy(YOLOV8_CONFIG)
+    
+    # Update parameters
+    config['scale'] = scale
+    config['nc'] = nc
+    config['ch'] = ch
+    
+    return config
+
 class YoloTransform:
     """
     Handles preprocessing and postprocessing for YOLO models.
@@ -356,10 +438,13 @@ class YoloDetectionModel(nn.Module):
             min_size = cfg.min_size
             max_size = cfg.max_size
         #self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)
-        yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
-        self.yaml = yaml_load(yaml_path)
+        #yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+        #self.yaml = yaml_load(yaml_path)
+        #Using Python configuration instead of YAML
+        self.yaml = get_yolo_config(scale, nc, ch)
         self.yaml['scale'] = scale
-        self.modelname = extract_filename(yaml_path)
+        #self.modelname = extract_filename(yaml_path)
+        self.modelname = "yolov8"
         self.scale = scale
         self.config = {
             "model_type": "yolov8",
@@ -1327,12 +1412,12 @@ if __name__ == "__main__":
     #test_localmodel()
     #test_upload_model()
     # Or upload all scales in sequence
-    # for scale in ['n', 's', 'm', 'l', 'x']:
-    #     try:
-    #         print(f"\n=== Uploading YOLOv8{scale} model ===\n")
-    #         upload_onetype_model(scale)
-    #     except Exception as e:
-    #         print(f"Error uploading YOLOv8{scale}: {e}")
+    for scale in ['n', 's', 'm', 'l', 'x']:
+        try:
+            print(f"\n=== Uploading YOLOv8{scale} model ===\n")
+            upload_onetype_model(scale)
+        except Exception as e:
+            print(f"Error uploading YOLOv8{scale}: {e}")
     repo_id = "lkk688/yolov8s-model"
     test_model_loading(repo_id)
     
