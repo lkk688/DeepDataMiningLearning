@@ -1047,7 +1047,7 @@ def test_upload_model():
     upload_to_huggingface(
         model=model,
         repo_id=repo_id,
-        token=None,#use system token, login in termal
+        token=None,#use system token, login in termal: huggingface-cli login
         commit_message="Upload YOLOv8s model",
         private=False,  # Set to True if you want a private repository
         create_model_card=True,  # This triggers the model card creation
@@ -1055,8 +1055,73 @@ def test_upload_model():
         model_description=custom_description  # Optional: custom description
     )
     #The model card is automatically created when you call upload_to_huggingface with create_model_card=True .
+
+def upload_onetype_model(scale='s'):
+    """
+    Test function to upload a YOLO model to HuggingFace Hub.
+    
+    Args:
+        scale (str): Model scale - 'n' (nano), 's' (small), 'm' (medium), 
+                    'l' (large), or 'x' (xlarge)
+    """
+    # Initialize model with the specified scale
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+    model = YoloDetectionModel(cfg=yaml_path, scale=scale, nc=80, ch=3,
+                              device=device, use_fp16=True, min_size=640, max_size=640)
+    
+    # Load weights for the specified scale
+    weights_path = f"../modelzoo/yolov8{scale}_statedicts.pt"
+    model.load_state_dict(torch.load(weights_path))
+    model = model.to(device)
+    model.eval()
+    
+    # Upload to HuggingFace with scale in the repo name
+    repo_id = f"lkk688/yolov8{scale}-model"
+
+    # Example images for the model card (optional)
+    example_images = [
+        "sampledata/bus.jpg",
+        "sampledata/sjsupeople.jpg"
+    ]
+    
+    # Custom description based on scale
+    scale_descriptions = {
+        'n': "nano (smallest and fastest)",
+        's': "small (good balance of speed and accuracy)",
+        'm': "medium (higher accuracy, moderate speed)",
+        'l': "large (high accuracy, slower inference)",
+        'x': "xlarge (highest accuracy, slowest inference)"
+    }
+    
+    scale_desc = scale_descriptions.get(scale, f"custom scale '{scale}'")
+    
+    custom_description = f"""
+    This is a custom YOLOv8{scale} model ({scale_desc}) trained on the COCO dataset for object detection.
+    It can detect 80 different object classes with good accuracy and speed.
+    The model has been optimized for real-time inference on both GPU and CPU.
+    """
+    
+    # Upload the model with model card creation
+    upload_to_huggingface(
+        model=model,
+        repo_id=repo_id,
+        token=None,  # use system token, login in terminal
+        commit_message=f"Upload YOLOv8{scale} model",
+        private=False,  # Set to True if you want a private repository
+        create_model_card=True,  # This triggers the model card creation
+        example_images=example_images,  # Optional: include example images
+        model_description=custom_description  # Optional: custom description
+    )
     
 if __name__ == "__main__":
     #test_localmodel()
-    test_upload_model()
+    #test_upload_model()
+    # Or upload all scales in sequence
+    for scale in ['n', 's', 'm', 'l', 'x']:
+        try:
+            print(f"\n=== Uploading YOLOv8{scale} model ===\n")
+            upload_onetype_model(scale)
+        except Exception as e:
+            print(f"Error uploading YOLOv8{scale}: {e}")
     
