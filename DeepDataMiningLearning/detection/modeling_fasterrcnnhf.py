@@ -39,7 +39,7 @@ class FasterRCNNConfig(PretrainedConfig):
     def __init__(
         self,
         num_classes=91,  # COCO has 91 classes (including background)
-        backbone_type="resnet50_fpn",
+        backbone_type="resnet50_fpn_v2",
         min_size=800,
         max_size=1333,
         box_score_thresh=0.05,
@@ -136,7 +136,7 @@ class FasterRCNNModel(PreTrainedModel):
     def forward(self, images=None, targets=None, pixel_values=None, **kwargs):
         # Handle both 'images' and 'pixel_values' input formats
         if pixel_values is not None:
-            images = pixel_values
+            images = pixel_values #list of tensor
         
         # If no images/pixel_values provided, check for 'inputs' in kwargs
         if images is None and 'inputs' in kwargs:
@@ -173,6 +173,7 @@ class FasterRCNNModel(PreTrainedModel):
                 return self.model(images, targets)
         
         # Run the model for inference
+        
         outputs = self.model(images)
         
         # For inference, return in a format compatible with HF pipelines
@@ -241,65 +242,44 @@ class FasterRCNNModel(PreTrainedModel):
 # 3. Preprocessing Utilities
 # ======================
 class FasterRCNNProcessor:
-    def __init__(self, config):
+    def __init__(self, config=None, device='cuda'):
         self.config = config
         self.size_divisibility = 32
-        
-        # Define normalization parameters (ImageNet mean and std)
-        self.mean = [0.485, 0.456, 0.406]
-        self.std = [0.229, 0.224, 0.225]
-        
-        # Set to use torchvision preprocessing by default
-        self.use_torchvision = True
-        self.use_hf_processor = False
+        self.device = device
+    
         
         # Create torchvision transform
+        # self.transform = torchvision.transforms.Compose([
+        #     torchvision.transforms.ToTensor(),
+        #     torchvision.transforms.Normalize(mean=self.mean, std=self.std)
+        # ])
         self.transform = torchvision.transforms.Compose([
             torchvision.transforms.ToTensor(),
-            torchvision.transforms.Normalize(mean=self.mean, std=self.std)
         ])
         
     def __call__(self, images: List[Image.Image]):
-        if self.use_torchvision:
-            # Use torchvision's preprocessing
-            processed_images = []
-            for image in images:
-                # Handle different image modes
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
-                
-                # Apply torchvision transform
-                image_tensor = self.transform(image)
-                processed_images.append(image_tensor)
+        # Use torchvision's preprocessing
+        processed_images = []
+        for image in images:
+            # Handle different image modes
+            # if image.mode != "RGB":
+            #     image = image.convert("RGB")
             
-            # Stack tensors if more than one image
-            if len(processed_images) > 1:
-                return {"pixel_values": torch.stack(processed_images)}
-            else:
-                return {"pixel_values": processed_images[0].unsqueeze(0)}
-        else:
-            # Fallback to custom implementation
-            # Convert images to tensors and normalize
-            processed_images = []
-            for image in images:
-                # Handle different image modes
-                if image.mode != "RGB":
-                    image = image.convert("RGB")
-                
-                # Convert to numpy array and normalize
-                image_np = np.array(image).astype(np.float32) / 255.0
-                
-                # Apply normalization
-                for i in range(3):
-                    image_np[:, :, i] = (image_np[:, :, i] - self.mean[i]) / self.std[i]
-                
-                # Convert to tensor with correct channel order
-                image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).float()
-                processed_images.append(image_tensor)
-            
-            # Create image tensors with padding
-            images_tensor = self.batch_images(processed_images)
-            return {"pixel_values": images_tensor}
+            # Apply torchvision transform
+            # 
+            # img_tensor = transform(image).to(device) #[3, 1080, 810]
+            image_tensor = self.transform(image).to(self.device)
+            #img_tensor = transform(image).to(self.device) #[3, 1080, 810]
+            processed_images.append(image_tensor)
+        
+        #FasterRCNN need list of image tensor as input
+        return {"pixel_values": processed_images}
+            # # Stack tensors if more than one image
+            # if len(processed_images) > 1:
+            #     return {"pixel_values": torch.stack(processed_images)}
+            # else:
+            #     return {"pixel_values": processed_images[0].unsqueeze(0)}
+        
         
     def post_process_object_detection(self, outputs, threshold=0.5, target_sizes=None):
         """
@@ -637,6 +617,34 @@ class FasterRCNNProcessor_hf:
         
         return results
 
+from typing import Union, Dict, List, Any
+def move_to_device(data: Any, device: torch.device) -> Any:
+    """
+    Moves data to the specified device. Handles:
+    - Single tensors
+    - Lists/tuples of tensors
+    - Dictionaries with tensor values
+    - Nested structures of the above
+    
+    Args:
+        data: Input data (tensor, list, dict, or nested structure)
+        device: Target device (e.g., 'cuda:0' or torch.device('cpu'))
+    
+    Returns:
+        Data moved to the target device
+    """
+    if isinstance(data, torch.Tensor):
+        return data.to(device)
+    elif isinstance(data, (list, tuple)):
+        return [move_to_device(x, device) for x in data]
+    elif isinstance(data, dict):
+        return {k: move_to_device(v, device) for k, v in data.items()}
+    elif hasattr(data, 'to'):  # Other objects with .to() method (e.g., nn.Module)
+        return data.to(device)
+    else:
+        # Return data as is if not a tensor and doesn't have .to()
+        return data
+    
 def inference_image(model_path, image_path, model_type="huggingface", output_path="output/", threshold=0.5, checkpoint_path=None):
     """
     Run inference on a single image and save the result with bounding boxes.
@@ -761,11 +769,12 @@ def inference_image(model_path, image_path, model_type="huggingface", output_pat
             target_sizes=[original_size]
         )[0]
     
-    else:  # "local" model
+    elif model_type=="local":  # "local" model
         print("Creating a new model with default configuration")
         # Use a pretrained model with COCO classes
         config = FasterRCNNConfig(num_classes=91, use_pretrained_model=True)
         model = FasterRCNNModel(config).to(device)
+        #model = torchvision.models.detection.fasterrcnn_resnet50_fpn_v2(weights="DEFAULT")
         
         # Print model configuration
         print(f"Model configuration: num_classes={config.num_classes}, backbone={config.backbone_type}")
@@ -783,16 +792,9 @@ def inference_image(model_path, image_path, model_type="huggingface", output_pat
         model.eval()
         
         # Create processor
-        processor = FasterRCNNProcessor(model.config)
-        processor.use_torchvision = True  # Ensure we use torchvision preprocessing
-        
+        processor = FasterRCNNProcessor(model.config, device=device)
         # Preprocess image
         inputs = processor([image])
-        
-        # Move inputs to the same device as model
-        for k, v in inputs.items():
-            if isinstance(v, torch.Tensor):
-                inputs[k] = v.to(device)
         
         # Run inference
         with torch.no_grad():
@@ -816,7 +818,11 @@ def inference_image(model_path, image_path, model_type="huggingface", output_pat
                 class_idx = int(detection['label'].split('_')[-1])
                 if 0 <= class_idx < len(COCO_INSTANCE_CATEGORY_NAMES):
                     detection['label'] = COCO_INSTANCE_CATEGORY_NAMES[class_idx]
-                    
+    
+    else:
+        print("Not supported")
+        return None
+               
     # Convert PIL image to OpenCV format for visualization
     img_cv = np.array(image)
     img_cv = img_cv[:, :, ::-1].copy()  # RGB to BGR
@@ -1383,7 +1389,7 @@ if __name__ == "__main__":
                         help="Path to input image or directory")
     parser.add_argument("--output", type=str, default=None,
                         help="Path to output directory or file")
-    parser.add_argument("--threshold", type=float, default=0.5,
+    parser.add_argument("--threshold", type=float, default=0.2,
                         help="Detection confidence threshold")
     parser.add_argument("--device", type=int, default=None,
                         help="Device to run inference on (-1 for CPU, 0+ for GPU)")
@@ -1402,9 +1408,9 @@ if __name__ == "__main__":
         detections, output_path = inference_image(
             model_path="fasterrcnn_resnet50_fpn_v2",  # HF Hub model or local path
             image_path=args.image,
-            model_type="local", #"torchvision",  # or "huggingface"
+            model_type="local", #"local", "torchvision",  # or "huggingface"
             output_path="output",  # Optional
-            threshold=0.5,
+            threshold=0.2,
             checkpoint_path=None  # Optional: path to checkpoint
         )
     elif args.action == "inference":
