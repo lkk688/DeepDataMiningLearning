@@ -330,7 +330,7 @@ def register_yolo_architecture():
     Register the YOLOv8 model architecture with the Hugging Face transformers library
     for full integration with the transformers ecosystem.
     """
-    from transformers import AutoConfig, AutoModel, AutoModelForObjectDetection
+    from transformers import AutoConfig, AutoModel
     from transformers.models.auto.configuration_auto import CONFIG_MAPPING
     from transformers.models.auto.modeling_auto import MODEL_MAPPING, MODEL_FOR_OBJECT_DETECTION_MAPPING
     
@@ -409,6 +409,83 @@ class YoloDetectionModel(nn.Module):
         
         # Create transform for preprocessing and postprocessing
         self.transform = YoloTransform(min_size=min_size, max_size=max_size, device=device, fp16=use_fp16, use_letterbox=True)
+    
+        # Add this class method for loading from pretrained
+    @classmethod
+    def from_pretrained(cls, pretrained_model_name_or_path, *model_args, **kwargs):
+        """
+        Load a YOLOv8 model from a pretrained model directory or Hugging Face Hub.
+        
+        Args:
+            pretrained_model_name_or_path (str): Path to a local directory or HF Hub model ID
+            *model_args: Additional positional arguments passed to the model
+            **kwargs: Additional keyword arguments passed to the model
+            
+        Returns:
+            YoloDetectionModel: Loaded model instance
+        """
+        from transformers.utils import WEIGHTS_NAME, CONFIG_NAME
+        from transformers.utils.hub import cached_file
+        import os
+        import json
+        
+        # Register architecture to ensure it's recognized
+        register_yolo_architecture()
+        
+        # Load config
+        config = None
+        try:
+            # Try to load the config file
+            config_file = cached_file(
+                pretrained_model_name_or_path,
+                CONFIG_NAME,
+                _raise_exceptions_for_missing_entries=False,
+                _raise_exceptions_for_connection_errors=False,
+            )
+            
+            if config_file:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    config_dict = json.load(f)
+                
+                # Create config object
+                config = YoloConfig(**config_dict)
+            else:
+                print("Config file not found, using default config")
+                config = YoloConfig()
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            print("Using default config")
+            config = YoloConfig()
+        
+        # Create model instance with config
+        model = cls(cfg=config)
+        
+        # Load weights
+        try:
+            weights_file = cached_file(
+                pretrained_model_name_or_path,
+                WEIGHTS_NAME,
+                _raise_exceptions_for_missing_entries=False,
+                _raise_exceptions_for_connection_errors=False,
+            )
+            
+            if weights_file:
+                # Load state dict
+                state_dict = torch.load(weights_file, map_location="cpu")
+                model.load_state_dict(state_dict)
+                print(f"Loaded weights from {weights_file}")
+            else:
+                print("Weights file not found")
+        except Exception as e:
+            print(f"Error loading weights: {e}")
+        
+        # Set model to evaluation mode
+        model.eval()
+        
+        # Set config attribute
+        model.config = config
+        
+        return model
     
     def _get_component_indices(self, scale):
         """Get indices to split model into backbone, neck, and head based on scale."""
@@ -1225,15 +1302,37 @@ def upload_onetype_model(scale='s'):
     except Exception as e:
         print(f"Error uploading YOLOv8{scale} model: {e}")
         raise
+
+from transformers import AutoModelForObjectDetection, AutoConfig
+def test_model_loading(repo_id):
+    """Test loading a YOLOv8 model from Hugging Face Hub."""
+    print(f"Testing model loading from {repo_id}...")
+    
+    # Register the model first
+    register_yolo_architecture()
+    
+    # Try to load the model
+    try:
+        model = AutoModelForObjectDetection.from_pretrained(repo_id)
+        print(f"Successfully loaded model from {repo_id}")
+        print(f"Model type: {type(model).__name__}")
+        print(f"Model scale: {model.scale}")
+        print(f"Number of classes: {model.config.num_classes}")
+        return True
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return False
     
 if __name__ == "__main__":
     #test_localmodel()
     #test_upload_model()
     # Or upload all scales in sequence
-    for scale in ['n', 's', 'm', 'l', 'x']:
-        try:
-            print(f"\n=== Uploading YOLOv8{scale} model ===\n")
-            upload_onetype_model(scale)
-        except Exception as e:
-            print(f"Error uploading YOLOv8{scale}: {e}")
+    # for scale in ['n', 's', 'm', 'l', 'x']:
+    #     try:
+    #         print(f"\n=== Uploading YOLOv8{scale} model ===\n")
+    #         upload_onetype_model(scale)
+    #     except Exception as e:
+    #         print(f"Error uploading YOLOv8{scale}: {e}")
+    repo_id = "lkk688/yolov8s-model"
+    test_model_loading(repo_id)
     
