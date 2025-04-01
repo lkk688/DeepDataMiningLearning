@@ -694,93 +694,187 @@ class YoloDetectionModel(nn.Module):
         
         return detections
     
-    def upload_to_huggingface(self, repo_id, token=None, commit_message="Upload YOLO model"):
-        """
-        Upload the model to HuggingFace Hub.
+def upload_to_huggingface(model, repo_id, token=None, commit_message="Upload YOLO model", private=False, 
+                          create_model_card=True, example_images=None, model_description=None):
+    """
+    Upload a YOLO model to HuggingFace Hub.
+    
+    Args:
+        model (YoloDetectionModel): The YOLO model to upload
+        repo_id (str): HuggingFace repository ID (e.g., 'username/model-name')
+        token (str, optional): HuggingFace token. If None, will use the token from the environment.
+        commit_message (str): Commit message for the upload
+        private (bool): Whether to create a private repository
+        create_model_card (bool): Whether to create a model card
+        example_images (list, optional): List of paths to example images to include in the model card
+        model_description (str, optional): Custom description for the model card
         
-        Args:
-            repo_id (str): HuggingFace repository ID (e.g., 'username/model-name')
-            token (str, optional): HuggingFace token. If None, will use the token from the environment.
-            commit_message (str): Commit message for the upload
-            
-        Returns:
-            str: URL of the uploaded model
-        """
-        try:
-            from huggingface_hub import HfApi, create_repo
-            from huggingface_hub.utils import validate_repo_id
-        except ImportError:
-            raise ImportError("huggingface_hub package is required to upload models. Install it with 'pip install huggingface_hub'.")
-        
+    Returns:
+        str: URL of the uploaded model
+    """
+    try:
+        from huggingface_hub import HfApi, create_repo, upload_folder
+        from huggingface_hub.utils import validate_repo_id
+    except ImportError:
+        raise ImportError("huggingface_hub package is required to upload models. Install it with 'pip install huggingface_hub'.")
+    
+    # Create a temporary directory for files to upload
+    import tempfile
+    import shutil
+    temp_dir = tempfile.mkdtemp()
+    print(f"Created temporary directory: {temp_dir}")
+    
+    try:
         # Validate repository ID
         validate_repo_id(repo_id)
         
         # Create repository if it doesn't exist
         api = HfApi()
         try:
-            create_repo(repo_id, token=token, exist_ok=True)
+            create_repo(repo_id, token=token, exist_ok=True, private=private)
+            print(f"Repository created/verified: {repo_id}")
         except Exception as e:
             print(f"Repository creation warning (can be ignored if repo exists): {e}")
         
         # Save model state dict
-        model_path = f"{self.modelname}_{self.scale}.pt"
-        torch.save(self.state_dict(), model_path)
+        model_name = model.modelname
+        scale = model.scale
+        model_path = os.path.join(temp_dir, f"{model_name}_{scale}.pt")
+        torch.save(model.state_dict(), model_path)
+        print(f"Model state dict saved to: {model_path}")
         
         # Save model configuration
-        config_path = f"{self.modelname}_{self.scale}_config.json"
+        config_path = os.path.join(temp_dir, f"config.json")
+        
+        # Create a more detailed config
+        detailed_config = {
+            "model_type": "yolov8",
+            "scale": scale,
+            "num_classes": model.yaml.get('nc', 80),
+            "image_size": [model.transform.min_size, model.transform.max_size],
+            "confidence_threshold": 0.25,
+            "iou_threshold": 0.45,
+            "max_detections": 300,
+            "backbone_type": model.yaml.get('backbone_type', 'default'),
+            "id2label": {str(i): model.names.get(i, f"class_{i}") for i in range(model.yaml.get('nc', 80))},
+            "label2id": {model.names.get(i, f"class_{i}"): str(i) for i in range(model.yaml.get('nc', 80))},
+            "architectures": ["YoloDetectionModel"],
+        }
+        
         with open(config_path, 'w') as f:
-            json.dump(self.config, f, indent=2)
+            json.dump(detailed_config, f, indent=2)
+        print(f"Model configuration saved to: {config_path}")
         
-        # Create model card using the separate function
-        from DeepDataMiningLearning.detection.utils.model_card import create_yolo_model_card
-        model_card_path = "README.md"
-        create_yolo_model_card(
-            model_name=f"{self.modelname}_{self.scale}",
-            scale=self.scale,
-            num_classes=self.yaml['nc'],
-            repo_id=repo_id,
-            output_path=model_card_path
+        # Create preprocessor config
+        preprocessor_config_path = os.path.join(temp_dir, "preprocessor_config.json")
+        preprocessor_config = {
+            "do_normalize": True,
+            "do_resize": True,
+            "do_rescale": True,
+            "image_mean": [0.0, 0.0, 0.0],  # YOLO uses 0-1 normalization
+            "image_std": [1.0, 1.0, 1.0],
+            "rescale_factor": 1/255.0,
+            "size": {
+                "height": model.transform.min_size,
+                "width": model.transform.max_size
+            },
+            "use_letterbox": model.transform.use_letterbox
+        }
+        
+        with open(preprocessor_config_path, 'w') as f:
+            json.dump(preprocessor_config, f, indent=2)
+        print(f"Preprocessor configuration saved to: {preprocessor_config_path}")
+        
+        # Create model card if requested
+        if create_model_card:
+            model_card_path = os.path.join(temp_dir, "README.md")
+            create_yolo_model_card(
+                model_name=f"{model_name}_{scale}",
+                scale=scale,
+                num_classes=model.yaml.get('nc', 80),
+                repo_id=repo_id,
+                output_path=model_card_path,
+                example_images=example_images,
+                description=model_description
+            )
+            print(f"Model card created at: {model_card_path}")
+        
+        # Create a simple example script
+        example_script_path = os.path.join(temp_dir, "example.py")
+        with open(example_script_path, 'w') as f:
+            f.write(f"""
+# Example script for using the {model_name}_{scale} model from Hugging Face
+import torch
+import cv2
+import numpy as np
+from PIL import Image
+from transformers import AutoImageProcessor, AutoModelForObjectDetection
+
+# Load model and processor
+model = AutoModelForObjectDetection.from_pretrained("{repo_id}")
+processor = AutoImageProcessor.from_pretrained("{repo_id}")
+
+# Function to run inference on an image
+def detect_objects(image_path, confidence_threshold=0.25):
+    # Load image
+    image = Image.open(image_path).convert("RGB")
+    
+    # Process image
+    inputs = processor(images=image, return_tensors="pt")
+    
+    # Run inference
+    with torch.no_grad():
+        outputs = model(**inputs)
+    
+    # Post-process outputs
+    target_sizes = torch.tensor([image.size[::-1]])
+    results = processor.post_process_object_detection(
+        outputs, 
+        threshold=confidence_threshold,
+        target_sizes=target_sizes
+    )[0]
+    
+    # Print results
+    for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
+        box = [round(i, 2) for i in box.tolist()]
+        print(
+            f"Detected {{model.config.id2label[label.item()]}} with confidence "
+            f"{{round(score.item(), 3)}} at location {{box}}"
         )
+    
+    return results
+
+# Example usage
+if __name__ == "__main__":
+    # Replace with your image path
+    image_path = "path/to/your/image.jpg"
+    detect_objects(image_path)
+""")
+            print(f"Example script created at: {example_script_path}")
         
-        # Upload files to HuggingFace
-        print(f"Uploading model to HuggingFace Hub: {repo_id}")
-        api.upload_file(
-            path_or_fileobj=model_path,
-            path_in_repo=model_path,
+        # Upload all files to HuggingFace
+        print(f"Uploading files to HuggingFace Hub: {repo_id}")
+        upload_folder(
+            folder_path=temp_dir,
             repo_id=repo_id,
             token=token,
             commit_message=commit_message
         )
-        
-        api.upload_file(
-            path_or_fileobj=config_path,
-            path_in_repo=config_path,
-            repo_id=repo_id,
-            token=token,
-            commit_message=commit_message
-        )
-        
-        api.upload_file(
-            path_or_fileobj=model_card_path,
-            path_in_repo=model_card_path,
-            repo_id=repo_id,
-            token=token,
-            commit_message=commit_message
-        )
-        
-        # Clean up temporary files
-        os.remove(model_path)
-        os.remove(config_path)
-        os.remove(model_card_path)
         
         print(f"Model uploaded successfully to: https://huggingface.co/{repo_id}")
         return f"https://huggingface.co/{repo_id}"
     
+    finally:
+        # Clean up temporary directory
+        shutil.rmtree(temp_dir)
+        print(f"Cleaned up temporary directory: {temp_dir}")
+    
 import os
 
-def create_yolo_model_card(model_name, scale, num_classes, repo_id, output_path="README.md"):
+def create_yolo_model_card(model_name, scale, num_classes, repo_id, output_path="README.md", 
+                          example_images=None, description=None):
     """
-    Create a model card for a YOLO model to be uploaded to HuggingFace.
+    Create a detailed model card for a YOLO model to be uploaded to HuggingFace.
     
     Args:
         model_name (str): Name of the model
@@ -788,6 +882,8 @@ def create_yolo_model_card(model_name, scale, num_classes, repo_id, output_path=
         num_classes (int): Number of classes the model can detect
         repo_id (str): HuggingFace repository ID
         output_path (str): Path to save the model card
+        example_images (list, optional): List of paths to example images to include in the model card
+        description (str, optional): Custom description for the model card
         
     Returns:
         str: Path to the created model card
@@ -795,55 +891,63 @@ def create_yolo_model_card(model_name, scale, num_classes, repo_id, output_path=
     # Ensure the directory exists
     os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else '.', exist_ok=True)
     
+    # Scale descriptions
+    scale_descriptions = {
+        'n': "nano (smallest, fastest)",
+        's': "small (good balance of speed and accuracy)",
+        'm': "medium (higher accuracy, moderate speed)",
+        'l': "large (high accuracy, slower inference)",
+        'x': "xlarge (highest accuracy, slowest inference)"
+    }
+    
+    scale_desc = scale_descriptions.get(scale, f"custom scale '{scale}'")
+    
+    # Default description if none provided
+    if description is None:
+        description = f"""
+This model is a YOLOv8 object detection model with scale '{scale}' ({scale_desc}). 
+It can detect {num_classes} different classes and is optimized for real-time object detection.
+
+YOLOv8 is the latest version in the YOLO (You Only Look Once) family of models and 
+offers improved accuracy and speed compared to previous versions.
+"""
+    
     # Create the model card content
     model_card = f"""---
+language: en
+license: mit
 tags:
 - object-detection
 - yolov8
 - computer-vision
+- pytorch
+- transformers
+datasets:
+- coco
 ---
 
 # {model_name} - YOLOv8 Object Detection Model
 
-This model is a YOLOv8 object detection model with scale '{scale}'. It can detect {num_classes} different classes.
+{description}
 
 ## Model Details
 
-- Model Type: YOLOv8
-- Scale: {scale}
-- Number of Classes: {num_classes}
-- Input Size: 640x640
+- **Model Type:** YOLOv8
+- **Scale:** {scale} ({scale_desc})
+- **Number of Classes:** {num_classes}
+- **Input Size:** 640x640
+- **Framework:** PyTorch + Transformers
 
 ## Usage
 
+### With Transformers Pipeline
+
 ```python
-from transformers import AutoImageProcessor, AutoModelForObjectDetection
-import torch
-from PIL import Image
-import requests
+from transformers import pipeline
 
-# Load model and processor
-model = AutoModelForObjectDetection.from_pretrained("{repo_id}")
-processor = AutoImageProcessor.from_pretrained("{repo_id}")
-
-# Load image
-url = "http://images.cocodataset.org/val2017/000000039769.jpg"
-image = Image.open(requests.get(url, stream=True).raw)
-
-# Process image and perform inference
-inputs = processor(images=image, return_tensors="pt")
-with torch.no_grad():
-    outputs = model(**inputs)
-
-# Convert outputs to COCO API
-results = processor.post_process_object_detection(
-    outputs, threshold=0.5, target_sizes=[(image.height, image.width)]
-)[0]
-
-# Print results
-for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
-    print(f"Detected {{model.config.id2label[label.item()]}} with confidence "
-          f"{{round(score.item(), 3)}} at location {{box.tolist()}}")
+detector = pipeline("object-detection", model="{repo_id}")
+result = detector("path/to/image.jpg")
+print(result)
 """
 
 def test_localmodel(use_fp16=True):
@@ -907,5 +1011,52 @@ def testviaHF():
     cv2.imshow("Result", image)
     cv2.waitKey(0)
 
+def test_upload_model():
+    """
+    Test function to upload a YOLO model to HuggingFace Hub.
+    """
+    # Initialize model
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+    model = YoloDetectionModel(cfg=yaml_path, scale='s', nc=80, ch=3,
+    device=device, use_fp16=True, min_size=640, max_size=640)
+    
+    # Load weights
+    model.load_state_dict(torch.load("../modelzoo/yolov8s_statedicts.pt"))
+    model = model.to(device)
+    model.eval()
+    
+    # Upload to HuggingFace
+    # Replace with your HuggingFace username and desired repository name
+    repo_id = "lkk688/yolov8s-model"
+
+    # Example images for the model card (optional)
+    example_images = [
+        "sampledata/bus.jpg",
+        "sampledata/sjsupeople.jpg"
+    ]
+    
+    # Custom description for the model card (optional)
+    custom_description = """
+    This is a custom modified YOLOv8s model trained on the COCO dataset for object detection.
+    It can detect 80 different object classes with good accuracy and speed.
+    The model has been optimized for real-time inference on both GPU and CPU.
+    """
+    
+    # Upload the model with model card creation
+    upload_to_huggingface(
+        model=model,
+        repo_id=repo_id,
+        token=None,#use system token, login in termal
+        commit_message="Upload YOLOv8s model",
+        private=False,  # Set to True if you want a private repository
+        create_model_card=True,  # This triggers the model card creation
+        example_images=example_images,  # Optional: include example images
+        model_description=custom_description  # Optional: custom description
+    )
+    #The model card is automatically created when you call upload_to_huggingface with create_model_card=True .
+    
 if __name__ == "__main__":
-    test_localmodel()
+    #test_localmodel()
+    test_upload_model()
+    
