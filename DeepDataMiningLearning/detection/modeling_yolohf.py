@@ -288,13 +288,78 @@ def parse_model(d, ch, verbose=True):
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
 
+from transformers import PretrainedConfig
+class YoloConfig(PretrainedConfig):
+    """Configuration class for YOLOv8 models."""
+    model_type = "yolov8"
+    
+    def __init__(
+        self,
+        scale="s",
+        nc=80,
+        ch=3,
+        min_size=640,
+        max_size=640,
+        use_fp16=False,
+        id2label=None,
+        label2id=None,
+        **kwargs
+    ):
+        super().__init__(**kwargs)
+        self.scale = scale
+        self.nc = nc  # number of classes
+        self.ch = ch  # number of channels
+        self.min_size = min_size
+        self.max_size = max_size
+        self.use_fp16 = use_fp16
+        
+        # Set up id2label and label2id mappings
+        if id2label is None:
+            id2label = {str(i): f"class_{i}" for i in range(nc)}
+        self.id2label = id2label
+        
+        if label2id is None:
+            label2id = {v: k for k, v in id2label.items()}
+        self.label2id = label2id
+        
+        # Add model architecture info
+        self.architectures = ["YoloDetectionModel"]
+
+def register_yolo_architecture():
+    """
+    Register the YOLOv8 model architecture with the Hugging Face transformers library
+    for full integration with the transformers ecosystem.
+    """
+    from transformers import AutoConfig, AutoModel, AutoModelForObjectDetection
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    from transformers.models.auto.modeling_auto import MODEL_MAPPING, MODEL_FOR_OBJECT_DETECTION_MAPPING
+    
+    # Register the config
+    CONFIG_MAPPING.register("yolov8", YoloConfig)
+    
+    # Register the model architecture
+    MODEL_MAPPING.register(YoloConfig, YoloDetectionModel)
+    MODEL_FOR_OBJECT_DETECTION_MAPPING.register(YoloConfig, YoloDetectionModel)
+    
+    print("YOLOv8 architecture registered successfully with Hugging Face transformers")
+    
 class YoloDetectionModel(nn.Module):
     """YOLOv8 detection model with HuggingFace-compatible interface."""
-    def __init__(self, cfg='yolov8n.yaml', scale='n', ch=3, nc=None, device='cuda', use_fp16=False, min_size=640, max_size=640):
+    def __init__(self, cfg=None, scale='n', ch=3, nc=None, device='cuda', use_fp16=False, min_size=640, max_size=640):
         super().__init__()
-        self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)
+        # If a config object is provided, use its parameters
+        if isinstance(cfg, YoloConfig):
+            scale = cfg.scale
+            nc = cfg.nc
+            ch = cfg.ch
+            use_fp16 = cfg.use_fp16
+            min_size = cfg.min_size
+            max_size = cfg.max_size
+        #self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)
+        yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+        self.yaml = yaml_load(yaml_path)
         self.yaml['scale'] = scale
-        self.modelname = extract_filename(cfg)
+        self.modelname = extract_filename(yaml_path)
         self.scale = scale
         self.config = {
             "model_type": "yolov8",
@@ -725,6 +790,30 @@ def upload_to_huggingface(model, repo_id, token=None, commit_message="Upload YOL
     print(f"Created temporary directory: {temp_dir}")
     
     try:
+        # Create config object if not already part of the model
+        if not hasattr(model, 'config') or model.config is None:
+            # Create a proper YoloConfig object, not just a dictionary
+            config = YoloConfig(
+                scale=model.scale,
+                nc=model.yaml.get('nc', 80),
+                ch=model.yaml.get('ch', 3),
+                min_size=model.transform.min_size,
+                max_size=model.transform.max_size,
+                use_fp16=getattr(model.transform, 'fp16', False)
+            )
+            # Save config
+            config.save_pretrained(temp_dir)
+        elif isinstance(model.config, dict):
+            # If model.config is a dictionary, convert it to a YoloConfig object
+            config = YoloConfig(**model.config)
+            config.save_pretrained(temp_dir)
+        else:
+            # If model already has a config object, save it
+            model.config.save_pretrained(temp_dir)
+            
+        # Save model state dict
+        torch.save(model.state_dict(), os.path.join(temp_dir, "pytorch_model.bin"))
+        
         # Validate repository ID
         validate_repo_id(repo_id)
         
@@ -1064,11 +1153,29 @@ def upload_onetype_model(scale='s'):
         scale (str): Model scale - 'n' (nano), 's' (small), 'm' (medium), 
                     'l' (large), or 'x' (xlarge)
     """
+    # Register the YOLO architecture with Transformers
+    register_yolo_architecture()
+    
     # Initialize model with the specified scale
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
-    model = YoloDetectionModel(cfg=yaml_path, scale=scale, nc=80, ch=3,
-                              device=device, use_fp16=True, min_size=640, max_size=640)
+    
+    # Create a proper config object first
+    config = YoloConfig(
+        scale=scale,
+        nc=80,
+        ch=3,
+        min_size=640,
+        max_size=640,
+        use_fp16=True
+    )
+    # Initialize model with config
+    model = YoloDetectionModel(
+        cfg=config,
+        device=device
+    )
+    # yaml_path = "DeepDataMiningLearning/detection/modules/yolov8.yaml"
+    # model = YoloDetectionModel(cfg=yaml_path, scale=scale, nc=80, ch=3,
+    #                           device=device, use_fp16=True, min_size=640, max_size=640)
     
     # Load weights for the specified scale
     weights_path = f"../modelzoo/yolov8{scale}_statedicts.pt"
@@ -1103,16 +1210,21 @@ def upload_onetype_model(scale='s'):
     """
     
     # Upload the model with model card creation
-    upload_to_huggingface(
-        model=model,
-        repo_id=repo_id,
-        token=None,  # use system token, login in terminal
-        commit_message=f"Upload YOLOv8{scale} model",
-        private=False,  # Set to True if you want a private repository
-        create_model_card=True,  # This triggers the model card creation
-        example_images=example_images,  # Optional: include example images
-        model_description=custom_description  # Optional: custom description
-    )
+    try:
+        upload_to_huggingface(
+            model=model,
+            repo_id=repo_id,
+            token=None,  # use system token, login in terminal
+            commit_message=f"Upload YOLOv8{scale} model",
+            private=False,  # Set to True if you want a private repository
+            create_model_card=True,  # This triggers the model card creation
+            example_images=example_images,  # Optional: include example images
+            model_description=custom_description  # Optional: custom description
+        )
+        print(f"Successfully uploaded YOLOv8{scale} model to {repo_id}")
+    except Exception as e:
+        print(f"Error uploading YOLOv8{scale} model: {e}")
+        raise
     
 if __name__ == "__main__":
     #test_localmodel()
