@@ -437,6 +437,8 @@ def register_yolo_architecture2():
     
     # Import the image processor
     #from DeepDataMiningLearning.detection.image_processor import YoloImageProcessor
+    # Import DETR's image processor
+    from transformers import DetrImageProcessor
     
     # Register the config
     CONFIG_MAPPING.register("yolov8", YoloConfig)
@@ -833,16 +835,37 @@ class YoloDetectionModel(nn.Module):
         head_modules = list(self.model[self.neck_end:])
         return nn.ModuleList(head_modules)
     
-    def forward(self, x, *args, **kwargs):
+    def forward(self, x=None, pixel_values=None, images=None, **kwargs):
         """
         Forward pass of the model with HuggingFace-compatible interface.
         
         Args:
-            x: Input tensor or list of images
+            x: Original input tensor parameter
+            pixel_values: Input tensor (HuggingFace standard name)
+            images: Alternative input tensor name
+            **kwargs: Additional keyword arguments
             
         Returns:
             dict or list: Detection results
         """
+        # Handle different input parameter names for compatibility
+        if x is None:
+            if pixel_values is not None:
+                x = pixel_values
+            elif images is not None:
+                x = images
+            elif 'inputs' in kwargs:
+                x = kwargs['inputs']
+            else:
+                # Try to find any tensor in kwargs
+                for k, v in kwargs.items():
+                    if isinstance(v, torch.Tensor) and len(v.shape) == 4:
+                        x = v
+                        break
+                else:
+                    raise ValueError("No valid input tensor found in arguments. Expected 'x', 'pixel_values', or 'images'")
+        
+        # Continue with the existing forward logic
         # Handle different input types
         if isinstance(x, list) and all(isinstance(img, np.ndarray) for img in x):
             # List of numpy arrays (images)
@@ -1390,7 +1413,7 @@ def upload_to_huggingface2(model, repo_id, token=None, commit_message="Upload mo
             # Create a config object if the model doesn't have one
             from transformers import PretrainedConfig
             config_dict = {
-                "model_type": "yolov8",
+                "model_type": "detr",  # Use DETR model type instead of custom yolov8
                 "architectures": ["YoloDetectionModel"],
                 "scale": model.scale,
                 "num_classes": model.yaml.get('nc', 80),
@@ -1409,7 +1432,7 @@ def upload_to_huggingface2(model, repo_id, token=None, commit_message="Upload mo
         
         # Add image processor config
         processor_config = {
-            "image_processor_type": "YoloImageProcessor",
+            "image_processor_type": "DetrImageProcessor",  # Use DETR's image processor "YoloImageProcessor",
             "do_normalize": True,
             "do_resize": True,
             "do_rescale": True,
