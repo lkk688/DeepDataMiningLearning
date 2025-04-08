@@ -1932,6 +1932,7 @@ def create_yolo(
 def train_yolo_detr(
     model,
     data_path,
+    dataset_type='coco',  # 'coco' or 'kitti'
     epochs=100,
     batch_size=16,
     img_size=640,
@@ -1943,11 +1944,12 @@ def train_yolo_detr(
     resume=None
 ):
     """
-    Train YOLO-DETR hybrid model on COCO dataset.
+    Train YOLO-DETR hybrid model on COCO or KITTI dataset.
     
     Args:
         model: YOLO-DETR model
-        data_path: Path to COCO dataset
+        data_path: Path to dataset
+        dataset_type: Type of dataset ('coco' or 'kitti')
         epochs: Number of training epochs
         batch_size: Batch size
         img_size: Input image size
@@ -1962,7 +1964,7 @@ def train_yolo_detr(
     import time
     from datetime import datetime
     from tqdm import tqdm
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, Dataset
     from torchvision.datasets import CocoDetection
     from torch.optim import SGD
     from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -1978,7 +1980,7 @@ def train_yolo_detr(
     model = model.to(device)
     
     # Define loss function
-    criterion = YOLODETRLoss(num_classes=80)
+    criterion = YOLODETRLoss(num_classes=model.num_classes)
     
     # Define optimizer
     optimizer = SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=weight_decay)
@@ -2080,29 +2082,171 @@ def train_yolo_detr(
             
             return img_tensor, {'boxes': boxes, 'class': classes}
     
-    # Create datasets and dataloaders
-    train_dataset = COCOYOLODataset(
-        root=os.path.join(data_path, 'train2017'),
-        annFile=os.path.join(data_path, 'annotations', 'instances_train2017.json')
-    )
+    # Custom KITTI dataset
+    class KITTIYOLODataset(Dataset):
+        def __init__(self, root, split='training'):
+            self.root = root
+            self.split = split
+            self.img_dir = os.path.join(root, split, 'image_2')
+            self.label_dir = os.path.join(root, split, 'label_2')
+            
+            # Get all image files
+            self.img_files = sorted([f for f in os.listdir(self.img_dir) if f.endswith('.png')])
+            
+            # KITTI class mapping (simplified to common classes)
+            self.class_map = {
+                'Car': 0,
+                'Van': 0,  # Map to Car
+                'Truck': 1,
+                'Pedestrian': 2,
+                'Person_sitting': 2,  # Map to Pedestrian
+                'Cyclist': 3,
+                'Tram': 4,
+                'Misc': 5,
+                'DontCare': -1  # Ignore
+            }
+            
+            # Count number of classes
+            self.num_classes = len(set(v for v in self.class_map.values() if v >= 0))
+        
+        def __len__(self):
+            return len(self.img_files)
+        
+        def __getitem__(self, index):
+            # Load image
+            img_file = self.img_files[index]
+            img_path = os.path.join(self.img_dir, img_file)
+            img = Image.open(img_path).convert('RGB')
+            
+            # Original dimensions
+            orig_width, orig_height = img.size
+            
+            # Calculate scaling factor
+            scale = min(img_size / orig_width, img_size / orig_height)
+            new_width = int(orig_width * scale)
+            new_height = int(orig_height * scale)
+            
+            # Resize image
+            img = img.resize((new_width, new_height), Image.BILINEAR)
+            
+            # Create a canvas with padding
+            padded_img = Image.new('RGB', (img_size, img_size), (114, 114, 114))
+            padded_img.paste(img, (0, 0))
+            
+            # Convert to tensor and normalize
+            transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            img_tensor = transform(padded_img)
+            
+            # Load labels
+            label_file = os.path.join(self.label_dir, img_file.replace('.png', '.txt'))
+            boxes = []
+            classes = []
+            
+            if os.path.exists(label_file):
+                with open(label_file, 'r') as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        obj_class = parts[0]
+                        
+                        # Skip DontCare or unknown classes
+                        if obj_class not in self.class_map or self.class_map[obj_class] < 0:
+                            continue
+                        
+                        # KITTI format: [left, top, right, bottom] in pixel coordinates
+                        x1 = float(parts[4])
+                        y1 = float(parts[5])
+                        x2 = float(parts[6])
+                        y2 = float(parts[7])
+                        
+                        # Convert to normalized coordinates and scale to new size
+                        x1 = x1 * scale / img_size
+                        y1 = y1 * scale / img_size
+                        x2 = x2 * scale / img_size
+                        y2 = y2 * scale / img_size
+                        
+                        # Clip to image boundaries
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(1, x2), min(1, y2)
+                        
+                        # Skip invalid boxes
+                        if x2 <= x1 or y2 <= y1:
+                            continue
+                        
+                        # Add box [x1, y1, x2, y2]
+                        boxes.append([x1, y1, x2, y2])
+                        
+                        # Get class index
+                        class_idx = self.class_map[obj_class]
+                        classes.append(class_idx)
+            
+            # Convert to tensors
+            if len(boxes) > 0:
+                boxes = torch.tensor(boxes, dtype=torch.float32)
+                classes = torch.tensor(classes, dtype=torch.int64)
+            else:
+                # No valid annotations
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+                classes = torch.zeros((0), dtype=torch.int64)
+            
+            return img_tensor, {'boxes': boxes, 'class': classes}
     
-    val_dataset = COCOYOLODataset(
-        root=os.path.join(data_path, 'val2017'),
-        annFile=os.path.join(data_path, 'annotations', 'instances_val2017.json')
-    )
+    # Create datasets based on dataset type
+    if dataset_type.lower() == 'coco':
+        print("Loading COCO dataset...")
+        train_dataset = COCOYOLODataset(
+            root=os.path.join(data_path, 'train2017'),
+            annFile=os.path.join(data_path, 'annotations', 'instances_train2017.json')
+        )
+        
+        val_dataset = COCOYOLODataset(
+            root=os.path.join(data_path, 'val2017'),
+            annFile=os.path.join(data_path, 'annotations', 'instances_val2017.json')
+        )
+    elif dataset_type.lower() == 'kitti':
+        print("Loading KITTI dataset...")
+        # For KITTI, we'll split the training data into train/val
+        kitti_dataset = KITTIYOLODataset(root=data_path, split='training')
+        
+        # Split dataset: 80% train, 20% val
+        dataset_size = len(kitti_dataset)
+        train_size = int(dataset_size * 0.8)
+        val_size = dataset_size - train_size
+        
+        # Use random_split to create train/val datasets
+        from torch.utils.data import random_split
+        train_dataset, val_dataset = random_split(
+            kitti_dataset, 
+            [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)  # For reproducibility
+        )
+        
+        # Update model's num_classes if needed
+        if model.num_classes != kitti_dataset.num_classes:
+            print(f"Warning: Model has {model.num_classes} classes but KITTI dataset has {kitti_dataset.num_classes} classes")
+            print("You may need to adjust the model's output layers accordingly")
+    else:
+        raise ValueError(f"Unsupported dataset type: {dataset_type}. Choose 'coco' or 'kitti'.")
     
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,
-        collate_fn=lambda batch: (
+    # Collate function for batching
+    def collate_fn(batch):
+        return (
             torch.stack([item[0] for item in batch]),
             {
                 'boxes': [item[1]['boxes'] for item in batch],
                 'class': [item[1]['class'] for item in batch]
             }
-        ),
+        )
+    
+    # Create dataloaders
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=4,
+        collate_fn=collate_fn,
         pin_memory=True
     )
     
@@ -2111,13 +2255,7 @@ def train_yolo_detr(
         batch_size=batch_size,
         shuffle=False,
         num_workers=4,
-        collate_fn=lambda batch: (
-            torch.stack([item[0] for item in batch]),
-            {
-                'boxes': [item[1]['boxes'] for item in batch],
-                'class': [item[1]['class'] for item in batch]
-            }
-        ),
+        collate_fn=collate_fn,
         pin_memory=True
     )
     
@@ -2246,24 +2384,25 @@ def train_yolo_detr(
             'scheduler': scheduler.state_dict(),
             'loss': avg_loss,
             'val_loss': avg_val_loss,
-            'best_map': best_map
+            'best_map': best_map,
+            'dataset_type': dataset_type
         }
         
         # Save latest checkpoint
-        torch.save(checkpoint, os.path.join(save_dir, 'last.pt'))
+        torch.save(checkpoint, os.path.join(save_dir, f'last_{dataset_type}.pt'))
         
         # Save best model (using validation loss as metric for simplicity)
         # In a real implementation, you would calculate mAP here
         if avg_val_loss < best_map or best_map == 0:
             best_map = avg_val_loss
-            torch.save(checkpoint, os.path.join(save_dir, 'best.pt'))
+            torch.save(checkpoint, os.path.join(save_dir, f'best_{dataset_type}.pt'))
             print(f"Saved best model with validation loss: {avg_val_loss:.4f}")
         
         # Save checkpoint every 10 epochs
         if (epoch + 1) % 10 == 0:
-            torch.save(checkpoint, os.path.join(save_dir, f'epoch_{epoch+1}.pt'))
+            torch.save(checkpoint, os.path.join(save_dir, f'{dataset_type}_epoch_{epoch+1}.pt'))
     
-    print("Training complete!")
+    print(f"Training complete on {dataset_type} dataset!")
     return model
 
 class YOLODETRHead(nn.Module):
