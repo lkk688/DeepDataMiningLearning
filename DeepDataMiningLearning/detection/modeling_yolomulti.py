@@ -206,6 +206,8 @@ class DFL(nn.Module):
         
         # Apply softmax along reg_max dimension
         x = x.softmax(1)
+        if self.conv.weight.device!=x.device:
+            self.conv.weight = nn.Parameter(self.conv.weight.to(x.device))
         
         # Apply convolution (which is effectively a weighted sum with the weights being 0,1,2,...,reg_max-1)
         x = self.conv(x)  # Shape: [bs*anchors*coords, 1, 1, 1]
@@ -406,6 +408,7 @@ class YOLOv8(nn.Module):
         """
         bs, anchors = box.shape[:2]
         box = box.view(bs, anchors, 4, self.detect.reg_max)
+        self.dfl = self.dfl.to("cuda")
         box = self.dfl(box).view(bs, anchors, 4)
         
         # Convert from xywh to xyxy
