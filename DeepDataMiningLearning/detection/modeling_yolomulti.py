@@ -2494,5 +2494,18 @@ def test_yolomulti():
     test_yolo_inference(image_path, yolo12s_cbam, COCO_CLASSES)
     test_yolo_inference(image_path, yolo12m_transformer, COCO_CLASSES)
 
+def start_training():
+    # Initialize YOLO-DETR hybrid model
+    model = YOLOMulti(
+        num_classes=80,
+        version='yolo-detr',
+        scale='m',
+        in_channels=3
+    )
+    # Start training
+    train_yolo_detr(model=model, data_path="", epochs=20, batch_size=8, \
+        save_dir="", img_size=640)
+
 if __name__ == "__main__":
-    test_yolomulti()
+    #test_yolomulti()
+    start_training()
