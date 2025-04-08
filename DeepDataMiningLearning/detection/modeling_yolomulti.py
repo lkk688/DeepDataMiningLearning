@@ -197,7 +197,8 @@ class DFL(nn.Module):
         """Applies softmax to channel dimension and computes expected value."""
         b, c, h, w = x.shape
         x = x.softmax(1)
-        return self.conv(x)
+        return self.conv(x) #x: [4, 25600, 4, 16]
+    #weight of size [1, 16, 1, 1], expected input[4, 25600, 4, 16] to have 16 channels, but got 25600 channels instead
 
 class YOLOv8(nn.Module):
     """
@@ -1360,14 +1361,23 @@ class YOLOMulti(nn.Module):
             )
             
             # DETR head for medium scale (P4, 40x40)
+            # self.detr_head = DETRHead(
+            #     in_channels=c3,  # Same as P4 channels
+            #     hidden_dim=256,
+            #     num_classes=num_classes,
+            #     num_queries=100,  # Number of object queries
+            #     nheads=8,
+            #     num_encoder_layers=3,
+            #     num_decoder_layers=3
+            # )
             self.detr_head = DETRHead(
                 in_channels=c3,  # Same as P4 channels
-                hidden_dim=256,
+                hidden_dim=128,
                 num_classes=num_classes,
-                num_queries=100,  # Number of object queries
-                nheads=8,
-                num_encoder_layers=3,
-                num_decoder_layers=3
+                num_queries=20,  # Number of object queries
+                nheads=4,
+                num_encoder_layers=1,
+                num_decoder_layers=1
             )
         else:
             # Standard YOLO detection head for other versions
@@ -1940,7 +1950,7 @@ def train_yolo_detr(
     weight_decay=0.0005,
     momentum=0.937,
     warmup_epochs=3,
-    save_dir='/Users/kaikailiu/Documents/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/detection/weights',
+    save_dir='output',
     resume=None
 ):
     """
@@ -2302,7 +2312,7 @@ def train_yolo_detr(
         # Training step
         for i, (imgs, targets) in enumerate(pbar):
             # Move data to device
-            imgs = imgs.to(device)
+            imgs = imgs.to(device) #[8, 3, 640, 640]
             batch_targets = {
                 'boxes': [box.to(device) for box in targets['boxes']],
                 'class': [cls.to(device) for cls in targets['class']]
@@ -2636,14 +2646,14 @@ def test_yolomulti():
 def start_training():
     # Initialize YOLO-DETR hybrid model
     model = YOLOMulti(
-        num_classes=80,
+        num_classes=6, #80,
         version='yolo-detr',
         scale='m',
         in_channels=3
     )
     # Start training
-    train_yolo_detr(model=model, data_path="", epochs=20, batch_size=8, \
-        save_dir="", img_size=640)
+    train_yolo_detr(model=model, data_path="/mnt/f/Dataset/Kitti", dataset_type="kitti", epochs=20, batch_size=4, \
+        img_size=640, save_dir = 'output/yolomulti')
 
 if __name__ == "__main__":
     #test_yolomulti()
