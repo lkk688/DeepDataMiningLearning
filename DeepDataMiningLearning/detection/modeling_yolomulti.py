@@ -567,10 +567,14 @@ class YOLOv8Loss(nn.Module):
             IoU values, tensor of shape [...]
         """
         # Handle case where box2 is a tuple
+                # Handle case where box2 is a tuple or list of tuples
         if isinstance(box2, tuple):
             # If box2 is a tuple, convert it to a tensor with the same shape as box1
-            # Assuming the tuple contains tensors that can be stacked along the last dimension
-            box2 = torch.stack(box2, dim=-1)
+            box2 = torch.stack(list(box2), dim=-1)
+        elif isinstance(box2, list) and all(isinstance(item, tuple) for item in box2):
+            # If box2 is a list of tuples, first convert each tuple to a tensor
+            # and then stack them along the batch dimension
+            box2 = torch.stack([torch.stack(list(item), dim=-1) for item in box2])
         
         # Get coordinates of intersection rectangles
         # For each coordinate, we take the maximum of the top-left corners
