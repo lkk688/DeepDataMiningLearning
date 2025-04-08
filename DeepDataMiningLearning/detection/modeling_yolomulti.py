@@ -1258,12 +1258,23 @@ class HungarianMatcher(nn.Module):
         return indices
 
 
+# def box_cxcywh_to_xyxy(x):
+#     """Convert boxes from [cx, cy, w, h] to [x1, y1, x2, y2] format."""
+#     x_c, y_c, w, h = x.unbind(-1)
+#     b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
+#          (x_c + 0.5 * w), (y_c + 0.5 * h)]
+#     return torch.stack(b, dim=-1)
+
 def box_cxcywh_to_xyxy(x):
     """Convert boxes from [cx, cy, w, h] to [x1, y1, x2, y2] format."""
-    x_c, y_c, w, h = x.unbind(-1)
-    b = [(x_c - 0.5 * w), (y_c - 0.5 * h),
-         (x_c + 0.5 * w), (y_c + 0.5 * h)]
-    return torch.stack(b, dim=-1)
+    # Instead of unbinding and stacking, which can create a tuple in some cases,
+    # use direct tensor operations to ensure we return a single tensor
+    result = torch.zeros_like(x)
+    result[..., 0] = x[..., 0] - x[..., 2] / 2  # x1 = cx - w/2
+    result[..., 1] = x[..., 1] - x[..., 3] / 2  # y1 = cy - h/2
+    result[..., 2] = x[..., 0] + x[..., 2] / 2  # x2 = cx + w/2
+    result[..., 3] = x[..., 1] + x[..., 3] / 2  # y2 = cy + h/2
+    return result
 
 def generalized_box_iou(boxes1, boxes2):
     """
