@@ -10,6 +10,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
 from torchvision.ops import nms
+from scipy.optimize import linear_sum_assignment
+import os
 
 class Conv(nn.Module):
     """
@@ -559,11 +561,17 @@ class YOLOv8Loss(nn.Module):
         
         Args:
             box1: First set of boxes, tensor of shape [..., 4]
-            box2: Second set of boxes, tensor of shape [..., 4]
+            box2: Second set of boxes, tensor of shape [..., 4] or tuple of tensors
             
         Returns:
             IoU values, tensor of shape [...]
         """
+        # Handle case where box2 is a tuple
+        if isinstance(box2, tuple):
+            # If box2 is a tuple, convert it to a tensor with the same shape as box1
+            # Assuming the tuple contains tensors that can be stacked along the last dimension
+            box2 = torch.stack(box2, dim=-1)
+        
         # Get coordinates of intersection rectangles
         # For each coordinate, we take the maximum of the top-left corners
         # and the minimum of the bottom-right corners
@@ -577,18 +585,6 @@ class YOLOv8Loss(nn.Module):
         inter_width = torch.clamp(inter_right - inter_left, min=0)
         inter_height = torch.clamp(inter_bottom - inter_top, min=0)
         inter_area = inter_width * inter_height
-        
-        # Calculate areas of both boxes
-        box1_area = (box1[..., 2] - box1[..., 0]) * (box1[..., 3] - box1[..., 1])  # width1 * height1
-        box2_area = (box2[..., 2] - box2[..., 0]) * (box2[..., 3] - box2[..., 1])  # width2 * height2
-        
-        # Union = sum of areas - intersection
-        union_area = box1_area + box2_area - inter_area
-        
-        # IoU = intersection / union (add small epsilon to avoid division by zero)
-        iou = inter_area / (union_area + 1e-7)
-        
-        return iou
 
 def load_and_preprocess_image(image_path, img_size=640):
     """
