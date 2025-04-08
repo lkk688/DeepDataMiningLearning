@@ -195,11 +195,26 @@ class DFL(nn.Module):
 
     def forward(self, x):
         """Applies softmax to channel dimension and computes expected value."""
-        b, c, h, w = x.shape
+        # Input shape: [bs, anchors, 4, reg_max]
+        # Need to process each box coordinate separately
+        
+        # Store original shape for reshaping later
+        bs, anchors, coords, reg_max = x.shape
+        
+        # Reshape to [bs*anchors*coords, reg_max, 1, 1] for conv operation
+        x = x.reshape(-1, reg_max, 1, 1)
+        
+        # Apply softmax along reg_max dimension
         x = x.softmax(1)
-        return self.conv(x) #x: [4, 25600, 4, 16]
-    #weight of size [1, 16, 1, 1], expected input[4, 25600, 4, 16] to have 16 channels, but got 25600 channels instead
-
+        
+        # Apply convolution (which is effectively a weighted sum with the weights being 0,1,2,...,reg_max-1)
+        x = self.conv(x)  # Shape: [bs*anchors*coords, 1, 1, 1]
+        
+        # Reshape back to original format but without the reg_max dimension
+        x = x.reshape(bs, anchors, coords)
+        
+        return x
+        
 class YOLOv8(nn.Module):
     """
     YOLOv8 object detection model with proper feature pyramid network.
