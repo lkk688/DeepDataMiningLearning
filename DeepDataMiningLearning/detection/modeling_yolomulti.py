@@ -420,176 +420,278 @@ class YOLOv8(nn.Module):
         ], -1)
         return box
 
+from DeepDataMiningLearning.detection.modules.tal import TaskAlignedAssigner, dist2bbox, make_anchors, bbox2dist
+from DeepDataMiningLearning.detection.modules.metrics import bbox_iou
+from DeepDataMiningLearning.detection.modules.utils import xywh2xyxy
+from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss, BboxLoss
+
 class YOLOv8Loss(nn.Module):
-    """
-    YOLOv8 loss function combining:
-    - Classification loss (BCE): Binary cross-entropy for multi-label classification
-    - Box regression loss (DFL + CIoU): Distribution Focal Loss for box coordinate regression
-                                       and Complete IoU for better bounding box accuracy
-    
-    The loss function handles predictions from multiple detection layers (different scales).
-    """
+    """YOLOv8 Loss function."""
     def __init__(self, num_classes=80):
         super().__init__()
         self.num_classes = num_classes
-        # BCE loss with no reduction to allow for weighting
         self.bce = nn.BCEWithLogitsLoss(reduction='none')
-        # Distribution Focal Loss for box coordinate regression
-        self.dfl = DFL()
         
-    def forward(self, preds, targets):
-        """
-        Compute YOLOv8 loss.
-        
-        Args:
-            preds: Model predictions (list of outputs from Detect head)
-                  Each element has shape [batch_size, (4+num_classes)*reg_max, height, width]
-            targets: Ground truth targets dictionary containing:
-                    - 'boxes': Target boxes in xyxy format [batch_size, num_targets, 4]
-                    - 'class': Target class indices [batch_size, num_targets]
-            
-        Returns:
-            Dictionary of loss components:
-            - 'loss': Total loss (box_loss + cls_loss)
-            - 'box_loss': Localization loss component
-            - 'cls_loss': Classification loss component
-        """
-        device = preds[0].device
-        lcls = torch.zeros(1, device=device)  # Class loss initialization
-        lbox = torch.zeros(1, device=device)  # Box loss initialization
-        
-        # Process each prediction level (P3, P4, P5)
-        for i, pred in enumerate(preds):
-            # Get dimensions
-            bs, ch, ny, nx = pred.shape  # [batch_size, (4+num_classes)*reg_max, height, width]
-            
-            # Reshape predictions to [batch_size, height*width, 4+num_classes]
-            # This transforms grid cell predictions into a sequence of predictions
-            pred = pred.view(bs, self.dfl.conv.weight.shape[1] * 4 + self.num_classes, -1).permute(0, 2, 1)
-            # pred shape after reshape: [batch_size, height*width, 4*reg_max+num_classes]
-            
-            # Split predictions into box and class components
-            # box_pred shape: [batch_size, height*width, 4*reg_max]
-            # cls_pred shape: [batch_size, height*width, num_classes]
-            box_pred, cls_pred = pred.split((self.dfl.conv.weight.shape[1] * 4, self.num_classes), 2)
-            
-            # Reshape box predictions for DFL processing
-            # [batch_size, height*width, 4*reg_max] -> [batch_size, height*width, 4, reg_max]
-            box_pred = box_pred.view(bs, -1, 4, self.dfl.conv.weight.shape[1])
-            
-            # Apply DFL to get final box coordinates
-            # Output shape: [batch_size, height*width, 4]
-            box_pred = self.dfl(box_pred).view(bs, -1, 4)
-            
-            # In a real implementation, we would match predictions to targets here
-            # This would involve:
-            # 1. Converting grid cell predictions to actual coordinates
-            # 2. Assigning targets to predictions based on IoU and other criteria
-            # 3. Creating masks for positive (matched) and negative (unmatched) samples
-            
-            # For this simplified example, we assume targets are already matched
-            # and have the same structure as predictions
-            
-            # Classification loss calculation
-            # Create target tensor with same shape as cls_pred
-            # tcls shape: [batch_size, height*width, num_classes]
-            tcls = torch.zeros_like(cls_pred)
-            
-            # In practice, we would use the matching results to assign target classes
-            # Here we're using a simplified approach where targets['class'] directly indexes the classes
-            # This assumes targets['class'] contains indices of positive classes for each prediction
-            if isinstance(targets['class'], int):
-                # Handle single class case
-                tcls[..., targets['class']] = 1.0
-            else:
-                # Handle multi-class case
-                # This is simplified - in practice, we'd have a more complex assignment
-                for b in range(bs):
-                    if b < len(targets['class']):
-                        tcls[b, :, targets['class'][b]] = 1.0
-            
-            # Calculate BCE loss for classification
-            # Mean over all dimensions to get scalar loss
-            cls_loss = self.bce(cls_pred, tcls).mean()
-            lcls += cls_loss
-            
-            # Box regression loss calculation
-            # Convert predicted boxes from xywh to xyxy format for IoU calculation
-            # pbox shape: [batch_size, height*width, 4]
-            pbox = self.xywh2xyxy(box_pred)
-            
-            # Get target boxes (already in xyxy format)
-            # tbox shape should match pbox: [batch_size, height*width, 4]
-            # In practice, we would use the matching results to assign target boxes
-            tbox = targets['boxes']
-            
-            # Calculate 1 - IoU as the box loss (higher IoU = lower loss)
-            # In a real implementation, we would use CIoU or DIoU for better convergence
-            box_loss = (1.0 - self.box_iou(pbox, tbox)).mean()
-            lbox += box_loss
-        
-        # Return combined loss and individual components
-        return {
-            'loss': lbox + lcls,  # Total loss
-            'box_loss': lbox,     # Box regression loss component
-            'cls_loss': lcls      # Classification loss component
+        # Hyperparameters
+        self.hyp = {
+            'box': 7.5,  # box loss gain
+            'cls': 0.5,  # cls loss gain (scale with pixels)
+            'dfl': 1.5,  # dfl loss gain
         }
+        
+        # Set up model parameters
+        self.reg_max = 16  # DFL channels
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.stride = torch.tensor([8, 16, 32], device=self.device)
+        self.no = self.num_classes + self.reg_max * 4
+        
+        # Task aligned assigner and bbox loss
+        self.assigner = TaskAlignedAssigner(topk=10, num_classes=self.num_classes, alpha=0.5, beta=6.0)
+        self.bbox_loss = BboxLoss(self.reg_max - 1, use_dfl=True).to(self.device)
+        
+        # DFL projection
+        self.proj = torch.arange(self.reg_max, dtype=torch.float, device=self.device)
+
+    def preprocess(self, targets, batch_size, scale_tensor):
+        """Preprocesses the target counts and matches with the input batch size."""
+        if targets.shape[0] == 0:
+            out = torch.zeros(batch_size, 0, 5, device=self.device)
+        else:
+            i = targets[:, 0]  # image index
+            _, counts = i.unique(return_counts=True)
+            counts = counts.to(dtype=torch.int32)
+            out = torch.zeros(batch_size, counts.max(), 5, device=self.device)
+            for j in range(batch_size):
+                matches = i == j
+                n = matches.sum()
+                if n:
+                    out[j, :n] = targets[matches, 1:]
+            out[..., 1:5] = xywh2xyxy(out[..., 1:5].mul_(scale_tensor))
+        return out
+
+    def bbox_decode(self, anchor_points, pred_dist):
+        """Decode predicted object bounding box coordinates."""
+        if self.use_dfl:
+            b, a, c = pred_dist.shape
+            pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.proj.type(pred_dist.dtype))
+        return dist2bbox(pred_dist, anchor_points, xywh=False)
+
+    def __call__(self, preds, batch):
+        """Calculate the sum of the loss."""
+        loss = torch.zeros(3, device=self.device)  # box, cls, dfl
+        feats = preds[1] if isinstance(preds, tuple) else preds
+        
+        pred_distri, pred_scores = torch.cat([xi.view(feats[0].shape[0], self.no, -1) 
+                                            for xi in feats], 2).split((self.reg_max * 4, self.num_classes), 1)
+
+        pred_scores = pred_scores.permute(0, 2, 1).contiguous()
+        pred_distri = pred_distri.permute(0, 2, 1).contiguous()
+
+        dtype = pred_scores.dtype
+        batch_size = pred_scores.shape[0]
+        imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]
+        anchor_points, stride_tensor = make_anchors(feats, self.stride, 0.5)
+
+        # Targets
+        targets = torch.cat((batch['batch_idx'].view(-1, 1), batch['cls'].view(-1, 1), batch['bboxes']), 1)
+        targets = self.preprocess(targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+        gt_labels, gt_bboxes = targets.split((1, 4), 2)
+        mask_gt = gt_bboxes.sum(2, keepdim=True).gt_(0)
+
+        # Pboxes
+        pred_bboxes = self.bbox_decode(anchor_points, pred_distri)
+
+        _, target_bboxes, target_scores, fg_mask, _ = self.assigner(
+            pred_scores.detach().sigmoid(), (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
+            anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
+
+        target_scores_sum = max(target_scores.sum(), 1)
+
+        # Cls loss
+        loss[1] = self.bce(pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+
+        # Bbox loss
+        if fg_mask.sum():
+            target_bboxes /= stride_tensor
+            loss[0], loss[2] = self.bbox_loss(pred_distri, pred_bboxes, anchor_points, target_bboxes, target_scores,
+                                            target_scores_sum, fg_mask)
+
+        loss[0] *= self.hyp['box']  # box gain
+        loss[1] *= self.hyp['cls']  # cls gain
+        loss[2] *= self.hyp['dfl']  # dfl gain
+
+        return loss.sum() * batch_size, loss.detach()
+
+# class YOLOv8Loss(nn.Module):
+#     """
+#     YOLOv8 loss function combining:
+#     - Classification loss (BCE): Binary cross-entropy for multi-label classification
+#     - Box regression loss (DFL + CIoU): Distribution Focal Loss for box coordinate regression
+#                                        and Complete IoU for better bounding box accuracy
     
-    @staticmethod
-    def xywh2xyxy(x):
-        """
-        Convert boxes from [x_center, y_center, width, height] to [x1, y1, x2, y2] format.
+#     The loss function handles predictions from multiple detection layers (different scales).
+#     """
+#     def __init__(self, num_classes=80):
+#         super().__init__()
+#         self.num_classes = num_classes
+#         # BCE loss with no reduction to allow for weighting
+#         self.bce = nn.BCEWithLogitsLoss(reduction='none')
+#         # Distribution Focal Loss for box coordinate regression
+#         self.dfl = DFL()
         
-        Args:
-            x: Tensor of shape [..., 4] containing boxes in xywh format
+#     def forward(self, preds, targets):
+#         """
+#         Compute YOLOv8 loss.
+        
+#         Args:
+#             preds: Model predictions (list of outputs from Detect head)
+#                   Each element has shape [batch_size, (4+num_classes)*reg_max, height, width]
+#             targets: Ground truth targets dictionary containing:
+#                     - 'boxes': Target boxes in xyxy format [batch_size, num_targets, 4]
+#                     - 'class': Target class indices [batch_size, num_targets]
             
-        Returns:
-            Tensor of same shape with boxes in xyxy format
-        """
-        y = x.clone()
-        y[..., 0] = x[..., 0] - x[..., 2] / 2  # x1 = x_center - width/2
-        y[..., 1] = x[..., 1] - x[..., 3] / 2  # y1 = y_center - height/2
-        y[..., 2] = x[..., 0] + x[..., 2] / 2  # x2 = x_center + width/2
-        y[..., 3] = x[..., 1] + x[..., 3] / 2  # y2 = y_center + height/2
-        return y
+#         Returns:
+#             Dictionary of loss components:
+#             - 'loss': Total loss (box_loss + cls_loss)
+#             - 'box_loss': Localization loss component
+#             - 'cls_loss': Classification loss component
+#         """
+#         device = preds[0].device
+#         lcls = torch.zeros(1, device=device)  # Class loss initialization
+#         lbox = torch.zeros(1, device=device)  # Box loss initialization
+        
+#         # Process each prediction level (P3, P4, P5)
+#         for i, pred in enumerate(preds):
+#             # Get dimensions
+#             bs, ch, ny, nx = pred.shape  # [batch_size, (4+num_classes)*reg_max, height, width]
+            
+#             # Reshape predictions to [batch_size, height*width, 4+num_classes]
+#             # This transforms grid cell predictions into a sequence of predictions
+#             pred = pred.view(bs, self.dfl.conv.weight.shape[1] * 4 + self.num_classes, -1).permute(0, 2, 1)
+#             # pred shape after reshape: [batch_size, height*width, 4*reg_max+num_classes]
+            
+#             # Split predictions into box and class components
+#             # box_pred shape: [batch_size, height*width, 4*reg_max]
+#             # cls_pred shape: [batch_size, height*width, num_classes]
+#             box_pred, cls_pred = pred.split((self.dfl.conv.weight.shape[1] * 4, self.num_classes), 2)
+            
+#             # Reshape box predictions for DFL processing
+#             # [batch_size, height*width, 4*reg_max] -> [batch_size, height*width, 4, reg_max]
+#             box_pred = box_pred.view(bs, -1, 4, self.dfl.conv.weight.shape[1])
+            
+#             # Apply DFL to get final box coordinates
+#             # Output shape: [batch_size, height*width, 4]
+#             box_pred = self.dfl(box_pred).view(bs, -1, 4)
+            
+#             # In a real implementation, we would match predictions to targets here
+#             # This would involve:
+#             # 1. Converting grid cell predictions to actual coordinates
+#             # 2. Assigning targets to predictions based on IoU and other criteria
+#             # 3. Creating masks for positive (matched) and negative (unmatched) samples
+            
+#             # For this simplified example, we assume targets are already matched
+#             # and have the same structure as predictions
+            
+#             # Classification loss calculation
+#             # Create target tensor with same shape as cls_pred
+#             # tcls shape: [batch_size, height*width, num_classes]
+#             tcls = torch.zeros_like(cls_pred)
+            
+#             # In practice, we would use the matching results to assign target classes
+#             # Here we're using a simplified approach where targets['class'] directly indexes the classes
+#             # This assumes targets['class'] contains indices of positive classes for each prediction
+#             if isinstance(targets['class'], int):
+#                 # Handle single class case
+#                 tcls[..., targets['class']] = 1.0
+#             else:
+#                 # Handle multi-class case
+#                 # This is simplified - in practice, we'd have a more complex assignment
+#                 for b in range(bs):
+#                     if b < len(targets['class']):
+#                         tcls[b, :, targets['class'][b]] = 1.0
+            
+#             # Calculate BCE loss for classification
+#             # Mean over all dimensions to get scalar loss
+#             cls_loss = self.bce(cls_pred, tcls).mean()
+#             lcls += cls_loss
+            
+#             # Box regression loss calculation
+#             # Convert predicted boxes from xywh to xyxy format for IoU calculation
+#             # pbox shape: [batch_size, height*width, 4]
+#             pbox = self.xywh2xyxy(box_pred)
+            
+#             # Get target boxes (already in xyxy format)
+#             # tbox shape should match pbox: [batch_size, height*width, 4]
+#             # In practice, we would use the matching results to assign target boxes
+#             tbox = targets['boxes']
+            
+#             # Calculate 1 - IoU as the box loss (higher IoU = lower loss)
+#             # In a real implementation, we would use CIoU or DIoU for better convergence
+#             box_loss = (1.0 - self.box_iou(pbox, tbox)).mean()
+#             lbox += box_loss
+        
+#         # Return combined loss and individual components
+#         return {
+#             'loss': lbox + lcls,  # Total loss
+#             'box_loss': lbox,     # Box regression loss component
+#             'cls_loss': lcls      # Classification loss component
+#         }
     
-    @staticmethod
-    def box_iou(box1, box2):
-        """
-        Compute intersection over union (IoU) of boxes.
-        Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
+#     @staticmethod
+#     def xywh2xyxy(x):
+#         """
+#         Convert boxes from [x_center, y_center, width, height] to [x1, y1, x2, y2] format.
         
-        Args:
-            box1: First set of boxes, tensor of shape [..., 4]
-            box2: Second set of boxes, tensor of shape [..., 4] or tuple of tensors
+#         Args:
+#             x: Tensor of shape [..., 4] containing boxes in xywh format
             
-        Returns:
-            IoU values, tensor of shape [...]
-        """
-        # Handle case where box2 is a tuple
-                # Handle case where box2 is a tuple or list of tuples
-        if isinstance(box2, tuple):
-            # If box2 is a tuple, convert it to a tensor with the same shape as box1
-            box2 = torch.stack(list(box2), dim=-1)
-        elif isinstance(box2, list):# and all(isinstance(item, tuple) for item in box2):
-            # If box2 is a list of tuples, first convert each tuple to a tensor
-            # and then stack them along the batch dimension
-            #box2 = torch.stack([torch.stack(list(item), dim=-1) for item in box2])
-            box2 = torch.stack(box2)
+#         Returns:
+#             Tensor of same shape with boxes in xyxy format
+#         """
+#         y = x.clone()
+#         y[..., 0] = x[..., 0] - x[..., 2] / 2  # x1 = x_center - width/2
+#         y[..., 1] = x[..., 1] - x[..., 3] / 2  # y1 = y_center - height/2
+#         y[..., 2] = x[..., 0] + x[..., 2] / 2  # x2 = x_center + width/2
+#         y[..., 3] = x[..., 1] + x[..., 3] / 2  # y2 = y_center + height/2
+#         return y
+    
+#     @staticmethod
+#     def box_iou(box1, box2):
+#         """
+#         Compute intersection over union (IoU) of boxes.
+#         Both sets of boxes are expected to be in (x1, y1, x2, y2) format.
         
-        # Get coordinates of intersection rectangles
-        # For each coordinate, we take the maximum of the top-left corners
-        # and the minimum of the bottom-right corners
-        inter_left = torch.max(box1[..., 0], box2[..., 0])    # max of x1 values
-        inter_top = torch.max(box1[..., 1], box2[..., 1])     # max of y1 values
-        inter_right = torch.min(box1[..., 2], box2[..., 2])   # min of x2 values
-        inter_bottom = torch.min(box1[..., 3], box2[..., 3])  # min of y2 values
+#         Args:
+#             box1: First set of boxes, tensor of shape [..., 4]
+#             box2: Second set of boxes, tensor of shape [..., 4] or tuple of tensors
+            
+#         Returns:
+#             IoU values, tensor of shape [...]
+#         """
+#         # Handle case where box2 is a tuple
+#                 # Handle case where box2 is a tuple or list of tuples
+#         if isinstance(box2, tuple):
+#             # If box2 is a tuple, convert it to a tensor with the same shape as box1
+#             box2 = torch.stack(list(box2), dim=-1)
+#         elif isinstance(box2, list):# and all(isinstance(item, tuple) for item in box2):
+#             # If box2 is a list of tuples, first convert each tuple to a tensor
+#             # and then stack them along the batch dimension
+#             #box2 = torch.stack([torch.stack(list(item), dim=-1) for item in box2])
+#             box2 = torch.stack(box2)
         
-        # Calculate intersection area, ensuring non-negative dimensions
-        # If boxes don't overlap, this will be zero
-        inter_width = torch.clamp(inter_right - inter_left, min=0)
-        inter_height = torch.clamp(inter_bottom - inter_top, min=0)
-        inter_area = inter_width * inter_height
+#         # Get coordinates of intersection rectangles
+#         # For each coordinate, we take the maximum of the top-left corners
+#         # and the minimum of the bottom-right corners
+#         inter_left = torch.max(box1[..., 0], box2[..., 0])    # max of x1 values
+#         inter_top = torch.max(box1[..., 1], box2[..., 1])     # max of y1 values
+#         inter_right = torch.min(box1[..., 2], box2[..., 2])   # min of x2 values
+#         inter_bottom = torch.min(box1[..., 3], box2[..., 3])  # min of y2 values
+        
+#         # Calculate intersection area, ensuring non-negative dimensions
+#         # If boxes don't overlap, this will be zero
+#         inter_width = torch.clamp(inter_right - inter_left, min=0)
+#         inter_height = torch.clamp(inter_bottom - inter_top, min=0)
+#         inter_area = inter_width * inter_height
 
 def load_and_preprocess_image(image_path, img_size=640):
     """
@@ -689,49 +791,15 @@ def test_yolov8_on_image(image_path, model, class_names):
     # Run model
     model.eval()
     with torch.no_grad():
-        # Forward pass through backbone
-        x = img_tensor
-        print("\nBackbone stages:")
-        x1 = model.backbone[:4](x)
-        print(f"Stage 1-2 output: {x1.shape}")  # [1, 256, 160, 160]
-        x2 = model.backbone[4:7](x1)
-        print(f"Stage 3 output: {x2.shape}")    # [1, 512, 80, 80]
-        x3 = model.backbone[7:](x2)
-        print(f"Stage 4 output: {x3.shape}")    # [1, 512, 40, 40]
+        outputs = model(img_tensor)
         
-        # Neck (FPN)
-        print("\nNeck stages:")
-        p3 = model.neck[0](x3)  # SPPF
-        print(f"SPPF output: {p3.shape}")       # [1, 512, 40, 40]
-        p3 = model.neck[1](p3)   # Conv
-        print(f"Conv output: {p3.shape}")       # [1, 256, 40, 40]
-        p3 = model.neck[2](p3)   # Upsample
-        print(f"Upsample output: {p3.shape}")   # [1, 256, 80, 80]
-        
-        p2 = torch.cat([p3, x2], 1)
-        print(f"Concat output: {p2.shape}")     # [1, 768, 80, 80]
-        p2 = model.neck[3][0](p2)  # C2f
-        print(f"C2f output: {p2.shape}")        # [1, 256, 80, 80]
-        p2_conv = model.neck[3][1](p2)  # Conv
-        print(f"Conv output: {p2_conv.shape}")  # [1, 256, 80, 80]
-        p2_up = model.neck[3][2](p2_conv)  # Upsample
-        print(f"Upsample output: {p2_up.shape}")# [1, 256, 160, 160]
-        
-        p1 = torch.cat([p2_up, x1], 1)
-        print(f"Concat output: {p1.shape}")     # [1, 512, 160, 160]
-        p1 = model.neck[3][3](p1)  # C2f
-        print(f"Final neck output: {p1.shape}") # [1, 256, 160, 160]
-        
-        # Head - Use the correct feature maps that match the expected channel dimensions
-        print("\nHead outputs:")
-        # Use p1, p2 (not p2_conv or p2_up), and p3 as inputs to the detection head
-        outputs = model.detect([p1, p2, p3])
-        for i, o in enumerate(outputs):
-            print(f"Detection head {i} output: {o.shape}")
-        
-        # Post-process
-        detections = model.post_process(outputs)[0]
-        print(f"\nPost-processed detections: {detections.shape}")  # [N, 6] (x1,y1,x2,y2,conf,cls)
+        # Handle different output formats
+        if isinstance(outputs, dict):
+            # YOLO-DETR outputs
+            detections = model.post_process(outputs['yolo'])[0]
+        else:
+            # Standard YOLO outputs
+            detections = outputs[0]
     
     # Visualize
     visualize_detections(image_path, detections, class_names, scale)
@@ -2676,14 +2744,16 @@ def test_yolomulti():
 def start_training():
     # Initialize YOLO-DETR hybrid model
     model = YOLOMulti(
-        num_classes=6, #80,
+        num_classes=80, #6, #80,
         version='yolo-detr',
         scale='m',
         in_channels=3
     )
     # Start training
-    train_yolo_detr(model=model, data_path="/mnt/f/Dataset/Kitti", dataset_type="kitti", epochs=20, batch_size=4, \
-        img_size=640, save_dir = 'output/yolomulti')
+    # train_yolo_detr(model=model, data_path="/mnt/f/Dataset/Kitti", dataset_type="kitti", epochs=20, batch_size=4, \
+    #     img_size=640, save_dir = 'output/yolomulti')
+    train_yolo_detr(model=model, data_path="/DATA10T/Datasets/COCOoriginal/", dataset_type="coco", epochs=20, batch_size=4, \
+        img_size=640, save_dir = 'output/yolomulti_coco')
 
 if __name__ == "__main__":
     #test_yolomulti()
