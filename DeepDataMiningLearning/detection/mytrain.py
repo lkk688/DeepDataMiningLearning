@@ -222,7 +222,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model, preprocess, classes = create_detectionmodel(args.model, num_classes, args.trainable)
+    model, preprocess, classes = create_detectionmodel(args.model, num_classes=num_classes, trainable_layers=args.trainable, device=device)
     model.to(device)
     
     if args.distributed and args.sync_bn:
@@ -330,7 +330,7 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, sc
         images = list(image.to(device) for image in images) #list of [3, 1280, 1920]
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets] #tuple to list
         #with torch.cuda.amp.autocast(enabled=scaler is not None):
-        with torch.amp.autocast(enabled=scaler is not None):
+        with torch.amp.autocast(device_type=device.type, enabled=scaler is not None):
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values()) #single value
 
