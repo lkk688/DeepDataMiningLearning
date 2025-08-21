@@ -1,46 +1,136 @@
-# DeepDataMiningLearning
-Data mining, machine learning, and deep learning sample codes for SJSU CMPE255 Data Mining ([Fall2023 SJSU Official Syllabus](https://sjsu.campusconcourse.com/view_syllabus?course_id=22871&public_mode=1)) and CMPE258 Deep Learning ([Fall2023 SJSU Official Syllabus](https://sjsu.campusconcourse.com/view_syllabus?course_id=26399&public_mode=1)).
-* Some google colab examples need SJSU google account to view)
-* Large language Models (LLMs) part is newly added
-* You can also view the documents in: [readthedocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
+# 🚀 DeepDataMiningLearning
 
-## Setups
-Install this python package (optional) via
+> **Comprehensive collection of data mining, machine learning, and deep learning sample codes and tutorials**
+
+This repository contains educational materials and practical implementations for:
+- **SJSU CMPE255** - Data Mining
+- **SJSU CMPE257** - Machine Learning  
+- **SJSU CMPE258** - Deep Learning
+- **SJSU CMPE249** - Intelligent Autonomous Systems
+
+## 🌟 Features
+
+- ✅ **Comprehensive tutorials** from basic Python to advanced deep learning
+- ✅ **Large Language Models (LLMs)** - newly added section
+- ✅ **Google Colab integration** (some examples require SJSU Google account)
+- ✅ **Modern documentation** with Sphinx and Furo theme
+- ✅ **Multi-platform support** (local, HPC, cloud)
+
+📖 **Documentation**: [ReadTheDocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
+
+## 📋 Table of Contents
+
+- [🚀 DeepDataMiningLearning](#-deepdatamininglearning)
+  - [🌟 Features](#-features)
+  - [📋 Table of Contents](#-table-of-contents)
+  - [⚙️ Setup & Installation](#️-setup--installation)
+  - [📚 Sphinx Documentation](#-sphinx-documentation)
+  - [📊 Python Data Analytics](#-python-data-analytics)
+  - [☁️ Cloud Data Analytics](#️-cloud-data-analytics)
+  - [🤖 Machine Learning Algorithms](#-machine-learning-algorithms)
+  - [🔥 Deep Learning with PyTorch](#-deep-learning-with-pytorch)
+  - [🧠 Deep Learning with TensorFlow](#-deep-learning-with-tensorflow)
+  - [📈 Unsupervised Learning](#-unsupervised-learning)
+  - [📝 NLP and Text Mining](#-nlp-and-text-mining)
+  - [🎵 SignalAI](#-signalai)
+
+## ⚙️ Setup & Installation
+
+### Package Installation (Optional)
+
+Install this Python package via:
 
 ```bash
 git clone https://github.com/lkk688/DeepDataMiningLearning.git
 cd DeepDataMiningLearning
-% pip install flit
-% flit install --symlink
+pip install flit
+flit install --symlink
 ```
-You will see the package "DeepDataMiningLearning" is install in your python virionment, you can "import DeepDataMiningLearning" as a package.
 
-If you face issues of "OSError: [WinError 1314] A required privilege is not held by the client" in Windows, you can try to activate developer mode on Windows settings (Settings -> System -> For developers (turn on)).
+After installation, you can import the package in Python:
+```python
+import DeepDataMiningLearning
+```
 
-ref "docs/python.rst" for detailed python package description.
+### 🐛 Troubleshooting
 
-Open the Jupyter notebook in local machine:
+**Windows Permission Error**: If you encounter `OSError: [WinError 1314] A required privilege is not held by the client`, enable Developer Mode:
+- Go to **Settings** → **System** → **For developers** → Turn on **Developer Mode**
+
+**Detailed Documentation**: See [`docs/python.rst`](docs/python.rst) for comprehensive package description.
+
+### 🚀 Quick Start
+
+**Launch Jupyter Lab**:
 ```bash
 jupyter lab --ip 0.0.0.0 --no-browser --allow-root
 ```
 
-## Sphinx docs
+## 📚 Sphinx Documentation
 
-Activate python virtual environment, you can use 'sphinx-build' command to build the document
+### Quick Start - View Documentation
+
+1. **Build the documentation:**
+   ```bash
+   sphinx-build docs ./docs/build
+   sphinx-autobuild docs/ docs/_build/html
+   ```
+
+2. **Serve locally:**
+   ```bash
+   cd docs/build
+   python -m http.server 8000
+   ```
+
+3. **Open in browser:** http://localhost:8000/
+
+### Documentation Setup & Dependencies
+
+The documentation system has been upgraded with modern themes and full dependency resolution:
 
 ```bash
-   % pip install -r requirements.txt
-   % pip install nbsphinx, nbsphinx_link  #enable jupyter notebook support for Sphinx: https://docs.readthedocs.io/en/stable/guides/jupyter.html
-   $ conda install -c conda-forge nbsphinx 
-   % #https://pandoc.org/installing.html
-   (mypy310) kaikailiu@kaikais-mbp DeepDataMiningLearning % sphinx-build docs ./docs/build
-   #check the integrity of all internal and external links:
-   (mypy310) kaikailiu@kaikais-mbp DeepDataMiningLearning % sphinx-build docs -W -b linkcheck -d docs/build/doctrees docs/build/html
-```
-The generated html files are in the folder of "build". You can also view the documents in: [readthedocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
+# Install required dependencies
+pip install sphinx>=8.1.3 furo myst-parser nbsphinx nbsphinx-link sphinx-immaterial
 
-## Python Data Analytics
-Basic python tutorials, numpy, Pandas, data visualization and EDA
+# Build documentation
+sphinx-build docs ./docs/build
+
+# Check link integrity (optional)
+sphinx-build docs -W -b linkcheck -d docs/build/doctrees docs/build/html
+```
+
+### Theme Configuration
+
+The documentation uses the **Furo theme** - a modern, responsive theme with Material Design aesthetics:
+
+```python
+# In docs/conf.py
+html_theme = 'furo'  # Modern, clean theme similar to Material Design
+```
+
+**Available themes:**
+- `furo` - Current active theme (modern, Material Design-like)
+- `sphinx_immaterial` - Direct adaptation of MkDocs-Material (installed, has config issues)
+- `sphinx_rtd_theme` - Classic Read the Docs theme
+
+### Supported File Formats
+
+- **RestructuredText (.rst)** - Native Sphinx format
+- **Markdown (.md)** - Via myst-parser extension
+- **Jupyter Notebooks (.ipynb)** - Via nbsphinx extension
+
+### Recent Fixes Applied
+
+✅ **Resolved ImportError with Python 3.11+**: Upgraded Sphinx from 3.5.3 to 8.1.3  
+✅ **Added missing extensions**: myst-parser, nbsphinx-link  
+✅ **Modern theme integration**: Furo theme with Material Design aesthetics  
+✅ **Dependency compatibility**: All extensions now work together seamlessly  
+
+The generated HTML files are in `docs/build/`. You can also view the documents at: [readthedocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
+
+## 📊 Python Data Analytics
+
+> **Foundation tutorials covering Python basics, NumPy, Pandas, data visualization, and exploratory data analysis**
 * Colab Tutorials:
    * Colab basic features: [colabfeatures](https://colab.research.google.com/notebooks/basic_features_overview.ipynb)
    * Tutorial of Colab working with external data: [colabexternaldata](https://colab.research.google.com/notebooks/io.ipynb#scrollTo=XDg9OBaYqRMd)
@@ -56,7 +146,9 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
    * Streamlit connect to Google Big Query: [streamlitbigquery](https://docs.streamlit.io/knowledge-base/tutorials/databases/bigquery)
    * Deploy Streamlit to Google Cloud App Engine: [streamlitappengine](https://dev.to/whitphx/how-to-deploy-streamlit-apps-to-google-app-engine-407o)
 
-## Cloud Data Analytics
+## ☁️ Cloud Data Analytics
+
+> **Google Cloud Platform integration for scalable data mining and analytics**
 
 * Data Mining based on Google Cloud: 
    * Google Cloud access via Colab: [colablink](https://colab.research.google.com/drive/1fmNMY23wzoQQTGoGns1cgTrjOIuj-Qtc?usp=sharing)
@@ -82,7 +174,9 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
       * Text Embedding, Kmeans for text embeddings
       * Use PaLM2 LLM model to summarize text/complaints
 
-## Machine Learning Algorithm
+## 🤖 Machine Learning Algorithms
+
+> **Classical machine learning implementations with scikit-learn and custom algorithms**
 * Machine Learning introduction: 
    * MLIntro-Regression -- [colablink](https://colab.research.google.com/drive/1atrY6rpfPKs5K1VxddfEOWR5QRarxHiG?usp=sharing)
       * Linear Regression via Normal Equation and own SGD implementation
@@ -109,56 +203,72 @@ Basic python tutorials, numpy, Pandas, data visualization and EDA
       * Support Vector Machines introduction, SVM for Breast Cancer Dataset, SVM for Face Recognition
       * SVM for MNIST in Pytorch, Neural Network MNIST Pytorch
 
-## Deep Learning based on Pytorch (new)
-Pytorch Tutorial Series Sample Code with [ReadtheDocs](https://deepdatamininglearning.readthedocs.io/en/latest/):
-* Pytorch Tutorial1: [CMPE_pytorch1](./docs/notebooks/CMPE_pytorch1_2024Fall.ipynb)
-   * Pytorch installation, Tensors, Tensor functions, Arithmetic operations
-* Pytorch Tutorial2: [CMPE_pytorch2](./docs/notebooks/CMPE_pytorch2_2024Fall.ipynb)
-   * Fit a third order polynomial to sine function via numpy and pytorch
-   * PyTorch Linear Regression, PyTorch Regression via SKLearn dataset
-   * Binary Classification, PyTorch Logistic Regression, Pytorch Multi-class Classification via SKLearn dataset
-* Pytorch Tutorial3: [CMPE_pytorch3_autograd](./docs/notebooks/CMPE_pytorch3_2024Fall.ipynb)
-   * Autograd, Computing Gradients, Fitting sine wave example
-   * Pytorch NN package, Optim package, Using nn.Module
-* Pytorch Tutorial4: [CMPE_pytorch4_MNIST](./docs/notebooks/CMPE_pytorch4_2024Fall.ipynb)
-   * Pytorch MNIST Dataset,Torch NN Module and torch.nn.functional module
-   * nn.Sequential and nn.Sequential with OrderedDict
-   * Training Neural Networks via nn.NLLLoss
-   * L1 norm, L2 norm, and Elastic Net (L1+L2) Regularization with PyTorch
-   * MNIST with NLLLoss and weight_decay
-   * MNIST with CrossEntropyLoss
-* Pytorch Tutorial5: [CMPE_pytorch5_imageclassification](./docs/notebooks/CMPE_pytorch5_2024Fall_imageclassification.ipynb)
-   * MLP for MNIST and FashionMNIST Data
-   * CNN Filters for Image
-   * CNN for CIFAR Dataset
-* Pytorch Tutorial6: [CMPE_pytorch6_mlp2resnet](./docs/notebooks/CMPE_pytorch6_2024Fall_mlp2resnet.ipynb) 
-   * Multilayer Perceptron for image classification
-   * LeNet for image classification
-   * AlexNet for Image Classification
-   * VGG for Image Classification
-   * ResNet for Image Classification
-* Pytorch Tutorial7: [CMPE_pytorch7_torchvision](./docs/notebooks/CMPE_pytorch7_2024Fall_torchvision.ipynb)
-   * Download Flower dataset, Pytorch Data Processing
-   * VGGNet Transfer Learning for Flowers
-   * Torchvision, pretrained Torchvision model (EfficientNet, resnet, densenet121, vit)
-   * Freeze EfficientNet backbone and revise header, Train and test the model
-* Pytorch Tutorial8: [CMPE_pytorch8_timm.ipynb](./docs/notebooks/CMPE_pytorch8_2024Fall_timm.ipynb)
-   * Download Oxford-IIT Pet Dataset, Download Imagenette
-   * TIMM Datasets
-   * TIMM, Customizing models, Modify the classifier and pooling layers, Feature Extraction, Using FX to access intermediate layers
-   * Train TIMM Model
-   * Data Augmentation (RandAugment, CutMix and Mixup), create dataloader
-   * Optimizers and Schedulers, Adjusting Learning rate schedules
-   * Apply new data augmentation, optimizers and schedulers in Training
-   * Exponential Moving Average Model
-* Pytorch Tutorial9: [CMPE_pytorch9_inferenceoptimization.ipynb](./docs/notebooks/CMPE_pytorch7_2024Fall_inferenceoptimization.ipynb)
-   * Model Exporting to TorchScript
-   * libtorch Install
-   * TIMM to TorchScript
-   * Exporting to ONNX
-* Pytorch Tutorial10: [CMPE_pytorch10_huggingfaceimage.ipynb](./docs/notebooks/CMPE_pytorch7_2024Fall_huggingfaceimage.ipynb)
-   * Huggingface Image
-   * Training for Huggingface Food-101 dataset, CIFAR10 dataset, Flower dataset
+## 🔥 Deep Learning with PyTorch
+
+> **Modern deep learning tutorials and implementations using PyTorch framework**
+### 📚 PyTorch Tutorial Series
+
+**Complete tutorial series with detailed documentation**: [ReadTheDocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
+
+#### 🎯 Fundamentals & Core Concepts
+
+**Tutorial 1: PyTorch Basics** - [`CMPE_pytorch1`](./docs/notebooks/CMPE_pytorch1_2024Fall.ipynb)
+- PyTorch installation, Tensors, Tensor functions, Arithmetic operations
+
+**Tutorial 2: Regression & Classification** - [`CMPE_pytorch2`](./docs/notebooks/CMPE_pytorch2_2024Fall.ipynb)
+- Polynomial fitting with NumPy and PyTorch
+- Linear Regression, Binary/Multi-class Classification
+- Logistic Regression with scikit-learn datasets
+
+**Tutorial 3: Automatic Differentiation** - [`CMPE_pytorch3_autograd`](./docs/notebooks/CMPE_pytorch3_2024Fall.ipynb)
+- Autograd system, Computing Gradients
+- Sine wave fitting example
+- PyTorch NN package, Optimizer package, nn.Module usage
+
+**Tutorial 4: Neural Networks & MNIST** - [`CMPE_pytorch4_MNIST`](./docs/notebooks/CMPE_pytorch4_2024Fall.ipynb)
+- MNIST Dataset handling
+- torch.nn.Module and torch.nn.functional
+- nn.Sequential and OrderedDict
+- Loss functions (NLLLoss, CrossEntropyLoss)
+- Regularization techniques (L1, L2, Elastic Net)
+#### 🖼️ Computer Vision & Image Classification
+
+**Tutorial 5: CNN Fundamentals** - [`CMPE_pytorch5_imageclassification`](./docs/notebooks/CMPE_pytorch5_2024Fall_imageclassification.ipynb)
+- Multi-Layer Perceptron for MNIST and FashionMNIST
+- CNN Filters and Feature Maps
+- CNN architecture for CIFAR Dataset
+
+**Tutorial 6: Classic CNN Architectures** - [`CMPE_pytorch6_mlp2resnet`](./docs/notebooks/CMPE_pytorch6_2024Fall_mlp2resnet.ipynb)
+- Multi-layer Perceptron baseline
+- LeNet architecture implementation
+- AlexNet for large-scale image classification
+- VGG network variations
+- ResNet and residual connections
+
+**Tutorial 7: Transfer Learning & TorchVision** - [`CMPE_pytorch7_torchvision`](./docs/notebooks/CMPE_pytorch7_2024Fall_torchvision.ipynb)
+- Flower dataset processing and handling
+- VGGNet Transfer Learning implementation
+- Pre-trained models (EfficientNet, ResNet, DenseNet, ViT)
+- Feature extraction vs fine-tuning strategies
+
+**Tutorial 8: Advanced Training with TIMM** - [`CMPE_pytorch8_timm`](./docs/notebooks/CMPE_pytorch8_2024Fall_timm.ipynb)
+- Oxford-IIT Pet Dataset and Imagenette
+- TIMM library integration and model customization
+- Advanced data augmentation (RandAugment, CutMix, Mixup)
+- Learning rate scheduling and optimization
+- Exponential Moving Average (EMA) models
+#### ⚡ Model Optimization & Deployment
+
+**Tutorial 9: Inference Optimization** - [`CMPE_pytorch9_inferenceoptimization`](./docs/notebooks/CMPE_pytorch7_2024Fall_inferenceoptimization.ipynb)
+- Model export to TorchScript
+- LibTorch installation and usage
+- TIMM model conversion to TorchScript
+- ONNX export for cross-platform deployment
+
+**Tutorial 10: Hugging Face Integration** - [`CMPE_pytorch10_huggingfaceimage`](./docs/notebooks/CMPE_pytorch7_2024Fall_huggingfaceimage.ipynb)
+- Hugging Face Transformers for computer vision
+- Training on Food-101, CIFAR-10, and Flower datasets
+- Pre-trained vision models from Hugging Face Hub
 
 
 * Pytorch introduction code (archived): 
@@ -202,7 +312,9 @@ Other Deep Learning sample code based on Pytorch (under the folder of "DeepDataM
    * [CustomDetectron2](https://github.com/lkk688/CustomDetectron2)
 
 
-## Deep Learning based on Tensorflow (archived)
+## 🧠 Deep Learning with TensorFlow (Archived)
+
+> **Legacy TensorFlow implementations for reference and learning**
 Deep learning notebooks (colab link is better)
 * Tensorflow introduction code: [CMPE-Tensorflow1.ipynb](./notebooks/CMPE-Tensorflow1.ipynb) -- [colablink](https://colab.research.google.com/drive/188d4pSon4mSAzhGG54zXjWctTOo7Ds53?usp=sharing)
 
@@ -210,7 +322,9 @@ Deep learning notebooks (colab link is better)
    * Road sign data from Kaggle example: [Tensorflow-Roadsignclassification.ipynb](./notebooks/Tensorflow-Roadsignclassification.ipynb), [colablink](https://colab.research.google.com/drive/1W0bwQVXDFakcB7FdQbbkrSdsucNWW7we)
    * Flower dataset example with TF Dataset, TFRecord, Google Cloud Storage, TPU/GPU acceleration: [colablink](https://colab.research.google.com/drive/1_CwebpyvkcTdAW4zbffga6DT58yw0bZO?usp=sharing)
 
-## Unsupervised Learning
+## 📈 Unsupervised Learning
+
+> **Dimensionality reduction, clustering, and manifold learning techniques**
 * Unsupervised Learning Jupyter notebooks
   * PCA: [colablink](https://colab.research.google.com/drive/1zho_nKQq8yQ-4IFXxw9GZEcdhVdtOabX?usp=share_link)
     * Affine Transformation via Matrix Application, eigenvalues and eigenvectors, eigendecomposition
@@ -222,46 +336,80 @@ Deep learning notebooks (colab link is better)
   * Clustering: [colablink](https://colab.research.google.com/drive/1wOMrFR7AXnSc99mUkpJhMLfshpe5aeGd?usp=share_link) 
     * K-Means, Gaussian Mixture Models, Spectral Clustering, DBSCAN 
 
-## NLP and Text Mining
-* Text Mining Jupyter notebooks
-   * Text Representations: [colablink](https://colab.research.google.com/drive/1L4gyfPqvqdvWSGy88DXVS-7nta1pGWB8?usp=sharing)
-      * One-Hot encoding, Bag-of-Words, TF-IDF, and Word2Vec (based on gensim); Word2Vec WiKi and Shakespeare examples; Gather data from Google and WordCLoud
-   * Texrtact and NLTK: [colablink](https://colab.research.google.com/drive/1q6Khw3MGJg2S1q8eOcpgtnbLPS_LD7Uj?usp=share_link)
-      * Text Extraction via textract; NLTK text preprocessing
-   * Text Mining via Tensorflow-text: [colablink](https://colab.research.google.com/drive/1kcM8zAPWDQa1_82OCl74CZOCgZDofipR?usp=share_link)
-      * Using Keras embedding layer; sentiment classification example; prepare positive and negative samples and create a Skip-gram Word2Vec model  
-   * Text Classification via Tensorflow: [colablink](https://colab.research.google.com/drive/1NyIjdj4d4lueByK-_17BepKLRXz7oM9e?usp=sharing)
-      * RNN, LSTM, Transformer, BERT
-   * Twitter NLP all-in-one example: [colablink](https://colab.research.google.com/drive/16Lq8pFyxwIUhFi241FYDrG-VfBBSTsgE?usp=sharing)
-      * NTLK, LSTM, Bi-LSTM, GRU, BERT
+## 📝 NLP and Text Mining
+
+> **Natural Language Processing and Large Language Models (LLMs) implementations**
+
+### 📚 Text Processing Fundamentals
+
+**Text Representations** - [Colab Notebook](https://colab.research.google.com/drive/1L4gyfPqvqdvWSGy88DXVS-7nta1pGWB8?usp=sharing)
+- One-Hot encoding, Bag-of-Words, TF-IDF
+- Word2Vec with Gensim (Wikipedia and Shakespeare examples)
+- Data gathering from Google and WordCloud visualization
+
+**Text Extraction & NLTK** - [Colab Notebook](https://colab.research.google.com/drive/1q6Khw3MGJg2S1q8eOcpgtnbLPS_LD7Uj?usp=share_link)
+- Text extraction using Textract
+- NLTK preprocessing pipelines
+
+### 🤖 Deep Learning for NLP
+
+**TensorFlow Text Processing** - [Colab Notebook](https://colab.research.google.com/drive/1kcM8zAPWDQa1_82OCl74CZOCgZDofipR?usp=share_link)
+- Keras embedding layers
+- Sentiment classification
+- Skip-gram Word2Vec implementation
+
+**Text Classification Models** - [Colab Notebook](https://colab.research.google.com/drive/1NyIjdj4d4lueByK-_17BepKLRXz7oM9e?usp=sharing)
+- RNN, LSTM, Transformer, BERT architectures
+
+**Twitter NLP Pipeline** - [Colab Notebook](https://colab.research.google.com/drive/16Lq8pFyxwIUhFi241FYDrG-VfBBSTsgE?usp=sharing)
+- NLTK preprocessing
+- LSTM, Bi-LSTM, GRU models
+- BERT fine-tuning
 
 ## Recommendation
 * Recommendation
    * Recommendation via Python Surprise and Neural Collaborative Filtering (Tensorflow): [colablink](https://colab.research.google.com/drive/1PNi5Vl4YRCsNdLS-pcODSdgbhBlPUoBI?usp=sharing)
    * Tensorflow Recommender: [colab](https://colab.research.google.com/drive/14tfyPInCyZzcr4sk6zRejHR1847WwVR9?usp=sharing)
 
-## NLP Models and Transformer
-NLP models based on Huggingface Transformer libraries
-* Starting
-   * [HuggingfaceTransformers](notebooks/Transformers.ipynb)
-   * [huggingfacetest](nlp/huggingfacetest.py)
-   * [hfdataset.py](nlp/hfdataset.py)
-   * [huggingfaceHPC.ipynb](nlp/huggingfaceHPC.ipynb)
-   * [huggingfaceHPCdata](nlp/huggingfaceHPCdata.py)
-* Classification application
-   * [BERTMTLfakehate](nlp/BERTMTLfakehate.py)
-   * [MLTclassifier](nlp/MLTclassifier.py)
-   * [huggingfaceClassifierNER.ipynb](nlp/huggingfaceClassifierNER.ipynb)
-* Multi-modal Classifier: [huggingfaceclassifier2](nlp/huggingfaceclassifier2.py), [huggingfaceclassifier](nlp/huggingfaceclassifier.py)
-* Sequence related application, e.g., translation, summary
-   * [huggingfaceSequence](nlp/huggingfaceSequence.ipynb)
-* Question and Answer (Q&A)
-   * [huggingfaceQA.py](nlp/huggingfaceQA.py)
-* Chatbot
-   * [huggingfacechatbot.ipynb](nlp/huggingfacechatbot.ipynb)
+### 🤗 Hugging Face Transformers
 
-Pytorch Transformer
-* [torchtransformer](nlp/torchtransformer.py)
+> **State-of-the-art NLP models using Hugging Face Transformers library**
+
+#### 🚀 Getting Started
+
+**Foundation Tutorials**:
+- [`HuggingfaceTransformers.ipynb`](notebooks/Transformers.ipynb) - Introduction notebook
+- [`huggingfacetest.py`](nlp/huggingfacetest.py) - Basic usage examples
+- [`hfdataset.py`](nlp/hfdataset.py) - Dataset handling
+- [`huggingfaceHPC.ipynb`](nlp/huggingfaceHPC.ipynb) - HPC training setup
+- [`huggingfaceHPCdata.py`](nlp/huggingfaceHPCdata.py) - HPC data processing
+
+#### 📊 Text Classification
+
+**BERT Applications**:
+- [`BERTMTLfakehate.py`](nlp/BERTMTLfakehate.py) - Multi-task learning for fake news and hate speech
+- [`MLTclassifier.py`](nlp/MLTclassifier.py) - Multi-label text classification
+- [`huggingfaceClassifierNER.ipynb`](nlp/huggingfaceClassifierNER.ipynb) - Classification and NER
+
+**Multi-modal Classification**:
+- [`huggingfaceclassifier2.py`](nlp/huggingfaceclassifier2.py) - Advanced multi-modal classifier
+- [`huggingfaceclassifier.py`](nlp/huggingfaceclassifier.py) - Basic multi-modal classifier
+
+#### 🔄 Sequence-to-Sequence Tasks
+
+**Translation & Summarization**:
+- [`huggingfaceSequence.ipynb`](nlp/huggingfaceSequence.ipynb) - Translation and summarization models
+
+**Question Answering**:
+- [`huggingfaceQA.py`](nlp/huggingfaceQA.py) - Q&A system implementation
+
+**Conversational AI**:
+- [`huggingfacechatbot.ipynb`](nlp/huggingfacechatbot.ipynb) - Chatbot development
+
+#### ⚡ PyTorch Transformers
+
+**Custom Implementation**:
+- [`torchtransformer.py`](nlp/torchtransformer.py) - Transformer from scratch in PyTorch
 
 Open Source LLMs
 * [BERTLM.ipynb](nlp/BERTLM.ipynb)
@@ -507,8 +655,13 @@ epoch 15, evaluation metric: sacrebleu
 Evaluation result: {'score': 45.11294317735652, 'counts': [200677, 140858, 104286, 81486], 'totals': [283438, 274938, 266464, 258142], 'precisions': [70.8010217402042, 51.232641541001975, 39.1369941155278, 31.566347204251922], 'bp': 0.9805091347328498, 'sys_len': 283438, 'ref_len': 289017}
 ```
 
-## SignalAI
-Perform audio classification via "hfclassify1.py":
+## 📡 SignalAI
+
+> **Signal processing, time series analysis, and AI-driven signal intelligence**
+
+### 🎵 Audio Classification
+
+Perform audio classification via `hfclassify1.py`:
 ```bash
    {'eval_loss': 0.8612403869628906, 'eval_accuracy': 0.8342342342342343, 'eval_runtime': 244.7536, 'eval_samples_per_second': 9.07, 'eval_steps_per_second': 0.568, 'epoch': 8.0}                                                                                     
    {'train_runtime': 26052.4526, 'train_samples_per_second': 6.133, 'train_steps_per_second': 0.384, 'train_loss': 1.0575269655821498, 'epoch': 8.0}
@@ -520,10 +673,17 @@ Perform audio classification via "hfclassify1.py":
    eval_samples_per_second =      7.894
    eval_steps_per_second   =      0.494
 ```
-Language classification via common_language dataset (https://huggingface.co/datasets/common_language)
+### 🌍 Language Classification
 
-Jupyter notebook for finetune wave2vec2: signalAI/hfwave2vec2_finetune.ipynb
+**Dataset**: [Common Language Dataset](https://huggingface.co/datasets/common_language)
 
-Pretrain the wave2vec2 model: signalAI/hfwave2vec2.py
+### 🎙️ Wave2Vec2 Models
 
-Perform wave2vec2 training via "hfwave2vec2.py"
+**Fine-tuning Notebook**: [`signalAI/hfwave2vec2_finetune.ipynb`](signalAI/hfwave2vec2_finetune.ipynb)
+
+**Pre-training Script**: [`signalAI/hfwave2vec2.py`](signalAI/hfwave2vec2.py)
+
+**Training Command**:
+```bash
+python signalAI/hfwave2vec2.py
+```

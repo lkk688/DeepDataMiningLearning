@@ -3,7 +3,7 @@
 # -- Project information
 
 project = 'DEEPDATAMININGLEARNING'
-copyright = '2023, Kaikai Liu'
+copyright = '2025, Kaikai Liu'
 author = 'Kaikai Liu'
 
 release = '0.1'
@@ -22,6 +22,37 @@ extensions = [
     "nbsphinx_link"
 ]
 
+# Configure nbsphinx for fast processing without execution
+nbsphinx_execute = 'never'  # Never execute notebooks, just render existing outputs
+nbsphinx_allow_errors = True  # Allow notebooks with errors to be processed
+nbsphinx_timeout = 30  # Shorter timeout
+nbsphinx_codecell_lexer = 'none'  # Disable syntax highlighting for speed
+
+# Exclude problematic notebooks that cause long processing times
+exclude_patterns = [
+    'notebooks/CMPE-Langchain.ipynb',
+    'notebooks/CMPE-LangchainMac.ipynb', 
+    'notebooks/CMPE-LangchainNVIDIA.ipynb',
+    'notebooks/CMPE-LangchainNVIDIA2.ipynb',
+    'notebooks/CMPE-Pinecone.ipynb'
+]
+
+# MyST parser configuration
+myst_enable_extensions = [
+    "dollarmath",
+    "amsmath",
+    "deflist",
+    "fieldlist",
+    "html_admonition",
+    "html_image",
+    "colon_fence",
+    "smartquotes",
+    "replacements",
+    "strikethrough",
+    "substitution",
+    "tasklist"
+]
+
 source_suffix = {
     '.rst': 'restructuredtext',
     '.txt': 'markdown',
@@ -38,7 +69,8 @@ templates_path = ['_templates']
 
 # -- Options for HTML output
 
-html_theme = 'sphinx_rtd_theme' #'bizstyle' #'sphinx_rtd_theme'
+html_theme = 'furo' # Modern, clean theme similar to Material Design
+# html_theme = 'sphinx_immaterial' #'sphinx_rtd_theme' #'bizstyle' #'sphinx_rtd_theme'
 
 # -- Options for EPUB output
 epub_show_urls = 'footnote'

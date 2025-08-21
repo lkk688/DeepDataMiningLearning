@@ -32,16 +32,11 @@ There are three main ways of running the notebooks we recommend:
 - **SJSU CoE HPC**: If you want to save your large dataset and train your own (larger) neural networks for a longer period (longer than Colab's timeout), you can make use of our SJSU CoE HPC cluster. The setup of your HPC workspace is documented beblow in the HPC section.
 
 .. toctree::
-   :caption: AI System Setups
+   :caption: Deep Learning Tutorial
    :maxdepth: 2
 
-   source/MacDev
-   source/MacML
-   source/python
-   source/linux
-   source/CondaEnv
-   source/HPC2
-   source/Windows
+   source/deep_learning
+
 
 .. toctree::
    :caption: Pytorch Tutorial
@@ -57,6 +52,26 @@ There are three main ways of running the notebooks we recommend:
    notebooks/CMPE_pytorch8_2024Fall_timm
    notebooks/CMPE_pytorch9_2024Fall_inferenceoptimization
    notebooks/CMPE_pytorch10_2024Fall_huggingfaceimage
+
+.. toctree::
+   :caption: AI System Setups
+   :maxdepth: 2
+
+   source/MacDev
+   source/MacML
+   source/python
+   source/linux
+   source/CondaEnv
+   source/HPC2
+   source/Windows
+
+.. toctree::
+   :caption: Autonomous System Survey
+   :maxdepth: 2
+
+   source/autonomous_survey
+   source/autonomous_tech
+   source/autonomous_llm
 
 
 .. toctree::
