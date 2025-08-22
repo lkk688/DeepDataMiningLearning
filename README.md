@@ -66,67 +66,6 @@ import DeepDataMiningLearning
 jupyter lab --ip 0.0.0.0 --no-browser --allow-root
 ```
 
-## 📚 Sphinx Documentation
-
-### Quick Start - View Documentation
-
-1. **Build the documentation:**
-   ```bash
-   sphinx-build docs ./docs/build
-   sphinx-autobuild docs/ docs/_build/html
-   ```
-
-2. **Serve locally:**
-   ```bash
-   cd docs/build
-   python -m http.server 8000
-   ```
-
-3. **Open in browser:** http://localhost:8000/
-
-### Documentation Setup & Dependencies
-
-The documentation system has been upgraded with modern themes and full dependency resolution:
-
-```bash
-# Install required dependencies
-pip install sphinx>=8.1.3 furo myst-parser nbsphinx nbsphinx-link sphinx-immaterial
-
-# Build documentation
-sphinx-build docs ./docs/build
-
-# Check link integrity (optional)
-sphinx-build docs -W -b linkcheck -d docs/build/doctrees docs/build/html
-```
-
-### Theme Configuration
-
-The documentation uses the **Furo theme** - a modern, responsive theme with Material Design aesthetics:
-
-```python
-# In docs/conf.py
-html_theme = 'furo'  # Modern, clean theme similar to Material Design
-```
-
-**Available themes:**
-- `furo` - Current active theme (modern, Material Design-like)
-- `sphinx_immaterial` - Direct adaptation of MkDocs-Material (installed, has config issues)
-- `sphinx_rtd_theme` - Classic Read the Docs theme
-
-### Supported File Formats
-
-- **RestructuredText (.rst)** - Native Sphinx format
-- **Markdown (.md)** - Via myst-parser extension
-- **Jupyter Notebooks (.ipynb)** - Via nbsphinx extension
-
-### Recent Fixes Applied
-
-✅ **Resolved ImportError with Python 3.11+**: Upgraded Sphinx from 3.5.3 to 8.1.3  
-✅ **Added missing extensions**: myst-parser, nbsphinx-link  
-✅ **Modern theme integration**: Furo theme with Material Design aesthetics  
-✅ **Dependency compatibility**: All extensions now work together seamlessly  
-
-The generated HTML files are in `docs/build/`. You can also view the documents at: [readthedocs](https://deepdatamininglearning.readthedocs.io/en/latest/)
 
 ## 📊 Python Data Analytics
 
