@@ -6,10 +6,16 @@ project = 'DEEPDATAMININGLEARNING'
 copyright = '2025, Kaikai Liu'
 author = 'Kaikai Liu'
 
-release = '0.1'
-version = '0.1.0'
+release = '1.0'
+version = '1.0.0'
 
 # -- General configuration
+
+import sys
+import os
+
+# Add the _extensions directory to the Python path
+sys.path.insert(0, os.path.abspath('../_extensions'))
 
 extensions = [
     'sphinx.ext.duration',
@@ -19,7 +25,8 @@ extensions = [
     'sphinx.ext.intersphinx',
     'myst_parser',
     "nbsphinx",
-    "nbsphinx_link"
+    "nbsphinx_link",
+    'mcreference'  # Custom extension for handling mcreference tags
 ]
 
 # Configure nbsphinx for fast processing without execution

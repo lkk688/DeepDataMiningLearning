@@ -16,7 +16,33 @@ This comprehensive survey examines the current landscape of autonomous systems, 
 
 ## SAE Autonomy Levels
 
-![SAE Autonomy Levels](https://www.sae.org/binaries/content/gallery/cm/articles/press-releases/2021/12/j3016-levels-of-automation-image.png)
+The Society of Automotive Engineers (SAE) has established a widely accepted standard for defining levels of driving automation. The SAE J3016 standard defines six levels of driving automation, from Level 0 (no automation) to Level 5 (full automation).
+
+![SAE J3016 Levels of Driving Automation](https://www.sae.org/binaries/content/gallery/cm/content/news/sae-blog/j3016graphic_2021.png)
+
+### NHTSA vs SAE Standards Comparison
+
+While SAE J3016 is the industry standard, the National Highway Traffic Safety Administration (NHTSA) has its own regulatory framework for Automated Driving Systems (ADS). Here's how they compare:
+
+| Aspect | SAE J3016 | NHTSA |
+|--------|-----------|-------|
+| **Scope** | Levels 0-5 (comprehensive taxonomy) | Focuses on Levels 3-5 (ADS only) |
+| **Level 2** | Included in classification | Excluded from ADS guidance |
+| **Terminology** | "Automated Vehicles" | "Automated Driving Systems (ADS)" |
+| **Purpose** | Technical classification standard | Regulatory guidance and safety framework |
+| **Focus** | System capabilities and human involvement | Safety assessment and regulatory compliance |
+| **Application** | Global industry standard | US regulatory framework |
+
+**Key Differences:**
+- **NHTSA's Voluntary Guidance** focuses specifically on SAE Levels 3-5, where the system takes full control of the vehicle including environmental monitoring
+- **SAE J3016** provides a comprehensive taxonomy covering all automation levels from 0-5
+- NHTSA emphasizes safety self-assessment and performance-based outcomes rather than prescriptive requirements
+- SAE standard is technology-focused, while NHTSA guidance is regulation and safety-focused
+
+**References:**
+- [SAE J3016 Update Blog](https://www.sae.org/blog/sae-j3016-update)
+- [SAE J3016 Standard (April 2021)](https://www.sae.org/standards/content/j3016_202104/)
+- [NHTSA Automated Driving Systems](https://www.nhtsa.gov/vehicle-manufacturers/automated-driving-systems)
 
 ### Level 2 (Partial Automation)
 
