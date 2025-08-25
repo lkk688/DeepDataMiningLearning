@@ -151,7 +151,9 @@ You can also build and deploy Sphinx documentation to your own web server or hos
 
 1. **Build the documentation:**
    ```bash
-   ~/Documents/MyRepo/DeepDataMiningLearning/docs$ make html
+   ~/Documents/MyRepo/DeepDataMiningLearning/docs$ make html 
+   (same to the above) sphinx-build -b html docs/source docs/build/html 
+   
    /Documents/MyRepo/DeepDataMiningLearning/docs [0] $ python -m http.server 8000 -d build/html
    sphinx-build docs ./docs/build
    sphinx-autobuild docs/ docs/_build/html

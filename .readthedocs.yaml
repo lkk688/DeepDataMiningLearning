@@ -18,8 +18,10 @@ build:
       - pip install --upgrade sphinx>=4.0
 
 # Build documentation in the "docs/" directory with Sphinx
+#the original:docs/conf.py
+#new path: docs/source/conf.py
 sphinx:
-   configuration: docs/conf.py
+   configuration: docs/source/conf.py
    builder: html
    fail_on_warning: false
 

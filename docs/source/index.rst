@@ -36,7 +36,18 @@ There are three main ways of running the notebooks we recommend:
    :maxdepth: 2
 
    deep_learning
+   transformers
+   transformers_advanced
+   llm
+   gpt_architecture_evolution
+   self-supervised
 
+.. toctree::
+   :caption: AI System Optimization
+   :maxdepth: 2
+
+   gpu_architecture_and_acceleration
+   inference_optimization
 
 .. toctree::
    :caption: AI System Setups
@@ -46,9 +57,11 @@ There are three main ways of running the notebooks we recommend:
    MacML
    python
    linux
+   linux2
    CondaEnv
    HPC2
    Windows
+   container
 
 .. toctree::
    :caption: Autonomous System Survey
@@ -58,12 +71,7 @@ There are three main ways of running the notebooks we recommend:
    autonomous_tech
    autonomous_llm
    autonomous_tesla
-
-
-.. toctree::
-
-   detection
-   container
+   physical_ai_autonomous_driving
 
 
 
