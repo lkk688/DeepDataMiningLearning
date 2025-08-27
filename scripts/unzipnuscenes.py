@@ -3,7 +3,7 @@ import glob
 import os
 
 # Path to where your zip files are stored
-zip_dir = "/mnt/e/Shared/Dataset/NuScenes/"
+zip_dir = r"E:\Shared\Dataset\NuScenes"
 # Destination folder
 extract_dir = os.path.join(zip_dir, "v1.0-trainval")
 
