@@ -57,7 +57,9 @@ myst_enable_extensions = [
     "replacements",
     "strikethrough",
     "substitution",
-    "tasklist"
+    "tasklist",
+    "attrs_inline",
+    "attrs_block"
 ]
 
 source_suffix = {

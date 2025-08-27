@@ -150,3 +150,5 @@ logs
 .DS_Store
 .vscode
 .vscode/settings.json
+
+docs/source/autonomous_survey_slides.md
