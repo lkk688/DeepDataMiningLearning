@@ -62,8 +62,8 @@ pip install accelerate         # For HuggingFace training
 ### Quick Setup
 
 ```bash
-git clone <your-repo>
-cd classifier
+https://github.com/lkk688/DeepDataMiningLearning.git
+cd DeepDataMiningLearning/classifier
 pip install -r requirements.txt  # If you create one
 ```
 

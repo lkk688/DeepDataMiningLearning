@@ -151,31 +151,34 @@ jupyter lab --ip 0.0.0.0 --no-browser --allow-root
 
 #### 🎯 Fundamentals & Core Concepts
 
-**Tutorial 1: PyTorch Basics** - [`CMPE_pytorch1`](./docs/notebooks/CMPE_pytorch1_2024Fall.ipynb)
+**Tutorial 1: PyTorch Basics** - [`CMPE_pytorch1`](./docs/notebooks/CMPE_pytorch1_2025Fall.ipynb) [`CMPE_pytorch1 Colab link`](https://colab.research.google.com/drive/1OKKKQ5H3ZY7VNhxxUT-zZ8LHT7oLVhIc?usp=sharing)
 - PyTorch installation, Tensors, Tensor functions, Arithmetic operations
 
-**Tutorial 2: Regression & Classification** - [`CMPE_pytorch2`](./docs/notebooks/CMPE_pytorch2_2024Fall.ipynb)
+**Tutorial 2: Regression & Classification** - [`CMPE_pytorch2`](./docs/notebooks/CMPE_pytorch2_2025Fall.ipynb) [`CMPE_pytorch2 Colab link`](https://colab.research.google.com/drive/1PUqFNQcB4qzwJHjS_072FBnqLaqOPPMI?usp=sharing)
 - Polynomial fitting with NumPy and PyTorch
 - Linear Regression, Binary/Multi-class Classification
-- Logistic Regression with scikit-learn datasets
+- Logistic Regression with scikit-learn datasets, PyTorch Logistic Regression
 
-**Tutorial 3: Automatic Differentiation** - [`CMPE_pytorch3_autograd`](./docs/notebooks/CMPE_pytorch3_2024Fall.ipynb)
-- Autograd system, Computing Gradients
+**Tutorial 3: Automatic Differentiation** - [`CMPE_pytorch3_autograd`](./docs/notebooks/CMPE_pytorch3_2025Fall.ipynb) [`CMPE_pytorch3 Colab link`](https://colab.research.google.com/drive/1jA3j_jjanznpz-dT1EfpLKPpyRzzk3ew?usp=sharing)
+- Autograd system, Computing Gradients, Jacobian Product
 - Sine wave fitting example
 - PyTorch NN package, Optimizer package, nn.Module usage
 
-**Tutorial 4: Neural Networks & MNIST** - [`CMPE_pytorch4_MNIST`](./docs/notebooks/CMPE_pytorch4_2024Fall.ipynb)
+**Tutorial 4: Neural Networks & MNIST** - [`CMPE_pytorch4_MNIST`](./docs/notebooks/CMPE_pytorch4_2025Fall.ipynb) [`CMPE_pytorch4 Colab link`](https://colab.research.google.com/drive/1atQQt5x18UCFLMGngfPgm-ZXmPR4-Sm7?usp=sharing)
 - MNIST Dataset handling
 - torch.nn.Module and torch.nn.functional
 - nn.Sequential and OrderedDict
 - Loss functions (NLLLoss, CrossEntropyLoss)
 - Regularization techniques (L1, L2, Elastic Net)
+- Compare CrossEntropyLoss, NLLLoss, and weight decay
+
 #### 🖼️ Computer Vision & Image Classification
 
-**Tutorial 5: CNN Fundamentals** - [`CMPE_pytorch5_imageclassification`](./docs/notebooks/CMPE_pytorch5_2024Fall_imageclassification.ipynb)
+**Tutorial 5: CNN Fundamentals** - [`CMPE_pytorch5_imageclassification`](./docs/notebooks/CMPE_pytorch5_2025Fall_imageclassification.ipynb) [`CMPE_pytorch5 Colab link`](hhttps://colab.research.google.com/drive/11gCHtYuQoTLZxHdAZF9hPivVRiiOS7Ty?usp=sharing)
 - Multi-Layer Perceptron for MNIST and FashionMNIST
 - CNN Filters and Feature Maps
 - CNN architecture for CIFAR Dataset
+- Comparison of MLP and CNN for MNIST, FashionMNIST, and CIFAR
 
 **Tutorial 6: Classic CNN Architectures** - [`CMPE_pytorch6_mlp2resnet`](./docs/notebooks/CMPE_pytorch6_2024Fall_mlp2resnet.ipynb)
 - Multi-layer Perceptron baseline
