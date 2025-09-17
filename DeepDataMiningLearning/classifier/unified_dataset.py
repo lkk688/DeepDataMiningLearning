@@ -6,7 +6,7 @@ Provides data loading, preprocessing, augmentation, and visualization utilities.
 
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader, Dataset
 import torchvision
 from torchvision import datasets, transforms
 try:
@@ -64,10 +64,15 @@ class UnifiedImageDataset:
         self.dataset_name = dataset_name
         self.data_path = data_path
         self.split = split
-        self.transform = transform
-        self.target_transform = target_transform
         self.download = download
         self.kwargs = kwargs
+        
+        # Set up transforms - use provided or create default
+        if transform is None:
+            self.transform = self._get_torchvision_transforms()
+        else:
+            self.transform = transform
+        self.target_transform = target_transform
         
         # Initialize dataset
         self.dataset = None
@@ -88,13 +93,101 @@ class UnifiedImageDataset:
         else:
             raise ValueError(f"Unsupported data source: {self.data_source}")
     
+    def _get_torchvision_dataset_name(self, name: str) -> str:
+        """Map dataset name to correct torchvision dataset class name."""
+        # Common dataset name mappings (case-insensitive)
+        name_mappings = {
+            'cifar10': 'CIFAR10',
+            'cifar-10': 'CIFAR10',
+            'cifar100': 'CIFAR100',
+            'cifar-100': 'CIFAR100',
+            'imagenet': 'ImageNet',
+            'mnist': 'MNIST',
+            'fashionmnist': 'FashionMNIST',
+            'fashion-mnist': 'FashionMNIST',
+            'fashion_mnist': 'FashionMNIST',
+            'svhn': 'SVHN',
+            'stl10': 'STL10',
+            'stl-10': 'STL10',
+            'celeba': 'CelebA',
+            'coco': 'CocoDetection',
+            'voc': 'VOCDetection',
+            'places365': 'Places365',
+            'caltech101': 'Caltech101',
+            'caltech256': 'Caltech256',
+            'oxfordiiitpet': 'OxfordIIITPet',
+            'oxford-iiit-pet': 'OxfordIIITPet',
+            'flowers102': 'Flowers102',
+            'food101': 'Food101',
+            'dtd': 'DTD',
+            'eurosat': 'EuroSAT',
+            'fgvcaircraft': 'FGVCAircraft',
+            'stanfordcars': 'StanfordCars',
+            'sun397': 'SUN397',
+            'country211': 'Country211',
+            'renderedsst2': 'RenderedSST2',
+            'gtsrb': 'GTSRB',
+            'pcam': 'PCAM',
+            'kitti': 'Kitti',
+            'usps': 'USPS',
+            'qmnist': 'QMNIST',
+            'emnist': 'EMNIST',
+            'kmnist': 'KMNIST',
+            'omniglot': 'Omniglot',
+            'phototur': 'PhotoTour',
+            'sbu': 'SBU',
+            'semeion': 'SEMEION',
+        }
+        
+        # First try exact match
+        if hasattr(datasets, name):
+            return name
+            
+        # Try lowercase lookup
+        lower_name = name.lower()
+        if lower_name in name_mappings:
+            mapped_name = name_mappings[lower_name]
+            if hasattr(datasets, mapped_name):
+                return mapped_name
+        
+        # Try uppercase
+        upper_name = name.upper()
+        if hasattr(datasets, upper_name):
+            return upper_name
+            
+        # Try title case
+        title_name = name.title()
+        if hasattr(datasets, title_name):
+            return title_name
+            
+        # Return original name if no mapping found
+        return name
+
     def _load_torchvision_dataset(self):
         """Load torchvision dataset."""
-        dataset_class = getattr(datasets, self.dataset_name, None)
+        # Map dataset name to correct torchvision class name
+        mapped_name = self._get_torchvision_dataset_name(self.dataset_name)
+        dataset_class = getattr(datasets, mapped_name, None)
+        
         if dataset_class is None:
-            raise ValueError(f"Dataset {self.dataset_name} not found in torchvision.datasets")
+            # Provide helpful error message with available datasets
+            available_datasets = [name for name in dir(datasets) 
+                                if not name.startswith('_') and 
+                                hasattr(getattr(datasets, name), '__call__')]
+            raise ValueError(
+                f"Dataset '{self.dataset_name}' (mapped to '{mapped_name}') not found in torchvision.datasets.\n"
+                f"Available datasets: {', '.join(sorted(available_datasets))}"
+            )
         
         train_split = self.split in ['train', 'training']
+        
+        # Filter out kwargs that are not valid for torchvision datasets
+        # These are parameters specific to our UnifiedImageDataset
+        excluded_kwargs = {
+            'dataset_source', 'data_dir', 'image_size', 'batch_size', 
+            'val_split', 'augment', 'num_workers'
+        }
+        filtered_kwargs = {k: v for k, v in self.kwargs.items() if k not in excluded_kwargs}
         
         self.dataset = dataset_class(
             root=self.data_path or './data',
@@ -102,7 +195,7 @@ class UnifiedImageDataset:
             download=self.download,
             transform=self.transform,
             target_transform=self.target_transform,
-            **self.kwargs
+            **filtered_kwargs
         )
         
         # Get class information
@@ -196,17 +289,56 @@ class UnifiedImageDataset:
         shuffle: bool = True,
         num_workers: int = 4,
         pin_memory: bool = True,
+        val_split: float = 0.2,
         **kwargs
-    ) -> DataLoader:
-        """Create DataLoader for the dataset."""
-        return DataLoader(
-            self.dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            **kwargs
-        )
+    ):
+        """Create DataLoader(s) for the dataset. Returns train and val loaders if val_split > 0."""
+        if val_split > 0 and self.split == 'train':
+            # Create train/val split
+            dataset_size = len(self.dataset)
+            val_size = int(val_split * dataset_size)
+            train_size = dataset_size - val_size
+            
+            train_dataset, val_dataset = torch.utils.data.random_split(
+                self.dataset, [train_size, val_size]
+            )
+            
+            train_loader = DataLoader(
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                **kwargs
+            )
+            
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,  # Don't shuffle validation
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                **kwargs
+            )
+            
+            return train_loader, val_loader
+        else:
+            # Return single loader
+            return DataLoader(
+                self.dataset,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                **kwargs
+            )
+    
+    def get_class_names(self) -> List[str]:
+        """Get class names for the dataset."""
+        if self.classes is not None:
+            return self.classes
+        else:
+            return [f"class_{i}" for i in range(self.num_classes)]
     
     def get_transforms(self, model_name: str = None, model_type: str = "torchvision") -> transforms.Compose:
         """Get appropriate transforms for the model type."""

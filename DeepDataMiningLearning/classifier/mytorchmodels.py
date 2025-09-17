@@ -524,19 +524,34 @@ def visualize_dataset(args, dataset, class_names, save_dir):
 
 def train_with_custom_loop(args, model, train_loader, val_loader, class_names, save_dir):
     """Train model using custom training loop."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = model.to(device)
+    
     engine = TrainingEngine(
         model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        num_epochs=args.epochs,
-        learning_rate=args.lr,
-        weight_decay=args.weight_decay,
+        device=device,
         use_amp=args.use_amp,
         use_ema=args.use_ema,
-        gradient_clip=args.gradient_clip,
-        save_dir=str(save_dir)
+        gradient_clip_val=args.gradient_clip,
+        save_dir=str(save_dir),
+        experiment_name="image_classification"
     )
-    history = engine.train()
+    
+    # Create optimizer and criterion
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+    criterion = nn.CrossEntropyLoss()
+    
+    history = engine.train(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        criterion=criterion,
+        num_epochs=args.epochs
+    )
     return engine, history
 
 def train_with_hf_trainer(args, model, train_loader, val_loader, class_names, save_dir):

@@ -81,6 +81,23 @@ python mytorchmodels.py \
     --epochs 10 \
     --batch_size 32
 
+# Train on local flower_photos dataset
+# Define training and test data directories 
+# data_dir = './flower_photos/' 
+# train_dir = os.path.join(data_dir, 'train/') 
+# test_dir = os.path.join(data_dir, 'test/') 
+# 
+# Classes are folders in each directory with these names 
+# classes = ['daisy', 'dandelion', 'roses', 'sunflowers', 'tulips']
+python mytorchmodels.py \
+    --model resnet18 \
+    --model_source torchvision \
+    --dataset flower_photos \
+    --dataset_source folder \
+    --data_dir ./flower_photos \
+    --epochs 10 \
+    --batch_size 32
+
 # Train Vision Transformer with HuggingFace Trainer
 python mytorchmodels.py \
     --model google/vit-base-patch16-224 \
