@@ -492,9 +492,9 @@ def inference(
 def setup_datasets(args):
     """Setup datasets based on arguments."""
     dataset = UnifiedImageDataset(
-        dataset_source=args.dataset_source,
+        data_source=args.dataset_source,
         dataset_name=args.dataset,
-        data_dir=args.data_dir,
+        data_path=args.data_dir,
         image_size=args.image_size,
         batch_size=args.batch_size,
         val_split=args.val_split,
