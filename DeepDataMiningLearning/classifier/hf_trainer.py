@@ -73,7 +73,18 @@ class ModelWrapper(nn.Module):
         self.model = model
     
     def forward(self, pixel_values, labels=None):
-        logits = self.model(pixel_values)
+        outputs = self.model(pixel_values)
+        
+        # Handle different model output types
+        if hasattr(outputs, 'logits'):
+            # HuggingFace model output (e.g., ImageClassifierOutput)
+            logits = outputs.logits
+        elif isinstance(outputs, torch.Tensor):
+            # Regular PyTorch model output
+            logits = outputs
+        else:
+            # Try to extract logits from dict-like output
+            logits = outputs.get('logits', outputs)
         
         loss = None
         if labels is not None:
