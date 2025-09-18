@@ -558,7 +558,6 @@ def train_with_hf_trainer(args, model, train_loader, val_loader, class_names, sa
     """Train model using HuggingFace Trainer."""
     hf_trainer = HuggingFaceTrainer(
         model=model,
-        num_classes=len(class_names),
         output_dir=str(save_dir)
     )
     trainer = hf_trainer.train(
