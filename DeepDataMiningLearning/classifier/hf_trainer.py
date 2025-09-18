@@ -258,7 +258,7 @@ class HuggingFaceTrainer:
             logging_steps=logging_steps,
             eval_steps=eval_steps,
             save_steps=save_steps,
-            evaluation_strategy=evaluation_strategy,
+            eval_strategy=evaluation_strategy,
             save_strategy=save_strategy,
             load_best_model_at_end=load_best_model_at_end,
             metric_for_best_model=metric_for_best_model,
