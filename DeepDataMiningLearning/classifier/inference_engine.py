@@ -678,10 +678,39 @@ class InferenceEngine:
             try:
                 # Try to import tensorrt to check availability
                 import tensorrt as trt
-                # Additional check: try to create a simple TensorRT logger
+                
+                # Create a logger and builder to test TensorRT functionality
                 logger = trt.Logger(trt.Logger.WARNING)
-                tensorrt_available = True
-                print("TensorRT availability check passed")
+                builder = trt.Builder(logger)
+                
+                # Test if we can create a network (this requires TensorRT C++ libraries)
+                network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+                
+                # Test basic TensorRT operations that require the full installation
+                config = builder.create_builder_config()
+                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 20)  # 1MB
+                
+                # Try to create a simple engine to verify full TensorRT functionality
+                # This will fail if TensorRT C++ libraries are not properly installed
+                input_tensor = network.add_input(name="input", dtype=trt.float32, shape=(1, 3, 224, 224))
+                identity = network.add_identity(input_tensor)
+                network.mark_output(identity.get_output(0))
+                
+                # Attempt to build the engine - this is the real test
+                serialized_engine = builder.build_serialized_network(network, config)
+                
+                if serialized_engine is not None:
+                    # Try to deserialize the engine to ensure runtime is working
+                    runtime = trt.Runtime(logger)
+                    engine = runtime.deserialize_cuda_engine(serialized_engine)
+                    if engine is not None:
+                        tensorrt_available = True
+                        print("TensorRT full functionality check passed")
+                    else:
+                        print("TensorRT engine deserialization failed")
+                else:
+                    print("TensorRT engine building failed")
+                    
             except Exception as e:
                 print(f"TensorRT not available or unsafe: {e}")
                 tensorrt_available = False
