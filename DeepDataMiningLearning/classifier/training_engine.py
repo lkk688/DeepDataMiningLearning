@@ -381,8 +381,10 @@ class TrainingEngine:
                 pred = output.argmax(dim=1)
                 acc = pred.eq(target).float().mean()
                 
-                # Calculate top-5 accuracy
-                _, top5_pred = output.topk(5, dim=1)
+                # Calculate top-5 accuracy (handle cases where num_classes < 5)
+                num_classes = output.size(1)
+                k = min(5, num_classes)
+                _, top5_pred = output.topk(k, dim=1)
                 top5_acc = top5_pred.eq(target.view(-1, 1).expand_as(top5_pred)).float().sum(dim=1).mean()
                 
                 # Update metrics
