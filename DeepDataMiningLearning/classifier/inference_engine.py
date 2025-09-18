@@ -597,6 +597,105 @@ class InferenceEngine:
         
         print(f"Evaluation results saved: {save_path}")
     
+    def _check_tensorrt_subprocess(self):
+        """
+        Check TensorRT availability using subprocess isolation to prevent fatal crashes.
+        This method runs TensorRT tests in a separate process to avoid crashing the main process.
+        """
+        import subprocess
+        import sys
+        import tempfile
+        import os
+        
+        # Create a temporary Python script to test TensorRT
+        test_script = '''
+import sys
+import os
+try:
+    # Test TensorRT import
+    import tensorrt as trt
+    
+    # Create a logger and builder to test TensorRT functionality
+    logger = trt.Logger(trt.Logger.ERROR)  # Suppress warnings in subprocess
+    builder = trt.Builder(logger)
+    
+    # Test if we can create a network (this requires TensorRT C++ libraries)
+    network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
+    
+    # Test basic TensorRT operations that require the full installation
+    config = builder.create_builder_config()
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 20)  # 1MB
+    
+    # Try to create a simple engine to verify full TensorRT functionality
+    input_tensor = network.add_input(name="input", dtype=trt.float32, shape=(1, 3, 224, 224))
+    identity = network.add_identity(input_tensor)
+    network.mark_output(identity.get_output(0))
+    
+    # Attempt to build the engine - this is the real test
+    serialized_engine = builder.build_serialized_network(network, config)
+    
+    if serialized_engine is not None:
+        # Try to deserialize the engine to ensure runtime is working
+        runtime = trt.Runtime(logger)
+        engine = runtime.deserialize_cuda_engine(serialized_engine)
+        if engine is not None:
+            print("SUCCESS")
+            sys.exit(0)
+        else:
+            print("FAILED: Engine deserialization failed")
+            sys.exit(1)
+    else:
+        print("FAILED: Engine building failed")
+        sys.exit(1)
+        
+except Exception as e:
+    print(f"FAILED: {e}")
+    sys.exit(1)
+'''
+        
+        try:
+            # Write the test script to a temporary file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(test_script)
+                temp_script_path = f.name
+            
+            # Run the test script in a subprocess with timeout
+            result = subprocess.run(
+                [sys.executable, temp_script_path],
+                capture_output=True,
+                text=True,
+                timeout=30,  # 30 second timeout
+                env=os.environ.copy()
+            )
+            
+            # Clean up temporary file
+            os.unlink(temp_script_path)
+            
+            # Check if the test passed
+            if result.returncode == 0 and "SUCCESS" in result.stdout:
+                print("TensorRT subprocess check passed")
+                return True
+            else:
+                print(f"TensorRT subprocess check failed: {result.stdout.strip()}")
+                if result.stderr:
+                    print(f"TensorRT subprocess stderr: {result.stderr.strip()}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            print("TensorRT subprocess check timed out")
+            try:
+                os.unlink(temp_script_path)
+            except:
+                pass
+            return False
+        except Exception as e:
+            print(f"TensorRT subprocess check error: {e}")
+            try:
+                os.unlink(temp_script_path)
+            except:
+                pass
+            return False
+
     def reset_performance_tracking(self):
         """Reset performance tracking statistics."""
         self.inference_times = []
@@ -655,7 +754,7 @@ class InferenceEngine:
         # Try different provider configurations with fallbacks
         provider_configs = []
         
-        # Check CUDA availability more thoroughly
+        # Check CUDA availability more thoroughly with context creation test
         cuda_available = False
         cuda_device_count = 0
         
@@ -666,54 +765,30 @@ class InferenceEngine:
                 # Try a simple CUDA operation to verify it's working
                 test_tensor = torch.tensor([1.0]).cuda()
                 _ = test_tensor + 1
-                print(f"CUDA verification successful: {cuda_device_count} device(s) available")
+                
+                # Additional CUDA context test to catch initialization issues
+                import pynvml
+                try:
+                    pynvml.nvmlInit()
+                    handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                    memory_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                    print(f"CUDA verification successful: {cuda_device_count} device(s) available, {memory_info.free // 1024**2} MB free")
+                except Exception as nvml_e:
+                    print(f"CUDA context test warning: {nvml_e}")
+                    # Continue anyway as basic CUDA operations work
+                    print(f"CUDA verification successful: {cuda_device_count} device(s) available")
+                    
         except Exception as e:
             print(f"CUDA verification failed: {e}")
             cuda_available = False
         
         # Only add GPU providers if CUDA is properly working
         if cuda_available and cuda_device_count > 0:
-            # Check if TensorRT is available and safe to use
-            tensorrt_available = False
-            try:
-                # Try to import tensorrt to check availability
-                import tensorrt as trt
-                
-                # Create a logger and builder to test TensorRT functionality
-                logger = trt.Logger(trt.Logger.WARNING)
-                builder = trt.Builder(logger)
-                
-                # Test if we can create a network (this requires TensorRT C++ libraries)
-                network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
-                
-                # Test basic TensorRT operations that require the full installation
-                config = builder.create_builder_config()
-                config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 20)  # 1MB
-                
-                # Try to create a simple engine to verify full TensorRT functionality
-                # This will fail if TensorRT C++ libraries are not properly installed
-                input_tensor = network.add_input(name="input", dtype=trt.float32, shape=(1, 3, 224, 224))
-                identity = network.add_identity(input_tensor)
-                network.mark_output(identity.get_output(0))
-                
-                # Attempt to build the engine - this is the real test
-                serialized_engine = builder.build_serialized_network(network, config)
-                
-                if serialized_engine is not None:
-                    # Try to deserialize the engine to ensure runtime is working
-                    runtime = trt.Runtime(logger)
-                    engine = runtime.deserialize_cuda_engine(serialized_engine)
-                    if engine is not None:
-                        tensorrt_available = True
-                        print("TensorRT full functionality check passed")
-                    else:
-                        print("TensorRT engine deserialization failed")
-                else:
-                    print("TensorRT engine building failed")
-                    
-            except Exception as e:
-                print(f"TensorRT not available or unsafe: {e}")
-                tensorrt_available = False
+            # Check TensorRT availability using subprocess isolation to prevent fatal crashes
+            tensorrt_available = self._check_tensorrt_subprocess()
+            
+            if not tensorrt_available:
+                print("[INFO] TensorRT not available. Install with: pip install tensorrt pycuda")
             
             # First try: GPU with TensorRT (only if both CUDA and TensorRT are verified)
             if tensorrt_available:
