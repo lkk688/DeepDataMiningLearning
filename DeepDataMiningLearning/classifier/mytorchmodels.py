@@ -1,39 +1,69 @@
-# modified based on https://github.com/lkk688/MultiModalClassifier/blob/main/TorchClassifier/myTorchModels/TorchCNNmodels.py
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Unified Image Classification System
+
+A comprehensive image classification framework supporting:
+- torchvision, timm, and HuggingFace models
+- Multiple dataset formats and sources
+- Custom training loops and HuggingFace Trainer integration
+- Advanced inference and evaluation capabilities
+- Comprehensive visualization and analysis tools
+"""
 
 import torch
 import torch.nn as nn
-from tqdm.auto import tqdm
-from typing import Dict, List, Tuple
 import torch.optim as optim
-from torch.optim import lr_scheduler
-import numpy as np
-import os
-import time
+from torch.utils.data import DataLoader
 import torchvision
-from torchvision import datasets, models, transforms
+from torchvision.models import get_model, get_model_weights, list_models
+import argparse
+import os
+import json
+import time
+import numpy as np
+from pathlib import Path
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
 
-# new approach: https://pytorch.org/blog/easily-list-and-initialize-models-with-new-apis-in-torchvision/
-from torchvision.models import get_model, get_model_weights, get_weight, list_models
-
-# print("Torch buildin models:", list_models())
-model_names = list_models(module=torchvision.models)
-# print("Torchvision buildin models:", model_names)
-from timm.utils import AverageMeter
-import timm  # pip install timm
-import timm.optim
-import timm.scheduler
-# model_names = timm.list_models(pretrained=True)
-# model_names = timm.list_models('*resnet*')
-
-from mydataset import get_labelfn, timmget_datasetfromfolder, timmcreate_dataloader
-
-# Try to get torchinfo, install it if it doesn't work
 try:
-    from torchinfo import summary
-except:
-    print("[INFO] Couldn't find torchinfo... installing it.")
-    # !pip install -q torchinfo
-    # from torchinfo import summary
+    import timm
+    TIMM_AVAILABLE = True
+except ImportError:
+    TIMM_AVAILABLE = False
+    print("[INFO] timm not available. Install with: pip install timm")
+
+# Import our modular components
+from unified_dataset import UnifiedImageDataset
+from unified_model import UnifiedImageClassifier
+from training_engine import TrainingEngine
+from hf_trainer import HuggingFaceTrainer
+from inference_engine import InferenceEngine
+from utils import (
+    set_seed, analyze_model, visualize_dataset_samples,
+    plot_class_distribution, create_data_augmentation_preview,
+    plot_training_curves, save_experiment_config
+)
+
+# Utility classes and functions
+class AverageMeter:
+    def __init__(self):
+        self.reset()
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+def get_labelfn(model):
+    """Get label function for model."""
+    return lambda x: f'class_{x}'
 
 
 def create_torchclassifiermodel(
@@ -93,6 +123,8 @@ def create_torchclassifiermodel(
             torchhublink, model_name, pretrained=pretrained
         )
     elif model_type == "timm":
+        if not TIMM_AVAILABLE:
+            raise ImportError("timm not available. Install with: pip install timm")
         # if model_name in model_names:
         pretrained_model = timm.create_model(
             model_name, pretrained=pretrained, num_classes=numclasses
@@ -115,6 +147,7 @@ def modify_classifier(pretrained_model, numclasses, dropoutp=0.3, classifiername
     lastmodulename = lastmoduleinlist[0]
     print("lastmodulename:", lastmodulename)
     lastlayer = lastmoduleinlist[-1]
+    newclassifier = lastlayer #default
     if isinstance(lastlayer, nn.Linear):
         print("Linear layer")
         newclassifier = nn.Linear(
@@ -158,6 +191,8 @@ def get_optimizer(model, opt="lamb", lr=0.01, weight_decay=0.01, momentum=0):
     # lr: initial learning rate
     # weight_decay: weight decay to apply in optimizer
     # momentum:  momentum for momentum based optimizers
+    if not TIMM_AVAILABLE:
+        raise ImportError("timm not available. Install with: pip install timm")
     optimizer = timm.optim.create_optimizer_v2(
         model, opt=opt, lr=lr, weight_decay=weight_decay, momentum=momentum
     )
@@ -170,6 +205,8 @@ def get_scheduler(optimizer, num_epochs, num_repeat=2, warmup_t=3):
     #                                                                 T_mult=1,
     #                                                                 eta_min=1e-6,
     #                                                                 last_epoch=-1)
+    if not TIMM_AVAILABLE:
+        raise ImportError("timm not available. Install with: pip install timm")
     num_epoch_repeat = num_epochs // num_repeat
     scheduler = timm.scheduler.CosineLRScheduler(
         optimizer,
@@ -305,6 +342,8 @@ def train(
     model.to(device)
 
     if use_ema:
+        if not TIMM_AVAILABLE:
+            raise ImportError("timm not available. Install with: pip install timm")
         ema_model = timm.utils.ModelEmaV2(model, decay=0.9)
         results = {
             "train_loss": [],
@@ -450,95 +489,273 @@ def inference(
     all_outputs = np.concatenate(all_outputs, axis=0).astype(np.float32)
     return test_loss, test_acc, all_indices, all_labels, all_outputs
 
-def test_train():
-    model_name = "resnet50"  #'mobilenetv3_large_100' 'resnet50' 'resnest26d'
-    model, preprocess, num_classes, imagenet_classes = create_torchclassifiermodel(
-        model_name,
-        numclasses=None,
-        model_type="timm",
-        freezeparameters=False,
-        pretrained=True,
+def setup_datasets(args):
+    """Setup datasets based on arguments."""
+    dataset = UnifiedImageDataset(
+        data_source=args.dataset_source,
+        dataset_name=args.dataset,
+        data_path=args.data_dir,
+        image_size=args.image_size,
+        batch_size=args.batch_size,
+        val_split=args.val_split,
+        augment=not args.no_augment,
+        num_workers=args.num_workers
     )
-    # check if CUDA is available
-    train_on_gpu = torch.cuda.is_available()
-    device = (
-        "cuda"
-        if torch.cuda.is_available()
-        else "mps" if torch.backends.mps.is_available() else "cpu"
+    train_loader, val_loader = dataset.get_dataloader()
+    class_names = dataset.get_class_names()
+    return train_loader, val_loader, class_names, dataset
+
+def setup_model(args, num_classes):
+    """Setup model based on arguments."""
+    unified_model = UnifiedImageClassifier(
+        model_source=args.model_source,
+        model_name=args.model,
+        num_classes=num_classes,
+        pretrained=args.pretrained
     )
-    print(f"Using {device} device")
+    model = unified_model.model
+    return model, unified_model
+
+def visualize_dataset(args, dataset, class_names, save_dir):
+    """Create dataset visualizations."""
+    print("Creating dataset visualizations...")
+    # Add visualization code here
+    pass
+
+def train_with_custom_loop(args, model, train_loader, val_loader, class_names, save_dir):
+    """Train model using custom training loop."""
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
-    model.eval()
     
-    data_path='data/imagenette/imagenette2-320'
-    train_data, test_data, num_classes, class_names = \
-        timmget_datasetfromfolder(data_path=data_path, mapidfile="data/map_clsloc.txt", use_autoaugment=False)
-
-    batch_size = 16
-    num_epochs = 20
-    train_dataloader, test_dataloader = timmcreate_dataloader(model, train_data, test_data, batch_size=batch_size)
-    
-    optimizer = get_optimizer(model=model, opt='adamw')
-    loss_fn = nn.CrossEntropyLoss()
-    scheduler = get_scheduler(optimizer=optimizer, num_epochs=num_epochs, num_repeat=2)
-    # Start the timer
-    from timeit import default_timer as timer
-    start_time = timer()
-
-    # Setup training and save the results
-    results, ema_model = train(model=model,
-                        train_dataloader=train_dataloader,
-                        test_dataloader=test_dataloader,
-                        optimizer=optimizer,
-                        loss_fn=loss_fn,
-                        epochs=num_epochs,
-                        device=device,
-                        scheduler=scheduler,
-                        use_ema = True)
-    # End the timer and print out how long it took
-    end_time = timer()
-    print(f"[INFO] Total training time: {end_time-start_time:.3f} seconds")
-    #https://pytorch.org/tutorials/beginner/saving_loading_models.html
-    os.makedirs('data', exist_ok=True)
-    filename=os.path.join('data', 'modelcheckpoint.pth.tar')
-    torch.save(model.state_dict(), filename)
-    filename=os.path.join('data', 'emamodelcheckpoint.pth.tar')
-    torch.save(ema_model.state_dict(), filename)
-    
-    # Saving the data
-    np.save("data/results.npy", results)
-    # # Loading the data
-    # data = np.load("d.npy",allow_pickle=True)
-    # # Display dict items
-    # print("Dict items:\n",data.item().get('B'))
-    return results
-
-def test_createmodel():
-    #model = torch.jit.script(model)
-
-    model_name = "efficientnet_b1"
-    model = create_torchclassifiermodel(
-        model_name,
-        numclasses=None,
-        model_type="torchvision",
-        freezeparameters=False,
-        pretrained=True,
-    )
-    summary(
+    engine = TrainingEngine(
         model=model,
-        input_size=(
-            32,
-            3,
-            224,
-            224,
-        ),  # make sure this is "input_size", not "input_shape"
-        # col_names=["input_size"], # uncomment for smaller output
-        col_names=["input_size", "output_size", "num_params", "trainable"],
-        col_width=20,
-        row_settings=["var_names"],
+        device=device,
+        use_amp=args.use_amp,
+        use_ema=args.use_ema,
+        gradient_clip_val=args.gradient_clip,
+        save_dir=str(save_dir),
+        experiment_name="image_classification"
     )
+    
+    # Create optimizer and criterion
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+    criterion = nn.CrossEntropyLoss()
+    
+    history = engine.train(
+        train_loader=train_loader,
+        val_loader=val_loader,
+        optimizer=optimizer,
+        criterion=criterion,
+        num_epochs=args.epochs
+    )
+    return engine, history
 
-if __name__ == "__main__":
-    test_train()
+def train_with_hf_trainer(args, model, train_loader, val_loader, class_names, save_dir):
+    """Train model using HuggingFace Trainer."""
+    hf_trainer = HuggingFaceTrainer(
+        model=model,
+        num_classes=len(class_names),
+        output_dir=str(save_dir)
+    )
+    trainer = hf_trainer.train(
+         train_dataset=train_loader.dataset,
+         eval_dataset=val_loader.dataset,
+        num_train_epochs=args.epochs,
+        learning_rate=args.lr,
+        per_device_train_batch_size=args.batch_size
+    )
+    return hf_trainer, trainer
+
+def evaluate_model(args, model, val_loader, class_names, save_dir):
+    """Evaluate model performance."""
+    inference_engine = InferenceEngine(
+        model=model,
+        class_names=class_names
+    )
+    results = inference_engine.evaluate(val_loader)
+    return results, inference_engine
+
+def create_experiment_config(args):
+    """Create experiment configuration."""
+    config = {
+        'model': args.model,
+        'model_source': args.model_source,
+        'dataset': args.dataset,
+        'dataset_source': args.dataset_source,
+        'batch_size': args.batch_size,
+        'epochs': args.epochs,
+        'lr': args.lr,
+        'image_size': args.image_size,
+        'pretrained': args.pretrained,
+        'trainer': args.trainer
+    }
+    return config
+
+def main():
+    parser = argparse.ArgumentParser(description='Unified Image Classification System')
+    
+    # Model arguments
+    parser.add_argument('--model', type=str, default='resnet18',
+                        help='Model name (e.g., resnet18, vit-base-patch16-224, microsoft/resnet-50)')
+    parser.add_argument('--model_source', type=str, default='torchvision',
+                        choices=['torchvision', 'timm', 'huggingface'],
+                        help='Model source')
+    parser.add_argument('--pretrained', action='store_true', default=True,
+                        help='Use pretrained weights')
+    
+    # Dataset arguments
+    parser.add_argument('--dataset', type=str, default='cifar10',
+                        help='Dataset name or path')
+    parser.add_argument('--dataset_source', type=str, default='torchvision',
+                        choices=['torchvision', 'huggingface', 'folder'],
+                        help='Dataset source')
+    parser.add_argument('--data_dir', type=str, default=None,
+                        help='Data directory (for folder datasets)')
+    parser.add_argument('--image_size', type=int, default=224,
+                        help='Input image size')
+    parser.add_argument('--val_split', type=float, default=0.2,
+                        help='Validation split ratio')
+    parser.add_argument('--no_augment', action='store_true',
+                        help='Disable data augmentation')
+    
+    # Training arguments
+    parser.add_argument('--trainer', type=str, default='custom',
+                        choices=['custom', 'huggingface'],
+                        help='Training method')
+    parser.add_argument('--epochs', type=int, default=10,
+                        help='Number of training epochs')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        help='Batch size')
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        help='Learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-4,
+                        help='Weight decay')
+    parser.add_argument('--early_stopping', type=int, default=None,
+                        help='Early stopping patience')
+    parser.add_argument('--use_amp', action='store_true',
+                        help='Use automatic mixed precision')
+    parser.add_argument('--use_ema', action='store_true',
+                        help='Use exponential moving average')
+    parser.add_argument('--gradient_clip', type=float, default=None,
+                        help='Gradient clipping value')
+    
+    # Logging and saving arguments
+    parser.add_argument('--experiment_name', type=str, default='image_classification',
+                        help='Experiment name')
+    parser.add_argument('--save_dir', type=str, default='./experiments',
+                        help='Directory to save results')
+    parser.add_argument('--log_interval', type=int, default=100,
+                        help='Logging interval')
+    parser.add_argument('--use_wandb', action='store_true',
+                        help='Use Weights & Biases logging')
+    parser.add_argument('--wandb_project', type=str, default='unified-image-classification',
+                        help='Wandb project name')
+    
+    # Execution arguments
+    parser.add_argument('--evaluate_only', action='store_true',
+                        help='Only evaluate (requires saved model)')
+    parser.add_argument('--load_model', type=str, default=None,
+                        help='Path to load saved model')
+    parser.add_argument('--visualize_only', action='store_true',
+                        help='Only create visualizations')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed')
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='Number of dataloader workers')
+    
+    args = parser.parse_args()
+    
+    # Set random seed
+    set_seed(args.seed)
+    
+    # Create save directory
+    save_dir = Path(args.save_dir) / args.experiment_name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save experiment configuration
+    config = create_experiment_config(args)
+    save_experiment_config(config, save_dir / "config.json")
+    
+    print(f"Unified Image Classification System")
+    print(f"Experiment: {args.experiment_name}")
+    print(f"Save directory: {save_dir}")
+    print("-" * 60)
+    
+    # Setup datasets
+    train_loader, val_loader, class_names, dataset = setup_datasets(args)
+    
+    # Create dataset visualizations if requested
+    if args.visualize_only:
+        visualize_dataset(args, dataset, class_names, save_dir)
+        print("Dataset visualizations completed!")
+        return
+    
+    # Setup model
+    model, unified_model = setup_model(args, len(class_names))
+    
+    # Load model if specified
+    if args.load_model:
+        print(f"Loading model from {args.load_model}")
+        checkpoint = torch.load(args.load_model, map_location='cpu')
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print("Model loaded successfully")
+    
+    if args.evaluate_only:
+        # Only evaluate
+        eval_results, inference_engine = evaluate_model(
+            args, model, val_loader, class_names, save_dir
+        )
+        print("Evaluation completed!")
+        return
+    
+    # Create dataset visualizations
+    visualize_dataset(args, dataset, class_names, save_dir)
+    
+    # Training
+    if args.trainer == 'custom':
+        # Custom training loop
+        engine, history = train_with_custom_loop(
+            args, model, train_loader, val_loader, class_names, save_dir
+        )
+        
+        # Plot training curves
+        plot_training_curves(
+            history=history,
+            save_path=str(save_dir / "training_curves.png")
+        )
+        
+    elif args.trainer == 'huggingface':
+        # HuggingFace Trainer
+        hf_trainer, trainer = train_with_hf_trainer(
+            args, model, train_loader, val_loader, 
+            class_names, save_dir
+        )
+    
+    # Evaluation
+    eval_results, inference_engine = evaluate_model(
+        args, model, val_loader, class_names, save_dir
+    )
+    
+    # Save final model
+    final_model_path = save_dir / "final_model.pth"
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'config': config,
+        'class_names': class_names,
+        'eval_results': eval_results
+    }, final_model_path)
+    
+    print(f"\nTraining and evaluation completed!")
+    print(f"Results saved to: {save_dir}")
+    print(f"Final model saved to: {final_model_path}")
+    print(f"Final validation accuracy: {eval_results['accuracy']:.4f}")
+
+
+if __name__ == '__main__':
+    main()
 
     

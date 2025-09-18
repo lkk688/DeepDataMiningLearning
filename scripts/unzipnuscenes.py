@@ -1,97 +1,14 @@
 import tarfile
 import glob
 import os
-import json
-import argparse
-import cv2
-import numpy as np
-import matplotlib.pyplot as plt
-from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Any
-from pathlib import Path
 
-#url: https://www.nuscenes.org/nuscenes#download
+# Path to where your zip files are stored
+zip_dir = "/mnt/e/Shared/Dataset/NuScenes/"
+# Destination folder
+extract_dir = os.path.join(zip_dir, "v1.0-trainval")
 
-# Standard NuScenes dataset structure
-NUSCENES_STRUCTURE = {
-    'samples': ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'LIDAR_TOP', 'RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT'],
-    'sweeps': ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'LIDAR_TOP', 'RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT'],
-    'maps': [],
-    'v1.0-trainval': []
-}
-
-REQUIRED_ANNOTATION_FILES = [
-    'attribute.json',
-    'calibrated_sensor.json', 
-    'category.json',
-    'ego_pose.json',
-    'instance.json',
-    'log.json',
-    'map.json',
-    'sample.json',
-    'sample_annotation.json',
-    'sample_data.json',
-    'scene.json',
-    'sensor.json',
-    'visibility.json'
-]
-
-# Default paths following standard NuScenes structure
-DEFAULT_DATA_ROOT = "/mnt/e/Shared/Dataset/"
-DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "NuScenes", "v1.0-trainval")
-DEFAULT_ZIP_DIR = "/mnt/e/Shared/Dataset/NuScenes/"
-
-def validate_dataset_structure(nuscenes_root: str) -> bool:
-    """
-    Validate that the extracted dataset follows standard NuScenes structure
-    
-    Args:
-        nuscenes_root: Root directory of the NuScenes dataset
-        
-    Returns:
-        True if structure is valid, False otherwise
-    """
-    print("\nValidating dataset structure...")
-    
-    required_dirs = ['samples', 'sweeps', 'v1.0-trainval']
-    missing_dirs = []
-    
-    for dir_name in required_dirs:
-        dir_path = os.path.join(nuscenes_root, dir_name)
-        if not os.path.exists(dir_path):
-            missing_dirs.append(dir_name)
-    
-    if missing_dirs:
-        print(f"Missing required directories: {missing_dirs}")
-        return False
-    
-    # Check annotation files
-    annotation_dir = os.path.join(nuscenes_root, 'v1.0-trainval')
-    missing_files = []
-    
-    for file_name in REQUIRED_ANNOTATION_FILES:
-        file_path = os.path.join(annotation_dir, file_name)
-        if not os.path.exists(file_path):
-            missing_files.append(file_name)
-    
-    if missing_files:
-        print(f"Missing annotation files: {missing_files}")
-        return False
-    
-    print("Dataset structure validation passed!")
-    return True
-
-def extract_files(zip_dir: str, extract_dir: str) -> None:
-    """
-    Extract all NuScenes tgz files to the specified directory following standard structure
-    
-    Args:
-        zip_dir: Directory containing the tgz files
-        extract_dir: Directory to extract files to (should be data/nuscenes/)
-    """
-    # Ensure we follow standard NuScenes directory structure
-    nuscenes_root = Path(extract_dir)
-    nuscenes_root.mkdir(parents=True, exist_ok=True)
+# Make sure the destination directory exists
+os.makedirs(extract_dir, exist_ok=True)
 
     # Find all blob tgz files
     zip_files = glob.glob(os.path.join(zip_dir, "v1.0-trainval*_blobs.tgz"))
