@@ -561,11 +561,13 @@ def train_with_hf_trainer(args, model, train_loader, val_loader, class_names, sa
         output_dir=str(save_dir)
     )
     trainer = hf_trainer.train(
-         train_dataset=train_loader.dataset,
-         eval_dataset=val_loader.dataset,
-        num_train_epochs=args.epochs,
-        learning_rate=args.lr,
-        per_device_train_batch_size=args.batch_size
+        train_dataset=train_loader.dataset,
+        eval_dataset=val_loader.dataset,
+        training_args=hf_trainer.create_training_args(
+            num_train_epochs=args.epochs,
+            learning_rate=args.lr,
+            per_device_train_batch_size=args.batch_size
+        )
     )
     return hf_trainer, trainer
 
