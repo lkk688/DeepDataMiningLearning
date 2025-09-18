@@ -701,7 +701,7 @@ def main():
     # Load model if specified
     if args.load_model:
         print(f"Loading model from {args.load_model}")
-        checkpoint = torch.load(args.load_model, map_location='cpu')
+        checkpoint = torch.load(args.load_model, map_location='cpu', weights_only=False)
         model.load_state_dict(checkpoint['model_state_dict'])
         print("Model loaded successfully")
     
