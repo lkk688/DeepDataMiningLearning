@@ -1027,7 +1027,7 @@ def test_inference_engine():
     print("InferenceEngine testing completed!")
 
 
-def test_sample_images(model_name: str = "resnet18", custom_image_path: str = None):
+def test_sample_images(model_name: str = "resnet18", custom_image_path: str = None, backend: str = "pytorch"):
     """Test inference on sample images or a custom image.
     
     Args:
@@ -1071,11 +1071,21 @@ def test_sample_images(model_name: str = "resnet18", custom_image_path: str = No
                                std=[0.229, 0.224, 0.225])
         ])
         
+        # Handle backend-specific initialization
+        onnx_model_path = None
+        if backend == "onnxruntime" and ONNXRUNTIME_AVAILABLE:
+            # Convert PyTorch model to ONNX for ONNX Runtime backend
+            onnx_model_path = f"temp_{model_name}.onnx"
+            print(f"Converting {model_name} to ONNX format...")
+            InferenceEngine.convert_to_onnx(model, (3, 224, 224), onnx_model_path)
+        
         # Initialize inference engine
         engine = InferenceEngine(
             model=model,
             class_names=imagenet_classes,
-            model_type="pytorch"
+            model_type="pytorch",
+            backend=backend,
+            onnx_model_path=onnx_model_path
         )
         
         # Test custom image if provided
@@ -1158,6 +1168,14 @@ def test_sample_images(model_name: str = "resnet18", custom_image_path: str = No
         print("Install with: pip install torchvision cairosvg pillow")
     except Exception as e:
         print(f"Error in sample image testing: {e}")
+    finally:
+        # Clean up temporary ONNX files
+        if backend == "onnxruntime" and onnx_model_path:
+            try:
+                Path(onnx_model_path).unlink(missing_ok=True)
+                print(f"Cleaned up temporary ONNX file: {onnx_model_path}")
+            except:
+                pass
 
 
 def benchmark_inference():
@@ -1221,7 +1239,7 @@ def benchmark_inference():
                 # Get stats
                 stats = engine.get_performance_stats()
                 
-                print(f"    Average inference time: {stats['avg_inference_time']:.4f}s")
+                print(f"    Average inference time: {stats['avg_per_sample_time']:.4f}s")
                 print(f"    Throughput: {batch_size * 10 / total_time:.2f} images/sec")
                 print(f"    Total time (10 batches): {total_time:.4f}s")
                 
@@ -1242,6 +1260,8 @@ if __name__ == "__main__":
                        help="Model to use for testing")
     parser.add_argument("--custom-image", type=str, 
                        help="Path to a custom image file for testing (e.g., sampledata/bus.jpg)")
+    parser.add_argument('--backend', type=str, choices=['pytorch', 'tensorrt', 'onnxruntime'], 
+                       default='pytorch', help='Inference backend to use (default: pytorch)')
     
     args = parser.parse_args()
     
@@ -1249,7 +1269,7 @@ if __name__ == "__main__":
         test_inference_engine()
     
     if args.test in ["samples", "all"]:
-        test_sample_images(model_name=args.model, custom_image_path=args.custom_image)
+        test_sample_images(model_name=args.model, custom_image_path=args.custom_image, backend=args.backend)
     
     if args.test in ["benchmark", "all"]:
         benchmark_inference()
