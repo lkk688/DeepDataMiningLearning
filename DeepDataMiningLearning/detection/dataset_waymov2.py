@@ -1653,7 +1653,7 @@ def main():
     Main function to demonstrate loading and visualizing Waymo Open Dataset v2
     """
     # Path to your downloaded Waymo Open Dataset v2 parquet files
-    data_path = "/mnt/e/Dataset/waymodata/training"
+    data_path = "/mnt/e/Shared/Dataset/waymodata/training"
 
     # Create dataset (limit to 5 frames for demonstration)
     dataset = WaymoDatasetV2(data_path, max_frames=5)

@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+GLM-4.1V Gradio Chat Interface - Main Application
+
+A modular Gradio web interface for interacting with GLM-4.1V-9B-Thinking and GLM-4.5V models.
+This application demonstrates how to use the modularized VLM components:
+
+- vlm_base.py: Abstract base class for VLM models
+- vlm_model.py: GLM-4V specific implementation
+- gradio_ui.py: Reusable Gradio interface components
+
+Usage:
+    python vlm_gradio.py --server_name 0.0.0.0 --server_port 7860 --share
+
+Requirements:
+    - transformers>=4.44.0
+    - torch>=2.0.0
+    - gradio>=4.0.0
+    - PyMuPDF (fitz) for PDF processing (optional)
+    - LibreOffice for PPT conversion (optional)
+
+Model Support:
+    - GLM-4.1V-9B-Thinking (default)
+    - GLM-4.5V models (MoE variants)
+    - Easy to extend with other VLM models by implementing VLMModelBase
+"""
+
+import argparse
+import sys
+
+try:
+    from vlm_model import GLM4VModel
+    from vlm_gradio_ui import create_vlm_interface
+except ImportError as e:
+    print(f"Error importing modules: {e}")
+    print("Please ensure all required dependencies are installed.")
+    print("Required files: vlm_base.py, vlm_model.py, gradio_ui.py")
+    sys.exit(1)
+
+
+def main():
+    """
+    Main application entry point.
+    
+    This function:
+    1. Parses command-line arguments
+    2. Initializes the GLM-4V model
+    3. Creates the Gradio interface
+    4. Launches the web application
+    """
+    # Command-line argument configuration
+    parser = argparse.ArgumentParser(description="GLM-4.1V Gradio Chat Interface")
+    parser.add_argument(
+        "--server_name",
+        type=str,
+        default="127.0.0.1",
+        help="Server IP address (use 0.0.0.0 for LAN access)",
+    )
+    parser.add_argument(
+        "--server_port", 
+        type=int, 
+        default=7860, 
+        help="Port number for the web server"
+    )
+    parser.add_argument(
+        "--share", 
+        action="store_true", 
+        help="Enable Gradio public sharing link"
+    )
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default="zai-org/GLM-4.1V-9B-Thinking",
+        help="Hugging Face model identifier"
+    )
+    args = parser.parse_args()
+    
+    # Initialize the GLM-4V model
+    print(f"Loading model: {args.model_path}")
+    try:
+        model = GLM4VModel(model_path=args.model_path)
+        model.load_model()
+        print("Model loaded successfully!")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        print("Please check your model path and ensure all dependencies are installed.")
+        sys.exit(1)
+    
+    # Create and launch the Gradio interface
+    try:
+        interface = create_vlm_interface(
+            model=model,
+            title="GLM-4V Chat Interface"
+        )
+        
+        print(f"Starting server on {args.server_name}:{args.server_port}")
+        interface.launch(
+            server_name=args.server_name,
+            server_port=args.server_port,
+            share=args.share
+        )
+    except Exception as e:
+        print(f"Error launching interface: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

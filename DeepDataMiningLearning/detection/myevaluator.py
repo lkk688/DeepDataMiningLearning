@@ -595,7 +595,7 @@ def vis_example(onedetection, imgtensor, filename='result.jpg'):
                             width=4, font_size=40)
     im = to_pil_image(box.detach())
     # save a image using extension
-    im = im.save(filename)
+    im.save(filename)
 
 from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.dataset import get_dataset
