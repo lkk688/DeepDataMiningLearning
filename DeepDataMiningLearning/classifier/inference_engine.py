@@ -655,23 +655,54 @@ class InferenceEngine:
         # Try different provider configurations with fallbacks
         provider_configs = []
         
-        # First try: GPU providers if CUDA is available
-        if torch.cuda.is_available():
-            provider_configs.append([
-                ('TensorrtExecutionProvider', {
-                    'device_id': 0,
-                    'trt_max_workspace_size': 2147483648,  # 2GB
-                    'trt_fp16_enable': True,
-                }),
-                ('CUDAExecutionProvider', {
-                    'device_id': 0,
-                    'arena_extend_strategy': 'kNextPowerOfTwo',
-                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB
-                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                    'do_copy_in_default_stream': True,
-                }),
-                'CPUExecutionProvider'
-            ])
+        # Check CUDA availability more thoroughly
+        cuda_available = False
+        cuda_device_count = 0
+        
+        try:
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                cuda_device_count = torch.cuda.device_count()
+                # Try a simple CUDA operation to verify it's working
+                test_tensor = torch.tensor([1.0]).cuda()
+                _ = test_tensor + 1
+                print(f"CUDA verification successful: {cuda_device_count} device(s) available")
+        except Exception as e:
+            print(f"CUDA verification failed: {e}")
+            cuda_available = False
+        
+        # Only add GPU providers if CUDA is properly working
+        if cuda_available and cuda_device_count > 0:
+            # Check if TensorRT is available and safe to use
+            tensorrt_available = False
+            try:
+                # Try to import tensorrt to check availability
+                import tensorrt as trt
+                # Additional check: try to create a simple TensorRT logger
+                logger = trt.Logger(trt.Logger.WARNING)
+                tensorrt_available = True
+                print("TensorRT availability check passed")
+            except Exception as e:
+                print(f"TensorRT not available or unsafe: {e}")
+                tensorrt_available = False
+            
+            # First try: GPU with TensorRT (only if both CUDA and TensorRT are verified)
+            if tensorrt_available:
+                provider_configs.append([
+                    ('TensorrtExecutionProvider', {
+                        'device_id': 0,
+                        'trt_max_workspace_size': 2147483648,  # 2GB
+                        'trt_fp16_enable': True,
+                    }),
+                    ('CUDAExecutionProvider', {
+                        'device_id': 0,
+                        'arena_extend_strategy': 'kNextPowerOfTwo',
+                        'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB
+                        'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                        'do_copy_in_default_stream': True,
+                    }),
+                    'CPUExecutionProvider'
+                ])
             
             # Second try: CUDA only (without TensorRT)
             provider_configs.append([
@@ -682,6 +713,8 @@ class InferenceEngine:
                 }),
                 'CPUExecutionProvider'
             ])
+        else:
+            print("CUDA not available or not working properly, using CPU-only execution")
         
         # Final fallback: CPU only
         provider_configs.append(['CPUExecutionProvider'])
@@ -691,7 +724,38 @@ class InferenceEngine:
         for i, providers in enumerate(provider_configs):
             try:
                 print(f"Attempting ONNX Runtime initialization with providers: {[p[0] if isinstance(p, tuple) else p for p in providers]}")
-                self.onnx_session = ort.InferenceSession(model_path, providers=providers)
+                
+                # Use a more defensive approach for provider initialization
+                # Create session with timeout and better error isolation
+                import signal
+                import threading
+                
+                session_result = [None]
+                session_error = [None]
+                
+                def create_session():
+                    try:
+                        session_result[0] = ort.InferenceSession(model_path, providers=providers)
+                    except Exception as e:
+                        session_error[0] = e
+                
+                # Create session in a separate thread with timeout
+                session_thread = threading.Thread(target=create_session)
+                session_thread.daemon = True
+                session_thread.start()
+                session_thread.join(timeout=10.0)  # 10 second timeout
+                
+                if session_thread.is_alive():
+                    # Session creation is taking too long, likely hanging
+                    raise TimeoutError("ONNX Runtime session creation timed out")
+                
+                if session_error[0]:
+                    raise session_error[0]
+                
+                if session_result[0] is None:
+                    raise RuntimeError("Failed to create ONNX Runtime session")
+                
+                self.onnx_session = session_result[0]
                 
                 # Get input/output info
                 self.onnx_input_name = self.onnx_session.get_inputs()[0].name
