@@ -652,32 +652,64 @@ class InferenceEngine:
         if not model_path or not Path(model_path).exists():
             raise FileNotFoundError(f"ONNX model file not found: {model_path}")
         
-        # Configure ONNX Runtime providers
-        providers = []
+        # Try different provider configurations with fallbacks
+        provider_configs = []
+        
+        # First try: GPU providers if CUDA is available
         if torch.cuda.is_available():
-            providers.append(('TensorrtExecutionProvider', {
-                'device_id': 0,
-                'trt_max_workspace_size': 2147483648,  # 2GB
-                'trt_fp16_enable': True,
-            }))
-            providers.append(('CUDAExecutionProvider', {
-                'device_id': 0,
-                'arena_extend_strategy': 'kNextPowerOfTwo',
-                'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB
-                'cudnn_conv_algo_search': 'EXHAUSTIVE',
-                'do_copy_in_default_stream': True,
-            }))
-        providers.append('CPUExecutionProvider')
+            provider_configs.append([
+                ('TensorrtExecutionProvider', {
+                    'device_id': 0,
+                    'trt_max_workspace_size': 2147483648,  # 2GB
+                    'trt_fp16_enable': True,
+                }),
+                ('CUDAExecutionProvider', {
+                    'device_id': 0,
+                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB
+                    'cudnn_conv_algo_search': 'EXHAUSTIVE',
+                    'do_copy_in_default_stream': True,
+                }),
+                'CPUExecutionProvider'
+            ])
+            
+            # Second try: CUDA only (without TensorRT)
+            provider_configs.append([
+                ('CUDAExecutionProvider', {
+                    'device_id': 0,
+                    'arena_extend_strategy': 'kNextPowerOfTwo',
+                    'gpu_mem_limit': 2 * 1024 * 1024 * 1024,  # 2GB
+                }),
+                'CPUExecutionProvider'
+            ])
         
-        # Create ONNX Runtime session
-        self.onnx_session = ort.InferenceSession(model_path, providers=providers)
+        # Final fallback: CPU only
+        provider_configs.append(['CPUExecutionProvider'])
         
-        # Get input/output info
-        self.onnx_input_name = self.onnx_session.get_inputs()[0].name
-        self.onnx_output_name = self.onnx_session.get_outputs()[0].name
+        # Try each provider configuration until one works
+        last_error = None
+        for i, providers in enumerate(provider_configs):
+            try:
+                print(f"Attempting ONNX Runtime initialization with providers: {[p[0] if isinstance(p, tuple) else p for p in providers]}")
+                self.onnx_session = ort.InferenceSession(model_path, providers=providers)
+                
+                # Get input/output info
+                self.onnx_input_name = self.onnx_session.get_inputs()[0].name
+                self.onnx_output_name = self.onnx_session.get_outputs()[0].name
+                
+                print(f"ONNX Runtime session initialized successfully: {model_path}")
+                print(f"Active providers: {self.onnx_session.get_providers()}")
+                return
+                
+            except Exception as e:
+                last_error = e
+                print(f"Provider configuration {i+1} failed: {str(e)}")
+                if i < len(provider_configs) - 1:
+                    print("Trying next provider configuration...")
+                continue
         
-        print(f"ONNX Runtime session initialized: {model_path}")
-        print(f"Available providers: {self.onnx_session.get_providers()}")
+        # If all configurations failed, raise the last error
+        raise RuntimeError(f"Failed to initialize ONNX Runtime with any provider configuration. Last error: {last_error}")
     
     def _tensorrt_inference(self, images: torch.Tensor) -> torch.Tensor:
         """Run inference using TensorRT engine."""
@@ -784,23 +816,47 @@ class InferenceEngine:
         # Create dummy input
         dummy_input = torch.randn(1, *input_shape)
         
-        # Export to ONNX
-        torch.onnx.export(
-            pytorch_model.eval(),
-            dummy_input,
-            onnx_path,
-            export_params=True,
-            opset_version=opset_version,
-            do_constant_folding=True,
-            input_names=['input'],
-            output_names=['output'],
-            dynamic_axes={
-                'input': {0: 'batch_size'},
-                'output': {0: 'batch_size'}
-            }
-        )
-        
-        print(f"ONNX model saved: {onnx_path}")
+        # Try to use the new torch.export-based ONNX exporter first
+        try:
+            # Check if torch.export is available (PyTorch 2.1+)
+            import torch.export as torch_export
+            
+            # Export to ONNX using the new dynamo-based exporter
+            torch.onnx.export(
+                pytorch_model.eval(),
+                dummy_input,
+                onnx_path,
+                export_params=True,
+                opset_version=opset_version,
+                do_constant_folding=True,
+                input_names=['input'],
+                output_names=['output'],
+                dynamic_axes={
+                    'input': {0: 'batch_size'},
+                    'output': {0: 'batch_size'}
+                },
+                dynamo=True  # Use the new torch.export-based exporter
+            )
+            print(f"ONNX model saved using new torch.export-based exporter: {onnx_path}")
+            
+        except (ImportError, AttributeError, RuntimeError) as e:
+            # Fallback to legacy TorchScript-based exporter
+            print(f"New torch.export-based exporter not available or failed ({str(e)}), using legacy exporter")
+            torch.onnx.export(
+                pytorch_model.eval(),
+                dummy_input,
+                onnx_path,
+                export_params=True,
+                opset_version=opset_version,
+                do_constant_folding=True,
+                input_names=['input'],
+                output_names=['output'],
+                dynamic_axes={
+                    'input': {0: 'batch_size'},
+                    'output': {0: 'batch_size'}
+                }
+            )
+            print(f"ONNX model saved using legacy TorchScript-based exporter: {onnx_path}")
         
         # Verify ONNX model
         if ONNXRUNTIME_AVAILABLE:
