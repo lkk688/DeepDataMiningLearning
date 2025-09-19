@@ -1682,21 +1682,45 @@ def visualize_bev_with_boxes(points: np.ndarray, annotations: List[Dict], catego
         'vehicle': '#DC143C'                 # Crimson (fallback for vehicle types)
     }
     
+    # Define emoji icons for each category
+    category_icons = {
+        'car': '🚗',
+        'truck': '🚛',
+        'bus': '🚌',
+        'trailer': '🚚',
+        'construction_vehicle': '🚧',
+        'pedestrian': '🚶',
+        'motorcycle': '🏍️',
+        'bicycle': '🚲',
+        'traffic_cone': '🚥',
+        'barrier': '🚧',
+        'movable_object': '📦',
+        'animal': '🐾',
+        'vehicle': '🚗'
+    }
+    
     # Create legend patches for categories that appear in the scene
     legend_elements = []
     for category_name, count in sorted(category_counts.items()):
         if count > 0:  # Only show categories that are present
             color = category_colors.get(category_name.lower(), '#6C5CE7')  # Default purple
-            legend_elements.append(Patch(facecolor=color, label=f'{category_name} ({count})'))
+            icon = category_icons.get(category_name.lower(), '📦')  # Default box icon
+            legend_elements.append(Patch(facecolor=color, label=f'{icon} {category_name} ({count})'))
     
     # Add ego vehicle to legend
-    legend_elements.append(Patch(facecolor='red', label='Ego Vehicle'))
+    legend_elements.append(Patch(facecolor='red', label='🚗 Ego Vehicle'))
     
-    # Create a separate legend for the color coding
+    # Create a separate legend for the color coding - positioned outside the plot area
     if legend_elements:
-        legend = ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1.02, 0.5), 
-                          fontsize=10, title='Object Categories', title_fontsize=12)
+        # Position legend outside the plot area to avoid overlap
+        legend = ax.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1.05, 1.0), 
+                          fontsize=9, title='Object Categories', title_fontsize=11,
+                          frameon=True, fancybox=True, shadow=True, framealpha=0.9)
         legend.get_title().set_fontweight('bold')
+        # Ensure legend background is white for better readability
+        legend.get_frame().set_facecolor('white')
+        legend.get_frame().set_edgecolor('gray')
+        legend.get_frame().set_linewidth(1)
     
     ax.set_xlabel('X (m)', fontsize=12, fontweight='bold')
     ax.set_ylabel('Y (m)', fontsize=12, fontweight='bold')
@@ -1805,40 +1829,42 @@ def draw_map_overlay(ax, map_data: Dict, bev_range: float):
         bev_range: BEV visualization range in meters
     """
     if map_data is not None:
-        # When map data is available, draw detailed map features
-        print("  Map overlay: Drawing detailed map features")
+        # When map data is available, draw simplified map features
+        print("  Map overlay: Drawing simplified map features")
         
-        # Draw road network with different colors for different road types
-        ax.axhline(y=0, color='darkblue', linestyle='-', alpha=0.8, linewidth=3.0, label='Main Road')
-        ax.axvline(x=0, color='darkblue', linestyle='-', alpha=0.8, linewidth=3.0)
+        # Draw main coordinate axes with enhanced styling
+        ax.axhline(y=0, color='darkblue', linestyle='-', alpha=0.8, linewidth=2.5, label='Main Road')
+        ax.axvline(x=0, color='darkblue', linestyle='-', alpha=0.8, linewidth=2.5)
         
-        # Add secondary roads
-        for i in range(-bev_range, bev_range + 1, 30):
+        # Add simplified secondary grid (every 25m instead of 30m)
+        for i in range(-bev_range, bev_range + 1, 25):
             if i != 0:
-                ax.axhline(y=i, color='blue', linestyle='-', alpha=0.6, linewidth=2.0)
-                ax.axvline(x=i, color='blue', linestyle='-', alpha=0.6, linewidth=2.0)
+                ax.axhline(y=i, color='blue', linestyle='-', alpha=0.4, linewidth=1.0)
+                ax.axvline(x=i, color='blue', linestyle='-', alpha=0.4, linewidth=1.0)
         
-        # Add lane markings
-        for i in range(-bev_range, bev_range + 1, 10):
-            ax.axhline(y=i, color='white', linestyle='--', alpha=0.5, linewidth=1.0)
-            ax.axvline(x=i, color='white', linestyle='--', alpha=0.5, linewidth=1.0)
+        # Add subtle lane markings (every 20m instead of 10m)
+        for i in range(-bev_range, bev_range + 1, 20):
+            if i != 0 and i % 25 != 0:  # Skip lines that overlap with secondary grid
+                ax.axhline(y=i, color='lightblue', linestyle=':', alpha=0.3, linewidth=0.5)
+                ax.axvline(x=i, color='lightblue', linestyle=':', alpha=0.3, linewidth=0.5)
             
         # Add map background with slight tint
-        ax.set_facecolor('#f0f8ff')  # Light blue background for map areas
+        ax.set_facecolor('#f8fbff')  # Very light blue background for map areas
         
     else:
         # When no map data is available, draw simple grid
         print("  Map overlay: No map data - drawing simple coordinate grid")
         
-        # Draw a basic coordinate grid
-        for i in range(-bev_range, bev_range + 1, 20):
+        # Draw a basic coordinate grid (every 25m)
+        for i in range(-bev_range, bev_range + 1, 25):
             ax.axhline(y=i, color='gray', linestyle='-', alpha=0.3, linewidth=1.0)
             ax.axvline(x=i, color='gray', linestyle='-', alpha=0.3, linewidth=1.0)
         
-        # Minor grid lines every 10m
+        # Minor grid lines every 10m (lighter)
         for i in range(-bev_range, bev_range + 1, 10):
-            ax.axhline(y=i, color='lightgray', linestyle=':', alpha=0.2, linewidth=0.5)
-            ax.axvline(x=i, color='lightgray', linestyle=':', alpha=0.2, linewidth=0.5)
+            if i % 25 != 0:  # Skip lines that overlap with major grid
+                ax.axhline(y=i, color='lightgray', linestyle=':', alpha=0.2, linewidth=0.3)
+                ax.axvline(x=i, color='lightgray', linestyle=':', alpha=0.2, linewidth=0.3)
             
         # Set plain background for no-map case
         ax.set_facecolor('#ffffff')  # White background for no-map areas
