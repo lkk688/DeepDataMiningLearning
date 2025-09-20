@@ -1,11 +1,10 @@
+#!/usr/bin/env python3
 """
-NuScenes Dataset for PyTorch Object Detection Training
+Simplified NuScenes Dataset for PyTorch Object Detection
 
-This module provides a PyTorch Dataset class for loading and processing NuScenes data
-for object detection tasks. It follows the same interface as the KITTI dataset but
-handles NuScenes-specific data structures and coordinate transformations.
-
-Author: Generated based on KITTI dataset structure
+This module provides a streamlined NuScenes dataset implementation that leverages
+utility functions from the main nuscenes.py script to reduce code duplication
+and complexity.
 """
 
 import os
@@ -14,90 +13,89 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import torch
 from torch.utils.data import Dataset
 import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from pathlib import Path
+from enum import IntEnum
+import argparse
+import sys
 
-# NuScenes dataset structure constants
-NUSCENES_STRUCTURE = {
-    'samples': [
-        'CAM_FRONT',
-        'CAM_FRONT_RIGHT', 
-        'CAM_FRONT_LEFT',
-        'CAM_BACK',
-        'CAM_BACK_LEFT',
-        'CAM_BACK_RIGHT',
-        'LIDAR_TOP',
-        'RADAR_FRONT',
-        'RADAR_FRONT_LEFT',
-        'RADAR_FRONT_RIGHT',
-        'RADAR_BACK_LEFT',
-        'RADAR_BACK_RIGHT'
-    ],
-    'sweeps': [
-        'CAM_FRONT',
-        'CAM_FRONT_RIGHT',
-        'CAM_FRONT_LEFT', 
-        'CAM_BACK',
-        'CAM_BACK_LEFT',
-        'CAM_BACK_RIGHT',
-        'LIDAR_TOP',
-        'RADAR_FRONT',
-        'RADAR_FRONT_LEFT',
-        'RADAR_FRONT_RIGHT',
-        'RADAR_BACK_LEFT',
-        'RADAR_BACK_RIGHT'
-    ]
-}
+# Import utility functions from nuscenes.py
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'scripts'))
+try:
+    from nuscenes import (
+        # 3D to 2D projection utilities
+        project_3d_box_to_2d,
+        get_2d_bbox_from_3d_projection,
+        quaternion_to_rotation_matrix,
+        draw_2d_bbox,
+        draw_2d_bbox_from_3d,
+        
+        # Data loading and validation utilities
+        diagnose_dataset_issues,
+        check_nuscenes_data_structure,
+        load_nuscenes_data,
+        box_in_image,
+        
+        # Constants and structures
+        NUSCENES_STRUCTURE,
+        REQUIRED_ANNOTATION_FILES,
+        BoxVisibility
+    )
+    print("✅ Successfully imported nuscenes utilities")
+except ImportError as e:
+    print(f"Warning: Could not import nuscenes utilities: {e}")
+    # Fallback definitions if import fails
+    NUSCENES_STRUCTURE = {
+        'samples': ['CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_FRONT_LEFT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'LIDAR_TOP'],
+        'sweeps': ['CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_FRONT_LEFT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT', 'LIDAR_TOP']
+    }
+    REQUIRED_ANNOTATION_FILES = ['sample.json', 'sample_data.json', 'sample_annotation.json', 'category.json']
+    
+    class BoxVisibility(IntEnum):
+        ALL = 0
+        ANY = 1
+        NONE = 2
 
-# Required annotation files for NuScenes
-REQUIRED_ANNOTATION_FILES = [
-    'sample.json',
-    'sample_data.json',
-    'sample_annotation.json',
-    'instance.json',
-    'category.json',
-    'attribute.json',
-    'visibility.json',
-    'sensor.json',
-    'calibrated_sensor.json',
-    'ego_pose.json',
-    'log.json',
-    'scene.json',
-    'map.json'
-]
-
-# NuScenes category mapping to detection classes
+# NuScenes category mapping (simplified)
 NUSCENES_CATEGORIES = {
-    'car': 0,
-    'truck': 1,
-    'bus': 2,
-    'trailer': 3,
-    'construction_vehicle': 4,
-    'pedestrian': 5,
-    'motorcycle': 6,
-    'bicycle': 7,
-    'traffic_cone': 8,
-    'barrier': 9
+    'vehicle.car': 0,
+    'vehicle.truck': 1,
+    'vehicle.bus.bendy': 2,
+    'vehicle.bus.rigid': 2,
+    'vehicle.trailer': 3,
+    'vehicle.construction': 4,
+    'human.pedestrian.adult': 5,
+    'human.pedestrian.child': 5,
+    'human.pedestrian.wheelchair': 5,
+    'human.pedestrian.stroller': 5,
+    'human.pedestrian.personal_mobility': 5,
+    'human.pedestrian.police_officer': 5,
+    'human.pedestrian.construction_worker': 5,
+    'vehicle.motorcycle': 6,
+    'vehicle.bicycle': 7,
+    'movable_object.trafficcone': 8,
+    'movable_object.barrier': 9
 }
 
-# Category names for visualization and evaluation
 CATEGORY_NAMES = [
     'car', 'truck', 'bus', 'trailer', 'construction_vehicle',
     'pedestrian', 'motorcycle', 'bicycle', 'traffic_cone', 'barrier'
 ]
 
-# Reverse mapping from class index to category name
-CLASS_TO_CATEGORY = {v: k for k, v in NUSCENES_CATEGORIES.items()}
+DEFAULT_NUSCENES_ROOT = "/DATA10T/Datasets/nuScenes/v1.0-trainval"
 
 
 class NuScenesDataset(Dataset):
     """
-    NuScenes Dataset for PyTorch object detection training.
+    Simplified NuScenes Dataset for PyTorch object detection training.
     
-    This dataset loads NuScenes data and provides it in a format suitable for
-    object detection training, similar to the KITTI dataset interface.
+    This dataset leverages utility functions from nuscenes.py to reduce
+    code duplication and complexity while maintaining full functionality.
     """
     
     def __init__(self, 
@@ -107,9 +105,10 @@ class NuScenesDataset(Dataset):
                  transform: Optional[transforms.Compose] = None,
                  target_transform: Optional[transforms.Compose] = None,
                  load_lidar: bool = False,
-                 max_samples: Optional[int] = None):
+                 max_samples: Optional[int] = None,
+                 validate_on_init: bool = True):
         """
-        Initialize NuScenes dataset.
+        Initialize simplified NuScenes dataset.
         
         Args:
             root_dir: Root directory of NuScenes dataset
@@ -119,6 +118,7 @@ class NuScenesDataset(Dataset):
             target_transform: Transform to apply to targets
             load_lidar: Whether to load LiDAR data
             max_samples: Maximum number of samples to load (for debugging)
+            validate_on_init: Whether to validate dataset structure on initialization
         """
         self.root_dir = root_dir
         self.split = split
@@ -130,133 +130,91 @@ class NuScenesDataset(Dataset):
         
         # Dataset paths
         self.samples_dir = os.path.join(root_dir, 'samples')
-        self.sweeps_dir = os.path.join(root_dir, 'sweeps')
         self.annotation_dir = os.path.join(root_dir, 'v1.0-trainval')
         
-        # Validate dataset structure
-        self._validate_dataset()
+        # Validate dataset structure using utility function
+        if validate_on_init:
+            if not check_nuscenes_data_structure(root_dir):
+                raise ValueError(f"Invalid NuScenes dataset structure at {root_dir}")
         
-        # Load annotations
-        self._load_annotations()
+        # Load annotation data using utility function
+        print("Loading NuScenes annotation data...")
+        try:
+            self.nuscenes_data = load_nuscenes_data(root_dir)
+            print(f"✅ Loaded {len(self.nuscenes_data['samples'])} samples")
+        except Exception as e:
+            print(f"❌ Failed to load annotation data: {e}")
+            raise
         
-        # Filter samples based on split and camera types
-        self._filter_samples()
-        
-        print(f"Loaded NuScenes dataset: {len(self.samples)} samples for {split} split")
-    
-    def _validate_dataset(self):
-        """Validate that the dataset has the required structure."""
-        if not os.path.exists(self.root_dir):
-            raise FileNotFoundError(f"Dataset root directory not found: {self.root_dir}")
-        
-        if not os.path.exists(self.samples_dir):
-            raise FileNotFoundError(f"Samples directory not found: {self.samples_dir}")
-        
-        if not os.path.exists(self.annotation_dir):
-            raise FileNotFoundError(f"Annotation directory not found: {self.annotation_dir}")
-        
-        # Check for required annotation files
-        missing_files = []
-        for file_name in REQUIRED_ANNOTATION_FILES:
-            file_path = os.path.join(self.annotation_dir, file_name)
-            if not os.path.exists(file_path):
-                missing_files.append(file_name)
-        
-        if missing_files:
-            print(f"Warning: Missing annotation files: {missing_files}")
-    
-    def _load_annotations(self):
-        """Load all annotation files."""
-        self.annotations = {}
-        
-        for file_name in REQUIRED_ANNOTATION_FILES:
-            file_path = os.path.join(self.annotation_dir, file_name)
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, 'r') as f:
-                        data = json.load(f)
-                    self.annotations[file_name.replace('.json', '')] = data
-                except json.JSONDecodeError as e:
-                    print(f"Error loading {file_name}: {e}")
-                    self.annotations[file_name.replace('.json', '')] = []
-        
-        # Create lookup dictionaries for faster access
+        # Create lookup dictionaries for efficient access
         self._create_lookup_dicts()
+        
+        # Filter and prepare samples for the specified split
+        self._prepare_samples()
+        
+        print(f"✅ Dataset initialized with {len(self.samples)} samples for {split} split")
     
     def _create_lookup_dicts(self):
-        """Create lookup dictionaries for faster data access."""
-        # Sample data lookup by token
-        self.sample_data_by_token = {}
-        if 'sample_data' in self.annotations:
-            for sd in self.annotations['sample_data']:
-                self.sample_data_by_token[sd['token']] = sd
+        """Create lookup dictionaries for efficient data access."""
+        # Create token-based lookups
+        self.sample_data_lookup = {sd['token']: sd for sd in self.nuscenes_data['sample_data']}
+        self.calibrated_sensor_lookup = {cs['token']: cs for cs in self.nuscenes_data['calibrated_sensors']}
+        self.ego_pose_lookup = {ep['token']: ep for ep in self.nuscenes_data['ego_poses']}
+        self.sensor_lookup = {s['token']: s for s in self.nuscenes_data['sensors']}
+        self.category_lookup = {c['token']: c['name'] for c in self.nuscenes_data['categories']}
+        self.instance_lookup = {i['token']: i for i in self.nuscenes_data['instances']}
         
-        # Sample annotation lookup by sample token
-        self.annotations_by_sample = defaultdict(list)
-        if 'sample_annotation' in self.annotations:
-            for ann in self.annotations['sample_annotation']:
-                self.annotations_by_sample[ann['sample_token']].append(ann)
-        
-        # Category lookup by token
-        self.category_by_token = {}
-        if 'category' in self.annotations:
-            for cat in self.annotations['category']:
-                self.category_by_token[cat['token']] = cat
-        
-        # Instance lookup by token
-        self.instance_by_token = {}
-        if 'instance' in self.annotations:
-            for inst in self.annotations['instance']:
-                self.instance_by_token[inst['token']] = inst
-        
-        # Sensor and calibration lookups
-        self.sensor_by_token = {}
-        if 'sensor' in self.annotations:
-            for sensor in self.annotations['sensor']:
-                self.sensor_by_token[sensor['token']] = sensor
-        
-        self.calibrated_sensor_by_token = {}
-        if 'calibrated_sensor' in self.annotations:
-            for cs in self.annotations['calibrated_sensor']:
-                self.calibrated_sensor_by_token[cs['token']] = cs
-        
-        # Ego pose lookup
-        self.ego_pose_by_token = {}
-        if 'ego_pose' in self.annotations:
-            for ego in self.annotations['ego_pose']:
-                self.ego_pose_by_token[ego['token']] = ego
+        print(f"✅ Created lookup dictionaries for efficient data access")
     
-    def _filter_samples(self):
-        """Filter samples based on split and camera types."""
+    def _prepare_samples(self):
+        """Prepare and filter samples for the dataset."""
         self.samples = []
         
-        if 'sample' not in self.annotations:
-            print("Warning: No sample annotations found")
-            return
+        # Simple split logic - use first 80% for train, rest for val
+        all_samples = self.nuscenes_data['samples']
+        split_idx = int(0.8 * len(all_samples))
         
-        # For now, we'll use all samples since NuScenes doesn't have explicit train/val splits
-        # In practice, you would implement proper train/val/test splitting
-        all_samples = self.annotations['sample']
+        if self.split == 'train':
+            selected_samples = all_samples[:split_idx]
+        elif self.split == 'val':
+            selected_samples = all_samples[split_idx:]
+        else:  # test or other
+            selected_samples = all_samples
         
         # Filter samples that have the required camera data
-        for sample in all_samples:
-            sample_token = sample['token']
-            
-            # Check if sample has data for at least one of the requested camera types
-            has_camera_data = False
-            for camera_type in self.camera_types:
-                if camera_type in sample['data']:
-                    sample_data_token = sample['data'][camera_type]
-                    if sample_data_token in self.sample_data_by_token:
-                        has_camera_data = True
-                        break
-            
-            if has_camera_data:
-                self.samples.append(sample)
+        for sample in selected_samples:
+            # Check if sample has required camera data
+            # Handle both test dataset structure (with 'data' key) and real NuScenes structure
+            if 'data' in sample:
+                # Test dataset structure
+                sample_data_tokens = [sample['data'][cam] for cam in self.camera_types 
+                                    if cam in sample['data']]
                 
-                # Apply max_samples limit if specified
-                if self.max_samples and len(self.samples) >= self.max_samples:
-                    break
+                if len(sample_data_tokens) == len(self.camera_types):
+                    self.samples.append(sample)
+            else:
+                # Real NuScenes structure - check if sample has camera data
+                sample_data_list = [sd for sd in self.nuscenes_data['sample_data'] 
+                                  if sd['sample_token'] == sample['token']]
+                
+                # Check if we have data for all required cameras
+                available_cameras = set()
+                for sd in sample_data_list:
+                    try:
+                        sensor = self.sensor_lookup[self.calibrated_sensor_lookup[sd['calibrated_sensor_token']]['sensor_token']]
+                        if sensor['channel'] in self.camera_types:
+                            available_cameras.add(sensor['channel'])
+                    except KeyError:
+                        continue
+                
+                if len(available_cameras) >= len(self.camera_types):
+                    self.samples.append(sample)
+                
+            # Apply max_samples limit if specified
+            if self.max_samples and len(self.samples) >= self.max_samples:
+                break
+        
+        print(f"✅ Prepared {len(self.samples)} samples for {self.split} split")
     
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -270,33 +228,44 @@ class NuScenesDataset(Dataset):
             idx: Sample index
             
         Returns:
-            Tuple of (image, target) where target is a dictionary containing:
-            - boxes: Tensor of shape (N, 4) with bounding boxes in (x1, y1, x2, y2) format
-            - labels: Tensor of shape (N,) with class labels
-            - image_id: Image identifier
-            - area: Tensor of shape (N,) with box areas
-            - iscrowd: Tensor of shape (N,) indicating crowd annotations
+            Tuple of (image_tensor, target_dict)
         """
         sample = self.samples[idx]
-        sample_token = sample['token']
         
-        # Get image data for the first available camera type
-        image = None
-        image_info = None
+        # Handle different NuScenes dataset structures
+        primary_camera = self.camera_types[0]
         
-        for camera_type in self.camera_types:
-            if camera_type in sample['data']:
-                sample_data_token = sample['data'][camera_type]
-                if sample_data_token in self.sample_data_by_token:
-                    image_info = self.sample_data_by_token[sample_data_token]
-                    image = self.get_image(image_info['filename'])
+        if 'data' in sample:
+            # Test dataset structure with direct 'data' key
+            sample_data_token = sample['data'][primary_camera]
+        else:
+            # Real NuScenes structure - find sample_data by sample_token and camera
+            sample_data_list = [sd for sd in self.nuscenes_data['sample_data'] 
+                              if sd['sample_token'] == sample['token']]
+            
+            # Find the camera data for the primary camera
+            camera_sample_data = None
+            for sd in sample_data_list:
+                sensor = self.sensor_lookup[self.calibrated_sensor_lookup[sd['calibrated_sensor_token']]['sensor_token']]
+                if sensor['channel'] == primary_camera:
+                    camera_sample_data = sd
                     break
+            
+            if camera_sample_data is None:
+                raise ValueError(f"No {primary_camera} data found for sample {sample['token']}")
+            
+            sample_data = camera_sample_data
+            sample_data_token = sample_data['token']
         
-        if image is None:
-            raise ValueError(f"No image data found for sample {idx}")
+        if 'data' in sample:
+            sample_data = self.sample_data_lookup[sample_data_token]
         
-        # Get annotations for this sample
-        target = self.get_target(sample_token, image_info)
+        # Load image
+        image_path = os.path.join(self.root_dir, sample_data['filename'])
+        image = self.get_image(image_path)
+        
+        # Get target annotations
+        target = self.get_target(sample['token'], sample_data)
         
         # Apply transforms
         if self.transform:
@@ -307,350 +276,389 @@ class NuScenesDataset(Dataset):
         
         return image, target
     
-    def get_image(self, filename: str) -> Image.Image:
-        """
-        Load an image from the dataset.
-        
-        Args:
-            filename: Relative path to the image file
-            
-        Returns:
-            PIL Image
-        """
-        image_path = os.path.join(self.root_dir, filename)
-        
-        if not os.path.exists(image_path):
-            raise FileNotFoundError(f"Image not found: {image_path}")
-        
+    def get_image(self, image_path: str) -> Image.Image:
+        """Load and return an image."""
         try:
             image = Image.open(image_path).convert('RGB')
             return image
         except Exception as e:
-            raise ValueError(f"Error loading image {image_path}: {e}")
+            print(f"Error loading image {image_path}: {e}")
+            # Return a blank image as fallback
+            return Image.new('RGB', (1600, 900), color='black')
     
-    def get_target(self, sample_token: str, image_info: Dict[str, Any]) -> Dict[str, Any]:
+    def get_target(self, sample_token: str, sample_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Get target annotations for a sample.
         
         Args:
-            sample_token: Sample token
-            image_info: Image information dictionary
+            sample_token: Token of the sample
+            sample_data: Sample data dictionary
             
         Returns:
-            Target dictionary with boxes, labels, etc.
+            Dictionary containing target annotations
         """
-        # Get annotations for this sample
-        sample_annotations = self.annotations_by_sample.get(sample_token, [])
+        # Get all annotations for this sample
+        sample_annotations = [ann for ann in self.nuscenes_data['sample_annotations'] 
+                            if ann['sample_token'] == sample_token]
         
+        # Get calibration and pose information
+        calibrated_sensor = self.calibrated_sensor_lookup[sample_data['calibrated_sensor_token']]
+        ego_pose = self.ego_pose_lookup[sample_data['ego_pose_token']]
+        
+        # Process annotations
         boxes = []
         labels = []
-        areas = []
-        iscrowd = []
-        
-        # Get camera calibration info for 3D to 2D projection
-        calibrated_sensor_token = image_info['calibrated_sensor_token']
-        ego_pose_token = image_info['ego_pose_token']
-        
-        calibrated_sensor = self.calibrated_sensor_by_token.get(calibrated_sensor_token, {})
-        ego_pose = self.ego_pose_by_token.get(ego_pose_token, {})
         
         for ann in sample_annotations:
-            # Get category information
-            category_token = ann['category_token']
-            instance_token = ann['instance_token']
+            # Get category
+            instance = self.instance_lookup[ann['instance_token']]
+            category_name = self.category_lookup[instance['category_token']]
             
-            if category_token in self.category_by_token:
-                category = self.category_by_token[category_token]
-                category_name = category['name']
+            # Map to simplified category
+            if category_name in NUSCENES_CATEGORIES:
+                label = NUSCENES_CATEGORIES[category_name]
                 
-                # Map category to class index
-                if category_name in NUSCENES_CATEGORIES:
-                    class_idx = NUSCENES_CATEGORIES[category_name]
-                    
-                    # Project 3D box to 2D
-                    bbox_2d = self._project_3d_to_2d(
-                        ann, calibrated_sensor, ego_pose, image_info
-                    )
-                    
-                    if bbox_2d is not None:
-                        x1, y1, x2, y2 = bbox_2d
-                        
-                        # Ensure valid bounding box
-                        if x2 > x1 and y2 > y1:
-                            boxes.append([x1, y1, x2, y2])
-                            labels.append(class_idx)
-                            areas.append((x2 - x1) * (y2 - y1))
-                            iscrowd.append(0)  # NuScenes doesn't have crowd annotations
+                # Project 3D box to 2D using proper 3D to 2D projection
+                bbox_2d = self._get_2d_bbox_from_3d(ann, calibrated_sensor, ego_pose)
+                
+                if bbox_2d is not None:
+                    boxes.append(bbox_2d)
+                    labels.append(label)
         
         # Convert to tensors
-        if len(boxes) > 0:
-            boxes = torch.as_tensor(boxes, dtype=torch.float32)
-            labels = torch.as_tensor(labels, dtype=torch.int64)
-            areas = torch.as_tensor(areas, dtype=torch.float32)
-            iscrowd = torch.as_tensor(iscrowd, dtype=torch.int64)
+        if boxes:
+            boxes = torch.tensor(boxes, dtype=torch.float32)
+            labels = torch.tensor(labels, dtype=torch.int64)
         else:
-            # Empty target
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
-            areas = torch.zeros((0,), dtype=torch.float32)
-            iscrowd = torch.zeros((0,), dtype=torch.int64)
         
         target = {
             'boxes': boxes,
             'labels': labels,
-            'image_id': torch.tensor([hash(sample_token) % (2**31)]),  # Convert to int32 range
-            'area': areas,
-            'iscrowd': iscrowd
+            'image_id': torch.tensor([hash(sample_token) % 1000000]),
+            'area': (boxes[:, 3] - boxes[:, 1]) * (boxes[:, 2] - boxes[:, 0]) if len(boxes) > 0 else torch.tensor([]),
+            'iscrowd': torch.zeros((len(boxes),), dtype=torch.int64)
         }
         
         return target
     
-    def _project_3d_to_2d(self, 
-                         annotation: Dict[str, Any],
-                         calibrated_sensor: Dict[str, Any],
-                         ego_pose: Dict[str, Any],
-                         image_info: Dict[str, Any]) -> Optional[List[float]]:
+    def _get_2d_bbox_from_3d(self, annotation: Dict[str, Any], 
+                            calibrated_sensor: Dict[str, Any],
+                            ego_pose: Dict[str, Any]) -> Optional[List[float]]:
         """
-        Project 3D bounding box to 2D image coordinates.
+        Project 3D bounding box to 2D using proper coordinate transformation.
+        
+        This function uses the utility functions from nuscenes.py for accurate
+        3D to 2D projection following NuScenes coordinate system conventions.
         
         Args:
-            annotation: 3D annotation dictionary
-            calibrated_sensor: Camera calibration information
+            annotation: 3D annotation with translation, size, and rotation
+            calibrated_sensor: Camera calibration and pose information
             ego_pose: Ego vehicle pose information
-            image_info: Image information
             
         Returns:
-            2D bounding box as [x1, y1, x2, y2] or None if projection fails
+            [x_min, y_min, x_max, y_max] bounding box or None if projection fails
         """
         try:
-            # Get 3D box parameters
-            center_3d = annotation['translation']  # [x, y, z]
-            size_3d = annotation['size']  # [width, length, height]
-            rotation_3d = annotation['rotation']  # quaternion [w, x, y, z]
+            # Extract 3D box parameters from annotation
+            center_3d = np.array(annotation['translation'])  # [x, y, z] in global coordinates
+            size_3d = np.array(annotation['size'])          # [width, length, height] in meters
+            rotation_3d = np.array(annotation['rotation'])   # [w, x, y, z] quaternion
             
-            # Get camera parameters
-            if 'camera_intrinsic' not in calibrated_sensor:
-                return None
-            
-            camera_intrinsic = np.array(calibrated_sensor['camera_intrinsic'])
+            # Extract camera parameters
             cam_translation = np.array(calibrated_sensor['translation'])
-            cam_rotation = calibrated_sensor['rotation']  # quaternion
+            cam_rotation = np.array(calibrated_sensor['rotation'])
+            camera_intrinsic = np.array(calibrated_sensor['camera_intrinsic'])
             
-            # Get ego pose
+            # Extract ego pose parameters
             ego_translation = np.array(ego_pose['translation'])
-            ego_rotation = ego_pose['rotation']  # quaternion
+            ego_rotation = np.array(ego_pose['rotation'])
             
-            # Project using the same method as in unzipnuscenes.py
-            bbox_2d = self._project_3d_box_to_2d(
+            # Project 3D bounding box to 2D using utility function
+            projection_result = project_3d_box_to_2d(
                 center_3d, size_3d, rotation_3d,
                 cam_translation, cam_rotation, camera_intrinsic,
-                ego_translation, ego_rotation
+                ego_translation, ego_rotation,
+                debug=False
             )
             
-            return bbox_2d
+            # Check if projection was successful
+            if projection_result[0] is None:
+                return None
+                
+            corners_2d, corners_3d_cam = projection_result
+            
+            # Check visibility using box_in_image function
+            if 'box_in_image' in globals():
+                # Standard image size for NuScenes
+                img_size = (1600, 900)  # (width, height)
+                if not box_in_image(corners_3d_cam, corners_2d.T, camera_intrinsic, img_size, BoxVisibility.ANY):
+                    return None
+            
+            # Get 2D bounding box from projected corners
+            bbox_2d = get_2d_bbox_from_3d_projection(corners_2d)
+            
+            if bbox_2d is None:
+                return None
+            
+            # Validate bounding box
+            x_min, y_min, x_max, y_max = bbox_2d
+            
+            # Image dimensions (standard NuScenes camera resolution)
+            img_width, img_height = 1600, 900
+            
+            # Filter out boxes that are completely outside image bounds
+            if x_max < 0 or y_max < 0 or x_min > img_width or y_min > img_height:
+                return None
+            
+            # Clip bounding box to image bounds
+            x_min = max(0, x_min)
+            y_min = max(0, y_min)
+            x_max = min(img_width, x_max)
+            y_max = min(img_height, y_max)
+            
+            # Check if clipped box is still valid
+            box_width = x_max - x_min
+            box_height = y_max - y_min
+            
+            # Filter out boxes that are too small after clipping
+            if box_width < 10 or box_height < 10:
+                return None
+            
+            # Filter out boxes that are unreasonably large (>90% of image)
+            if box_width > img_width * 0.9 or box_height > img_height * 0.9:
+                return None
+            
+            return [x_min, y_min, x_max, y_max]
             
         except Exception as e:
             print(f"Error projecting 3D box to 2D: {e}")
             return None
     
-    def _project_3d_box_to_2d(self, center_3d, size_3d, rotation_3d, 
-                             cam_translation, cam_rotation, camera_intrinsic,
-                             ego_translation, ego_rotation):
-        """
-        Project 3D bounding box to 2D using NuScenes coordinate transformations.
+    def get_sample_info(self, idx: int) -> Dict[str, Any]:
+        """Get detailed information about a sample."""
+        sample = self.samples[idx]
         
-        This is a simplified version of the projection from unzipnuscenes.py
-        """
+        # Get comprehensive sample data using utility functions
         try:
-            # Get 3D box corners
-            corners_3d = self._get_3d_box_corners(center_3d, size_3d, rotation_3d)
+            # Get basic sample information
+            sample_info = {
+                'sample_token': sample['token'],
+                'timestamp': sample['timestamp'],
+                'scene_token': sample['scene_token'],
+                'sample_idx': idx
+            }
             
-            # Transform from global to ego coordinate system
-            corners_3d = corners_3d - ego_translation
-            ego_rot_matrix = self._quaternion_to_rotation_matrix(ego_rotation)
-            corners_3d = corners_3d @ ego_rot_matrix.T
+            # Get sample data for each camera
+            camera_data = {}
             
-            # Transform from ego to camera coordinate system
-            corners_3d = corners_3d - cam_translation
-            cam_rot_matrix = self._quaternion_to_rotation_matrix(cam_rotation)
-            corners_3d = corners_3d @ cam_rot_matrix.T
+            if 'data' in sample:
+                # Test dataset structure
+                for camera_type in self.camera_types:
+                    # Find sample_data for this camera
+                    sample_data_token = None
+                    for key, token in sample['data'].items():
+                        if key == camera_type:
+                            sample_data_token = token
+                            break
+                    
+                    if sample_data_token:
+                        # Get sample_data record
+                        sample_data = self.sample_data_lookup.get(sample_data_token)
+                        if sample_data:
+                            # Get calibrated sensor and ego pose
+                            calibrated_sensor = self.calibrated_sensor_lookup.get(sample_data['calibrated_sensor_token'])
+                            ego_pose = self.ego_pose_lookup.get(sample_data['ego_pose_token'])
+                            
+                            camera_data[camera_type] = {
+                                'filename': sample_data['filename'],
+                                'timestamp': sample_data['timestamp'],
+                                'calibrated_sensor': calibrated_sensor,
+                                'ego_pose': ego_pose
+                            }
+            else:
+                # Real NuScenes structure
+                sample_data_list = [sd for sd in self.nuscenes_data['sample_data'] 
+                                  if sd['sample_token'] == sample['token']]
+                
+                for sd in sample_data_list:
+                    try:
+                        sensor = self.sensor_lookup[self.calibrated_sensor_lookup[sd['calibrated_sensor_token']]['sensor_token']]
+                        camera_type = sensor['channel']
+                        
+                        if camera_type in self.camera_types:
+                            # Get calibrated sensor and ego pose
+                            calibrated_sensor = self.calibrated_sensor_lookup.get(sd['calibrated_sensor_token'])
+                            ego_pose = self.ego_pose_lookup.get(sd['ego_pose_token'])
+                            
+                            camera_data[camera_type] = {
+                                'filename': sd['filename'],
+                                'timestamp': sd['timestamp'],
+                                'calibrated_sensor': calibrated_sensor,
+                                'ego_pose': ego_pose
+                            }
+                    except KeyError:
+                        continue
             
-            # Project to 2D
-            corners_2d = []
-            for corner in corners_3d:
-                if corner[2] > 0:  # Only project points in front of camera
-                    point_2d = camera_intrinsic @ corner
-                    point_2d = point_2d[:2] / point_2d[2]
-                    corners_2d.append(point_2d)
+            sample_info['camera_data'] = camera_data
             
-            if len(corners_2d) < 4:  # Need at least 4 corners for a valid box
-                return None
+            # Get annotations for this sample
+            sample_annotations = []
+            for ann_token in sample.get('anns', []):
+                annotation = self.sample_annotation_lookup.get(ann_token)
+                if annotation:
+                    sample_annotations.append(annotation)
             
-            # Get 2D bounding box from projected corners
-            corners_2d = np.array(corners_2d)
-            x_min, y_min = corners_2d.min(axis=0)
-            x_max, y_max = corners_2d.max(axis=0)
+            sample_info['annotations'] = sample_annotations
+            sample_info['num_annotations'] = len(sample_annotations)
             
-            return [float(x_min), float(y_min), float(x_max), float(y_max)]
+            return sample_info
             
         except Exception as e:
-            return None
-    
-    def _get_3d_box_corners(self, center, size, rotation):
-        """Get 8 corners of a 3D bounding box."""
-        w, l, h = size
-        
-        # Define box corners in local coordinate system
-        corners = np.array([
-            [-w/2, -l/2, -h/2], [w/2, -l/2, -h/2], [w/2, l/2, -h/2], [-w/2, l/2, -h/2],
-            [-w/2, -l/2, h/2], [w/2, -l/2, h/2], [w/2, l/2, h/2], [-w/2, l/2, h/2]
-        ])
-        
-        # Apply rotation
-        rotation_matrix = self._quaternion_to_rotation_matrix(rotation)
-        corners = corners @ rotation_matrix.T
-        
-        # Translate to center
-        corners += center
-        
-        return corners
-    
-    def _quaternion_to_rotation_matrix(self, q):
-        """Convert quaternion to rotation matrix."""
-        w, x, y, z = q
-        return np.array([
-            [1 - 2*y*y - 2*z*z, 2*x*y - 2*z*w, 2*x*z + 2*y*w],
-            [2*x*y + 2*z*w, 1 - 2*x*x - 2*z*z, 2*y*z - 2*x*w],
-            [2*x*z - 2*y*w, 2*y*z + 2*x*w, 1 - 2*x*x - 2*y*y]
-        ])
+            print(f"Warning: Error getting sample info for idx {idx}: {e}")
+            # Fallback to basic info
+            return {
+                'sample_token': sample['token'],
+                'timestamp': sample['timestamp'],
+                'scene_token': sample['scene_token'],
+                'sample_idx': idx,
+                'error': str(e)
+            }
 
 
 def create_nuscenes_transforms(train: bool = True) -> transforms.Compose:
-    """
-    Create standard transforms for NuScenes dataset.
-    
-    Args:
-        train: Whether to create transforms for training (includes augmentation)
-        
-    Returns:
-        Composed transforms
-    """
+    """Create standard transforms for NuScenes dataset."""
     if train:
         return transforms.Compose([
+            transforms.Resize((900, 1600)),
             transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
     else:
         return transforms.Compose([
+            transforms.Resize((900, 1600)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
 
 
 def collate_fn(batch):
-    """
-    Custom collate function for NuScenes dataset.
-    
-    Args:
-        batch: List of (image, target) tuples
-        
-    Returns:
-        Batched images and targets
-    """
+    """Custom collate function for NuScenes dataset."""
     images, targets = zip(*batch)
     images = torch.stack(images, 0)
     return images, list(targets)
 
 
-# Test and demo functions
-if __name__ == "__main__":
-    # Example usage and testing
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
+def main():
+    """Test the simplified NuScenes dataset."""
+    parser = argparse.ArgumentParser(description='Test NuScenes Dataset')
+    parser.add_argument('--root_dir', type=str, default=DEFAULT_NUSCENES_ROOT,
+                       help='Root directory of NuScenes dataset')
+    parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'],
+                       help='Dataset split to use')
+    parser.add_argument('--max_samples', type=int, default=10,
+                       help='Maximum number of samples to test')
+    parser.add_argument('--camera_types', nargs='+', default=['CAM_FRONT'],
+                       help='Camera types to use')
     
-    def test_dataset(root_dir: str, max_samples: int = 5):
-        """Test the NuScenes dataset loading."""
-        print("Testing NuScenes dataset...")
-        
-        # Create dataset
-        transform = create_nuscenes_transforms(train=False)
+    args = parser.parse_args()
+    
+    print("="*60)
+    print("TESTING SIMPLIFIED NUSCENES DATASET")
+    print("="*60)
+    
+    try:
+        # Create dataset with validation disabled for testing
         dataset = NuScenesDataset(
-            root_dir=root_dir,
-            split='train',
-            camera_types=['CAM_FRONT'],
-            transform=transform,
-            max_samples=max_samples
+            root_dir=args.root_dir,
+            split=args.split,
+            camera_types=args.camera_types,
+            max_samples=args.max_samples,
+            transform=create_nuscenes_transforms(train=False),
+            validate_on_init=False  # Disable validation for testing
         )
         
-        print(f"Dataset loaded with {len(dataset)} samples")
+        print(f"\n✅ Dataset created successfully with {len(dataset)} samples")
         
-        # Test loading a few samples
-        for i in range(min(3, len(dataset))):
+        # Test loading a few samples with visualization
+        print("\nTesting sample loading with 2D bounding box visualization...")
+        for i in range(min(20, len(dataset))):
             try:
-                image, target = dataset[i]
-                print(f"Sample {i}:")
-                print(f"  Image shape: {image.shape}")
-                print(f"  Number of boxes: {len(target['boxes'])}")
-                print(f"  Labels: {target['labels'].tolist()}")
+                image, target = dataset[i] #image:[3, 900, 1600]
+                print(f"  Sample {i}: Image shape: {image.shape}, "
+                      f"Boxes: {target['boxes'].shape[0]}, "
+                      f"Labels: {target['labels'].shape[0]}")
                 
-                # Visualize first sample
-                if i == 0:
-                    visualize_sample(image, target, f"Sample {i}")
+                # Visualize 2D bounding boxes for data correctness verification
+                if target['boxes'].shape[0] > 0:
+                    # Convert tensor image back to PIL for visualization
+                    if isinstance(image, torch.Tensor):
+                        # Denormalize if normalized
+                        img_array = image.permute(1, 2, 0).numpy()
+                        if img_array.min() >= 0 and img_array.max() <= 1:
+                            img_array = (img_array * 255).astype(np.uint8)
+                        elif img_array.min() < 0:  # Likely normalized with mean/std
+                            # Simple denormalization assuming ImageNet stats
+                            mean = np.array([0.485, 0.456, 0.406])
+                            std = np.array([0.229, 0.224, 0.225])
+                            img_array = img_array * std + mean
+                            img_array = np.clip(img_array * 255, 0, 255).astype(np.uint8)
+                        
+                        img_pil = Image.fromarray(img_array)
+                    else:
+                        img_pil = image
+                    
+                    # Create matplotlib figure for visualization
+                    fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+                    ax.imshow(img_pil)
+                    ax.set_title(f'Sample {i} - 2D Bounding Boxes ({target["boxes"].shape[0]} boxes)')
+                    
+                    # Draw 2D bounding boxes using utility functions
+                    boxes_drawn = 0
+                    for j, (bbox, label) in enumerate(zip(target['boxes'], target['labels'])):
+                        bbox_list = bbox.tolist()  # Convert tensor to list
+                        category_name = CATEGORY_NAMES[label.item()] if label.item() < len(CATEGORY_NAMES) else f"class_{label.item()}"
+                        
+                        # Use the visualization function from nuscenes.py
+                        try:
+                            success = draw_2d_bbox(ax, bbox_list, category_name, 
+                                                 color='red', linewidth=2,
+                                                 img_width=img_pil.width, img_height=img_pil.height)
+                            if success:
+                                boxes_drawn += 1
+                        except Exception as viz_e:
+                            print(f"    Warning: Could not draw bbox {j}: {viz_e}")
+                    
+                    ax.axis('off')
+                    
+                    # Save visualization
+                    viz_path = f'output/sample_{i}_bbox_visualization.png'
+                    plt.tight_layout()
+                    plt.savefig(viz_path, dpi=150, bbox_inches='tight')
+                    plt.close()
+                    
+                    print(f"    ✅ Saved visualization: {viz_path} ({boxes_drawn}/{target['boxes'].shape[0]} boxes drawn)")
+                else:
+                    print(f"    No bounding boxes found for sample {i}")
                     
             except Exception as e:
-                print(f"Error loading sample {i}: {e}")
+                print(f"  ❌ Error loading sample {i}: {e}")
+        
+        # Test sample info
+        if len(dataset) > 0:
+            sample_info = dataset.get_sample_info(0)
+            print(f"\nSample 0 info keys: {list(sample_info.keys())}")
+        
+        print("\n✅ Dataset testing completed successfully!")
+        
+    except Exception as e:
+        print(f"❌ Dataset testing failed: {e}")
+        return 1
     
-    def visualize_sample(image: torch.Tensor, target: Dict[str, Any], title: str = "Sample"):
-        """Visualize a sample with bounding boxes."""
-        # Convert tensor to PIL image
-        if isinstance(image, torch.Tensor):
-            # Denormalize
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-            image = image * std + mean
-            image = torch.clamp(image, 0, 1)
-            
-            # Convert to numpy
-            image = image.permute(1, 2, 0).numpy()
-        
-        # Create plot
-        fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-        ax.imshow(image)
-        ax.set_title(title)
-        
-        # Draw bounding boxes
-        boxes = target['boxes']
-        labels = target['labels']
-        
-        colors = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'pink', 'brown', 'gray', 'cyan']
-        
-        for box, label in zip(boxes, labels):
-            x1, y1, x2, y2 = box.tolist()
-            width = x2 - x1
-            height = y2 - y1
-            
-            # Draw rectangle
-            rect = patches.Rectangle(
-                (x1, y1), width, height,
-                linewidth=2, edgecolor=colors[label % len(colors)], facecolor='none'
-            )
-            ax.add_patch(rect)
-            
-            # Add label
-            category_name = CLASS_TO_CATEGORY.get(label.item(), f"class_{label}")
-            ax.text(x1, y1 - 5, category_name, 
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor=colors[label % len(colors)], alpha=0.7),
-                   fontsize=10, color='white')
-        
-        plt.axis('off')
-        plt.tight_layout()
-        plt.show()
-    
-    # Example usage
-    if len(os.sys.argv) > 1:
-        root_dir = os.sys.argv[1]
-        test_dataset(root_dir)
-    else:
-        print("Usage: python dataset_nuscenes.py <nuscenes_root_dir>")
-        print("Example: python dataset_nuscenes.py /path/to/nuscenes/v1.0-trainval")
+    return 0
+
+
+if __name__ == "__main__":
+    exit(main())

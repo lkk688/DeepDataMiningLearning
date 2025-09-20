@@ -10,6 +10,7 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
 from enum import IntEnum
+from PIL import Image
 
 # NuScenes dataset structure definition
 NUSCENES_STRUCTURE = {
@@ -35,10 +36,7 @@ REQUIRED_ANNOTATION_FILES = [
     'visibility.json'
 ]
 
-# Default paths
-DEFAULT_DATA_ROOT = "/mnt/e/Shared/Dataset/"
-DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "NuScenes", "v1.0-trainval")
-DEFAULT_ZIP_DIR = "/mnt/e/Shared/Dataset/NuScenes/"
+
 
 class BoxVisibility(IntEnum):
     """ Enumerates the various level of box visibility in an image """
@@ -861,10 +859,10 @@ def draw_2d_bbox(ax, bbox_2d, category_name="", color='green', linewidth=2, img_
     x_min, y_min, x_max, y_max = bbox_2d
     
     # Clip bounding box to image boundaries
-    x_min = max(0, min(x_min, img_width))
-    y_min = max(0, min(y_min, img_height))
-    x_max = max(0, min(x_max, img_width))
-    y_max = max(0, min(y_max, img_height))
+    x_min = max(0, x_min)
+    y_min = max(0, y_min)
+    x_max = min(img_width, x_max)
+    y_max = min(img_height, y_max)
     
     # Check if clipped box is still valid
     if x_max <= x_min or y_max <= y_min:
@@ -872,6 +870,10 @@ def draw_2d_bbox(ax, bbox_2d, category_name="", color='green', linewidth=2, img_
     
     width = x_max - x_min
     height = y_max - y_min
+    
+    # Check for minimum size threshold
+    if width < 1 or height < 1:
+        return False
     
     # Draw rectangle with enhanced style
     import matplotlib.patches as patches
@@ -1883,313 +1885,601 @@ def draw_map_overlay(ax, map_data: Dict, bev_range: float):
     ax.arrow(0, 0, 0, 5, head_width=2, head_length=2, fc='red', ec='red', alpha=0.7)
 
 
-def visualize_sample_with_boxes(nuscenes_root, sample_idx):
+def load_nuscenes_data(nuscenes_root: str) -> Dict[str, Any]:
     """
-    Visualize a sample with bounding boxes for all cameras and save to local files.
+    Load all NuScenes annotation data from JSON files.
+    
+    This function loads the core annotation files that define the NuScenes dataset structure:
+    - samples: Main data samples with timestamps and scene information
+    - sample_data: Sensor data files (camera images, LiDAR, radar) linked to samples
+    - sample_annotations: 3D bounding box annotations for objects in each sample
+    - categories: Object category definitions (car, pedestrian, etc.)
+    - sensors: Sensor definitions (camera channels, LiDAR, radar)
+    - calibrated_sensors: Sensor calibration parameters (intrinsics, extrinsics)
+    - ego_poses: Vehicle pose information (position and orientation in world coordinates)
+    - instances: Object instance tracking across multiple samples
     
     Args:
         nuscenes_root (str): Path to the NuScenes dataset root directory
-        sample_idx (int): Index of the sample to visualize
+        
+    Returns:
+        Dict[str, Any]: Dictionary containing all loaded annotation data with keys:
+            - samples, sample_data, sample_annotations, categories, sensors,
+              calibrated_sensors, ego_poses, instances
+            - annotation_dir: Path to the annotation directory
+            
+    Raises:
+        FileNotFoundError: If annotation files are missing
+        json.JSONDecodeError: If annotation files are corrupted
+    """
+    annotation_dir = os.path.join(nuscenes_root, 'v1.0-trainval')
+    print(f"Loading NuScenes annotation files from: {annotation_dir}")
+    
+    # Define the required annotation files and their purposes
+    annotation_files = {
+        'samples': 'sample.json',              # Main data samples with metadata
+        'sample_data': 'sample_data.json',     # Sensor data file references
+        'sample_annotations': 'sample_annotation.json',  # 3D bounding box annotations
+        'categories': 'category.json',         # Object category definitions
+        'sensors': 'sensor.json',             # Sensor channel definitions
+        'calibrated_sensors': 'calibrated_sensor.json',  # Sensor calibration data
+        'ego_poses': 'ego_pose.json',         # Vehicle pose information
+        'instances': 'instance.json'          # Object instance tracking
+    }
+    
+    loaded_data = {'annotation_dir': annotation_dir}
+    
+    # Load each annotation file with error handling
+    for data_key, filename in annotation_files.items():
+        file_path = os.path.join(annotation_dir, filename)
+        try:
+            with open(file_path, 'r') as f:
+                loaded_data[data_key] = json.load(f)
+            print(f"  ✓ Loaded {filename}: {len(loaded_data[data_key])} entries")
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Required annotation file not found: {file_path}")
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Corrupted annotation file {file_path}: {e}")
+    
+    return loaded_data
+
+
+def prepare_sample_data(nuscenes_data: Dict[str, Any], sample_idx: int) -> Dict[str, Any]:
+    """
+    Prepare and validate data for a specific sample.
+    
+    This function extracts and organizes all data related to a specific sample:
+    - Validates sample index bounds
+    - Filters sensor data for the sample (cameras, LiDAR, radar)
+    - Creates lookup tables for efficient data access
+    - Separates camera data from other sensor data
+    
+    Args:
+        nuscenes_data (Dict[str, Any]): Loaded NuScenes annotation data
+        sample_idx (int): Index of the sample to process
+        
+    Returns:
+        Dict[str, Any]: Organized sample data containing:
+            - sample: The main sample record
+            - camera_data: List of camera sensor data entries
+            - sample_data_entries: All sensor data for this sample
+            - sample_annotations: 3D annotations for this sample
+            - calibrated_to_sensor: Mapping from calibrated sensor tokens to sensor tokens
+            - sensor_to_channel: Mapping from sensor tokens to channel names
+            - category_lookup: Mapping from category tokens to category names
+            - instance_to_category: Mapping from instance tokens to category tokens
+            
+    Raises:
+        IndexError: If sample_idx is out of range
+    """
+    samples = nuscenes_data['samples']
+    
+    # Validate sample index
+    if sample_idx >= len(samples):
+        raise IndexError(f"Sample index {sample_idx} is out of range. Total samples: {len(samples)}")
+    
+    sample = samples[sample_idx]
+    print(f"Processing sample {sample_idx}:")
+    print(f"  Sample token: {sample['token']}")
+    print(f"  Scene token: {sample['scene_token']}")
+    print(f"  Timestamp: {sample['timestamp']}")
+    
+    # Filter sensor data for this specific sample
+    # sample_data contains references to all sensor files (camera images, LiDAR, radar)
+    sample_data_entries = [sd for sd in nuscenes_data['sample_data'] 
+                          if sd['sample_token'] == sample['token']]
+    
+    # Extract camera data specifically (main samples, not sweeps)
+    # Camera data is identified by 'CAM' in filename and 'samples/' path (not 'sweeps/')
+    camera_data = [sd for sd in sample_data_entries 
+                  if 'CAM' in sd.get('filename', '') and 'samples/' in sd.get('filename', '')]
+    
+    if not camera_data:
+        raise ValueError("No camera data found for this sample")
+    
+    # Create efficient lookup tables for sensor information
+    # These mappings help convert between different token-based references in the dataset
+    
+    # Map calibrated sensor tokens to base sensor tokens
+    calibrated_to_sensor = {cs['token']: cs['sensor_token'] 
+                           for cs in nuscenes_data['calibrated_sensors']}
+    
+    # Map sensor tokens to human-readable channel names (e.g., 'CAM_FRONT', 'LIDAR_TOP')
+    sensor_to_channel = {s['token']: s['channel'] 
+                        for s in nuscenes_data['sensors']}
+    
+    # Get all 3D bounding box annotations for this sample
+    sample_annotations = [ann for ann in nuscenes_data['sample_annotations'] 
+                         if ann['sample_token'] == sample['token']]
+    
+    # Create category lookup for object classification
+    category_lookup = {cat['token']: cat['name'] 
+                      for cat in nuscenes_data['categories']}
+    
+    # Map object instances to their categories (for tracking objects across frames)
+    instance_to_category = {inst['token']: inst['category_token'] 
+                           for inst in nuscenes_data['instances']}
+    
+    print(f"  Found {len(camera_data)} camera views and {len(sample_annotations)} annotations")
+    
+    return {
+        'sample': sample,
+        'camera_data': camera_data,
+        'sample_data_entries': sample_data_entries,
+        'sample_annotations': sample_annotations,
+        'calibrated_to_sensor': calibrated_to_sensor,
+        'sensor_to_channel': sensor_to_channel,
+        'category_lookup': category_lookup,
+        'instance_to_category': instance_to_category
+    }
+
+
+def process_camera_data(cam_data: Dict, sample_data: Dict, calibrated_sensors: List[Dict], 
+                       sensors: List[Dict], ego_poses: List[Dict], nuscenes_root: str) -> Optional[Dict]:
+    """
+    Process camera data for a single camera view, extracting calibration and pose information.
+    
+    This function handles the coordinate system transformations in NuScenes:
+    1. Global coordinate system: World coordinates (ego vehicle moves in this frame)
+    2. Ego vehicle coordinate system: Vehicle-centric coordinates
+    3. Sensor coordinate system: Camera-centric coordinates
+    4. Image coordinate system: 2D pixel coordinates
+    
+    Coordinate Transformations:
+    - Global → Ego: Apply inverse ego pose transformation
+    - Ego → Sensor: Apply inverse sensor calibration transformation  
+    - Sensor → Image: Apply camera intrinsic matrix projection
+    
+    Args:
+        cam_data: Camera sample data entry containing filename, tokens, etc.
+        sample_data: Complete sample data dictionary for lookups
+        calibrated_sensors: List of calibrated sensor configurations
+        sensors: List of sensor definitions
+        ego_poses: List of ego pose transformations
+        nuscenes_root: Root directory of NuScenes dataset
+        
+    Returns:
+        Dictionary containing processed camera information or None if processing fails
+        {
+            'channel': str,           # Camera channel name (e.g., 'CAM_FRONT')
+            'image_path': str,        # Full path to image file
+            'image': PIL.Image,       # Loaded image object
+            'camera_intrinsic': np.ndarray,  # 3x3 camera intrinsic matrix
+            'cam_translation': np.ndarray,   # Camera translation in ego frame [x,y,z]
+            'cam_rotation': np.ndarray,      # Camera rotation quaternion [w,x,y,z]
+            'ego_translation': np.ndarray,   # Ego translation in global frame [x,y,z]
+            'ego_rotation': np.ndarray,      # Ego rotation quaternion [w,x,y,z]
+            'img_width': int,         # Image width in pixels
+            'img_height': int         # Image height in pixels
+        }
+    """
+    from PIL import Image
+    
+    # Create mapping from calibrated_sensor_token to sensor_token
+    calibrated_to_sensor = {cs['token']: cs['sensor_token'] for cs in calibrated_sensors}
+    sensor_to_channel = {s['token']: s['channel'] for s in sensors}
+    
+    # Get channel name through token mappings
+    calibrated_sensor_token = cam_data['calibrated_sensor_token']
+    sensor_token = calibrated_to_sensor.get(calibrated_sensor_token)
+    channel = sensor_to_channel.get(sensor_token, 'UNKNOWN')
+    
+    # Load image file
+    image_path = os.path.join(nuscenes_root, cam_data['filename'])
+    if not os.path.exists(image_path):
+        print(f"  Warning: Image file not found: {image_path}")
+        return None
+        
+    try:
+        img = Image.open(image_path)
+        img_width, img_height = img.size
+    except Exception as e:
+        print(f"  Warning: Failed to load image {image_path}: {e}")
+        return None
+    
+    # Get camera calibration data (sensor → image transformation)
+    calibrated_sensor = next((cs for cs in calibrated_sensors 
+                            if cs['token'] == calibrated_sensor_token), None)
+    
+    if not calibrated_sensor or not calibrated_sensor.get('camera_intrinsic'):
+        print(f"  Warning: No camera intrinsic found for {channel}")
+        return None
+        
+    # Extract camera calibration parameters
+    camera_intrinsic = np.array(calibrated_sensor['camera_intrinsic'])  # 3x3 matrix
+    cam_translation = np.array(calibrated_sensor['translation'])        # [x, y, z] in ego frame
+    cam_rotation = np.array(calibrated_sensor['rotation'])              # [w, x, y, z] quaternion
+    
+    # Get ego pose for this timestamp (ego → global transformation)
+    ego_pose = next((ep for ep in ego_poses if ep['token'] == cam_data['ego_pose_token']), None)
+    if not ego_pose:
+        print(f"  Warning: No ego pose found for {channel}")
+        return None
+        
+    ego_translation = np.array(ego_pose['translation'])  # [x, y, z] in global frame
+    ego_rotation = np.array(ego_pose['rotation'])        # [w, x, y, z] quaternion
+    
+    return {
+        'channel': channel,
+        'image_path': image_path,
+        'image': img,
+        'camera_intrinsic': camera_intrinsic,
+        'cam_translation': cam_translation,
+        'cam_rotation': cam_rotation,
+        'ego_translation': ego_translation,
+        'ego_rotation': ego_rotation,
+        'img_width': img_width,
+        'img_height': img_height
+    }
+
+
+def process_3d_annotations_for_camera(sample_anns: List[Dict], camera_info: Dict, 
+                                     categories: List[Dict], instances: List[Dict], 
+                                     debug_first: bool = False) -> List[Dict]:
+    """
+    Process 3D annotations for a specific camera view, handling coordinate transformations and visibility.
+    
+    This function performs the complete 3D to 2D projection pipeline:
+    1. Transform 3D bounding boxes from global coordinates to camera coordinates
+    2. Project 3D camera coordinates to 2D image coordinates
+    3. Check visibility using NuScenes official visibility criteria
+    4. Extract category information for labeling
+    
+    Coordinate System Flow:
+    Global (world) → Ego vehicle → Camera sensor → Image (2D pixels)
+    
+    3D Bounding Box Representation:
+    - Center: [x, y, z] in global coordinates
+    - Size: [width, length, height] - physical dimensions in meters
+    - Rotation: [w, x, y, z] quaternion representing orientation
+    
+    Args:
+        sample_anns: List of 3D annotations for the current sample
+        camera_info: Processed camera information from process_camera_data()
+        categories: List of category definitions for labeling
+        instances: List of instance definitions linking annotations to categories
+        debug_first: Whether to enable debug output for the first annotation
+        
+    Returns:
+        List of processed annotation dictionaries containing:
+        {
+            'corners_2d': np.ndarray,     # 8x2 array of projected corner coordinates
+            'corners_3d_cam': np.ndarray, # 8x3 array of 3D corners in camera frame
+            'category_name': str,         # Human-readable category name
+            'bbox_2d_from_3d': List,      # [x_min, y_min, x_max, y_max] from projection
+            'annotation_idx': int         # Original annotation index for debugging
+        }
+    """
+    processed_annotations = []
+    
+    for i, ann in enumerate(sample_anns):
+        try:
+            # Extract 3D bounding box parameters from annotation
+            center_3d = np.array(ann['translation'])  # [x, y, z] in global frame
+            size_3d = np.array(ann['size'])          # [width, length, height] in meters
+            rotation_3d = np.array(ann['rotation'])   # [w, x, y, z] quaternion
+            
+            # Project 3D bounding box to 2D image coordinates
+            # This handles the full transformation chain: Global → Ego → Camera → Image
+            projection_result = project_3d_box_to_2d(
+                center_3d, size_3d, rotation_3d,
+                camera_info['cam_translation'], camera_info['cam_rotation'], 
+                camera_info['camera_intrinsic'],
+                camera_info['ego_translation'], camera_info['ego_rotation'], 
+                debug=(debug_first and i == 0)
+            )
+            
+            # Check if projection was successful
+            if projection_result[0] is None:
+                if debug_first and i == 0:
+                    print(f"    Box {i} projection failed, skipping...")
+                continue
+                
+            corners_2d, corners_3d_cam = projection_result
+            
+            # Apply NuScenes official visibility check
+            # This ensures the bounding box has at least one corner visible in the image
+            is_visible = box_in_image(
+                corners_3d_cam, corners_2d.T, camera_info['camera_intrinsic'], 
+                (camera_info['img_width'], camera_info['img_height']), BoxVisibility.ANY
+            )
+            
+            if not is_visible:
+                if debug_first and i == 0:
+                    print(f"    Box {i} not visible, skipping...")
+                continue
+            
+            # Extract category name for labeling
+            category_name = ""
+            if ann.get('instance_token'):
+                # Navigate through instance table to get category
+                instance = next((inst for inst in instances 
+                               if inst['token'] == ann['instance_token']), None)
+                if instance and instance.get('category_token'):
+                    category = next((cat for cat in categories 
+                                   if cat['token'] == instance['category_token']), None)
+                    if category:
+                        category_name = category['name']
+            
+            # Calculate 2D bounding box from 3D projection
+            bbox_2d_from_3d = get_2d_bbox_from_3d_projection(corners_2d)
+            
+            # Store processed annotation data
+            processed_annotations.append({
+                'corners_2d': corners_2d,
+                'corners_3d_cam': corners_3d_cam,
+                'category_name': category_name,
+                'bbox_2d_from_3d': bbox_2d_from_3d,
+                'annotation_idx': i
+            })
+            
+        except Exception as e:
+            print(f"    Warning: Failed to process annotation {i}: {e}")
+            continue
+    
+    return processed_annotations
+
+
+def create_visualization_subplots(camera_info: Dict, sample_idx: int) -> Tuple:
+    """
+    Create matplotlib subplots for 3D and 2D bounding box visualizations.
+    
+    Args:
+        camera_info: Processed camera information containing image and metadata
+        sample_idx: Sample index for title labeling
+        
+    Returns:
+        Tuple of (figure, ax_3d, ax_2d) matplotlib objects
+    """
+    import matplotlib.pyplot as plt
+    
+    # Create side-by-side subplots: left for 3D boxes, right for 2D boxes
+    fig, (ax_3d, ax_2d) = plt.subplots(1, 2, figsize=(24, 8))
+    
+    # Display image on both subplots
+    ax_3d.imshow(camera_info['image'])
+    ax_3d.set_title(f"{camera_info['channel']} - Sample {sample_idx} (3D Bounding Boxes)")
+    
+    ax_2d.imshow(camera_info['image'])
+    ax_2d.set_title(f"{camera_info['channel']} - Sample {sample_idx} (2D Bounding Boxes)")
+    
+    return fig, ax_3d, ax_2d
+
+
+def draw_annotations_on_subplots(processed_annotations: List[Dict], camera_info: Dict, 
+                                ax_3d, ax_2d) -> Tuple[int, int]:
+    """
+    Draw processed annotations on the visualization subplots.
+    
+    Args:
+        processed_annotations: List of processed annotation data
+        camera_info: Camera information for image dimensions
+        ax_3d: Matplotlib axis for 3D bounding box visualization
+        ax_2d: Matplotlib axis for 2D bounding box visualization
+        
+    Returns:
+        Tuple of (boxes_drawn_3d, boxes_drawn_2d) counts
+    """
+    boxes_drawn_3d = 0
+    boxes_drawn_2d = 0
+    
+    for ann_data in processed_annotations:
+        # Draw 3D bounding box (wireframe) on left subplot
+        draw_3d_box_2d(ax_3d, ann_data['corners_2d'], 
+                      category_name=ann_data['category_name'], 
+                      color='red', linewidth=2, 
+                      img_width=camera_info['img_width'], 
+                      img_height=camera_info['img_height'])
+        boxes_drawn_3d += 1
+        
+        # Draw 2D bounding boxes on right subplot if projection is valid
+        if ann_data['bbox_2d_from_3d'] is not None:
+            # Draw the projected 2D bbox (blue dashed)
+            success = draw_2d_bbox_from_3d(ax_2d, ann_data['corners_2d'], 
+                                         f"{ann_data['category_name']} (3D→2D)", 
+                                         color='blue', linewidth=2,
+                                         img_width=camera_info['img_width'], 
+                                         img_height=camera_info['img_height'])
+            if success:
+                boxes_drawn_2d += 1
+            
+            # Create simulated 2D detection box for demonstration
+            x_min, y_min, x_max, y_max = ann_data['bbox_2d_from_3d']
+            margin = min(20, (x_max - x_min) * 0.1, (y_max - y_min) * 0.1)
+            simulated_2d_bbox = [x_min + margin, y_min + margin, 
+                               x_max - margin, y_max - margin]
+            
+            success = draw_2d_bbox(ax_2d, simulated_2d_bbox, 
+                                 f"{ann_data['category_name']} (2D Det)", 
+                                 color='green', linewidth=2,
+                                 img_width=camera_info['img_width'], 
+                                 img_height=camera_info['img_height'])
+            if success:
+                boxes_drawn_2d += 1
+    
+    return boxes_drawn_3d, boxes_drawn_2d
+
+
+def create_combined_visualization(saved_files, output_dir, sample_idx):
+    """
+    Create a combined visualization showing all camera views in a single image.
+    
+    Args:
+        saved_files (list): List of saved individual camera visualization files
+        output_dir (str): Directory to save the combined visualization
+        sample_idx (int): Sample index for naming
+    """
+    if not saved_files:
+        print("  No saved files to combine")
+        return
+    
+    try:
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle(f'NuScenes Sample {sample_idx} - All Camera Views', fontsize=16)
+        
+        camera_order = ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 
+                       'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
+        
+        for i, channel in enumerate(camera_order):
+            row, col = i // 3, i % 3
+            
+            # Find corresponding saved file
+            matching_file = None
+            for saved_file in saved_files:
+                if channel in saved_file:
+                    matching_file = saved_file
+                    break
+            
+            if matching_file and os.path.exists(matching_file):
+                img = Image.open(matching_file)
+                axes[row, col].imshow(img)
+                axes[row, col].set_title(channel)
+            else:
+                axes[row, col].text(0.5, 0.5, f'{channel}\nNot Available', 
+                                  ha='center', va='center', transform=axes[row, col].transAxes)
+            
+            axes[row, col].axis('off')
+        
+        combined_path = os.path.join(output_dir, f'combined_sample_{sample_idx}.png')
+        plt.savefig(combined_path, bbox_inches='tight', dpi=150)
+        plt.close()
+        
+        print(f"  Combined visualization saved to: {combined_path}")
+        
+    except Exception as e:
+        print(f"  Error creating combined visualization: {e}")
+
+
+def create_additional_visualizations(sample_data, sample_anns, categories, instances, 
+                                   calibrated_sensors, sensors, ego_poses, 
+                                   nuscenes_root, output_dir, sample_idx):
+    """
+    Create additional visualizations including LiDAR 3D, BEV, and projections.
+    
+    This function handles:
+    - LiDAR 3D visualization with 3D bounding boxes
+    - Interactive Open3D visualization
+    - LiDAR projection to camera images
+    - Bird's Eye View (BEV) with 2D boxes
+    - BEV with map overlay
+    
+    Args:
+        sample_data (list): Sample data entries
+        sample_anns (list): Sample annotations
+        categories (list): Category definitions
+        instances (list): Instance definitions
+        calibrated_sensors (list): Calibrated sensor data
+        sensors (list): Sensor definitions
+        ego_poses (list): Ego pose data
+        nuscenes_root (str): Root directory of NuScenes dataset
+        output_dir (str): Directory to save visualizations
+        sample_idx (int): Sample index for naming
+    """
+    print(f"\n🚀 Creating additional visualizations...")
+    
+    # Find LiDAR data
+    lidar_data_entries = [sd for sd in sample_data if 'LIDAR_TOP' in sd.get('filename', '')]
+    if not lidar_data_entries:
+        print(f"  ⚠️  No LiDAR data found for this sample")
+        return
+    
+    lidar_data = lidar_data_entries[0]  # Get the first LiDAR entry
+    lidar_path = os.path.join(nuscenes_root, lidar_data['filename'])
+    
+    if not os.path.exists(lidar_path):
+        print(f"  ⚠️  LiDAR file not found: {lidar_path}")
+        return
+    
+    try:
+        print(f"  📡 Processing LiDAR data...")
+        lidar_points = load_lidar_points(lidar_path)
+        
+        # 1. LiDAR 3D visualization with 3D boxes
+        lidar_3d_output = os.path.join(output_dir, f"lidar_3d_sample_{sample_idx}.png")
+        visualize_lidar_3d(lidar_points, sample_anns, categories, instances, lidar_3d_output)
+        
+        # 2. Interactive LiDAR 3D visualization with Open3D
+        print(f"  🎮 Creating interactive Open3D visualization...")
+        lidar_3d_open3d_output = os.path.join(output_dir, f"lidar_3d_open3d_sample_{sample_idx}.png")
+        
+        # Get ego pose from LiDAR data for coordinate transformation
+        lidar_ego_pose_token = lidar_data['ego_pose_token']
+        ego_pose = next((ep for ep in ego_poses if ep['token'] == lidar_ego_pose_token), None)
+        if ego_pose:
+            ego_translation = np.array(ego_pose['translation'])
+            ego_rotation = np.array(ego_pose['rotation'])
+            visualize_lidar_3d_open3d(lidar_points, sample_anns, categories, instances, 
+                                    lidar_3d_open3d_output, ego_translation, ego_rotation)
+        else:
+            visualize_lidar_3d_open3d(lidar_points, sample_anns, categories, instances, 
+                                    lidar_3d_open3d_output)
+        
+        # 3. BEV visualization with 2D boxes
+        print(f"  🗺️  Creating Bird's Eye View...")
+        bev_output = os.path.join(output_dir, f"bev_sample_{sample_idx}.png")
+        
+        if ego_pose:
+            visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_output,
+                                   ego_translation=ego_translation, ego_rotation=ego_rotation)
+        else:
+            visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_output)
+        
+        # 4. BEV with map overlay (placeholder implementation)
+        print(f"  🗺️  Creating BEV with map overlay...")
+        bev_map_output = os.path.join(output_dir, f"bev_with_map_sample_{sample_idx}.png")
+        # For now, we'll use a placeholder map_data
+        map_data = {"placeholder": True}  # In real implementation, load actual map data
+        if ego_pose:
+            visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_map_output, map_data,
+                                   ego_translation=ego_translation, ego_rotation=ego_rotation)
+        else:
+            visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_map_output, map_data)
+        
+    except Exception as e:
+        print(f"  Error creating additional visualizations: {e}")
+
+
+def save_annotation_summary(sample, sample_anns, camera_data, categories, instances, output_dir):
+    """
+    Save a text summary of all annotations for the sample.
+    
+    Args:
+        sample (dict): Sample data
+        sample_anns (list): Sample annotations
+        camera_data (list): Camera data entries
+        categories (list): Category definitions
+        instances (list): Instance definitions
+        output_dir (str): Directory to save the summary
     """
     try:
-        import matplotlib.pyplot as plt
-        import matplotlib.patches as patches
-        from PIL import Image
-        import numpy as np
-        
-        # Initialize variables to avoid UnboundLocalError in exception handling
-        camera_data = []
-        output_dir = ""
-        
-        # Load annotation files
-        annotation_dir = os.path.join(nuscenes_root, 'v1.0-trainval')
-        print(f"\nVisualizing sample {sample_idx} with bounding boxes:")
-        print(f"Successfully loaded annotation files from: {annotation_dir}")
-        
-        with open(os.path.join(annotation_dir, 'sample.json'), 'r') as f:
-            samples = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'sample_data.json'), 'r') as f:
-            sample_data = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'sample_annotation.json'), 'r') as f:
-            sample_annotations = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'category.json'), 'r') as f:
-            categories = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'sensor.json'), 'r') as f:
-            sensors = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'calibrated_sensor.json'), 'r') as f:
-            calibrated_sensors = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'ego_pose.json'), 'r') as f:
-            ego_poses = json.load(f)
-        
-        with open(os.path.join(annotation_dir, 'instance.json'), 'r') as f:
-            instances = json.load(f)
-        
-        # Get the sample
-        if sample_idx >= len(samples):
-            print(f"Error: Sample index {sample_idx} is out of range. Total samples: {len(samples)}")
-            return
-        
-        sample = samples[sample_idx]
-        print(f"Sample token: {sample['token']}")
-        print(f"Scene token: {sample['scene_token']}")
-        print(f"Timestamp: {sample['timestamp']}")
-        
-        # Find all sample_data entries for this sample
-        sample_data_entries = [sd for sd in sample_data if sd['sample_token'] == sample['token']]
-        
-        # Filter for camera data only (main samples, not sweeps)
-        camera_data = [sd for sd in sample_data_entries 
-                      if 'CAM' in sd.get('filename', '') and 'samples/' in sd.get('filename', '')]
-        
-        if not camera_data:
-            print("No camera data found for this sample")
-            return
-        
-        # Create mapping from calibrated_sensor_token to channel
-        calibrated_to_sensor = {cs['token']: cs['sensor_token'] for cs in calibrated_sensors}
-        sensor_to_channel = {s['token']: s['channel'] for s in sensors}
-        
-        # Get sample annotations for this sample
-        sample_anns = [ann for ann in sample_annotations if ann['sample_token'] == sample['token']]
-        
-        # Create category lookup
+        # Create lookup dictionaries
+        instance_to_category = {inst['token']: inst['category_token'] for inst in instances}
         category_lookup = {cat['token']: cat['name'] for cat in categories}
         
-        # Create instance to category mapping
-        instance_to_category = {inst['token']: inst['category_token'] for inst in instances}
-        
-        # Create output directory for visualizations
-        output_dir = os.path.join(nuscenes_root, 'visualizations', f'sample_{sample_idx}')
-        os.makedirs(output_dir, exist_ok=True)
-        
-        print(f"Found {len(camera_data)} camera views and {len(sample_anns)} annotations")
-        
-        # Process each camera view
-        saved_files = []
-        for cam_data in camera_data:
-            try:
-                # Get channel name
-                calibrated_sensor_token = cam_data['calibrated_sensor_token']
-                sensor_token = calibrated_to_sensor.get(calibrated_sensor_token)
-                channel = sensor_to_channel.get(sensor_token, 'UNKNOWN')
-                
-                print(f"Processing {channel}...")
-                
-                # Load image
-                image_path = os.path.join(nuscenes_root, cam_data['filename'])
-                if not os.path.exists(image_path):
-                    print(f"  Warning: Image file not found: {image_path}")
-                    continue
-                
-                # Load and display image
-                img = Image.open(image_path)
-                
-                # Create side-by-side subplots: left for 3D boxes, right for 2D boxes
-                fig, (ax_3d, ax_2d) = plt.subplots(1, 2, figsize=(24, 8))
-                
-                # Display image on both subplots
-                ax_3d.imshow(img)
-                ax_3d.set_title(f'{channel} - Sample {sample_idx} (3D Bounding Boxes)')
-                
-                ax_2d.imshow(img)
-                ax_2d.set_title(f'{channel} - Sample {sample_idx} (2D Bounding Boxes)')
-                
-                # Get camera calibration data
-                calibrated_sensor = next((cs for cs in calibrated_sensors 
-                                        if cs['token'] == calibrated_sensor_token), None)
-                
-                if calibrated_sensor and calibrated_sensor.get('camera_intrinsic'):
-                    # Project and draw 3D bounding boxes
-                    camera_intrinsic = np.array(calibrated_sensor['camera_intrinsic'])
-                    cam_translation = np.array(calibrated_sensor['translation'])
-                    cam_rotation = np.array(calibrated_sensor['rotation'])  # quaternion [w, x, y, z]
-                    
-                    # Get ego pose for this sample
-                    ego_pose = next((ep for ep in ego_poses if ep['token'] == cam_data['ego_pose_token']), None)
-                    if not ego_pose:
-                        print(f"  Warning: No ego pose found for {channel}")
-                        continue
-                    
-                    ego_translation = np.array(ego_pose['translation'])
-                    ego_rotation = np.array(ego_pose['rotation'])
-                    
-                    boxes_drawn_3d = 0
-                    boxes_drawn_2d = 0
-                    for i, ann in enumerate(sample_anns):
-                        try:
-                            # Get 3D bounding box parameters
-                            center_3d = np.array(ann['translation'])  # [x, y, z]
-                            size_3d = np.array(ann['size'])  # [width, length, height]
-                            rotation_3d = np.array(ann['rotation'])  # quaternion [w, x, y, z]
-                            
-                            # Project 3D bounding box to 2D
-                            projection_result = project_3d_box_to_2d(
-                                center_3d, size_3d, rotation_3d,
-                                cam_translation, cam_rotation, camera_intrinsic,
-                                ego_translation, ego_rotation, debug=(i == 0 and channel == 'CAM_FRONT')
-                            )
-                            
-                            if projection_result[0] is not None:
-                                corners_2d, corners_3d_cam = projection_result
-                                
-                                # Get image dimensions for visibility check
-                                img_width, img_height = img.size
-                                
-                                # Check if box is visible using NuScenes official visibility check
-                                is_visible = box_in_image(
-                                    corners_3d_cam, corners_2d.T, camera_intrinsic, 
-                                    (img_width, img_height), BoxVisibility.ANY
-                                )
-                                
-                                if not is_visible:
-                                    if i == 0 and channel == 'CAM_FRONT':  # Debug for first annotation
-                                        print(f"    Box {i} not visible, skipping...")
-                                    continue
-                                
-                                # Get category name for labeling
-                                category_name = ""
-                                if ann.get('instance_token'):
-                                    # Get category from instance table
-                                    instance = next((inst for inst in instances if inst['token'] == ann['instance_token']), None)
-                                    if instance and instance.get('category_token'):
-                                        category = next((cat for cat in categories if cat['token'] == instance['category_token']), None)
-                                        if category:
-                                            category_name = category['name']
-                                
-                                # Draw 3D bounding box (wireframe) on left subplot
-                                draw_3d_box_2d(ax_3d, corners_2d, category_name=category_name, color='red', linewidth=2, 
-                                             img_width=img_width, img_height=img_height)
-                                boxes_drawn_3d += 1
-                                
-                                # Calculate and draw 2D bounding box from 3D projection on right subplot
-                                bbox_2d_from_3d = get_2d_bbox_from_3d_projection(corners_2d)
-                                if bbox_2d_from_3d is not None:
-                                    # Draw the projected 2D bbox (blue dashed)
-                                    success = draw_2d_bbox_from_3d(ax_2d, corners_2d, f"{category_name} (3D→2D)", 
-                                                                 color='blue', linewidth=2,
-                                                                 img_width=img_width, img_height=img_height)
-                                    if success:
-                                        boxes_drawn_2d += 1
-                                
-                                    # For demonstration, also draw a regular 2D detection box (solid green)
-                                    # This would typically come from a 2D detector, but we'll simulate it
-                                    x_min, y_min, x_max, y_max = bbox_2d_from_3d
-                                    # Create a simulated 2D detection box (slightly smaller)
-                                    margin = min(20, (x_max - x_min) * 0.1, (y_max - y_min) * 0.1)
-                                    simulated_2d_bbox = [x_min + margin, y_min + margin, 
-                                                       x_max - margin, y_max - margin]
-                                    
-                                    success = draw_2d_bbox(ax_2d, simulated_2d_bbox, f"{category_name} (2D Det)", 
-                                                         color='green', linewidth=2,
-                                                         img_width=img_width, img_height=img_height)
-                                    if success:
-                                        boxes_drawn_2d += 1
-                                
-                        except Exception as e:
-                            print(f"    Warning: Failed to project annotation {i}: {e}")
-                    
-                    # Add annotation info for 3D subplot
-                    info_text_3d = f'3D Annotations: {len(sample_anns)} (Drawn: {boxes_drawn_3d})'
-                    ax_3d.text(10, 30, info_text_3d, 
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
-                           fontsize=12, fontweight='bold')
-                    
-                    # Add legend for 3D subplot
-                    ax_3d.text(10, 70, "3D Wireframe", fontsize=10, 
-                              bbox=dict(boxstyle="round,pad=0.2", facecolor="red", alpha=0.8))
-                    ax_3d.plot([10, 40], [85, 85], color='red', linestyle='-', linewidth=2)
-                    
-                    # Add annotation info for 2D subplot
-                    info_text_2d = f'2D Annotations: {len(sample_anns)} (Drawn: {boxes_drawn_2d})'
-                    ax_2d.text(10, 30, info_text_2d, 
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
-                           fontsize=12, fontweight='bold')
-                    
-                    # Add legend for 2D subplot
-                    legend_y_start = 70
-                    legend_items_2d = [
-                        ("3D→2D Bbox", "blue", "--"),
-                        ("2D Detection", "green", "-")
-                    ]
-                    
-                    for i, (label, color, linestyle) in enumerate(legend_items_2d):
-                        y_pos = legend_y_start + i * 25
-                        # Draw sample line
-                        ax_2d.plot([10, 40], [y_pos, y_pos], color=color, linestyle=linestyle, linewidth=2)
-                        # Add text
-                        ax_2d.text(45, y_pos, label, fontsize=10, verticalalignment='center',
-                               bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
-                else:
-                    # Fallback: just show annotation count
-                    ax_3d.text(10, 30, f'Annotations: {len(sample_anns)} (No camera intrinsics)', 
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="orange", alpha=0.7),
-                           fontsize=12, fontweight='bold')
-                    ax_2d.text(10, 30, f'Annotations: {len(sample_anns)} (No camera intrinsics)', 
-                           bbox=dict(boxstyle="round,pad=0.3", facecolor="orange", alpha=0.7),
-                           fontsize=12, fontweight='bold')
-                
-                ax_3d.axis('off')
-                ax_2d.axis('off')
-                
-                # Save the visualization
-                output_path = os.path.join(output_dir, f'{channel}_sample_{sample_idx}.png')
-                plt.savefig(output_path, bbox_inches='tight', dpi=150)
-                plt.close()
-                
-                saved_files.append(output_path)
-                print(f"  Saved visualization to: {output_path}")
-                
-            except Exception as e:
-                print(f"  Error processing camera {channel}: {str(e)}")
-        
-        # Create a combined visualization
-        if saved_files:
-            try:
-                fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-                fig.suptitle(f'NuScenes Sample {sample_idx} - All Camera Views', fontsize=16)
-                
-                camera_order = ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 
-                               'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT']
-                
-                for i, channel in enumerate(camera_order):
-                    row, col = i // 3, i % 3
-                    
-                    # Find corresponding saved file
-                    matching_file = None
-                    for saved_file in saved_files:
-                        if channel in saved_file:
-                            matching_file = saved_file
-                            break
-                    
-                    if matching_file and os.path.exists(matching_file):
-                        img = Image.open(matching_file)
-                        axes[row, col].imshow(img)
-                        axes[row, col].set_title(channel)
-                    else:
-                        axes[row, col].text(0.5, 0.5, f'{channel}\nNot Available', 
-                                          ha='center', va='center', transform=axes[row, col].transAxes)
-                    
-                    axes[row, col].axis('off')
-                
-                combined_path = os.path.join(output_dir, f'combined_sample_{sample_idx}.png')
-                plt.savefig(combined_path, bbox_inches='tight', dpi=150)
-                plt.close()
-                
-                print(f"Combined visualization saved to: {combined_path}")
-                
-            except Exception as e:
-                print(f"Error creating combined visualization: {e}")
-        
-        # Save annotation summary
         summary_path = os.path.join(output_dir, 'annotations.txt')
         with open(summary_path, 'w') as f:
-            f.write(f"Sample {sample_idx} Annotations\n")
+            f.write(f"Sample Annotations Summary\n")
+            f.write(f"=" * 50 + "\n")
             f.write(f"Sample token: {sample['token']}\n")
             f.write(f"Timestamp: {sample['timestamp']}\n")
             f.write(f"Camera views: {len(camera_data)}\n")
@@ -2202,191 +2492,137 @@ def visualize_sample_with_boxes(nuscenes_root, sample_idx):
                 f.write(f"  Category: {category_name}\n")
                 f.write(f"  Instance token: {ann['instance_token']}\n")
                 f.write(f"  Visibility: {ann['visibility_token']}\n")
-                f.write(f"  Translation: {ann['translation']}\n")
-                f.write(f"  Size: {ann['size']}\n")
-                f.write(f"  Rotation: {ann['rotation']}\n\n")
+                f.write(f"  Translation (x,y,z): {ann['translation']}\n")
+                f.write(f"  Size (w,l,h): {ann['size']}\n")
+                f.write(f"  Rotation (quat): {ann['rotation']}\n\n")
         
-        # Add new visualizations
-        print(f"\n🚀 Creating additional visualizations...")
+        print(f"  Annotation summary saved to: {summary_path}")
         
-        # 1. LiDAR 3D visualization with 3D boxes
-        lidar_data_entries = [sd for sd in sample_data_entries if 'LIDAR_TOP' in sd.get('filename', '')]
-        if lidar_data_entries:
-            lidar_data = lidar_data_entries[0]  # Get the first LiDAR entry
-            lidar_path = os.path.join(nuscenes_root, lidar_data['filename'])
-            if os.path.exists(lidar_path):
-                print(f"  📡 Processing LiDAR data...")
-                lidar_points = load_lidar_points(lidar_path)
-                lidar_3d_output = os.path.join(output_dir, f"lidar_3d_sample_{sample_idx}.png")
-                visualize_lidar_3d(lidar_points, sample_anns, categories, instances, lidar_3d_output)
-                saved_files.append(lidar_3d_output)
-                
-                # 1.5. Interactive LiDAR 3D visualization with Open3D
-                print(f"  🎮 Creating interactive Open3D visualization...")
-                lidar_3d_open3d_output = os.path.join(output_dir, f"lidar_3d_open3d_sample_{sample_idx}.png")
-                
-                # Get ego pose from LiDAR data for coordinate transformation
-                lidar_ego_pose_token = lidar_data['ego_pose_token']
-                ego_pose = next((ep for ep in ego_poses if ep['token'] == lidar_ego_pose_token), None)
-                if ego_pose:
-                    ego_translation = np.array(ego_pose['translation'])
-                    ego_rotation = np.array(ego_pose['rotation'])
-                    visualize_lidar_3d_open3d(lidar_points, sample_anns, categories, instances, 
-                                            lidar_3d_open3d_output, ego_translation, ego_rotation)
-                else:
-                    visualize_lidar_3d_open3d(lidar_points, sample_anns, categories, instances, 
-                                            lidar_3d_open3d_output)
-                saved_files.append(lidar_3d_open3d_output)
-                
-                # 2. LiDAR projection to camera images
-                for cam_data in camera_data[:2]:  # Process first 2 cameras for performance
-                    try:
-                        calibrated_sensor_token = cam_data['calibrated_sensor_token']
-                        sensor_token = calibrated_to_sensor.get(calibrated_sensor_token)
-                        channel = sensor_to_channel.get(sensor_token, 'UNKNOWN')
-                        
-                        # Get camera calibration
-                        calibrated_sensor = next((cs for cs in calibrated_sensors 
-                                                if cs['token'] == calibrated_sensor_token), None)
-                        if calibrated_sensor:
-                            cam_translation = np.array(calibrated_sensor['translation'])
-                            cam_rotation = np.array(calibrated_sensor['rotation'])
-                            camera_intrinsic = np.array(calibrated_sensor['camera_intrinsic'])
-                            
-                            # Get ego pose from LiDAR data (not camera data)
-                            lidar_ego_pose_token = lidar_data['ego_pose_token']
-                            ego_pose = next((ep for ep in ego_poses if ep['token'] == lidar_ego_pose_token), None)
-                            if ego_pose:
-                                ego_translation = np.array(ego_pose['translation'])
-                                ego_rotation = np.array(ego_pose['rotation'])
-                                
-                                image_path = os.path.join(nuscenes_root, cam_data['filename'])
-                                lidar_proj_output = os.path.join(output_dir, f"lidar_projection_{channel}_sample_{sample_idx}.png")
-                                
-                                print(f"  🎯 Creating LiDAR projection for {channel}...")
-                                visualize_lidar_projection(image_path, lidar_points, cam_translation, 
-                                                         cam_rotation, camera_intrinsic, ego_translation, 
-                                                         ego_rotation, lidar_proj_output)
-                                saved_files.append(lidar_proj_output)
-                    except Exception as e:
-                        print(f"    Warning: Failed to create LiDAR projection for {channel}: {e}")
-                
-                # 3. BEV visualization with 2D boxes
-                print(f"  🗺️  Creating Bird's Eye View...")
-                bev_output = os.path.join(output_dir, f"bev_sample_{sample_idx}.png")
-                
-                # Get ego pose from LiDAR data for coordinate transformation
-                lidar_ego_pose_token = lidar_data['ego_pose_token']
-                ego_pose = next((ep for ep in ego_poses if ep['token'] == lidar_ego_pose_token), None)
-                if ego_pose:
-                    ego_translation = np.array(ego_pose['translation'])
-                    ego_rotation = np.array(ego_pose['rotation'])
-                    visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_output,
-                                           ego_translation=ego_translation, ego_rotation=ego_rotation)
-                else:
-                    visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_output)
-                saved_files.append(bev_output)
-                
-                # 4. BEV with map overlay (placeholder implementation)
-                print(f"  🗺️  Creating BEV with map overlay...")
-                bev_map_output = os.path.join(output_dir, f"bev_with_map_sample_{sample_idx}.png")
-                # For now, we'll use a placeholder map_data
-                map_data = {"placeholder": True}  # In real implementation, load actual map data
-                if ego_pose:
-                    visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_map_output, map_data,
-                                           ego_translation=ego_translation, ego_rotation=ego_rotation)
-                else:
-                    visualize_bev_with_boxes(lidar_points, sample_anns, categories, instances, bev_map_output, map_data)
-                saved_files.append(bev_map_output)
-            else:
-                print(f"  ⚠️  LiDAR file not found: {lidar_path}")
-        else:
-            print(f"  ⚠️  No LiDAR data found for this sample")
+    except Exception as e:
+        print(f"  Error saving annotation summary: {e}")
 
-        print(f"\nVisualization completed successfully!")
-        print(f"Files saved to: {output_dir}")
-        print(f"- Individual camera views: {len([f for f in saved_files if 'CAM_' in f])} files")
-        print(f"- LiDAR visualizations: {len([f for f in saved_files if 'lidar' in f])} files")
-        print(f"- BEV visualizations: {len([f for f in saved_files if 'bev' in f])} files")
-        print(f"- Combined view: combined_sample_{sample_idx}.png")
-        print(f"- Annotation summary: annotations.txt")
+
+def visualize_sample_with_boxes(nuscenes_root, sample_idx, output_dir=None):
+    """
+    Visualize a sample with bounding boxes for all cameras and save to local files.
+    
+    This is the main orchestration function that coordinates the visualization pipeline:
+    1. Load NuScenes annotation data
+    2. Prepare sample-specific data and camera information
+    3. Process each camera view with 3D→2D projection
+    4. Create visualizations and save results
+    
+    Args:
+        nuscenes_root (str): Path to the NuScenes dataset root directory
+        sample_idx (int): Index of the sample to visualize
+        output_dir (str, optional): Custom output directory for visualizations
+    """
+    try:
+        import matplotlib.pyplot as plt
+        from PIL import Image
+        import numpy as np
         
-    except KeyError as e:
-        print(f"Error: Missing key in annotation data - {e}")
-    except json.JSONDecodeError as e:
-        print(f"Error: Failed to parse JSON file - {e}")
-    except Exception as e:
-        print(f"Unexpected error during visualization: {e}")
-        import traceback
-        traceback.print_exc()
+        # Step 1: Load NuScenes annotation data using modular function
+        print(f"\nVisualizing sample {sample_idx} with bounding boxes:")
+        nuscenes_data = load_nuscenes_data(nuscenes_root)
+        print(f"Successfully loaded annotation files from: {nuscenes_data['annotation_dir']}")
         
-        # Create a combined visualization
-        if camera_data:
-            print(f"\n🎨 Creating combined visualization...")
-            fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-            fig.suptitle(f'NuScenes Sample {sample_idx} - All Camera Views', fontsize=16)
+        # Step 2: Prepare sample-specific data using modular function
+        sample_data = prepare_sample_data(nuscenes_data, sample_idx)
+        if not sample_data:
+            return
             
-            camera_positions = [
-                (0, 1, 'CAM_FRONT'),
-                (0, 0, 'CAM_FRONT_LEFT'), 
-                (0, 2, 'CAM_FRONT_RIGHT'),
-                (1, 1, 'CAM_BACK'),
-                (1, 0, 'CAM_BACK_LEFT'),
-                (1, 2, 'CAM_BACK_RIGHT')
-            ]
-            
-            for row, col, channel in camera_positions:
-                ax = axes[row, col]
+        # Use custom output directory if provided, otherwise use default from sample_data
+        if output_dir:
+            sample_data['output_dir'] = os.path.join(output_dir, f'sample_{sample_idx}')
+            os.makedirs(sample_data['output_dir'], exist_ok=True)
+        
+        print(f"Found {len(sample_data['camera_data'])} camera views and {len(sample_data['sample_annotations'])} annotations")
+        
+        # Step 3: Process each camera view
+        saved_files = []
+        for cam_data in sample_data['camera_data']:
+            try:
+                # Process camera data and extract calibration/pose information
+                camera_info = process_camera_data(
+                    cam_data, nuscenes_data['sample_data'], nuscenes_data['calibrated_sensors'],
+                    nuscenes_data['sensors'], nuscenes_data['ego_poses'], nuscenes_root
+                )
                 
-                # Find corresponding camera data
-                cam_data = None
-                for cd in camera_data:
-                    # Get channel name for this camera data
-                    calibrated_sensor_token = cd['calibrated_sensor_token']
-                    sensor_token = calibrated_to_sensor.get(calibrated_sensor_token)
-                    cd_channel = sensor_to_channel.get(sensor_token, 'UNKNOWN')
-                    if cd_channel == channel:
-                        cam_data = cd
-                        break
+                if not camera_info:
+                    continue
+                    
+                print(f"Processing {camera_info['channel']}...")
                 
-                if cam_data:
-                    image_path = os.path.join(nuscenes_root, cam_data['filename'])
-                    if os.path.exists(image_path):
-                        try:
-                            image = cv2.imread(image_path)
-                            if image is not None:
-                                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                                ax.imshow(image_rgb)
-                                ax.set_title(f'{channel}', fontsize=12)
-                                ax.axis('off')
-                            else:
-                                ax.text(0.5, 0.5, f'{channel}\nImage not found', 
-                                       ha='center', va='center', transform=ax.transAxes)
-                                ax.axis('off')
-                        except:
-                            ax.text(0.5, 0.5, f'{channel}\nError loading', 
-                                   ha='center', va='center', transform=ax.transAxes)
-                            ax.axis('off')
-                else:
-                    ax.text(0.5, 0.5, f'{channel}\nNo data', 
-                           ha='center', va='center', transform=ax.transAxes)
-                    ax.axis('off')
+                # Process 3D annotations for this camera view
+                processed_annotations = process_3d_annotations_for_camera(
+                    sample_data['sample_annotations'], camera_info, 
+                    nuscenes_data['categories'], nuscenes_data['instances'],
+                    debug_first=(camera_info['channel'] == 'CAM_FRONT')
+                )
+                
+                # Create visualization subplots
+                fig, ax_3d, ax_2d = create_visualization_subplots(camera_info, sample_idx)
+                
+                # Draw annotations on subplots
+                boxes_drawn_3d, boxes_drawn_2d = draw_annotations_on_subplots(
+                    processed_annotations, camera_info, ax_3d, ax_2d
+                )
+                
+                # Add annotation info text to subplots
+                info_text_3d = f'3D Annotations: {len(sample_data["sample_annotations"])} (Drawn: {boxes_drawn_3d})'
+                ax_3d.text(10, 30, info_text_3d, 
+                          bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+                          fontsize=12, color='black')
+                
+                info_text_2d = f'2D Annotations: {len(sample_data["sample_annotations"])} (Drawn: {boxes_drawn_2d})'
+                ax_2d.text(10, 30, info_text_2d, 
+                          bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.7),
+                          fontsize=12, color='black')
+                
+                # Save visualization
+                output_filename = f'{camera_info["channel"]}_sample_{sample_idx}_boxes.png'
+                output_path = os.path.join(output_dir, output_filename)
+                
+                plt.tight_layout()
+                plt.savefig(output_path, dpi=150, bbox_inches='tight')
+                plt.close()
+                
+                saved_files.append(output_path)
+                print(f"  Saved: {output_path}")
+                print(f"  3D boxes drawn: {boxes_drawn_3d}, 2D boxes drawn: {boxes_drawn_2d}")
+                
+            except Exception as e:
+                print(f"  Error processing {cam_data.get('filename', 'unknown')}: {e}")
+                continue
+        
+        # Step 4: Create combined visualization
+        create_combined_visualization(saved_files, output_dir, sample_idx)
+        
+        # Step 5: Create additional visualizations (LiDAR, BEV, etc.)
+        create_additional_visualizations(
+            sample_data['sample_data_entries'], sample_data['sample_annotations'], 
+            nuscenes_data['categories'], nuscenes_data['instances'], 
+            nuscenes_data['calibrated_sensors'], nuscenes_data['sensors'], 
+            nuscenes_data['ego_poses'], nuscenes_root, output_dir, sample_idx
+        )
+        
+        # Step 6: Save annotation summary
+        save_annotation_summary(
+            sample_data['sample'], sample_data['sample_annotations'], 
+            sample_data['camera_data'], nuscenes_data['categories'], 
+            nuscenes_data['instances'], output_dir
+        )
+        
+        # Summary
+        print(f"\n✅ Visualization complete!")
+        print(f"📁 Output directory: {output_dir}")
+        print(f"📸 Files saved: {len(saved_files)}")
+        for file_path in saved_files:
+            print(f"   - {os.path.basename(file_path)}")
             
-            plt.tight_layout()
-            combined_output = os.path.join(output_dir, f"sample_{sample_idx}_combined.png")
-            plt.savefig(combined_output, dpi=150, bbox_inches='tight')
-            plt.close()
-            print(f"  💾 Saved combined visualization: {combined_output}")
-        
-        print(f"\n✅ Visualization complete for sample {sample_idx}")
-        print(f"📁 All visualizations saved to: {output_dir}")
-        
-    except json.JSONDecodeError as e:
-        print(f"Error: Failed to parse JSON file - {e}")
-    except KeyError as e:
-        print(f"Error: Missing key in annotation data - {e}")
     except Exception as e:
-        print(f"Error: Unexpected error during visualization - {e}")
+        print(f"❌ Error in visualization: {e}")
         import traceback
         traceback.print_exc()
 
@@ -2630,6 +2866,16 @@ def extract_nuscenes_subset(nuscenes_root: str, num_samples: int, output_dir: st
     
     return zip_path
 
+
+# Default paths
+# DEFAULT_DATA_ROOT = "/mnt/e/Shared/Dataset/"
+# DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "NuScenes", "v1.0-trainval")
+# DEFAULT_ZIP_DIR = "/mnt/e/Shared/Dataset/NuScenes/"
+
+DEFAULT_DATA_ROOT = "/DATA10T/Datasets/"
+DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "nuScenes", "v1.0-trainval")
+DEFAULT_ZIP_DIR = "/DATA10T/Datasets/nuScenes/"
+
 def main():
     """
     Main function with enhanced NuScenes dataset management
@@ -2639,6 +2885,8 @@ def main():
                        help="Directory containing NuScenes zip files")
     parser.add_argument("--extract_dir", default=DEFAULT_NUSCENES_DIR, 
                        help="Directory to extract files to (will become NuScenes root)")
+    parser.add_argument("--output_dir", default="output",
+                       help="Directory to save visualizations (default: <nuscenes_root>/visualizations)")
     
     args = parser.parse_args()
     
@@ -2680,7 +2928,7 @@ def main():
             
         elif choice == '6':
             sample_idx = int(input("Enter sample index to visualize (default 0): ") or "0")
-            visualize_sample_with_boxes(args.extract_dir, sample_idx)
+            visualize_sample_with_boxes(args.extract_dir, sample_idx, args.output_dir)
             
         elif choice == '7':
             diagnosis = diagnose_dataset_issues(args.extract_dir)
