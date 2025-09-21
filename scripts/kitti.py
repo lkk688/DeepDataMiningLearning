@@ -1653,20 +1653,30 @@ def visualize_kitti_sample_bev(root_path, sample_idx, dataset_type='auto', outpu
     try:
         # Detect dataset type if auto
         if dataset_type == 'auto':
-            dataset_type = 'waymokitti' if 'waymo' in root_path.lower() else 'kitti'
+            dataset_type = detect_dataset_type(root_path)
         
-        # Set up paths based on dataset type
-        if dataset_type == 'waymokitti':
-            velodyne_dir = os.path.join(root_path, 'velodyne')
-            label_dir = os.path.join(root_path, 'label_all')
-            calib_dir = os.path.join(root_path, 'calib')
-        else:
-            velodyne_dir = os.path.join(root_path, 'velodyne')
-            label_dir = os.path.join(root_path, 'label_2')
-            calib_dir = os.path.join(root_path, 'calib')
+        # Get file paths with automatic training/testing folder detection
+        def find_file_path(root_path, subfolder, filename):
+            """Find file in root_path or in training/testing subfolders"""
+            # Try direct path first
+            direct_path = os.path.join(root_path, subfolder, filename)
+            if os.path.exists(direct_path):
+                return direct_path
+            
+            # Try training folder
+            training_path = os.path.join(root_path, 'training', subfolder, filename)
+            if os.path.exists(training_path):
+                return training_path
+            
+            # Try testing folder
+            testing_path = os.path.join(root_path, 'testing', subfolder, filename)
+            if os.path.exists(testing_path):
+                return testing_path
+            
+            # Return direct path as fallback (will show proper error later)
+            return direct_path
         
-        # Load LiDAR points
-        velodyne_file = os.path.join(velodyne_dir, f'{sample_idx:06d}.bin')
+        velodyne_file = find_file_path(root_path, 'velodyne', f'{sample_idx:06d}.bin')
         if not os.path.exists(velodyne_file):
             print(f"❌ Velodyne file not found: {velodyne_file}")
             return False
@@ -1675,7 +1685,10 @@ def visualize_kitti_sample_bev(root_path, sample_idx, dataset_type='auto', outpu
         print(f"📊 Loaded {len(points)} LiDAR points")
         
         # Load labels
-        label_file = os.path.join(label_dir, f'{sample_idx:06d}.txt')
+        if dataset_type == 'waymokitti':
+            label_file = find_file_path(root_path, 'label_all', f'{sample_idx:06d}.txt')
+        else:
+            label_file = find_file_path(root_path, 'label_2', f'{sample_idx:06d}.txt')
         objects = []
         if os.path.exists(label_file):
             with open(label_file, 'r') as f:
@@ -1687,7 +1700,7 @@ def visualize_kitti_sample_bev(root_path, sample_idx, dataset_type='auto', outpu
             print(f"⚠️ Label file not found: {label_file}")
         
         # Load calibration
-        calib_file = os.path.join(calib_dir, f'{sample_idx:06d}.txt')
+        calib_file = find_file_path(root_path, 'calib', f'{sample_idx:06d}.txt')
         if not os.path.exists(calib_file):
             print(f"❌ Calibration file not found: {calib_file}")
             return False
@@ -1711,7 +1724,8 @@ def visualize_kitti_sample_bev(root_path, sample_idx, dataset_type='auto', outpu
             scatter = ax.scatter(filtered_points[:, 0], filtered_points[:, 1], 
                                c=filtered_points[:, 2], cmap='viridis', 
                                s=0.5, alpha=0.6)
-            plt.colorbar(scatter, ax=ax, label='Height (m)')
+            # Position colorbar on the right side
+            cbar = plt.colorbar(scatter, ax=ax, label='Height (m)', shrink=0.6, pad=0.15)
         
         # Draw 3D bounding boxes
         categories_present = set()
@@ -1742,9 +1756,25 @@ def visualize_kitti_sample_bev(root_path, sample_idx, dataset_type='auto', outpu
             draw_bev_box_2d(ax, box_center_bev, box_size, rotation_y, obj.type)
             categories_present.add(obj.type)
         
-        # Add ego vehicle marker (at origin)
+        # Add ego vehicle marker (at origin) with coordinates display
         ego_size = [4.5, 2.0]  # Typical car dimensions
         draw_bev_box_2d(ax, [0, 0], ego_size, 0, 'Ego', alpha=0.5)
+        
+        # Add directional arrows for X and Y axes
+        arrow_length = 8
+        arrow_offset = ego_size[0]/2 + 2
+        
+        # X-axis arrow (forward direction) - Red
+        ax.arrow(arrow_offset, 0, arrow_length, 0, head_width=1.5, head_length=1.5, 
+                fc='red', ec='red', linewidth=2, alpha=0.8)
+        ax.text(arrow_offset + arrow_length/2, -2.5, 'X (Forward)', 
+               ha='center', va='top', color='red', fontsize=9, weight='bold')
+        
+        # Y-axis arrow (left direction) - Green  
+        ax.arrow(0, arrow_offset, 0, arrow_length, head_width=1.5, head_length=1.5, 
+                fc='green', ec='green', linewidth=2, alpha=0.8)
+        ax.text(-3, arrow_offset + arrow_length/2, 'Y (Left)', 
+               ha='center', va='center', color='green', fontsize=9, weight='bold', rotation=90)
         
         # Add range circles
         for radius in [10, 20, 30, 40]:
@@ -1762,8 +1792,9 @@ def visualize_kitti_sample_bev(root_path, sample_idx, dataset_type='auto', outpu
                 legend_elements.append(plt.Rectangle((0, 0), 1, 1, 
                                                    facecolor=color, alpha=0.7, 
                                                    label=category))
-            ax.legend(handles=legend_elements, loc='upper right', 
-                     bbox_to_anchor=(1.15, 1))
+            # Position legend on the left side to avoid colorbar overlap
+            ax.legend(handles=legend_elements, loc='center left', 
+                     bbox_to_anchor=(-0.15, 0.5), frameon=True, fancybox=True, shadow=True)
         
         # Set equal aspect ratio and labels
         ax.set_aspect('equal')
@@ -1920,7 +1951,7 @@ def main():
             try:
                 sample_idx = int(input("Enter sample index to visualize (default 0): ") or "0")
                 dataset_type = input("Enter dataset type (kitti/waymokitti/auto, default: auto): ").strip() or "auto"
-                success = visualize_kitti_lidar(args.root_path, sample_idx, dataset_type, args.output_dir)
+                success = visualize_kitti_sample_lidar(args.root_path, sample_idx, dataset_type, args.output_dir)
                 if not success:
                     print("❌ LiDAR visualization failed")
             except ValueError:
