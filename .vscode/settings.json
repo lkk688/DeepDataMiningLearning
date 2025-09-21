@@ -4,5 +4,8 @@
     },
     "python.formatting.provider": "none",
     "ros.distro": "humble",
-    "basedpyright.disableLanguageServices": true
+    "basedpyright.disableLanguageServices": true,
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": []
 }

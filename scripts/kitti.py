@@ -1829,11 +1829,11 @@ def main():
     Main function with enhanced KITTI dataset management
     """
     parser = argparse.ArgumentParser(description="KITTI Dataset Utilities and Visualization Tool")
-    parser.add_argument("--root_path", default='/DATA10T/Datasets/Kitti/',
+    parser.add_argument("--root_path", default='/data/Datasets/kitti',
                        help="Root path of KITTI dataset")
-    parser.add_argument("--download_dir", default='/DATA10T/Datasets/Kitti/',
+    parser.add_argument("--download_dir", default='/data/Datasets',
                        help="Directory to download files to")
-    parser.add_argument("--extract_dir", default='/DATA10T/Datasets/Kitti/training/',
+    parser.add_argument("--extract_dir", default='/data/Datasets/kitti',
                        help="Directory to extract files to")
     parser.add_argument("--output_dir", default="output",
                        help="Directory to save visualizations")
