@@ -10,6 +10,19 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Any
 from pathlib import Path
 from enum import IntEnum
+# Add Open3D import at the top of the file
+try:
+    import open3d as o3d
+    OPEN3D_AVAILABLE = True
+    print(f"Open3D {o3d.__version__} is available for 3D visualization.")
+except ImportError:
+    print("Warning: Open3D not available. 3D interactive visualization will be disabled.")
+    print("To enable Open3D visualization, activate the py312 environment:")
+    print("  conda activate py312")
+    print("  python scripts/nuscenes.py [your_arguments]")
+    OPEN3D_AVAILABLE = False
+    o3d = None
+
 from PIL import Image
 
 # NuScenes dataset structure definition
@@ -553,35 +566,79 @@ def check_nuscenes_data_structure(nuscenes_root: str) -> bool:
 
 def view_points(points: np.ndarray, view: np.ndarray, normalize: bool) -> np.ndarray:
     """
-    This is a helper function that maps 3d points to a 2d plane. It can be used to implement both perspective and
-    orthographic projections. It first applies the dot product between the points and the view. By convention,
-    the view should be such that the data is projected onto the first 2 axis and the third axis is the depth.
+    Transform 3D points to 2D plane using projection matrix.
+    
+    This is a core function for coordinate transformation in computer vision and autonomous driving.
+    It handles both perspective (camera) and orthographic (bird's eye view) projections.
+    
+    The transformation process:
+    1. Convert 3D points to homogeneous coordinates (add w=1)
+    2. Apply the view/projection matrix transformation
+    3. Optionally normalize by depth (perspective division)
+    
+    Coordinate System Convention:
+    - Input points: 3D world coordinates [x, y, z]
+    - Output: 2D projected coordinates [u, v] + optional depth
+    
+    Projection Types:
+    - Perspective (Camera): view = 3x3 camera intrinsic matrix, normalize=True
+      Projects 3D world points to 2D image coordinates with perspective effects
+    - Orthographic (BEV): view = 3x4 or 3x3 matrix, normalize=False  
+      Projects 3D points to 2D plane without perspective distortion
     
     Based on NuScenes official implementation.
     
     Args:
         points: <np.float32: 3, n> Matrix of points, where each point (x, y, z) is along each column.
         view: <np.float32: n, n> Defines an arbitrary projection (n <= 4).
-        normalize: Whether to normalize the remaining coordinate (along the depth axis).
+              - For camera projection: 3x3 intrinsic matrix
+              - For BEV projection: 3x4 transformation matrix
+        normalize: Whether to apply perspective division (divide by depth)
+                  - True for camera projection (perspective)
+                  - False for orthographic projection (BEV)
     
     Returns:
-        <np.float32: n, n> Mapped points. If normalize=False, the points are not normalized.
+        <np.float32: 3, n> Projected points
+        - If normalize=True: [u/z, v/z, 1] (normalized image coordinates)
+        - If normalize=False: [u, v, z] (orthographic coordinates with depth)
+    
+    Example Usage:
+        # Camera projection (3D world -> 2D image)
+        camera_intrinsic = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+        image_points = view_points(world_points, camera_intrinsic, normalize=True)
+        
+        # BEV projection (3D world -> 2D top-down view)
+        bev_transform = np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
+        bev_points = view_points(world_points, bev_transform, normalize=False)
     """
-    assert view.shape[0] <= 4
-    assert view.shape[1] <= 4
-    assert points.shape[0] == 3
+    # Input validation - ensure matrix dimensions are valid
+    assert view.shape[0] <= 4, "View matrix rows must be <= 4"
+    assert view.shape[1] <= 4, "View matrix columns must be <= 4"
+    assert points.shape[0] == 3, "Points must be 3D (3 rows)"
 
-    viewpad = np.eye(4)
-    viewpad[:view.shape[0], :view.shape[1]] = view
+    # Pad view matrix to 4x4 homogeneous transformation matrix
+    # This allows handling of both 3x3 and 3x4 input matrices uniformly
+    viewpad = np.eye(4)  # Start with 4x4 identity matrix
+    viewpad[:view.shape[0], :view.shape[1]] = view  # Copy input view matrix
 
     nbr_points = points.shape[1]
 
-    # Do operation in homogenous coordinates.
-    points = np.concatenate((points, np.ones((1, nbr_points))))
+    # Convert to homogeneous coordinates by adding w=1 coordinate
+    # This enables matrix multiplication for affine transformations
+    points = np.concatenate((points, np.ones((1, nbr_points))))  # [x, y, z, 1]
+    
+    # Apply the projection transformation: P' = M * P
+    # where M is the 4x4 transformation matrix and P is homogeneous point
     points = np.dot(viewpad, points)
-    points = points[:3, :]
+    
+    # Extract only the first 3 coordinates (drop homogeneous coordinate)
+    points = points[:3, :]  # [x', y', z']
 
+    # Apply perspective division if requested (for camera projections)
     if normalize:
+        # Divide x' and y' by z' to get normalized device coordinates
+        # This converts from 3D camera coordinates to 2D image coordinates
+        # Result: [x'/z', y'/z', 1] where z' becomes the normalization factor
         points = points / points[2:3, :].repeat(3, 0).reshape(3, nbr_points)
 
     return points
@@ -648,42 +705,104 @@ def get_3d_box_corners(center, size, rotation):
     """
     Get 8 corners of a 3D bounding box following NuScenes conventions.
     
-    NuScenes coordinate system:
-    - x points forward (length direction)
-    - y points to the left (width direction) 
-    - z points up (height direction)
+    This function is critical for 3D object detection and visualization in autonomous driving.
+    It converts a 3D bounding box representation (center, size, rotation) into 8 corner points
+    that can be used for visualization, collision detection, and geometric calculations.
+    
+    NuScenes Coordinate System Convention:
+    - Right-handed coordinate system: X: forward, Y: left, Z: up
+    - Vehicle coordinate frame: Front of vehicle points in +X direction
+    - Size format: [width, length, height] where:
+      * width (size[0]): Y-axis dimension (left-right extent)
+      * length (size[1]): X-axis dimension (forward-backward extent) 
+      * height (size[2]): Z-axis dimension (up-down extent)
+    
+    Corner Ordering (following NuScenes convention):
+    Bottom face (z = -height/2):
+      0: left-back-bottom    [-w/2, -l/2, -h/2]
+      1: right-back-bottom   [+w/2, -l/2, -h/2]
+      2: right-front-bottom  [+w/2, +l/2, -h/2]  <- Vehicle front
+      3: left-front-bottom   [-w/2, +l/2, -h/2]  <- Vehicle front
+    Top face (z = +height/2):
+      4: left-back-top       [-w/2, -l/2, +h/2]
+      5: right-back-top      [+w/2, -l/2, +h/2]
+      6: right-front-top     [+w/2, +l/2, +h/2]  <- Vehicle front
+      7: left-front-top      [-w/2, +l/2, +h/2]  <- Vehicle front
+    
+    Transformation Pipeline:
+    1. Define unit box corners in local coordinate frame
+    2. Apply rotation using quaternion -> rotation matrix conversion
+    3. Translate to world position using center coordinates
     
     Args:
-        center: [x, y, z] center of the box
-        size: [width, length, height] dimensions of the box (NuScenes format)
-        rotation: quaternion [w, x, y, z] rotation of the box
-    
+        center: [x, y, z] center position of the box in world coordinates
+        size: [width, length, height] dimensions in NuScenes format
+              - width: Y-axis extent (left-right)
+              - length: X-axis extent (forward-backward)
+              - height: Z-axis extent (up-down)
+        rotation: [w, x, y, z] quaternion rotation in NuScenes format
+                 - Represents rotation from local box frame to world frame
+                 - NuScenes uses [w, x, y, z] format (scalar-first)
+        
     Returns:
-        8x3 array of corner coordinates in NuScenes standard order
-    """
-    w, l, h = size
+        corners: 8x3 numpy array of corner coordinates in world frame
+                Each row represents one corner: [x, y, z]
+                Corners are ordered as described above
     
-    # Define box corners in local coordinate system (centered at origin)
-    # Following NuScenes convention: x=forward(length), y=left(width), z=up(height)
-    # Reorder to match NuScenes standard: [length, width, height] -> [x, y, z]
+    Example Usage:
+        # Define a car bounding box
+        center = [10.0, 5.0, 1.0]  # 10m forward, 5m left, 1m up
+        size = [2.0, 4.5, 1.8]     # 2m wide, 4.5m long, 1.8m tall
+        rotation = [1, 0, 0, 0]    # No rotation (identity quaternion)
+        
+        corners = get_3d_box_corners(center, size, rotation)
+        # corners[2] and corners[3] are the front corners of the vehicle
+        # corners[0] and corners[1] are the back corners of the vehicle
+    """
+    # Convert quaternion to rotation matrix using scipy for maximum accuracy
+    # This handles the conversion from NuScenes quaternion format to rotation matrix
+    try:
+        from scipy.spatial.transform import Rotation as R
+        
+        if len(rotation) == 4:
+            # NuScenes uses [w, x, y, z] format, scipy uses [x, y, z, w]
+            # Convert between the two formats for proper rotation
+            q_scipy = [rotation[1], rotation[2], rotation[3], rotation[0]]
+            rot_scipy = R.from_quat(q_scipy)
+            rotation_matrix = rot_scipy.as_matrix()
+        else:
+            raise ValueError(f"Invalid quaternion format: {rotation}")
+    except ImportError:
+        # Fallback to manual quaternion conversion if scipy not available
+        rotation_matrix = quaternion_to_rotation_matrix(rotation)
+    
+    # Extract dimensions according to NuScenes convention
+    width, length, height = size  # [width, length, height]
+    
+    # Define the 8 corners of a unit box centered at origin
+    # This creates a canonical box that will be rotated and translated
+    # NuScenes convention: X=forward(length), Y=left(width), Z=up(height)
+    # Vehicle front is in +X direction (length direction)
     corners = np.array([
-        # Bottom face (z = -h/2)
-        [-l/2, -w/2, -h/2],  # 0: back-right
-        [-l/2, +w/2, -h/2],  # 1: back-left  
-        [+l/2, +w/2, -h/2],  # 2: front-left
-        [+l/2, -w/2, -h/2],  # 3: front-right
-        # Top face (z = +h/2)
-        [-l/2, -w/2, +h/2],  # 4: back-right-top
-        [-l/2, +w/2, +h/2],  # 5: back-left-top
-        [+l/2, +w/2, +h/2],  # 6: front-left-top
-        [+l/2, -w/2, +h/2]   # 7: front-right-top
+        # Bottom face (z = -height/2) - ground level
+        [-width/2, -length/2, -height/2],  # 0: left-back-bottom
+        [+width/2, -length/2, -height/2],  # 1: right-back-bottom
+        [+width/2, +length/2, -height/2],  # 2: right-front-bottom (vehicle front)
+        [-width/2, +length/2, -height/2],  # 3: left-front-bottom (vehicle front)
+        # Top face (z = +height/2) - roof level
+        [-width/2, -length/2, +height/2],  # 4: left-back-top
+        [+width/2, -length/2, +height/2],  # 5: right-back-top
+        [+width/2, +length/2, +height/2],  # 6: right-front-top (vehicle front)
+        [-width/2, +length/2, +height/2],  # 7: left-front-top (vehicle front)
     ])
     
-    # Apply rotation using quaternion
-    rotation_matrix = quaternion_to_rotation_matrix(rotation)
-    corners_rotated = np.dot(corners, rotation_matrix.T)
+    # Apply rotation: R @ corners.T gives correct rotation
+    # Matrix multiplication order is critical: rotation_matrix @ points
+    # This transforms from local box coordinates to world coordinates
+    corners_rotated = (rotation_matrix @ corners.T).T
     
-    # Translate to center position
+    # Translate to final world position by adding center coordinates
+    # This moves the rotated box from origin to its final position
     corners_world = corners_rotated + center
     
     return corners_world
@@ -692,23 +811,52 @@ def get_3d_box_corners(center, size, rotation):
 def project_3d_box_to_2d(center_3d, size_3d, rotation_3d, cam_translation, cam_rotation, camera_intrinsic, ego_translation, ego_rotation, debug=False):
     """
     Project 3D bounding box to 2D image coordinates using NuScenes coordinate system conventions.
-    Based on official NuScenes devkit implementation.
+    
+    This function performs the complete transformation pipeline from global 3D coordinates to 2D image pixels:
+    1. Generate 8 corner points of the 3D bounding box in global coordinates
+    2. Transform from global coordinate system to ego vehicle coordinate system
+    3. Transform from ego vehicle coordinate system to camera coordinate system  
+    4. Project 3D camera coordinates to 2D image coordinates using camera intrinsics
+    
+    Coordinate System Conventions (NuScenes):
+    - Global: Right-handed coordinate system, Z-axis points up
+    - Ego Vehicle: X-forward, Y-left, Z-up (relative to vehicle orientation)
+    - Camera: X-right, Y-down, Z-forward (standard computer vision convention)
+    
+    Transformation Chain:
+    Global → Ego Vehicle → Camera → Image
     
     Args:
-        center_3d: [x, y, z] center of 3D box in global coordinates
-        size_3d: [width, length, height] dimensions of 3D box
-        rotation_3d: quaternion [w, x, y, z] rotation of 3D box
-        cam_translation: [x, y, z] camera translation relative to ego vehicle
+        center_3d: [x, y, z] center of 3D box in global coordinates (meters)
+        size_3d: [width, length, height] dimensions of 3D box (meters)
+        rotation_3d: quaternion [w, x, y, z] rotation of 3D box in global coordinates
+        cam_translation: [x, y, z] camera translation relative to ego vehicle (meters)
         cam_rotation: quaternion [w, x, y, z] camera rotation relative to ego vehicle
-        camera_intrinsic: 3x3 camera intrinsic matrix
-        ego_translation: [x, y, z] ego vehicle translation in global coordinates
+        camera_intrinsic: 3x3 camera intrinsic matrix (focal lengths and principal point)
+        ego_translation: [x, y, z] ego vehicle translation in global coordinates (meters)
         ego_rotation: quaternion [w, x, y, z] ego vehicle rotation in global coordinates
-        debug: whether to print debug information
+        debug: whether to print detailed transformation debug information
     
     Returns:
-        8x2 array of 2D corner coordinates, or None if projection fails
+        tuple: (corners_2d, corners_cam_3xN) where:
+            - corners_2d: 8x2 array of 2D corner coordinates in image pixels
+            - corners_cam_3xN: 3x8 array of 3D corners in camera coordinates (for depth checking)
+            Returns (None, None) if projection fails
+            
+    Example:
+        >>> corners_2d, corners_3d = project_3d_box_to_2d(
+        ...     center_3d=[10.0, 5.0, 1.5],
+        ...     size_3d=[2.0, 4.5, 1.8], 
+        ...     rotation_3d=[1.0, 0.0, 0.0, 0.1],
+        ...     cam_translation=[1.5, 0.0, 1.8],
+        ...     cam_rotation=[0.5, -0.5, 0.5, -0.5],
+        ...     camera_intrinsic=np.array([[1266.4, 0, 816.3], [0, 1266.4, 491.5], [0, 0, 1]]),
+        ...     ego_translation=[100.0, 200.0, 0.0],
+        ...     ego_rotation=[0.9, 0.0, 0.0, 0.4]
+        ... )
     """
     try:
+        # Print debug information if requested
         if debug:
             print(f"DEBUG: Box center_3d: {center_3d}")
             print(f"DEBUG: Box size_3d: {size_3d}")
@@ -718,7 +866,8 @@ def project_3d_box_to_2d(center_3d, size_3d, rotation_3d, cam_translation, cam_r
             print(f"DEBUG: Cam translation: {cam_translation}")
             print(f"DEBUG: Cam rotation: {cam_rotation}")
         
-        # Get 3D box corners in global coordinates
+        # STEP 1: Generate 8 corner points of the 3D bounding box in global coordinates
+        # This creates the fundamental geometry of the bounding box
         corners_3d_global = get_3d_box_corners(center_3d, size_3d, rotation_3d)
         
         if debug:
@@ -726,13 +875,18 @@ def project_3d_box_to_2d(center_3d, size_3d, rotation_3d, cam_translation, cam_r
             for i, corner in enumerate(corners_3d_global):
                 print(f"  Corner {i}: {corner}")
         
-        # Step 1: Transform from global to ego vehicle coordinate system
-        # Use NuScenes transform_matrix function
+        # STEP 2: Transform from global coordinate system to ego vehicle coordinate system
+        # This accounts for the ego vehicle's position and orientation in the world
+        # Use inverse transformation to go from global to ego coordinates
         global_to_ego = transform_matrix(ego_translation, ego_rotation, inverse=True)
+        
+        # Convert 3D points to homogeneous coordinates (add 1 as 4th dimension)
         corners_3d_global_homogeneous = np.ones((corners_3d_global.shape[0], 4))
         corners_3d_global_homogeneous[:, :3] = corners_3d_global
+        
+        # Apply transformation matrix: T_ego_global * P_global = P_ego
         corners_ego_homogeneous = np.dot(global_to_ego, corners_3d_global_homogeneous.T)
-        corners_ego = corners_ego_homogeneous[:3, :].T
+        corners_ego = corners_ego_homogeneous[:3, :].T  # Extract 3D coordinates
         
         if debug:
             print(f"DEBUG: Global to ego transform matrix:")
@@ -741,13 +895,18 @@ def project_3d_box_to_2d(center_3d, size_3d, rotation_3d, cam_translation, cam_r
             for i, corner in enumerate(corners_ego):
                 print(f"  Corner {i}: {corner}")
         
-        # Step 2: Transform from ego to camera coordinate system
-        # Use NuScenes transform_matrix function
+        # STEP 3: Transform from ego vehicle coordinate system to camera coordinate system
+        # This accounts for the camera's position and orientation relative to the ego vehicle
+        # Use inverse transformation to go from ego to camera coordinates
         ego_to_cam = transform_matrix(cam_translation, cam_rotation, inverse=True)
+        
+        # Convert ego coordinates to homogeneous coordinates
         corners_ego_homogeneous = np.ones((corners_ego.shape[0], 4))
         corners_ego_homogeneous[:, :3] = corners_ego
+        
+        # Apply transformation matrix: T_cam_ego * P_ego = P_cam
         corners_cam_homogeneous = np.dot(ego_to_cam, corners_ego_homogeneous.T)
-        corners_cam = corners_cam_homogeneous[:3, :].T
+        corners_cam = corners_cam_homogeneous[:3, :].T  # Extract 3D coordinates
         
         if debug:
             print(f"DEBUG: Ego to cam transform matrix:")
@@ -756,32 +915,33 @@ def project_3d_box_to_2d(center_3d, size_3d, rotation_3d, cam_translation, cam_r
             for i, corner in enumerate(corners_cam):
                 print(f"  Corner {i}: {corner}")
         
-        # Step 3: Project to image coordinates using NuScenes view_points function
-        # Check if any points are behind the camera (z <= 0)
+        # STEP 4: Project 3D camera coordinates to 2D image coordinates
+        # Check depth values - points behind camera (z <= 0) cannot be properly projected
         depths = corners_cam[:, 2]
         if np.any(depths <= 0):
             if debug:
                 print(f"DEBUG: Some points behind camera, depths: {depths}")
                 behind_camera = depths <= 0
                 print(f"DEBUG: Points behind camera: {np.where(behind_camera)[0]}")
-            # Still continue with projection but mark as potentially invalid
+            # Continue with projection but results may be invalid for behind-camera points
         
-        # Use NuScenes view_points function for projection
-        # Convert corners to 3xN format (required by view_points)
-        corners_cam_3xN = corners_cam.T  # Shape: (3, N)
+        # Convert corners to 3xN format as required by view_points function
+        corners_cam_3xN = corners_cam.T  # Shape: (3, N) where N=8 corners
         
-        # Project using view_points function
+        # Apply camera intrinsic matrix to project 3D points to 2D image coordinates
+        # This handles perspective projection: (X, Y, Z) → (u, v) where u = fx*X/Z + cx, v = fy*Y/Z + cy
         corners_2d_3xN = view_points(corners_cam_3xN, camera_intrinsic, normalize=True)
         
-        # Convert back to Nx2 format
-        corners_2d = corners_2d_3xN[:2, :].T  # Shape: (N, 2)
+        # Convert back to Nx2 format for easier handling
+        corners_2d = corners_2d_3xN[:2, :].T  # Shape: (N, 2) - extract u,v coordinates
         
         if debug:
             print(f"DEBUG: Final 2D corners:")
             for i, corner in enumerate(corners_2d):
                 print(f"  Corner {i}: {corner}")
         
-        # Return both 2D corners and 3D corners in camera coordinates for visibility check
+        # Return both 2D image coordinates and 3D camera coordinates
+        # 3D camera coordinates are useful for visibility and depth checking
         return corners_2d, corners_cam_3xN  # Return as Nx2 array and 3xN array
         
     except Exception as e:
@@ -1126,6 +1286,80 @@ def draw_3d_box_2d(ax, corners_2d, category_name="", color='red', linewidth=2, i
     return edges_drawn
 
 
+def get_lidar_calibration_info(sample_data: Dict, calibrated_sensors: List[Dict], sensors: List[Dict]) -> Optional[Dict]:
+    """获取LiDAR传感器的标定信息"""
+    
+    # 找到对应的calibrated_sensor
+    calibrated_sensor = None
+    for cs in calibrated_sensors:
+        if cs['token'] == sample_data['calibrated_sensor_token']:
+            calibrated_sensor = cs
+            break
+    
+    if not calibrated_sensor:
+        print(f"❌ 未找到calibrated_sensor")
+        return None
+    
+    # 找到对应的sensor
+    sensor = None
+    for s in sensors:
+        if s['token'] == calibrated_sensor['sensor_token']:
+            sensor = s
+            break
+    
+    if not sensor:
+        print(f"❌ 未找到sensor")
+        return None
+    
+    print(f"✅ 找到传感器: {sensor['channel']}")
+    print(f"   标定信息: translation={calibrated_sensor['translation']}")
+    print(f"   标定信息: rotation={calibrated_sensor['rotation']}")
+    
+    return {
+        'sensor_channel': sensor['channel'],
+        'translation': np.array(calibrated_sensor['translation']),
+        'rotation': np.array(calibrated_sensor['rotation']),
+        'camera_intrinsic': calibrated_sensor.get('camera_intrinsic', None)
+    }
+
+def transform_lidar_to_ego(points: np.ndarray, lidar_calibration: Dict) -> np.ndarray:
+    """将LiDAR点云从传感器坐标系变换到ego坐标系"""
+    
+    if lidar_calibration is None:
+        print("⚠️  没有LiDAR标定信息，假设点云已在ego坐标系")
+        return points
+    
+    print(f"🔄 将LiDAR点云从传感器坐标系变换到ego坐标系...")
+    
+    # 创建从LiDAR传感器到ego的变换矩阵
+    lidar_to_ego_transform = transform_matrix(
+        lidar_calibration['translation'], 
+        lidar_calibration['rotation']
+    )
+    
+    print(f"   LiDAR到ego变换矩阵:")
+    print(f"   {lidar_to_ego_transform}")
+    
+    # 变换点云
+    points_transformed = points.copy()
+    if len(points) > 0:
+        # 转换为齐次坐标
+        points_homogeneous = np.column_stack([points[:, :3], np.ones(len(points))])
+        
+        # 应用变换
+        points_ego = points_homogeneous @ lidar_to_ego_transform.T
+        points_transformed[:, :3] = points_ego[:, :3]
+        
+        print(f"   变换了 {len(points)} 个点")
+        print(f"   原始点云范围: X[{points[:, 0].min():.2f}, {points[:, 0].max():.2f}], "
+              f"Y[{points[:, 1].min():.2f}, {points[:, 1].max():.2f}], "
+              f"Z[{points[:, 2].min():.2f}, {points[:, 2].max():.2f}]")
+        print(f"   变换后范围: X[{points_transformed[:, 0].min():.2f}, {points_transformed[:, 0].max():.2f}], "
+              f"Y[{points_transformed[:, 1].min():.2f}, {points_transformed[:, 1].max():.2f}], "
+              f"Z[{points_transformed[:, 2].min():.2f}, {points_transformed[:, 2].max():.2f}]")
+    
+    return points_transformed
+
 def load_lidar_points(lidar_path: str) -> np.ndarray:
     """
     Load LiDAR point cloud from .pcd.bin file (NuScenes format).
@@ -1162,8 +1396,9 @@ def load_lidar_points(lidar_path: str) -> np.ndarray:
 
 
 def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categories: List[Dict], 
-                             instances: List[Dict], output_path: str = None, ego_translation: np.ndarray = None, 
-                             ego_rotation: np.ndarray = None) -> None:
+                              instances: List[Dict], output_path: str = None, ego_translation: np.ndarray = None, 
+                              ego_rotation: np.ndarray = None, transform_points: bool = False,
+                              lidar_calibration: Dict = None) -> None:
     """
     Create interactive 3D visualization of LiDAR point cloud with 3D bounding boxes using Open3D.
     
@@ -1176,56 +1411,139 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
         ego_translation: Ego vehicle translation for coordinate transformation
         ego_rotation: Ego vehicle rotation for coordinate transformation
     """
-    try:
-        import open3d as o3d
-    except ImportError:
-        print("Error: Open3D not installed. Please install with: pip install open3d")
+    if not OPEN3D_AVAILABLE:
+        print("Open3D not available. Using matplotlib fallback for 3D visualization.")
+        # Fallback to matplotlib 3D visualization
+        visualize_lidar_3d(points, annotations, categories, instances, output_path)
         return
     
     # Create Open3D point cloud
     pcd = o3d.geometry.PointCloud()
     
-    if len(points) > 0:
-        # Use only x, y, z coordinates
-        pcd.points = o3d.utility.Vector3dVector(points[:, :3])
+    print(f"Input points shape: {points.shape if len(points) > 0 else 'Empty'}")
+    print(f"Number of points: {len(points)}")
+    
+    # 步骤1: 将LiDAR点云从传感器坐标系变换到ego坐标系
+    if lidar_calibration is not None:
+        print("🔄 应用LiDAR传感器标定，将点云从传感器坐标系变换到ego坐标系")
+        points_ego = transform_lidar_to_ego(points, lidar_calibration)
+    else:
+        print("⚠️  没有LiDAR标定信息，假设点云已在ego坐标系")
+        points_ego = points.copy()
+    
+    if len(points_ego) > 0:
+        # 现在点云已经在ego坐标系中，不需要额外的坐标变换
+        points_transformed = points_ego.copy()
         
-        # Color points by intensity (normalize to 0-1 range)
+        print("ℹ️  点云已在ego坐标系中，无需额外变换")
+        if ego_translation is not None and ego_rotation is not None:
+            print(f"   Ego pose: translation={ego_translation}, rotation={ego_rotation}")
+        
+        # Use only x, y, z coordinates and ensure they are valid
+        xyz_points = points_transformed[:, :3]
+        
+        # Filter out invalid points (NaN, inf, or extremely large values)
+        valid_mask = np.isfinite(xyz_points).all(axis=1)
+        valid_mask &= (np.abs(xyz_points) < 1000).all(axis=1)  # Remove extremely large values
+        
+        if np.sum(valid_mask) == 0:
+            print("Warning: No valid points after filtering!")
+            return
+        
+        xyz_points = xyz_points[valid_mask]
+        points_transformed = points_transformed[valid_mask]
+        
+        print(f"Using {len(xyz_points)} valid points out of {len(points)} total points")
+        
+        # Create point cloud with valid points
+        pcd.points = o3d.utility.Vector3dVector(xyz_points)
+        print(f"Point cloud created with {len(pcd.points)} points")
+        
+        # Color points based on height with improved color mapping
+        import matplotlib.pyplot as plt
+        
+        # Always use height-based coloring for better visualization
+        heights = xyz_points[:, 2]  # Z coordinate
+        
+        # Use percentile-based normalization for better color distribution
+        height_min = np.percentile(heights, 5)   # 5th percentile
+        height_max = np.percentile(heights, 95)  # 95th percentile
+        
+        print(f"Height range: {height_min:.2f} to {height_max:.2f}")
+        
+        # Clamp heights to the percentile range to avoid outliers
+        heights_clamped = np.clip(heights, height_min, height_max)
+        
+        # Normalize heights to 0-1 range
+        heights_norm = (heights_clamped - height_min) / (height_max - height_min + 1e-8)
+        
+        # Use a more vibrant colormap for height visualization
+        # 'turbo' provides excellent contrast across different heights
+        colors = plt.cm.turbo(heights_norm)[:, :3]  # Remove alpha channel
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+        
+        # If intensity is available, blend it with height coloring for richer visualization
         if points.shape[1] > 3:
-            intensities = points[:, 3]
-            # Normalize intensities to 0-1 range
+            intensities = points_transformed[:, 3]
+            # Normalize intensities
             intensities_norm = (intensities - intensities.min()) / (intensities.max() - intensities.min() + 1e-8)
-            # Create colormap (blue to red based on intensity)
-            colors = np.zeros((len(points), 3))
-            colors[:, 0] = intensities_norm  # Red channel
-            colors[:, 2] = 1 - intensities_norm  # Blue channel (inverse)
-            pcd.colors = o3d.utility.Vector3dVector(colors)
+            
+            # Blend height and intensity colors (70% height, 30% intensity)
+            intensity_colors = plt.cm.plasma(intensities_norm)[:, :3]
+            blended_colors = 0.7 * colors + 0.3 * intensity_colors
+            pcd.colors = o3d.utility.Vector3dVector(blended_colors)
+            print("Applied blended height and intensity coloring")
         else:
-            # Default gray color if no intensity
-            pcd.paint_uniform_color([0.5, 0.5, 0.5])
+            print("Applied height-based coloring")
+    else:
+        print("Warning: No LiDAR points to visualize!")
     
     # Create list to store all geometries
-    geometries = [pcd]
+    geometries = []
+    
+    # Always add point cloud if we have points, even if it appears empty
+    if len(points_ego) > 0:
+        # Ensure the point cloud has been properly created
+        if not hasattr(pcd, 'points') or len(pcd.points) == 0:
+            # Recreate point cloud if it wasn't created properly
+            pcd.points = o3d.utility.Vector3dVector(points_ego[:, :3])
+            print(f"Recreated point cloud with {len(pcd.points)} points")
+        
+        geometries.append(pcd)
+        print(f"Added point cloud to geometries list with {len(pcd.points)} points")
+        
+        # Debug: Print point cloud bounds
+        if len(pcd.points) > 0:
+            points_array = np.asarray(pcd.points)
+            print(f"Point cloud bounds: X[{points_array[:, 0].min():.2f}, {points_array[:, 0].max():.2f}], "
+                  f"Y[{points_array[:, 1].min():.2f}, {points_array[:, 1].max():.2f}], "
+                  f"Z[{points_array[:, 2].min():.2f}, {points_array[:, 2].max():.2f}]")
+    else:
+        print(f"Skipping empty point cloud (no input points)")
     
     # Define category colors
+    # Enhanced category colors for better visualization
     category_colors = {
         'car': [1.0, 0.0, 0.0],           # Red
-        'truck': [0.0, 1.0, 0.0],         # Green  
+        'truck': [0.0, 0.8, 0.0],         # Green  
         'bus': [0.0, 0.0, 1.0],           # Blue
         'trailer': [1.0, 1.0, 0.0],       # Yellow
         'construction_vehicle': [1.0, 0.5, 0.0],  # Orange
         'pedestrian': [1.0, 0.0, 1.0],    # Magenta
-        'motorcycle': [0.5, 1.0, 0.0],    # Light Green
-        'bicycle': [0.0, 1.0, 1.0],       # Cyan
-        'traffic_cone': [1.0, 1.0, 0.5],  # Light Yellow
-        'barrier': [0.5, 0.0, 1.0]        # Purple
+        'motorcycle': [0.0, 1.0, 1.0],    # Cyan
+        'bicycle': [0.5, 0.0, 1.0],       # Purple
+        'traffic_cone': [1.0, 0.5, 0.5],  # Pink
+        'barrier': [0.5, 0.5, 0.5],       # Gray
+        'animal': [0.8, 0.4, 0.2],        # Brown
+        'default': [0.7, 0.7, 0.7]        # Light Gray
     }
     
     # Draw 3D bounding boxes
     boxes_drawn = 0
     for ann in annotations:
         # Get category name and color
-        category_name = "Unknown"
-        color = [0.7, 0.7, 0.7]  # Default gray
+        category_name = "unknown"
+        color = category_colors.get('default', [0.7, 0.7, 0.7])  # Use default from color map
         
         if ann.get('instance_token'):
             instance = next((inst for inst in instances if inst['token'] == ann['instance_token']), None)
@@ -1233,7 +1551,15 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
                 category = next((cat for cat in categories if cat['token'] == instance['category_token']), None)
                 if category:
                     category_name = category['name']
-                    color = category_colors.get(category_name.lower(), [0.7, 0.7, 0.7])
+                    # Try to match category name with color mapping
+                    # Handle both full names and simplified names
+                    for color_key in category_colors.keys():
+                        if color_key in category_name.lower() or category_name.lower() in color_key:
+                            color = category_colors[color_key]
+                            break
+                    else:
+                        # If no match found, use default
+                        color = category_colors.get('default', [0.7, 0.7, 0.7])
         
         # Get 3D box parameters
         center = np.array(ann['translation'])
@@ -1241,30 +1567,81 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
         rotation = np.array(ann['rotation'])  # quaternion [w, x, y, z]
         
         # Apply coordinate transformation if ego pose is provided
+        # NuScenes annotations are in global coordinates, need to transform to ego coordinates
         if ego_translation is not None and ego_rotation is not None:
-            # Create transformation matrix from global to ego coordinates
-            ego_rot_matrix = quaternion_to_rotation_matrix(ego_rotation)
+            print(f"    Transforming box from global to ego coordinates...")
+            print(f"      Original center (global): {center}")
             
-            # Transform center from global to ego coordinates
-            center_ego = ego_rot_matrix.T @ (center - ego_translation)
-            center = center_ego
+            # Use scipy for improved transformation accuracy
+            try:
+                from scipy.spatial.transform import Rotation as R
+                
+                # Transform box center from global to ego coordinates
+                center_relative = center - ego_translation
+                ego_rot_scipy = R.from_quat([ego_rotation[1], ego_rotation[2], ego_rotation[3], ego_rotation[0]])
+                center = ego_rot_scipy.inv().apply(center_relative)
+                
+                # Transform rotation from global to ego frame
+                box_rot_scipy = R.from_quat([rotation[1], rotation[2], rotation[3], rotation[0]])
+                relative_rot_scipy = ego_rot_scipy.inv() * box_rot_scipy
+                rot_matrix = relative_rot_scipy.as_matrix()
+                
+                print(f"      Transformed center (ego): {center}")
+                
+            except ImportError:
+                # Fallback to original method if scipy not available
+                # Create transformation matrix from global to ego coordinates
+                global_to_ego_transform = transform_matrix(ego_translation, ego_rotation, inverse=True)
+                
+                # Transform box center from global to ego coordinates
+                center_homogeneous = np.append(center, 1)  # Convert to homogeneous coordinates
+                center_ego = global_to_ego_transform @ center_homogeneous
+                center = center_ego[:3]  # Extract x, y, z
+                
+                print(f"      Transformed center (ego): {center}")
+                
+                # Transform rotation from global to ego frame
+                # The box rotation is relative to global frame, need to make it relative to ego frame
+                ego_rot_matrix = quaternion_to_rotation_matrix(ego_rotation)
+                box_rot_matrix = quaternion_to_rotation_matrix(rotation)
+                
+                # Combine rotations: R_ego_to_global^T * R_box_global = R_box_ego
+                relative_rot_matrix = ego_rot_matrix.T @ box_rot_matrix
+                
+                # Update the rotation matrix for the bounding box
+                rot_matrix = relative_rot_matrix
+        
+        # Create Open3D oriented bounding box with correct rotation handling
+        # Convert quaternion to rotation matrix (only if not already transformed)
+        if ego_translation is None or ego_rotation is None:
+            # Use improved get_3d_box_corners function which handles scipy internally
+            corners = get_3d_box_corners(center, size, rotation)
             
-            # Transform rotation (this is simplified - for full accuracy, quaternion composition should be used)
-            # For now, we'll keep the original rotation as it's relative to the object
+            # For Open3D, we need the rotation matrix
+            try:
+                from scipy.spatial.transform import Rotation as R
+                q_scipy = [rotation[1], rotation[2], rotation[3], rotation[0]]
+                rot_scipy = R.from_quat(q_scipy)
+                rot_matrix = rot_scipy.as_matrix()
+            except ImportError:
+                rot_matrix = quaternion_to_rotation_matrix(rotation)
         
-        # Create Open3D oriented bounding box
-        # Convert quaternion to rotation matrix
-        rot_matrix = quaternion_to_rotation_matrix(rotation)
+        # Create wireframe lines manually using the correct corners
+        # This ensures the box orientation matches our get_3d_box_corners function
+        corners_3d = get_3d_box_corners(center, size, rotation)
         
-        # Create oriented bounding box
-        obb = o3d.geometry.OrientedBoundingBox()
-        obb.center = center
-        obb.extent = size
-        obb.R = rot_matrix
-        obb.color = color
+        # Define the 12 edges of the bounding box
+        # Bottom face edges (corners 0,1,2,3)
+        edges = [
+            [0, 1], [1, 2], [2, 3], [3, 0],  # Bottom face
+            [4, 5], [5, 6], [6, 7], [7, 4],  # Top face
+            [0, 4], [1, 5], [2, 6], [3, 7]   # Vertical edges
+        ]
         
-        # Create wireframe lines for the bounding box
-        bbox_lines = o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
+        # Create LineSet manually
+        bbox_lines = o3d.geometry.LineSet()
+        bbox_lines.points = o3d.utility.Vector3dVector(corners_3d)
+        bbox_lines.lines = o3d.utility.Vector2iVector(edges)
         bbox_lines.paint_uniform_color(color)
         
         geometries.append(bbox_lines)
@@ -1274,7 +1651,7 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
     coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=2.0, origin=[0, 0, 0])
     geometries.append(coord_frame)
     
-    print(f"Created Open3D visualization with {len(points)} points and {boxes_drawn} bounding boxes")
+    print(f"Created Open3D visualization with {len(points_ego)} points and {boxes_drawn} bounding boxes")
     
     # Try interactive visualization first, fallback to headless mode
     try:
@@ -1284,15 +1661,37 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
         test_vis.destroy_window()
         
         if can_create_window:
-            # Interactive visualization
-            o3d.visualization.draw_geometries(
-                geometries,
+            # Interactive visualization with optimized view
+            vis = o3d.visualization.Visualizer()
+            vis.create_window(
                 window_name=f"LiDAR Point Cloud with 3D Bounding Boxes ({boxes_drawn} boxes)",
                 width=1200,
                 height=800,
                 left=50,
                 top=50
             )
+            
+            # Add all geometries
+            for geom in geometries:
+                vis.add_geometry(geom)
+            
+            # Set optimal view parameters for LiDAR visualization
+            ctr = vis.get_view_control()
+            if ctr is not None:
+                # Set camera position for bird's eye view with slight angle
+                ctr.set_front([0.3, 0.3, -0.9])  # Slightly angled from above
+                ctr.set_lookat([0.0, 0.0, 0.0])  # Look at origin
+                ctr.set_up([0.0, 0.0, 1.0])      # Z-axis up
+                ctr.set_zoom(0.4)                # Appropriate zoom level
+                
+                # Alternative: Set view from side angle for better depth perception
+                # ctr.set_front([0.7, 0.0, -0.7])  # 45-degree angle from side
+                # ctr.set_lookat([0.0, 0.0, 0.0])
+                # ctr.set_up([0.0, 0.0, 1.0])
+                # ctr.set_zoom(0.3)
+            
+            vis.run()
+            vis.destroy_window()
         else:
             print("  Interactive visualization not available (headless environment)")
     except Exception as e:
@@ -1301,27 +1700,55 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
     # Save screenshot if output path is provided
     if output_path:
         try:
-            # Create a visualizer for saving
+            # Create a visualizer for saving with proper rendering
             vis = o3d.visualization.Visualizer()
-            window_created = vis.create_window(window_name="LiDAR 3D Visualization", width=1200, height=800, visible=False)
+            window_created = vis.create_window(
+                window_name="LiDAR 3D Visualization", 
+                width=1200, 
+                height=800, 
+                visible=True  # Make window visible for proper screenshot
+            )
             
             if window_created:
+                # Add all geometries
                 for geom in geometries:
                     vis.add_geometry(geom)
                 
-                # Set view parameters for better visualization
+                # Set optimal view parameters for screenshot
                 ctr = vis.get_view_control()
-                if ctr is not None:  # Check if view control is available
-                    ctr.set_front([0.0, 0.0, -1.0])
-                    ctr.set_lookat([0.0, 0.0, 0.0])
-                    ctr.set_up([0.0, -1.0, 0.0])
-                    ctr.set_zoom(0.3)
+                if ctr is not None:
+                    # Set camera position for bird's eye view with slight angle
+                    ctr.set_front([0.3, 0.3, -0.9])  # Slightly angled from above
+                    ctr.set_lookat([0.0, 0.0, 0.0])  # Look at origin
+                    ctr.set_up([0.0, 0.0, 1.0])      # Z-axis up
+                    ctr.set_zoom(0.4)                # Appropriate zoom level
                 
-                vis.capture_screen_image(output_path)
+                # Update renderer multiple times to ensure proper rendering
+                for _ in range(5):
+                    vis.poll_events()
+                    vis.update_renderer()
+                
+                # Capture the screen with proper timing
+                import time
+                time.sleep(0.5)  # Longer delay to ensure rendering is complete
+                
+                success = vis.capture_screen_image(output_path)
+                
+                # Keep window open briefly to ensure screenshot is captured
+                time.sleep(0.2)
                 vis.destroy_window()
-                print(f"  Open3D 3D visualization saved to: {output_path}")
+                
+                if success:
+                    print(f"  Open3D 3D visualization saved to: {output_path}")
+                else:
+                    print(f"  Warning: Failed to capture screenshot to {output_path}")
+                    # Alternative: save point cloud data as PLY file
+                    ply_path = output_path.replace('.png', '.ply').replace('.jpg', '.ply')
+                    if len(geometries) > 0 and hasattr(geometries[0], 'points'):
+                        o3d.io.write_point_cloud(ply_path, geometries[0])
+                        print(f"  Point cloud saved as PLY file: {ply_path}")
             else:
-                print(f"  Warning: Cannot create window for screenshot in headless environment")
+                print(f"  Warning: Cannot create window for screenshot")
                 # Alternative: save point cloud data as PLY file
                 ply_path = output_path.replace('.png', '.ply').replace('.jpg', '.ply')
                 if len(geometries) > 0 and hasattr(geometries[0], 'points'):
@@ -1330,6 +1757,14 @@ def visualize_lidar_3d_open3d(points: np.ndarray, annotations: List[Dict], categ
         except Exception as e:
             print(f"  Warning: Failed to save Open3D screenshot: {e}")
             print(f"  This is normal in headless environments.")
+            # Alternative: save point cloud data as PLY file
+            try:
+                ply_path = output_path.replace('.png', '.ply').replace('.jpg', '.ply')
+                if len(geometries) > 0 and hasattr(geometries[0], 'points'):
+                    o3d.io.write_point_cloud(ply_path, geometries[0])
+                    print(f"  Point cloud saved as PLY file: {ply_path}")
+            except Exception as ply_error:
+                print(f"  Failed to save PLY file: {ply_error}")
 
 
 def visualize_lidar_3d(points: np.ndarray, annotations: List[Dict], categories: List[Dict], 
@@ -2425,14 +2860,19 @@ def create_additional_visualizations(sample_data, sample_anns, categories, insta
         # Get ego pose from LiDAR data for coordinate transformation
         lidar_ego_pose_token = lidar_data['ego_pose_token']
         ego_pose = next((ep for ep in ego_poses if ep['token'] == lidar_ego_pose_token), None)
+        
+        # 获取LiDAR传感器标定信息
+        lidar_calibration = get_lidar_calibration_info(lidar_data, calibrated_sensors, sensors)
+        
         if ego_pose:
             ego_translation = np.array(ego_pose['translation'])
             ego_rotation = np.array(ego_pose['rotation'])
             visualize_lidar_3d_open3d(lidar_points, sample_anns, categories, instances, 
-                                    lidar_3d_open3d_output, ego_translation, ego_rotation)
+                                    lidar_3d_open3d_output, ego_translation, ego_rotation, 
+                                    transform_points=False, lidar_calibration=lidar_calibration)
         else:
             visualize_lidar_3d_open3d(lidar_points, sample_anns, categories, instances, 
-                                    lidar_3d_open3d_output)
+                                    lidar_3d_open3d_output, lidar_calibration=lidar_calibration)
         
         # 3. BEV visualization with 2D boxes
         print(f"  🗺️  Creating Bird's Eye View...")
@@ -2885,7 +3325,7 @@ def main():
                        help="Directory containing NuScenes zip files")
     parser.add_argument("--extract_dir", default=DEFAULT_NUSCENES_DIR, 
                        help="Directory to extract files to (will become NuScenes root)")
-    parser.add_argument("--output_dir", default="output",
+    parser.add_argument("--output_dir", default="output/nuscenes",
                        help="Directory to save visualizations (default: <nuscenes_root>/visualizations)")
     
     args = parser.parse_args()

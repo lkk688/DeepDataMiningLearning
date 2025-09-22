@@ -40,11 +40,11 @@ ROOT_DIR = os.path.dirname(BASE_DIR)
 sys.path.append(ROOT_DIR)
 
 try:
-    import mayavi.mlab as mlab
-    MAYAVI_AVAILABLE = True
+    import open3d as o3d
+    OPEN3D_AVAILABLE = True
 except ImportError:
-    print("Warning: Mayavi not available. 3D LiDAR visualization will be disabled.")
-    MAYAVI_AVAILABLE = False
+    print("Warning: Open3D not available. 3D LiDAR visualization will be disabled.")
+    OPEN3D_AVAILABLE = False
 
 try:
     from DeepDataMiningLearning.detection3d.CalibrationUtils import WaymoCalibration, KittiCalibration, rotx, roty, rotz
@@ -161,10 +161,18 @@ INSTANCE3D_ColorCV2 = {
     'Person_sitting': (144, 238, 144), 'Tram': (255, 192, 203), 'Misc': (128, 128, 128)
 }
 
+# Enhanced category colors for better visualization (matching nuScenes style)
 INSTANCE3D_Color = {
-    'Car': (0, 1, 0), 'Pedestrian': (0, 1, 1), 'Sign': (1, 1, 0), 
-    'Cyclist': (0.5, 0.5, 0.3), 'Van': (1, 0.65, 0), 'Truck': (0.65, 0.16, 0.16),
-    'Person_sitting': (0.56, 0.93, 0.56), 'Tram': (1, 0.75, 0.8), 'Misc': (0.5, 0.5, 0.5)
+    'Car': [1.0, 0.0, 0.0],           # Red
+    'Truck': [0.0, 0.8, 0.0],         # Green  
+    'Van': [0.0, 0.0, 1.0],           # Blue
+    'Pedestrian': [1.0, 0.0, 1.0],    # Magenta
+    'Person_sitting': [1.0, 0.0, 1.0], # Magenta (same as pedestrian)
+    'Cyclist': [0.0, 1.0, 1.0],       # Cyan
+    'Tram': [1.0, 1.0, 0.0],          # Yellow
+    'Misc': [0.5, 0.5, 0.5],          # Gray
+    'Sign': [1.0, 0.5, 0.0],          # Orange
+    'default': [0.7, 0.7, 0.7]        # Light Gray
 }
 
 # Camera mappings for different datasets
@@ -622,11 +630,18 @@ def load_velo_scan(velo_filename, dtype=np.float32, n_vec=4, filterpoints=False,
     
     return scan
 
-def compute_box_3d(obj, dataset='kitti'):
+def compute_box_3d(obj, dataset='kitti', transform_to_lidar=False, calib=None):
     """ Takes an object3D and returns 3D bounding box corners
+        Args:
+            obj: Object3d instance with bounding box parameters
+            dataset: Dataset type ('kitti' or other)
+            transform_to_lidar: If True, transform from camera to LiDAR coordinates
+            calib: Calibration object for coordinate transformation
         Returns:
-            corners_3d: (8,3) array in rect camera coord.
+            corners_3d: (8,3) array in rect camera coord or LiDAR coord if transformed
     """
+    print(f"DEBUG: compute_box_3d called with obj.type={obj.type}, transform_to_lidar={transform_to_lidar}, calib={calib is not None}")
+    
     if not CALIB_UTILS_AVAILABLE:
         print("Warning: CalibrationUtils not available, using basic rotation")
         # Basic rotation matrix around Y axis
@@ -639,22 +654,59 @@ def compute_box_3d(obj, dataset='kitti'):
         R = roty(obj.ry)
 
     # 3d bounding box dimensions
-    l = obj.l  # length
-    w = obj.w  # width
-    h = obj.h  # height
+    l = obj.l  # length (x-direction in object coordinate)
+    w = obj.w  # width (z-direction in object coordinate)  
+    h = obj.h  # height (y-direction in object coordinate)
+    
+    print(f"DEBUG: Box dimensions - l={l}, w={w}, h={h}, ry={obj.ry}")
+    print(f"DEBUG: Box center - t={obj.t}")
 
-    # 3d bounding box corners
+    # 3d bounding box corners in object coordinate system
+    # KITTI uses a specific corner ordering convention
     x_corners = [l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2]
-    y_corners = [0, 0, 0, 0, -h, -h, -h, -h]
+    y_corners = [0, 0, 0, 0, -h, -h, -h, -h]  # y=0 is bottom, y=-h is top
     z_corners = [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2]
 
-    # rotate and translate 3d bounding box
+    # Rotate corners by rotation_y around Y-axis
     corners_3d = np.dot(R, np.vstack([x_corners, y_corners, z_corners]))
+    
+    # Translate to object center position (in camera coordinates)
     corners_3d[0, :] = corners_3d[0, :] + obj.t[0]
     corners_3d[1, :] = corners_3d[1, :] + obj.t[1]
     corners_3d[2, :] = corners_3d[2, :] + obj.t[2]
     
-    return np.transpose(corners_3d)
+    # Convert to (8, 3) array
+    corners_3d = np.transpose(corners_3d)
+    print(f"DEBUG: Camera coordinates corners shape: {corners_3d.shape}")
+    print(f"DEBUG: Camera coordinates corners sample: {corners_3d[0]}")
+    
+    # Transform from camera coordinates to LiDAR coordinates if requested
+    if transform_to_lidar and calib is not None:
+        print("DEBUG: Attempting coordinate transformation to LiDAR")
+        try:
+            # Transform from camera rect coordinates to LiDAR coordinates
+            # This is crucial for proper alignment with LiDAR point clouds
+            if hasattr(calib, 'rect_to_lidar'):
+                print("DEBUG: Using calib.rect_to_lidar method")
+                corners_3d = calib.rect_to_lidar(corners_3d)
+                print(f"DEBUG: LiDAR coordinates corners sample: {corners_3d[0]}")
+            elif hasattr(calib, 'C2V'):
+                print("DEBUG: Using calib.C2V method")
+                # Alternative transformation method
+                corners_3d_homo = np.hstack([corners_3d, np.ones((corners_3d.shape[0], 1))])
+                corners_lidar = np.dot(calib.C2V, corners_3d_homo.T).T
+                corners_3d = corners_lidar[:, :3]
+                print(f"DEBUG: LiDAR coordinates corners sample: {corners_3d[0]}")
+            else:
+                print("Warning: No suitable coordinate transformation method found in calibration")
+                print(f"DEBUG: Available calib methods: {[attr for attr in dir(calib) if not attr.startswith('_')]}")
+        except Exception as e:
+            print(f"Warning: Failed to transform to LiDAR coordinates: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    print(f"DEBUG: Final corners_3d shape: {corners_3d.shape}")
+    return corners_3d
 
 def pltshow_image_with_boxes(cameraid, img, objects, layout, cmap=None):
     """Show image with 2D bounding boxes"""
@@ -832,9 +884,9 @@ def plotlidar_to_image(pts_3d, img, calib, cameraid=0):
         print(f"Error projecting LiDAR to image: {e}")
 
 def pltlidar_with3dbox(pc_velo, object3dlabels, calib, point_cloud_range):
-    """Visualize LiDAR point cloud with 3D bounding boxes using Mayavi"""
-    if not MAYAVI_AVAILABLE or not MAYAVI_UTILS_AVAILABLE:
-        print("Warning: Mayavi or visualization utils not available, skipping 3D LiDAR visualization")
+    """Visualize LiDAR point cloud with 3D bounding boxes using Open3D"""
+    if not OPEN3D_AVAILABLE:
+        print("Warning: Open3D not available, skipping 3D LiDAR visualization")
         return
         
     if pc_velo is None:
@@ -842,36 +894,293 @@ def pltlidar_with3dbox(pc_velo, object3dlabels, calib, point_cloud_range):
         return
 
     try:
-        fig = mlab.figure(
-            figure=None, bgcolor=(0, 0, 0), fgcolor=None, engine=None, size=(1000, 500)
-        )
+        # Add debugging information for point cloud analysis
+        print(f"🔍 原始点云统计:")
+        print(f"   点数: {len(pc_velo)}")
+        print(f"   X范围: [{pc_velo[:, 0].min():.2f}, {pc_velo[:, 0].max():.2f}]")
+        print(f"   Y范围: [{pc_velo[:, 1].min():.2f}, {pc_velo[:, 1].max():.2f}]")
+        print(f"   Z范围: [{pc_velo[:, 2].min():.2f}, {pc_velo[:, 2].max():.2f}]")
         
-        draw_lidar(pc_velo, fig=fig, pts_scale=5, pc_label=False, 
-                  color_by_intensity=True, drawregion=True, 
-                  point_cloud_range=point_cloud_range)
+        # Filter points within range with more flexible criteria
+        if point_cloud_range is not None:
+            print(f"📏 使用过滤范围: {point_cloud_range}")
+            mask = ((pc_velo[:, 0] >= point_cloud_range[0]) & (pc_velo[:, 0] <= point_cloud_range[3]) &
+                   (pc_velo[:, 1] >= point_cloud_range[1]) & (pc_velo[:, 1] <= point_cloud_range[4]) &
+                   (pc_velo[:, 2] >= point_cloud_range[2]) & (pc_velo[:, 2] <= point_cloud_range[5]))
+            filtered_points = pc_velo[mask]
+            print(f"✂️  过滤后点云统计:")
+            print(f"   剩余点数: {len(filtered_points)} ({len(filtered_points)/len(pc_velo)*100:.1f}%)")
+            
+            # If too many points are filtered out, use a more permissive range
+            if len(filtered_points) < len(pc_velo) * 0.1:  # Less than 10% points remain
+                print(f"⚠️  警告: 过滤后点云过少，使用更宽松的范围")
+                # Use adaptive range based on actual data
+                x_range = pc_velo[:, 0].max() - pc_velo[:, 0].min()
+                y_range = pc_velo[:, 1].max() - pc_velo[:, 1].min()
+                z_range = pc_velo[:, 2].max() - pc_velo[:, 2].min()
+                
+                adaptive_range = [
+                    pc_velo[:, 0].min() - x_range * 0.1,  # x_min
+                    pc_velo[:, 1].min() - y_range * 0.1,  # y_min  
+                    pc_velo[:, 2].min() - z_range * 0.1,  # z_min
+                    pc_velo[:, 0].max() + x_range * 0.1,  # x_max
+                    pc_velo[:, 1].max() + y_range * 0.1,  # y_max
+                    pc_velo[:, 2].max() + z_range * 0.1   # z_max
+                ]
+                print(f"🔄 自适应范围: {[f'{x:.1f}' for x in adaptive_range]}")
+                
+                mask = ((pc_velo[:, 0] >= adaptive_range[0]) & (pc_velo[:, 0] <= adaptive_range[3]) &
+                       (pc_velo[:, 1] >= adaptive_range[1]) & (pc_velo[:, 1] <= adaptive_range[4]) &
+                       (pc_velo[:, 2] >= adaptive_range[2]) & (pc_velo[:, 2] <= adaptive_range[5]))
+                filtered_points = pc_velo[mask]
+                print(f"✅ 自适应过滤后点数: {len(filtered_points)} ({len(filtered_points)/len(pc_velo)*100:.1f}%)")
+            
+            pc_velo = filtered_points
+        else:
+            print("📏 未使用点云范围过滤")
+        
+        # Create Open3D point cloud with scaling for better visibility
+        pcd = o3d.geometry.PointCloud()
+        
+        # Scale up the point cloud coordinates to make it appear larger
+        scale_factor = 5.0  # Make point cloud 5x larger
+        scaled_points = pc_velo[:, :3] * scale_factor
+        pcd.points = o3d.utility.Vector3dVector(scaled_points)
+        
+        print(f"🔍 缩放后点云统计 (缩放因子: {scale_factor}x):")
+        print(f"   X范围: [{scaled_points[:, 0].min():.2f}, {scaled_points[:, 0].max():.2f}]")
+        print(f"   Y范围: [{scaled_points[:, 1].min():.2f}, {scaled_points[:, 1].max():.2f}]")
+        print(f"   Z范围: [{scaled_points[:, 2].min():.2f}, {scaled_points[:, 2].max():.2f}]")
+        print(f"   平均距离: {np.mean(np.linalg.norm(scaled_points, axis=1)):.1f}")
+        print(f"✅ 成功创建Open3D点云对象，包含 {len(pcd.points)} 个点")
+        
+        # Color points based on height (Z coordinate) and intensity if available
+        if pc_velo.shape[1] >= 4:  # Has intensity
+            # Normalize intensity values
+            intensity = pc_velo[:, 3]
+            intensity_norm = (intensity - intensity.min()) / (intensity.max() - intensity.min() + 1e-8)
+            
+            # Normalize height values
+            height = pc_velo[:, 2]
+            height_norm = (height - height.min()) / (height.max() - height.min() + 1e-8)
+            
+            # Combine height and intensity for coloring
+            # Use height as primary color component, intensity as secondary
+            colors = np.zeros((len(pc_velo), 3))
+            colors[:, 0] = height_norm  # Red channel for height
+            colors[:, 1] = intensity_norm  # Green channel for intensity
+            colors[:, 2] = 1.0 - height_norm  # Blue channel (inverse height)
+            
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+        else:
+            # Color only by height
+            height = pc_velo[:, 2]
+            height_norm = (height - height.min()) / (height.max() - height.min() + 1e-8)
+            
+            # Create colormap similar to 'spectral'
+            colors = np.zeros((len(pc_velo), 3))
+            colors[:, 0] = height_norm  # Red increases with height
+            colors[:, 1] = 1.0 - np.abs(height_norm - 0.5) * 2  # Green peaks at middle height
+            colors[:, 2] = 1.0 - height_norm  # Blue decreases with height
+            
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+
+        # Create visualization objects list
+        vis_objects = [pcd]
 
         # Draw 3D bounding boxes
         ref_cameraid = 0
+        valid_boxes_count = 0
+        filtered_boxes_count = 0
+        
         for obj in object3dlabels:
+            # Filter out DontCare objects and objects with invalid coordinates
             if obj.type == "DontCare":
+                filtered_boxes_count += 1
+                print(f"🚫 过滤DontCare边界框: {obj.type}")
+                continue
+            
+            # Check for invalid object dimensions and positions
+            if (obj.l <= 0 or obj.w <= 0 or obj.h <= 0 or 
+                abs(obj.t[0]) > 500 or abs(obj.t[1]) > 500 or abs(obj.t[2]) > 500):
+                filtered_boxes_count += 1
+                print(f"🚫 过滤异常边界框: {obj.type}, 位置={obj.t}, 尺寸=[{obj.l}, {obj.w}, {obj.h}]")
                 continue
                 
             try:
+                # Compute 3D box corners in camera rectified coordinates
                 box3d_pts_3d = compute_box_3d(obj)
-                box3d_pts_3d_velo = calib.project_rect_to_velo(box3d_pts_3d, ref_cameraid)
                 
-                if obj.type in INSTANCE3D_Color.keys():
-                    colorlabel = INSTANCE3D_Color[obj.type]
-                    draw_gt_boxes3d([box3d_pts_3d_velo], fig=fig, color=colorlabel, label=obj.type)
+                if box3d_pts_3d is None:
+                    filtered_boxes_count += 1
+                    print(f"🚫 边界框计算失败: {obj.type}")
+                    continue
+                
+                # Additional validation of computed corners
+                if (np.any(np.isnan(box3d_pts_3d)) or np.any(np.isinf(box3d_pts_3d)) or
+                    np.any(np.abs(box3d_pts_3d) > 1000)):
+                    filtered_boxes_count += 1
+                    print(f"🚫 过滤异常边界框坐标: {obj.type}, 最大坐标={np.max(np.abs(box3d_pts_3d))}")
+                    continue
+                
+                # Scale the bounding box to match the scaled point cloud
+                box3d_pts_3d_scaled = box3d_pts_3d * scale_factor
+                
+                # Transform from camera rectified coordinates to velodyne coordinates
+                # Use the EXACT same transformation as the working 2D projection code
+                if hasattr(calib, 'project_rect_to_velo') and CALIB_UTILS_AVAILABLE:
+                    # Use proper KITTI calibration transformation (same as working 2D code)
+                    box3d_pts_3d_velo = calib.project_rect_to_velo(box3d_pts_3d_scaled, ref_cameraid)
                 else:
-                    print(f"Unknown object type for 3D visualization: {obj.type}")
+                    print(f"Error: Cannot perform coordinate transformation - calibration method not available")
+                    print(f"Calib type: {type(calib)}, has project_rect_to_velo: {hasattr(calib, 'project_rect_to_velo')}")
+                    print(f"CALIB_UTILS_AVAILABLE: {CALIB_UTILS_AVAILABLE}")
+                    continue
+                
+                # Validate transformed points
+                if (np.any(np.isnan(box3d_pts_3d_velo)) or np.any(np.isinf(box3d_pts_3d_velo)) or
+                    np.any(np.abs(box3d_pts_3d_velo) > 1000)):
+                    filtered_boxes_count += 1
+                    print(f"🚫 过滤变换后异常坐标: {obj.type}, 最大坐标={np.max(np.abs(box3d_pts_3d_velo))}")
+                    continue
+                
+                # Create Open3D bounding box
+                bbox_lines = create_open3d_bbox(box3d_pts_3d_velo)
+                
+                # Set color based on object type
+                if obj.type in INSTANCE3D_Color.keys():
+                    color = INSTANCE3D_Color[obj.type]
+                    bbox_lines.paint_uniform_color(color)
+                    print(f"✅ 添加{obj.type}边界框，颜色={color}")
+                else:
+                    bbox_lines.paint_uniform_color(INSTANCE3D_Color['default'])
+                    print(f"✅ 添加未知类型边界框: {obj.type}，使用默认颜色")
+                
+                vis_objects.append(bbox_lines)
+                valid_boxes_count += 1
+                
             except Exception as e:
-                print(f"Error drawing 3D box for {obj.type}: {e}")
+                filtered_boxes_count += 1
+                print(f"❌ 边界框处理错误 {obj.type}: {e}")
+                print(f"   对象详情 - 类型: {obj.type}, 位置: {obj.t}, 尺寸: [{obj.l}, {obj.w}, {obj.h}], 旋转: {obj.ry}")
+        
+        print(f"📊 边界框统计: 有效={valid_boxes_count}, 过滤={filtered_boxes_count}, 总计={len(object3dlabels)}")
 
-        mlab.show()
+        # Enhanced visualization with better initial view and point size
+        vis = o3d.visualization.Visualizer()
+        vis.create_window("3D LiDAR Visualization", width=1600, height=1200)  # Much larger window
+        
+        # Add all geometries
+        for obj in vis_objects:
+            vis.add_geometry(obj)
+        
+        # Get render options and set much larger point size
+        render_option = vis.get_render_option()
+        render_option.point_size = 8.0  # Much larger point size for better visibility
+        render_option.line_width = 5.0  # Thicker line width for bounding boxes
+        render_option.background_color = np.array([0.05, 0.05, 0.05])  # Very dark background
+        render_option.show_coordinate_frame = True  # Show coordinate axes
+        
+        # Enable additional rendering features for better visibility
+        render_option.point_show_normal = False
+        render_option.mesh_show_wireframe = False
+        render_option.mesh_show_back_face = True
+        
+        # Set better initial camera view
+        view_control = vis.get_view_control()
+        
+        # Calculate scene bounds for better initial view
+        if len(pc_velo) > 0:
+            # Get point cloud bounds from SCALED coordinates
+            scaled_points = pc_velo[:, :3] * scale_factor
+            min_bound = np.min(scaled_points, axis=0)
+            max_bound = np.max(scaled_points, axis=0)
+            center = (min_bound + max_bound) / 2
+            scene_size = np.linalg.norm(max_bound - min_bound)
+            
+            # Calculate valid bounding box bounds (excluding DontCare boxes)
+            valid_box_bounds = []
+            for obj in vis_objects[1:]:  # Skip point cloud, only check bounding boxes
+                if hasattr(obj, 'get_axis_aligned_bounding_box'):
+                    bbox = obj.get_axis_aligned_bounding_box()
+                    bbox_center = bbox.get_center()
+                    # Only include reasonable bounding boxes (not extreme coordinates)
+                    if np.all(np.abs(bbox_center) < 500):
+                        valid_box_bounds.append(bbox_center)
+            
+            # Adjust scene center if we have valid bounding boxes
+            if valid_box_bounds:
+                valid_box_bounds = np.array(valid_box_bounds)
+                box_center = np.mean(valid_box_bounds, axis=0)
+                # Blend point cloud center with valid box center
+                center = 0.7 * center + 0.3 * box_center
+                print(f"🎯 调整场景中心，融合边界框信息")
+            
+            print(f"📐 场景统计 (缩放后):")
+            print(f"   中心点: [{center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}]")
+            print(f"   场景大小: {scene_size:.1f}")
+            print(f"   边界: X[{min_bound[0]:.1f}, {max_bound[0]:.1f}], Y[{min_bound[1]:.1f}, {max_bound[1]:.1f}], Z[{min_bound[2]:.1f}, {max_bound[2]:.1f}]")
+            
+            # Robust camera positioning that works for all point cloud sizes
+            if scene_size > 0:
+                # Calculate optimal camera distance based on scene size
+                optimal_distance = max(scene_size * 0.6, 50.0)  # Ensure minimum distance
+                
+                # Position camera at optimal viewing angle
+                camera_pos = center + np.array([0, -optimal_distance * 0.7, optimal_distance * 0.4])
+                
+                # Set view parameters for maximum visibility
+                view_control.set_lookat(center)  # Look at scene center
+                view_control.set_up([0.0, 0.0, 1.0])  # Z-axis up
+                view_control.set_front([0.0, -0.7, -0.7])  # Look down at angle
+                
+                # Adaptive zoom based on scene size and valid boxes
+                if scene_size < 100:
+                    zoom_factor = 0.05  # Very close for small scenes
+                elif scene_size < 500:
+                    zoom_factor = 0.1   # Medium zoom
+                else:
+                    zoom_factor = 0.2   # Further back for large scenes
+                
+                # Adjust zoom if we filtered many boxes (likely had extreme coordinates)
+                if filtered_boxes_count > valid_boxes_count:
+                    zoom_factor *= 0.8  # Zoom in a bit more
+                    print(f"🔍 检测到异常边界框，调整缩放因子")
+                
+                view_control.set_zoom(zoom_factor)
+                print(f"🎥 相机设置: 距离={optimal_distance:.1f}, 缩放={zoom_factor}")
+                
+                # Additional camera adjustment to ensure visibility
+                view_control.camera_local_translate(0, 0, -scene_size * 0.5)
+            else:
+                print("⚠️  警告: 场景大小为0，使用默认相机设置")
+                # Fallback for edge cases
+                view_control.set_zoom(0.1)
+        else:
+            print("⚠️  警告: 无点云数据，使用默认相机设置")
+            view_control.set_zoom(0.1)
+        
+        # Run the visualization
+        vis.run()
+        vis.destroy_window()
         
     except Exception as e:
         print(f"Error in 3D LiDAR visualization: {e}")
+
+def create_open3d_bbox(corners):
+    """Create Open3D LineSet for 3D bounding box from 8 corners"""
+    # Define the 12 edges of a 3D box
+    lines = [
+        [0, 1], [1, 2], [2, 3], [3, 0],  # top face
+        [4, 5], [5, 6], [6, 7], [7, 4],  # bottom face
+        [0, 4], [1, 5], [2, 6], [3, 7]   # vertical edges
+    ]
+    
+    line_set = o3d.geometry.LineSet()
+    line_set.points = o3d.utility.Vector3dVector(corners)
+    line_set.lines = o3d.utility.Vector2iVector(lines)
+    
+    return line_set
 
 def datasetinfo(datasetname):
     """Get dataset-specific information"""
@@ -1174,7 +1483,7 @@ def visualize_kitti_sample(kitti_root: str, sample_idx: int, dataset_type: str =
         else:
             object3dlabels = objectlabels[0] if objectlabels else []
         
-        if MAYAVI_AVAILABLE and pc_velo is not None:
+        if OPEN3D_AVAILABLE and pc_velo is not None:
             pltlidar_with3dbox(pc_velo, object3dlabels, calib, point_cloud_range)
         
         print("✅ Visualization completed successfully")
@@ -1212,34 +1521,26 @@ def project_to_image(pts_3d, P):
         print(f"Error in project_to_image: {e}")
         return None
 
-def get_3d_box_corners(obj):
-    """Get 3D bounding box corners for an object"""
+def get_3d_box_corners(obj, transform_to_lidar=False, calib=None):
+    """Get 3D bounding box corners for an object
+    Args:
+        obj: Object3d instance
+        transform_to_lidar: If True, transform from camera to LiDAR coordinates
+        calib: Calibration object for coordinate transformation
+    Returns:
+        corners_3d: (8,3) array of corner coordinates
+    """
+    print(f"DEBUG: get_3d_box_corners called for {obj.type}")
     try:
-        return compute_box_3d(obj)
+        corners = compute_box_3d(obj, transform_to_lidar=transform_to_lidar, calib=calib)
+        print(f"DEBUG: get_3d_box_corners returning corners with shape: {corners.shape if corners is not None else 'None'}")
+        return corners
     except Exception as e:
         print(f"Error getting 3D box corners: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
-def draw_3d_box_mayavi(mlab, corners):
-    """Draw 3D bounding box using Mayavi"""
-    try:
-        if corners is None or len(corners) != 8:
-            return
-            
-        # Define the 12 edges of a 3D box
-        edges = [
-            [0, 1], [1, 2], [2, 3], [3, 0],  # top face
-            [4, 5], [5, 6], [6, 7], [7, 4],  # bottom face
-            [0, 4], [1, 5], [2, 6], [3, 7]   # vertical edges
-        ]
-        
-        # Draw each edge
-        for edge in edges:
-            p1, p2 = corners[edge[0]], corners[edge[1]]
-            mlab.plot3d([p1[0], p2[0]], [p1[1], p2[1]], [p1[2], p2[2]], 
-                       color=(1, 0, 0), tube_radius=0.1)
-    except Exception as e:
-        print(f"Error drawing 3D box with Mayavi: {e}")
 
 def visualize_kitti_sample_2d(root_path, sample_idx, dataset_type='auto', output_dir='output'):
     """Visualize KITTI sample with 2D bounding boxes"""
@@ -1504,6 +1805,7 @@ def visualize_kitti_sample_lidar(root_path, sample_idx, dataset_type='auto', out
             return direct_path
         
         velodyne_path = find_file_path(root_path, 'velodyne', f'{sample_idx:06d}.bin')
+        calib_path = find_file_path(root_path, 'calib', f'{sample_idx:06d}.txt')
         if dataset_type == 'waymokitti':
             label_path = find_file_path(root_path, 'label_0', f'{sample_idx:06d}.txt')
         else:
@@ -1517,41 +1819,119 @@ def visualize_kitti_sample_lidar(root_path, sample_idx, dataset_type='auto', out
         # Load point cloud
         points = np.fromfile(velodyne_path, dtype=np.float32).reshape(-1, 4)
         
-        # Try to use Mayavi for 3D visualization if available
-        try:
-            import mayavi.mlab as mlab
+        # Try to use Open3D for 3D visualization if available
+        if OPEN3D_AVAILABLE:
             
-            # Create 3D plot
-            fig = mlab.figure(bgcolor=(0, 0, 0), size=(800, 600))
+            # Create Open3D point cloud
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points[:, :3])
             
-            # Plot points colored by height
-            pts = mlab.points3d(points[:, 0], points[:, 1], points[:, 2], 
-                               points[:, 2], mode='point', colormap='spectral', 
-                               scale_factor=0.1)
+            # Color points based on height and intensity (improved nuScenes-style coloring)
+            import matplotlib.pyplot as plt
             
-            # Load and visualize 3D bounding boxes if available
+            # Always use height-based coloring for better visualization
+            heights = points[:, 2]  # Z coordinate
+            
+            # Use percentile-based normalization for better color distribution
+            height_min = np.percentile(heights, 5)   # 5th percentile
+            height_max = np.percentile(heights, 95)  # 95th percentile
+            
+            print(f"Height range: {height_min:.2f} to {height_max:.2f}")
+            
+            # Clamp heights to the percentile range to avoid outliers
+            heights_clamped = np.clip(heights, height_min, height_max)
+            
+            # Normalize heights to 0-1 range
+            heights_norm = (heights_clamped - height_min) / (height_max - height_min + 1e-8)
+            
+            # Use a more vibrant colormap for height visualization
+            # 'turbo' provides excellent contrast across different heights
+            colors = plt.cm.turbo(heights_norm)[:, :3]  # Remove alpha channel
+            
+            # If intensity is available, blend it with height coloring for richer visualization
+            if points.shape[1] >= 4:  # Has intensity
+                intensities = points[:, 3]
+                # Normalize intensities
+                intensities_norm = (intensities - intensities.min()) / (intensities.max() - intensities.min() + 1e-8)
+                
+                # Blend height and intensity colors (70% height, 30% intensity)
+                intensity_colors = plt.cm.plasma(intensities_norm)[:, :3]
+                blended_colors = 0.7 * colors + 0.3 * intensity_colors
+                pcd.colors = o3d.utility.Vector3dVector(blended_colors)
+                print("Applied blended height and intensity coloring")
+            else:
+                pcd.colors = o3d.utility.Vector3dVector(colors)
+                print("Applied height-based coloring")
+
+            # Create visualization objects list
+            vis_objects = [pcd]
+            
+            # Load and visualize 3D bounding boxes if available (enhanced nuScenes-style)
             if os.path.exists(label_path):
                 objects = read_label(label_path)
+                print(f"Found {len(objects)} 3D objects to visualize")
+                
                 for obj in objects:
-                    if hasattr(obj, 'box3d') and obj.box3d is not None:
-                        # Draw 3D bounding box in point cloud
-                        corners = get_3d_box_corners(obj)
+                    # Filter out DontCare objects early to prevent processing
+                    if obj.type == "DontCare":
+                        print(f"🚫 跳过DontCare边界框: {obj.type}")
+                        continue
+                    
+                    # Check for invalid object dimensions and positions
+                    if (obj.l <= 0 or obj.w <= 0 or obj.h <= 0 or 
+                        abs(obj.t[0]) > 500 or abs(obj.t[1]) > 500 or abs(obj.t[2]) > 500):
+                        print(f"🚫 跳过异常边界框: {obj.type}, 位置={obj.t}, 尺寸=[{obj.l}, {obj.w}, {obj.h}]")
+                        continue
+                    
+                    try:
+                        # Load calibration for coordinate transformation
+                        calib = None
+                        if CALIB_UTILS_AVAILABLE and os.path.exists(calib_path):
+                            try:
+                                calib = KittiCalibration(calib_path)
+                            except Exception as e:
+                                print(f"Warning: Could not load calibration: {e}")
+                        
+                        # Get 3D box corners with LiDAR coordinate transformation
+                        corners = get_3d_box_corners(obj, transform_to_lidar=True, calib=calib)
                         if corners is not None:
-                            # Draw box edges
-                            draw_3d_box_mayavi(mlab, corners)
+                            # Create Open3D bounding box
+                            bbox_lines = create_open3d_bbox(corners)
+                            
+                            # Use enhanced color scheme with fallback
+                            if obj.type in INSTANCE3D_Color:
+                                color = INSTANCE3D_Color[obj.type]
+                            else:
+                                color = INSTANCE3D_Color['default']
+                                print(f"Using default color for unknown object type: {obj.type}")
+                            
+                            bbox_lines.paint_uniform_color(color)
+                            vis_objects.append(bbox_lines)
+                            
+                            # Debug: Print bounding box info
+                            print(f"Added {obj.type} bounding box with color {color} (transformed to LiDAR coordinates)")
+                            
+                    except Exception as e:
+                        print(f"Error drawing 3D box for {obj.type}: {e}")
+                        continue
+            else:
+                print(f"No label file found at: {label_path}")
             
-            mlab.title(f'Sample {sample_idx} - LiDAR Point Cloud')
-            
-            # Save visualization
-            os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f'sample_{sample_idx}_lidar.png')
-            mlab.savefig(output_path)
-            mlab.show()
-            
-            print(f"✅ LiDAR visualization saved to: {output_path}")
-            return True
-            
-        except ImportError:
+            # Try to visualize with Open3D
+            try:
+                o3d.visualization.draw_geometries(vis_objects, 
+                                                window_name=f"Sample {sample_idx} - LiDAR Point Cloud",
+                                                width=800, height=600)
+                print(f"✅ LiDAR 3D visualization completed")
+                return True
+            except Exception as e:
+                print(f"⚠️  Open3D visualization failed: {e}")
+                print("🔄 Falling back to matplotlib 2D visualization with 3D boxes...")
+                
+                # Fallback to matplotlib with 3D boxes
+                from visualize_lidar_with_boxes_2d import visualize_lidar_with_boxes_2d
+                return visualize_lidar_with_boxes_2d(points, vis_objects, sample_idx, output_dir)
+        else:
             # Fallback to matplotlib 2D visualization
             import matplotlib.pyplot as plt
             
@@ -1951,11 +2331,28 @@ def main():
             try:
                 sample_idx = int(input("Enter sample index to visualize (default 0): ") or "0")
                 dataset_type = input("Enter dataset type (kitti/waymokitti/auto, default: auto): ").strip() or "auto"
+                
+                # Enhanced LiDAR visualization with comprehensive features
+                print(f"🚀 Creating comprehensive LiDAR visualization for sample {sample_idx}...")
+                print(f"📊 Dataset type: {dataset_type}")
+                print(f"📁 Output directory: {args.output_dir}")
+                
                 success = visualize_kitti_sample_lidar(args.root_path, sample_idx, dataset_type, args.output_dir)
-                if not success:
-                    print("❌ LiDAR visualization failed")
+                
+                if success:
+                    print("✅ LiDAR visualization completed successfully!")
+                    print("📈 Features included:")
+                    print("   • 3D point cloud with height-intensity blended coloring")
+                    print("   • Enhanced 3D bounding boxes with category-specific colors")
+                    print("   • Interactive Open3D visualization")
+                    print("   • Fallback 2D BEV and side view projections")
+                else:
+                    print("❌ LiDAR visualization failed - check data paths and format")
+                    
             except ValueError:
                 print("❌ Invalid sample index. Please enter a valid integer.")
+            except Exception as e:
+                print(f"❌ Unexpected error during LiDAR visualization: {str(e)}")
                 
         elif choice == '9':
             try:

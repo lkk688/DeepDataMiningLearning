@@ -50,7 +50,7 @@ def get_args_parser(add_help=True):
         "--dataset",
         default="yolo", 
         type=str,
-        help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
+        help="dataset name. Use coco for object detection, kitti for KITTI dataset, kitti_yolo for KITTI with YOLO format, yolo for YOLO dataset",
     )
     parser.add_argument("--model", default="yolov8", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
     parser.add_argument("--scale", default="x", type=str, help="model scale: n, x") 
@@ -150,8 +150,10 @@ def get_args_parser(add_help=True):
 def main(args):
     if args.backend.lower() == "tv_tensor" and not args.use_v2:
         raise ValueError("Use --use-v2 if you want to use the tv_tensor backend.")
-    # if args.dataset not in ("coco", "coco_kp"):
-    #     raise ValueError(f"Dataset should be coco or coco_kp, got {args.dataset}")
+    # Support for multiple dataset types including KITTI
+    supported_datasets = ["coco", "coco_kp", "kitti", "kitti_yolo", "yolo", "waymococo"]
+    if args.dataset not in supported_datasets:
+        raise ValueError(f"Dataset should be one of {supported_datasets}, got {args.dataset}")
     if "keypoint" in args.model and args.dataset != "coco_kp":
         raise ValueError("Oops, if you want Keypoint detection, set --dataset coco_kp")
     if args.dataset == "coco_kp" and args.use_v2:
@@ -177,18 +179,20 @@ def main(args):
     if args.use_deterministic_algorithms:
         torch.use_deterministic_algorithms(True)
 
-    # Data loading code
+    # Data loading code with optimized settings for different datasets
     print("Loading data")
 
     dataset, num_classes = get_dataset(args.dataset, is_train=True, is_val=False, args=args) #get_dataset
     dataset_test, _ = get_dataset(args.dataset, is_train=False, is_val=True, args=args)
 
-    # split the dataset in train and test set
-    # indices = torch.randperm(len(dataset)).tolist()
-    # idxsplit=int(len(indices)*0.80)#159948
-    # dataset = torch.utils.data.Subset(dataset, indices[:idxsplit])
-    # dataset_test = torch.utils.data.Subset(dataset, indices[idxsplit+1:])
-    # dataset_test.transform = get_transform(is_train=False, args=args)
+    # Optimize batch size based on dataset type
+    if args.dataset in ["kitti", "kitti_yolo"]:
+        # KITTI typically has fewer samples, adjust batch size if needed
+        if args.batch_size > 32:
+            print(f"Warning: Large batch size ({args.batch_size}) for KITTI dataset. Consider reducing for better performance.")
+    
+    print(f"Dataset: {args.dataset}")
+    print(f"Number of classes: {num_classes}")
     print("train set len:", len(dataset))
     print("Test set len:", len(dataset_test))
 
@@ -200,15 +204,29 @@ def main(args):
         train_sampler = torch.utils.data.RandomSampler(dataset)
         test_sampler = torch.utils.data.SequentialSampler(dataset_test)
 
-    if args.aspect_ratio_group_factor >= 0:
-        group_ids = create_aspect_ratio_groups(dataset, k=args.aspect_ratio_group_factor)
-        train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
-    else:
+    # Optimize data loading for YOLO format datasets
+    if args.dataset in ["yolo", "kitti_yolo"]:
+        # For YOLO format, we can use simpler batch sampling
         train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size, drop_last=True)
+    else:
+        # Use aspect ratio grouping for other formats if enabled
+        if args.aspect_ratio_group_factor >= 0:
+            group_ids = create_aspect_ratio_groups(dataset, k=args.aspect_ratio_group_factor)
+            train_batch_sampler = GroupedBatchSampler(train_sampler, group_ids, args.batch_size)
+        else:
+            train_batch_sampler = torch.utils.data.BatchSampler(train_sampler, args.batch_size, drop_last=True)
 
     new_collate_fn = utils.mycollate_fn #utils.collate_fn
+    
+    # Optimize number of workers based on dataset type
+    num_workers = args.workers
+    if args.dataset in ["kitti", "kitti_yolo"] and num_workers > 2:
+        # KITTI dataset is smaller, reduce workers to avoid overhead
+        num_workers = min(2, args.workers)
+        print(f"Optimized num_workers to {num_workers} for {args.dataset} dataset")
+    
     data_loader = torch.utils.data.DataLoader(
-        dataset, batch_sampler=train_batch_sampler, num_workers=args.workers, collate_fn=new_collate_fn
+        dataset, batch_sampler=train_batch_sampler, num_workers=num_workers, collate_fn=new_collate_fn
     )
 
     data_loader_test = torch.utils.data.DataLoader(

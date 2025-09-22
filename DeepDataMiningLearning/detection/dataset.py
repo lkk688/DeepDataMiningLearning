@@ -153,6 +153,8 @@ def get_dataset(datasetname, is_train, is_val, args):
         ds, num_classes = get_cocodataset(is_train, is_val, args)
     elif datasetname.lower() == 'kitti':
         ds, num_classes = get_kittidataset(is_train, is_val, args)
+    elif datasetname.lower() == 'kitti_yolo':
+        ds, num_classes = get_kittiyolodataset(is_train, is_val, args)
     elif datasetname.lower() == 'waymococo':
         ds, num_classes = get_waymococodataset(is_train, is_val, args)
     elif datasetname.lower() == 'yolo':
@@ -199,6 +201,23 @@ def get_kittidataset(is_train, is_val, args):
     num_classes = dataset.numclass
     return dataset, num_classes
     #mykitti = datasets.Kitti(root=rootPath, train= True, transform = get_transform(is_train, args), target_transform = None, download = False)
+
+def get_kittiyolodataset(is_train, is_val, args):
+    """
+    Get KITTI dataset with YOLO format output
+    """
+    rootPath = args.data_path
+    
+    # Use simplified transforms for YOLO format since conversion happens in dataset
+    if is_val == True:
+        # No augmentation for validation
+        dataset = KittiDataset(rootPath, train=True, split='val', transform=None)
+    else:
+        # Training with augmentation - we'll handle this in the dataset itself
+        dataset = KittiDataset(rootPath, train=is_train, split='train', transform=None)
+    
+    num_classes = dataset.numclass
+    return dataset, num_classes
 
 def get_waymococodataset(is_train, is_val, args):
     rootPath=args.data_path

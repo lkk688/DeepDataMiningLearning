@@ -154,3 +154,4 @@ logs
 docs/source/autonomous_survey_slides.md
 tmp_*
 */tmp_*
+*.tex

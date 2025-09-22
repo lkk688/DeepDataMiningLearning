@@ -121,23 +121,13 @@ class KittiDataset(torch.utils.data.Dataset):
             target["iscrowd"] = iscrowd #torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
         return newtarget
 
-    def __getitem__(self, index: int) -> Tuple[Any, Any]:
+    def __getitem__(self, index: int) -> dict:
         """Get item at a given index.
 
         Args:
             index (int): Index
         Returns:
-            tuple: (image, target), where
-            target is a list of dictionaries with the following keys:
-
-            - type: str
-            - truncated: float
-            - occluded: int
-            - alpha: float
-            - bbox: float[4]
-            - dimensions: float[3]
-            - locations: float[3]
-            - rotation_y: float
+            dict: YOLO format dictionary with keys: img, bboxes, cls, batch_idx
 
         """
         
@@ -157,7 +147,77 @@ class KittiDataset(torch.utils.data.Dataset):
             target = dict(image_id=imageidx, annotations=target) #new changes, not used now
         if self.transform:
             image, target = self.transform(image, target)
-        return image, target
+        
+        # Convert to YOLO format
+        yolo_dict = self._convert_to_yolo_format(image, target, index)
+        return yolo_dict
+
+    def _convert_to_yolo_format(self, img, target, index):
+        """
+        Convert KITTI format to YOLO format
+        
+        Args:
+            img: PIL Image or tensor
+            target: dict with 'boxes' and 'labels'
+            index: sample index
+            
+        Returns:
+            dict: YOLO format dictionary
+        """
+        import torch
+        import numpy as np
+        from PIL import Image
+        
+        # Convert image to tensor if it's PIL Image
+        if isinstance(img, Image.Image):
+            img_array = np.array(img)
+            if len(img_array.shape) == 3:
+                img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).float() / 255.0
+            else:
+                img_tensor = torch.from_numpy(img_array).unsqueeze(0).float() / 255.0
+        else:
+            img_tensor = img
+            
+        # Get image dimensions
+        if len(img_tensor.shape) == 3:
+            _, img_h, img_w = img_tensor.shape
+        else:
+            img_h, img_w = img_tensor.shape
+            
+        # Convert bounding boxes to YOLO format (normalized xywh)
+        boxes = target.get('boxes', [])
+        labels = target.get('labels', [])
+        
+        if len(boxes) == 0:
+            # No objects in image
+            yolo_bboxes = torch.zeros((0, 4))
+            yolo_labels = torch.zeros((0,), dtype=torch.long)
+        else:
+            # Convert boxes from [x1, y1, x2, y2] to [x_center, y_center, width, height] normalized
+            boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            labels = torch.as_tensor(labels, dtype=torch.long)
+            
+            # Convert to center format and normalize
+            x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+            x_center = (x1 + x2) / 2.0 / img_w
+            y_center = (y1 + y2) / 2.0 / img_h
+            width = (x2 - x1) / img_w
+            height = (y2 - y1) / img_h
+            
+            yolo_bboxes = torch.stack([x_center, y_center, width, height], dim=1)
+            yolo_labels = labels
+            
+        # Create YOLO format dictionary
+        yolo_dict = {
+            'img': img_tensor,
+            'bboxes': yolo_bboxes,
+            'cls': yolo_labels,
+            'batch_idx': torch.tensor([index], dtype=torch.long),
+            'ori_shape': torch.tensor([img_h, img_w], dtype=torch.long),
+            'img_id': torch.tensor([index], dtype=torch.long)
+        }
+        
+        return yolo_dict
 
     def _parse_target(self, index: int) -> List:
         target = []
