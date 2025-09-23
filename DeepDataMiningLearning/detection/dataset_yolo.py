@@ -237,13 +237,13 @@ class YOLODataset(torch.utils.data.Dataset):
         assert not (self.use_segments and self.use_keypoints), 'Can not use both segments and keypoints.'
         #super().__init__(*args, **kwargs)
         self.fraction = 1 # a fraction of all image files
+        self.prefix = 'yolo'  # Set prefix before calling get_labels
         self.im_files = self.get_img_files(self.img_path) #all image files list
         self.labels = self.get_labels(Path(self.cache_path)) #list of dicts
         # if classes:
         #     self.single_cls = False
         #     self.update_labels(include_class=classes)  # single_cls and include_class
         self.ni = len(self.labels)  # number of images
-        self.prefix = 'yolo'
         self.rect = False
         self.augment = False
         self.stride =32

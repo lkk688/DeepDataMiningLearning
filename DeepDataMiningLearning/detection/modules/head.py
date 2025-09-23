@@ -351,7 +351,7 @@ class Detect(nn.Module):
         if self.training:
             return x
         elif self.dynamic or self.shape != shape:
-            self.anchors, self.strides = (x.transpose(0, 1) for x in make_anchors(x, self.stride, 0.5))
+            self.anchors, self.strides = make_anchors(x, self.stride, 0.5)
             self.shape = shape
 
         x_cat = torch.cat([xi.view(shape[0], self.no, -1) for xi in x], 2)
@@ -365,7 +365,7 @@ class Detect(nn.Module):
  
         #Dist2bbox Transform distance(ltrb) to box(xywh or xyxy)
             #self.dfl = DFL is integration
-        dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides
+        dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides.unsqueeze(0)
         #[1, 4, 6300] 4=64/reg_max(16)
 
         if self.export and self.format in ('tflite', 'edgetpu'):

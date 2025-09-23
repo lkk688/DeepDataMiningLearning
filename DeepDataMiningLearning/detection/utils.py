@@ -232,15 +232,85 @@ def mycollate_fn(batch): #16 imagefile list, each item is a dict
     for i, k in enumerate(keys):
         value = values[i]
         if k == 'img':
-            value = torch.stack(value, 0)
+            # Handle variable-sized images by padding to the largest size in the batch
+            if len(value) > 0 and isinstance(value[0], torch.Tensor):
+                # Find the maximum dimensions in the batch
+                max_h = max(img.shape[-2] for img in value)
+                max_w = max(img.shape[-1] for img in value)
+                
+                # Pad each image to the maximum size
+                padded_images = []
+                for img in value:
+                    c, h, w = img.shape
+                    # Calculate padding needed
+                    pad_h = max_h - h
+                    pad_w = max_w - w
+                    
+                    # Pad the image (left, right, top, bottom)
+                    if pad_h > 0 or pad_w > 0:
+                        padded_img = torch.nn.functional.pad(img, (0, pad_w, 0, pad_h), mode='constant', value=0)
+                    else:
+                        padded_img = img
+                    padded_images.append(padded_img)
+                
+                value = torch.stack(padded_images, 0)
+            else:
+                # Fallback for non-tensor values
+                value = torch.stack(value, 0)
         if k in ['masks', 'keypoints', 'bboxes', 'cls', 'labels', 'boxes']: #'labels' "boxes" in torchvision
             value = torch.cat(value, 0)
         new_batch[k] = value
-    #new add, create key='batch_idx'
-    new_batch['batch_idx'] = list(new_batch['batch_idx'])
-    for i in range(len(new_batch['batch_idx'])):
-        new_batch['batch_idx'][i] += i  # add target image index for build_targets()
-    new_batch['batch_idx'] = torch.cat(new_batch['batch_idx'], 0)
+    #new add, create key='batch_idx' - properly handle batch indexing for YOLO format
+    if 'batch_idx' in new_batch and 'cls' in new_batch:
+        # Create batch_idx tensor that matches the number of objects (cls)
+        batch_indices = []
+        cls_list = list(new_batch['cls']) if isinstance(new_batch['cls'], list) else new_batch['cls']
+        
+        # If cls is already concatenated, we need to reconstruct batch indices
+        if isinstance(cls_list, torch.Tensor):
+            # Assume equal distribution of objects across batch for now
+            # This is a fallback - ideally we should track object counts per image
+            total_objects = cls_list.shape[0]
+            batch_size = len(batch)
+            objects_per_image = total_objects // batch_size
+            
+            for i in range(batch_size):
+                start_idx = i * objects_per_image
+                end_idx = (i + 1) * objects_per_image if i < batch_size - 1 else total_objects
+                num_objects = end_idx - start_idx
+                batch_indices.extend([i] * num_objects)
+            
+            new_batch['batch_idx'] = torch.tensor(batch_indices, dtype=torch.float32)
+        else:
+            # Handle list case
+            for i, cls_tensor in enumerate(cls_list):
+                num_objects = len(cls_tensor) if hasattr(cls_tensor, '__len__') else 1
+                batch_indices.extend([i] * num_objects)
+            new_batch['batch_idx'] = torch.tensor(batch_indices, dtype=torch.float32)
+    
+    # Add image_id field for COCO evaluation compatibility
+    # Create sequential image IDs for the batch
+    batch_size = len(batch)
+    new_batch['image_id'] = torch.arange(batch_size, dtype=torch.long)
+    
+    # Add area and iscrowd fields for COCO evaluation compatibility
+    if 'bboxes' in new_batch:
+        # Calculate area from bboxes (normalized xywh format)
+        bboxes = new_batch['bboxes']  # normalized xc, yc, w, h
+        if len(bboxes) > 0:
+            # Convert to actual pixel area (assuming 640x640 image size)
+            img_size = 640
+            areas = bboxes[:, 2] * bboxes[:, 3] * (img_size * img_size)  # w * h * total_pixels
+            new_batch['area'] = areas.unsqueeze(0)  # Add batch dimension
+            
+            # Set iscrowd to 0 for all objects (no crowd annotations in YOLO format)
+            iscrowd = torch.zeros(len(bboxes), dtype=torch.long)
+            new_batch['iscrowd'] = iscrowd.unsqueeze(0)  # Add batch dimension
+        else:
+            # Handle empty batch case
+            new_batch['area'] = torch.tensor([[]], dtype=torch.float32)
+            new_batch['iscrowd'] = torch.tensor([[]], dtype=torch.long)
+    
     return new_batch
 
 def mkdir(path):

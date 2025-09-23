@@ -130,7 +130,7 @@ class YoloTransform(nn.Module):
         self.image_mean = image_mean
         self.image_std = image_std
         self.size_divisible = size_divisible
-        self.letterbox = LetterBox((640, 640), auto=True, stride=size_divisible) #only support cv2
+        self.letterbox = LetterBox((640, 640), auto=False, stride=size_divisible) #only support cv2
         #if auto is True, the size of the image is not square, if auto=False, the size of the image is square.
 
         self.device = device

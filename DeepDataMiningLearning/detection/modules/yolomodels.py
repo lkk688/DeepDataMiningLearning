@@ -1,26 +1,47 @@
 
-#ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
-import contextlib
-from copy import deepcopy
-from pathlib import Path
-import numpy as np
-import torch
-import torch.nn as nn
-import yaml
-import re
-from typing import Dict, List, Optional, Tuple, Union
+# YOLOv8 Detection Model Implementation
+# Reference: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
+# This module implements the complete YOLOv8 detection model architecture including:
+# - Model construction from YAML configuration
+# - Forward pass for training and inference
+# - Loss computation and training step
+# - Model loading and checkpoint management
 
-from DeepDataMiningLearning.detection.modules.block import (AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
-                    Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
-                    Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC )
-from DeepDataMiningLearning.detection.modules.utils import extract_filename, LOGGER, make_divisible, non_max_suppression, scale_boxes #colorstr, 
-from DeepDataMiningLearning.detection.modules.head import Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
-#Detect, Classify, Pose, RTDETRDecoder, Segment
-from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss
-from DeepDataMiningLearning.detection.modules.lossv7 import myv7DetectionLoss
-from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order
+import contextlib  # Context management utilities
+from copy import deepcopy  # Deep copying for model configuration
+from pathlib import Path  # Path manipulation utilities
+import numpy as np  # Numerical operations
+import torch  # PyTorch deep learning framework
+import torch.nn as nn  # Neural network modules
+import yaml  # YAML configuration file parsing
+import re  # Regular expression operations
+from typing import Dict, List, Optional, Tuple, Union  # Type hints for better code documentation
 
+# Import custom detection modules
+from DeepDataMiningLearning.detection.modules.block import (
+    AIFI, C1, C2, C3, C3TR, SPP, SPPF, Bottleneck, BottleneckCSP, C2f, C3Ghost, C3x,
+    Concat, Conv, Conv2, ConvTranspose, DWConv, DWConvTranspose2d,
+    Focus, GhostBottleneck, GhostConv, HGBlock, HGStem, RepC3, RepConv, MP, SPPCSPC,
+    C3K2, C2PSA, PSABlock, MultiHeadAttention, RELAN, A2 
+)  # Various building blocks for YOLO architecture
 
+from DeepDataMiningLearning.detection.modules.utils import (
+    extract_filename, LOGGER, make_divisible, non_max_suppression, scale_boxes
+)  # Utility functions for model operations
+
+from DeepDataMiningLearning.detection.modules.head import (
+    Detect, IDetect, Classify, Pose, RTDETRDecoder, Segment
+)  # Detection heads for different tasks
+
+# Import loss functions for different YOLO versions
+from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss  # YOLOv8 loss implementation
+from DeepDataMiningLearning.detection.modules.lossv7 import myv7DetectionLoss  # YOLOv7 loss implementation
+from DeepDataMiningLearning.detection.ultralytics_loss import v8DetectionLoss  # Official Ultralytics v8DetectionLoss
+from DeepDataMiningLearning.detection.modules.anchor import check_anchor_order  # Anchor validation utilities
+from DeepDataMiningLearning.detection.modules.hyperparameters import get_hyperparameters  # Hyperparameters configuration
+
+# modelcfg_file=os.path.join('./modules', modelname+'.yaml')
+#     cfgPath='./modules/default.yaml'
 
 def yaml_load(file='data.yaml', append_filename=True):
     """
@@ -50,25 +71,41 @@ def yaml_load(file='data.yaml', append_filename=True):
 #ref: https://github.com/ultralytics/ultralytics/blob/main/ultralytics/nn/tasks.py
 class YoloDetectionModel(nn.Module):
     #scale from nsmlx
-    def __init__(self, cfg='yolov8n.yaml', scale='n', ch=3, nc=None, verbose=True):  # model, input channels, number of classes
+    def __init__(self, cfg='yolov8n.yaml', scale='n', ch=3, nc=None, verbose=True, version='v8'):  # model, input channels, number of classes
+        """
+        Initialize YoloDetectionModel with enhanced multi-version support.
+        
+        Args:
+            cfg: Model configuration (dict or YAML path)
+            scale: Model scale ('n', 's', 'm', 'l', 'x')
+            ch: Input channels (default: 3)
+            nc: Number of classes
+            verbose: Verbose output
+            version: YOLO version ('v8', 'v11', 'v12')
+        """
         super().__init__()
+        self.version = version
         self.yaml = cfg if isinstance(cfg, dict) else yaml_load(cfg)  # cfg dict, nc=80, 'scales', 'backbone', 'head'
         self.yaml['scale'] = scale
-        self.modelname=extract_filename(cfg)
+        self.yaml['version'] = version  # Store version in config
+        self.modelname = cfg.get('model_name', f'yolo{version}') if isinstance(cfg, dict) else extract_filename(cfg)
 
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels, ch=3
         if nc and nc != self.yaml['nc']:
             LOGGER.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
             self.yaml['nc'] = nc  # override YAML value
+        
+        # Version-specific model parsing
+        if verbose:
+            LOGGER.info(f"Building YOLO{version.upper()} model with scale '{scale}'")
+            
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=ch, verbose=verbose)  # model, savelist
         self.names = {i: f'{i}' for i in range(self.yaml['nc'])}  # default names dict, 0~79
         self.inplace = self.yaml.get('inplace', True) #True
 
-        #self.model.eval()
-
-        # Build strides
-        m = self.model[-1]  # Detect()
+        # Build strides with version-aware detection head handling
+        m = self.model[-1]  # Detection head
         if isinstance(m, (Detect, Segment, Pose)): 
             s = 256  # 2x min stride
             m.inplace = self.inplace
@@ -76,43 +113,157 @@ class YoloDetectionModel(nn.Module):
             m.stride = torch.tensor([s / x.shape[-2] for x in forward(torch.zeros(1, ch, s, s))])  # forward
             self.stride = m.stride #[ 8., 16., 32.]
             m.bias_init()  # only run once
+            
+            # Store detection head attributes for loss function compatibility
+            self.nc = m.nc  # number of classes
+            self.reg_max = getattr(m, 'reg_max', 16)  # regression max value, default 16
+            
         elif isinstance(m, IDetect): #added yolov7's IDetect
             s = 256  # 2x min stride
             m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             m.anchors /= m.stride.view(-1, 1, 1)
             check_anchor_order(m)
             self.stride = m.stride
-            #self._initialize_biases()  # only run once
+            
+            # Store detection head attributes for loss function compatibility  
+            self.nc = m.nc  # number of classes
+            self.reg_max = getattr(m, 'reg_max', 16)  # regression max value, default 16
             m.bias_init()
         else:
             self.stride = torch.Tensor([32])  # default stride for i.e. RTDETR
 
-        # Init weights, biases
+        # Initialize weights with version-specific considerations
         initialize_weights(self)
+        
+        # Add hyperparameters for loss function compatibility
+        self.args = get_hyperparameters()
+        
+        if verbose:
+            LOGGER.info(f"YOLO{version.upper()} model initialized successfully: {self.modelname}")
+            LOGGER.info(f"Model parameters: {sum(p.numel() for p in self.parameters()):,}")
+            LOGGER.info(f"Model stride: {self.stride.tolist()}")
+    
     
     #ref BaseModel forward in ultralytics\nn\tasks.py
     def forward(self, x, *args, **kwargs):
         """
-        Forward pass of the model on a single scale.
-        Wrapper for `_forward_once` method.
-
+        Enhanced forward pass with multi-version support.
+        
         Args:
-            x (torch.Tensor | dict): The input image tensor or a dict including image tensor and gt labels.
-
+            x (torch.Tensor | dict): Input image tensor or dict with image and labels
+            *args: Additional arguments
+            **kwargs: Additional keyword arguments
+            
         Returns:
-            (torch.Tensor): The output of the network.
+            torch.Tensor: Model predictions
         """
-        #model.train() self.training=True
-        #model.eval() self.training=False
-        if isinstance(x, dict):# for cases of training and validating while training.
-            return self.loss(x, *args, **kwargs)
+        if isinstance(x, dict):
+            # Training mode with batch dict containing image and labels
+            img_tensor = x['img'] #[16, 3, 640, 640]
+            preds = self._predict_once(img_tensor, **kwargs)
+            #len3[[16, 72, 80, 80], [16, 72, 40, 40], [16, 72, 20, 20]]:
+            # Compute loss if in training mode
+            if self.training:
+                if not hasattr(self, 'criterion'):
+                    self.criterion = self.init_criterion()
+                return self.criterion(preds, x)
+            else:
+                return preds
+                
         elif self.training:
-            preds = self._predict_once(x) #tensor input
-            return preds #training mode, direct output x (three items)
-        else: #inference mode
-            preds, xtensors = self._predict_once(x) #tensor input #[1, 3, 256, 256]
-            #y,x output in inference mode, training mode, direct output x (three items),
+            # Training mode with tensor input
+            preds = self._predict_once(x, **kwargs)
             return preds
+        else:
+            # Inference mode
+            return self._predict_once(x, **kwargs)
+    
+    def predict(self, source, save=False, imgsz=640, conf=0.25, iou=0.45, **kwargs):
+        """
+        Enhanced prediction method with Ultralytics-style interface.
+        
+        Args:
+            source: Input source (image path, tensor, etc.)
+            save: Save results
+            imgsz: Image size for inference
+            conf: Confidence threshold
+            iou: IoU threshold for NMS
+            **kwargs: Additional arguments
+            
+        Returns:
+            Prediction results
+        """
+        # Set model to eval mode
+        self.eval()
+        
+        # Handle different input types
+        if isinstance(source, str):
+            # File path input
+            import cv2
+            img = cv2.imread(source)
+            if img is None:
+                raise ValueError(f"Could not load image from {source}")
+        elif isinstance(source, torch.Tensor):
+            img = source
+        else:
+            raise ValueError(f"Unsupported source type: {type(source)}")
+        
+        # Preprocess if needed
+        if not isinstance(img, torch.Tensor):
+            # Convert to tensor and normalize
+            img = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+            img = img.unsqueeze(0)  # Add batch dimension
+        
+        # Ensure correct device
+        img = img.to(next(self.parameters()).device)
+        
+        # Run inference
+        with torch.no_grad():
+            preds = self.forward(img)
+        
+        # Post-process predictions
+        if hasattr(self, 'postprocess'):
+            results = self.postprocess(preds, img, conf=conf, iou=iou)
+        else:
+            # Basic NMS post-processing
+            results = non_max_suppression(preds, conf, iou)
+        
+        return results
+    
+    def train_step(self, batch, optimizer=None):
+        """
+        Enhanced training step with version-specific optimizations.
+        
+        Args:
+            batch: Training batch
+            optimizer: Optimizer (optional)
+            
+        Returns:
+            dict: Loss components
+        """
+        self.train()
+        
+        # Forward pass
+        if isinstance(batch, dict):
+            loss_dict = self.forward(batch)
+        else:
+            # Assume batch is (images, targets)
+            images, targets = batch
+            batch_dict = {'img': images, 'batch_idx': targets.get('batch_idx', None)}
+            if 'cls' in targets:
+                batch_dict['cls'] = targets['cls']
+            if 'bboxes' in targets:
+                batch_dict['bboxes'] = targets['bboxes']
+            loss_dict = self.forward(batch_dict)
+        
+        # Backward pass if optimizer provided
+        if optimizer is not None:
+            total_loss = sum(loss_dict.values()) if isinstance(loss_dict, dict) else loss_dict
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+        
+        return loss_dict
     #from base
     # def forward(self, images, targets=None):
     #     """
@@ -264,7 +415,7 @@ class YoloDetectionModel(nn.Module):
 
     def init_criterion(self):
         if "v8" in self.modelname:
-            return myv8DetectionLoss(self) #v8DetectionLoss(self)
+            return v8DetectionLoss(self)  # Use official Ultralytics v8DetectionLoss
         elif "v7" in self.modelname:
             return myv7DetectionLoss(self)
     
@@ -307,7 +458,8 @@ def initialize_weights(model):
 #                  SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC,BottleneckCSP2, C3, C3TR, C3SPP, C3Ghost]
 
 twoargs_blocks=[nn.Conv2d, Classify, Conv, ConvTranspose, GhostConv, RepConv, Bottleneck, GhostBottleneck, SPP, SPPF, SPPCSPC, DWConv, Focus,
-                 BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3]
+                 BottleneckCSP, C1, C2, C2f, C3, C3TR, C3Ghost, nn.ConvTranspose2d, DWConvTranspose2d, C3x, RepC3, 
+                 C3K2, C2PSA, PSABlock, MultiHeadAttention, RELAN, A2]
 
 def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
     """Parse a YOLO model.yaml dictionary into a PyTorch model."""
@@ -345,6 +497,9 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
     ch = [ch]
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
     for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
+        # Handle module name mapping for compatibility
+        if m == 'R-ELAN':
+            m = 'RELAN'
         m = getattr(torch.nn, m[3:]) if 'nn.' in m else globals()[m]  # get module
         for j, a in enumerate(args):
             if isinstance(a, str):
@@ -401,6 +556,54 @@ def intersect_dicts(da, db, exclude=()):
     """Returns a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values."""
     return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
 
+def filter_checkpoint_for_different_classes(ckpt, model_state_dict, exclude_head_layers=True):
+    """
+    Filter checkpoint to exclude detection head layers when number of classes differs.
+    This allows loading backbone and neck weights while skipping incompatible head layers.
+    
+    Args:
+        ckpt (dict): Checkpoint state dict
+        model_state_dict (dict): Current model state dict
+        exclude_head_layers (bool): Whether to exclude detection head layers
+    
+    Returns:
+        dict: Filtered checkpoint
+    """
+    if not exclude_head_layers:
+        return ckpt
+    
+    # Common patterns for YOLO detection head layers that depend on number of classes
+    head_patterns = [
+        'cv2.',  # Classification head
+        'cv3.',  # Objectness head  
+        'dfl.',  # Distribution focal loss
+        '.m.',   # Detection head modules
+    ]
+    
+    filtered_ckpt = {}
+    excluded_keys = []
+    
+    for key, value in ckpt.items():
+        # Check if this key belongs to detection head
+        is_head_layer = any(pattern in key for pattern in head_patterns)
+        
+        # If it's a head layer and shapes don't match, exclude it
+        if is_head_layer and key in model_state_dict:
+            if value.shape != model_state_dict[key].shape:
+                excluded_keys.append(key)
+                continue
+        
+        filtered_ckpt[key] = value
+    
+    if excluded_keys:
+        print(f"Excluded {len(excluded_keys)} detection head layers due to class count mismatch:")
+        for key in excluded_keys[:5]:  # Show first 5 excluded keys
+            print(f"  - {key}: checkpoint shape {ckpt[key].shape} vs model shape {model_state_dict[key].shape}")
+        if len(excluded_keys) > 5:
+            print(f"  ... and {len(excluded_keys) - 5} more layers")
+    
+    return filtered_ckpt
+
 
 # def create_yolomodel(modelname,num_classes):
 #     cfgpath='./DeepDataMiningLearning/detection/modules/'
@@ -418,24 +621,41 @@ def load_defaultcfgs(cfgPath):
     #DEFAULT_CFG = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
     return DEFAULT_CFG_DICT
 
-def load_checkpoint(model, ckpt_file, fp16=False):
+def load_checkpoint(model, ckpt_file, fp16=False, exclude_head_on_mismatch=True):
+    """Load checkpoint with smart handling of class count mismatches."""
+    ckpt = torch.load(ckpt_file, map_location='cpu')
     
-    #ModuleNotFoundError: No module named 'models'
-    ckpt=torch.load(ckpt_file, map_location='cpu')
-    nn_module = isinstance(ckpt, torch.nn.Module)
-    print(ckpt.keys()) #'0.conv.weight', '0.bn.weight', '0.bn.bias'
-    currentmodel_statedict = model.state_dict()#starts with 'model.'
-    #rename ckpt for yolov7
+    # Rename keys for compatibility
     for key in list(ckpt.keys()):
         if not key.startswith("model"):
             ckpt['model.'+key] = ckpt.pop(key)
-
-    csd = intersect_dicts(ckpt, currentmodel_statedict)  # intersect
-    model.load_state_dict(ckpt, strict=False)
-    print(f'Transferred {len(csd)}/{len(model.state_dict())} items from pretrained weights')
-    #524/566 items
-    #names = ckpt.module.names if hasattr(ckpt, 'module') else ckpt.names  # get class names
-    model.half() if fp16 else model.float()
+    
+    # Get current model state dict
+    model_state_dict = model.state_dict()
+    
+    # Check if we need to filter out incompatible layers
+    if exclude_head_on_mismatch:
+        # First check if there are any shape mismatches
+        mismatched_keys = []
+        for key in ckpt:
+            if key in model_state_dict and ckpt[key].shape != model_state_dict[key].shape:
+                mismatched_keys.append(key)
+        
+        if mismatched_keys:
+            print(f"Found {len(mismatched_keys)} layers with shape mismatches. Filtering checkpoint...")
+            ckpt = filter_checkpoint_for_different_classes(ckpt, model_state_dict, exclude_head_layers=True)
+    
+    # Use intersection of compatible parameters
+    csd = intersect_dicts(ckpt, model_state_dict)
+    model.load_state_dict(csd, strict=False)
+    
+    print(f'Transferred {len(csd)}/{len(model_state_dict)} items from {ckpt_file}')
+    
+    if fp16:
+        model = model.half()
+    else:
+        model = model.float()
+    
     return model
 
 import DeepDataMiningLearning.detection.transforms as T
@@ -478,31 +698,105 @@ from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image
 import torchvision
 
-def create_yolomodel(modelname, num_classes = None, ckpt_file = None, fp16 = False, device = 'cuda:0', scale='n'):
+def create_yolomodel(modelname, num_classes=None, ckpt_file=None, fp16=False, device='cuda:0', scale='n', version=None):
+    """
+    Create a YOLO model with enhanced multi-version support.
     
-    modelcfg_file=os.path.join('./DeepDataMiningLearning/detection/modules', modelname+'.yaml')
-    cfgPath='./DeepDataMiningLearning/detection/modules/default.yaml'
-    myyolo = None
-    preprocess =None
-    classesList = None
-    if os.path.exists(modelcfg_file) and os.path.exists(cfgPath):
-        DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
-        classes=DEFAULT_CFG_DICT['names']
-        nc=len(classes) #80
-        classesList = list(classes.values()) #class name list
-        myyolo=YoloDetectionModel(cfg=modelcfg_file, scale=scale, ch=3, nc =num_classes)
+    Args:
+        modelname: Model name (e.g., 'yolov8n', 'yolov11n', 'yolov12n')
+        num_classes: Number of classes (defaults to 80)
+        ckpt_file: Path to checkpoint file
+        fp16: Use half precision
+        device: Device to load model on
+        scale: Model scale ('n', 's', 'm', 'l', 'x')
+        version: YOLO version ('v8', 'v11', 'v12') - auto-detected if None
+        
+    Returns:
+        tuple: (model, preprocess_transform, class_list)
+    """
+    from DeepDataMiningLearning.detection.modules.yolo_configs import get_model_config, get_default_config
+    
+    # Auto-detect version from model name if not specified
+    if version is None:
+        if 'yolov8' in modelname.lower() or 'v8' in modelname.lower():
+            version = 'v8'
+        elif 'yolov11' in modelname.lower() or 'v11' in modelname.lower():
+            version = 'v11'
+        elif 'yolov12' in modelname.lower() or 'v12' in modelname.lower():
+            version = 'v12'
+        else:
+            # Default to v8 for backward compatibility
+            version = 'v8'
+            print(f"Warning: Could not detect YOLO version from '{modelname}', defaulting to YOLOv8")
+    
+    # Get model configuration from Python dictionaries
+    model_cfg = get_model_config(modelname)
+    DEFAULT_CFG_DICT = get_default_config()
+    
+    if model_cfg is not None:
+        classes = DEFAULT_CFG_DICT['names']
+        nc = len(classes) if num_classes is None else num_classes
+        classesList = list(classes.values())  # class name list
+        
+        # Create YoloDetectionModel with Python config dictionary
+        myyolo = YoloDetectionModel(cfg=model_cfg, scale=scale, ch=3, nc=nc, version=version)
+        
+        # Load checkpoint if provided
         if ckpt_file is not None and os.path.exists(ckpt_file):
-            myyolo=load_checkpoint(myyolo, ckpt_file)
-        myyolo=myyolo.to(device).eval()
+            myyolo = load_checkpoint(myyolo, ckpt_file)
+        
+        # Setup model for inference
+        myyolo = myyolo.to(device).eval()
         stride = max(int(myyolo.stride.max()), 32)  # model stride
         names = myyolo.module.names if hasattr(myyolo, 'module') else myyolo.names  # get class names
-        #model = model.fuse(verbose=verbose) if fuse else model
         myyolo = myyolo.half() if fp16 else myyolo.float()
 
+        # Create preprocessing transform
         preprocess = YoloTransform(min_size=640, max_size=640, device=device, fp16=fp16, cfgs=DEFAULT_CFG_DICT)
+        
+        print(f"Successfully created {version.upper()} model '{modelname}' with {nc} classes")
         return myyolo, preprocess, classesList
     else:
-        print("Config file not found")
+        raise ValueError(f"Model configuration for '{modelname}' not found. "
+                        f"Supported models: {list(get_model_config().keys()) if hasattr(get_model_config, '__call__') else 'Check yolo_configs.py'}")
+
+
+def detect_yolo_version(model_path_or_name):
+    """
+    Detect YOLO version from model path or name.
+    
+    Args:
+        model_path_or_name: Path to model file or model name
+        
+    Returns:
+        str: Detected version ('v8', 'v11', 'v12')
+    """
+    name = str(model_path_or_name).lower()
+    
+    if 'yolov8' in name or 'v8' in name:
+        return 'v8'
+    elif 'yolov11' in name or 'v11' in name:
+        return 'v11'
+    elif 'yolov12' in name or 'v12' in name:
+        return 'v12'
+    else:
+        # Try to detect from file content if it's a path
+        if os.path.exists(model_path_or_name):
+            try:
+                checkpoint = torch.load(model_path_or_name, map_location='cpu')
+                if 'model' in checkpoint:
+                    model_dict = checkpoint['model']
+                    # Check for version-specific layers
+                    if any('C3K2' in str(k) for k in model_dict.keys()):
+                        return 'v11'
+                    elif any('RELAN' in str(k) or 'A2' in str(k) for k in model_dict.keys()):
+                        return 'v12'
+                    else:
+                        return 'v8'
+            except:
+                pass
+        
+        return 'v8'  # Default fallback
         return myyolo, preprocess, classesList
 
 def freeze_yolomodel(model, freeze=[]):

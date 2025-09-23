@@ -1486,6 +1486,240 @@ class C2f(nn.Module):
         y.extend(m(y[-1]) for m in self.m)
         return self.cv2(torch.cat(y, 1))
 
+class C3K2(nn.Module):
+    """C3K2 block for YOLOv11 - Cross Stage Partial with kernel size 2."""
+    
+    def __init__(self, c1, c2, n=1, c3k=False, e=0.5, g=1, shortcut=True):
+        """Initialize C3K2 block.
+        
+        Args:
+            c1: Input channels
+            c2: Output channels  
+            n: Number of bottlenecks
+            c3k: Use C3K block if True, else use C2f-like structure
+            e: Channel expansion ratio
+            g: Groups for convolution
+            shortcut: Use shortcut connection
+        """
+        super().__init__()
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        
+        if c3k:
+            # C3K mode: bottlenecks process c channels, cv2 handles 2*c input
+            self.cv2 = Conv(2 * self.c, c2, 1)
+            self.m = nn.Sequential(*(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n)))
+        else:
+            # C2f-like structure with splitting
+            self.cv2 = Conv((2 + n) * self.c, c2, 1)
+            self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut, g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+        
+        self.c3k = c3k
+
+    def forward(self, x):
+        """Forward pass through C3K2 layer."""
+        if self.c3k:
+            # C3K block forward - process full tensor
+            y = self.cv1(x)  # Shape: [B, 2*c, H, W]
+            # Split y into two parts for proper channel handling
+            y1, y2 = y.chunk(2, 1)  # Each part: [B, c, H, W]
+            # Process y2 through bottleneck layers
+            y2_processed = self.m(y2)  # [B, c, H, W]
+            # Concatenate y1 and processed y2
+            return self.cv2(torch.cat([y1, y2_processed], 1))  # [B, 2*c, H, W] -> [B, c2, H, W]
+        else:
+            # C2f-like forward with splitting
+            y = list(self.cv1(x).chunk(2, 1))
+            y.extend(m(y[-1]) for m in self.m)
+            return self.cv2(torch.cat(y, 1))
+
+
+class C2PSA(nn.Module):
+    """C2PSA block with Parallel Spatial Attention for YOLOv11."""
+    
+    def __init__(self, c1, c2, n=1, e=0.5):
+        """Initialize C2PSA block.
+        
+        Args:
+            c1: Input channels
+            c2: Output channels
+            n: Number of PSA modules
+            e: Channel expansion ratio
+        """
+        super().__init__()
+        assert c1 == c2
+        self.c = int(c2 * e)
+        self.cv1 = Conv(c1, 2 * self.c, 1)
+        self.cv2 = Conv(2 * self.c, c1, 1)
+        
+        # PSA modules
+        self.m = nn.ModuleList(PSABlock(self.c) for _ in range(n))
+
+    def forward(self, x):
+        """Forward pass through C2PSA layer."""
+        a, b = self.cv1(x).split((self.c, self.c), 1)
+        b = self.m[0](b) if len(self.m) == 1 else sum(m(b) for m in self.m)
+        return self.cv2(torch.cat((a, b), 1))
+
+
+class PSABlock(nn.Module):
+    """Parallel Spatial Attention block."""
+    
+    def __init__(self, c, attn_ratio=0.5, num_heads=4, shortcut=True):
+        """Initialize PSA block.
+        
+        Args:
+            c: Input channels
+            attn_ratio: Attention channel ratio
+            num_heads: Number of attention heads
+            shortcut: Use shortcut connection
+        """
+        super().__init__()
+        self.attn = MultiHeadAttention(c, num_heads, attn_ratio)
+        self.ffn = nn.Sequential(
+            Conv(c, c * 2, 1),
+            Conv(c * 2, c, 1, act=False)
+        )
+        self.add = shortcut and c == c
+
+    def forward(self, x):
+        """Forward pass through PSA block."""
+        x = x + self.attn(x) if self.add else self.attn(x)
+        x = x + self.ffn(x) if self.add else self.ffn(x)
+        return x
+
+
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention module for PSA."""
+    
+    def __init__(self, embed_dim, num_heads, attn_ratio=0.5):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = int(embed_dim * attn_ratio) // num_heads
+        self.key_dim = self.head_dim * num_heads
+        self.scale = self.head_dim ** -0.5
+        
+        self.q = Conv(embed_dim, self.key_dim, 1)
+        self.k = Conv(embed_dim, self.key_dim, 1)
+        self.v = Conv(embed_dim, self.key_dim, 1)
+        self.proj = Conv(self.key_dim, embed_dim, 1)
+        self.pe = Conv(embed_dim, embed_dim, 3, 1, g=embed_dim, act=False)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        N = H * W
+        
+        q = self.q(x).reshape(B, self.num_heads, self.head_dim, N).permute(0, 1, 3, 2)
+        k = self.k(x).reshape(B, self.num_heads, self.head_dim, N)
+        v = self.v(x).reshape(B, self.num_heads, self.head_dim, N).permute(0, 1, 3, 2)
+        
+        attn = (q @ k) * self.scale
+        attn = attn.softmax(dim=-1)
+        
+        x = (attn @ v).permute(0, 1, 3, 2).reshape(B, self.key_dim, H, W)
+        x = self.proj(x)
+        x = x + self.pe(x)
+        return x
+
+
+class RELAN(nn.Module):
+    """Residual Efficient Layer Aggregation Networks (R-ELAN) for YOLOv12."""
+    
+    def __init__(self, c1, c2, n=2, shortcut=True, g=1, e=0.5):  # ch_in, ch_out, number, shortcut, groups, expansion
+        """Initialize R-ELAN block.
+        
+        Args:
+            c1: Input channels
+            c2: Output channels  
+            n: Number of bottlenecks (default: 2)
+            shortcut: Use shortcut connection (default: True)
+            g: Groups (default: 1)
+            e: Expansion ratio (default: 0.5)
+        """
+        super().__init__()
+        self.c = int(c2 * e)  # hidden channels
+        self.cv1 = Conv(c1, 2 * self.c, 1, 1)
+        self.cv2 = Conv(c1, self.c, 1, 1)
+        self.cv3 = Conv(self.c, self.c, 1, 1)
+        self.cv4 = Conv((2 + n) * self.c, c2, 1, 1)
+        
+        # Residual bottleneck blocks
+        self.m = nn.ModuleList(Bottleneck(self.c, self.c, shortcut=shortcut, g=g, k=((3, 3), (3, 3)), e=1.0) for _ in range(n))
+
+    def forward(self, x):
+        """Forward pass through R-ELAN layer."""
+        y1 = self.cv1(x)  # Split into 2*c channels
+        y2 = self.cv2(x)  # c channels
+        
+        # Process through bottleneck blocks
+        outputs = [y1[:, :self.c, ...], y1[:, self.c:, ...]]  # Split y1 into two c-channel parts
+        
+        for m in self.m:
+            y2 = m(y2)
+            outputs.append(y2)
+            
+        # Concatenate all outputs and pass through final conv
+        return self.cv4(torch.cat(outputs, 1))
+
+
+class A2(nn.Module):
+    """Area Attention (A2) module for YOLOv12 - computationally efficient attention."""
+    
+    def __init__(self, c1, c2=None, kernel_size=5, stride=1):
+        """Initialize A2 attention module.
+        
+        Args:
+            c1: Input channels
+            c2: Output channels (defaults to c1)
+            kernel_size: Kernel size for area attention
+            stride: Stride for convolution
+        """
+        super().__init__()
+        c2 = c2 or c1
+        self.kernel_size = kernel_size
+        self.stride = stride
+        
+        # Area attention components
+        self.conv1 = Conv(c1, c2, 1, 1)
+        self.conv2 = Conv(c2, c2, kernel_size, stride, autopad(kernel_size, None), g=c2, act=False)
+        self.conv3 = Conv(c2, c2, 1, 1, act=False)
+        
+        # Spatial pooling for area attention
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(
+            nn.Linear(c2, c2 // 16),
+            nn.ReLU(inplace=True),
+            nn.Linear(c2 // 16, c2),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        """Forward pass through A2 attention."""
+        # Area attention mechanism
+        identity = x
+        x = self.conv1(x)
+        
+        # Spatial attention
+        spatial_attn = self.conv2(x)
+        spatial_attn = torch.sigmoid(spatial_attn)
+        
+        # Channel attention
+        b, c, _, _ = x.size()
+        channel_attn = self.pool(x).view(b, c)
+        channel_attn = self.fc(channel_attn).view(b, c, 1, 1)
+        
+        # Apply attention
+        x = x * spatial_attn * channel_attn
+        x = self.conv3(x)
+        
+        # Residual connection if dimensions match
+        if x.shape == identity.shape:
+            x = x + identity
+            
+        return x
+
+
 class RepC3(nn.Module):
     """Rep C3."""
 

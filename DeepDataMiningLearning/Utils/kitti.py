@@ -88,33 +88,63 @@ class BoxVisibility(IntEnum):
     NONE = 2  # Requires no corners to be inside, i.e. box can be fully outside the image.
 
 class Object3d(object):
-    """ 3D object label for KITTI format """
+    """
+    3D object label parser for KITTI dataset format.
+    
+    KITTI Label Format (15 values per line):
+    ========================================
+    1. type (str): Object class ('Car', 'Pedestrian', 'Cyclist', 'Van', 'Truck', 'Person_sitting', 'Tram', 'Misc', 'DontCare')
+    2. truncated (float): Truncation level [0..1], where 0=non-truncated, 1=fully truncated
+    3. occluded (int): Occlusion state (0=fully visible, 1=partly occluded, 2=largely occluded, 3=unknown)
+    4. alpha (float): Observation angle [-π..π] (angle between object heading and camera x-axis)
+    5-8. bbox (float): 2D bounding box in image coordinates [left, top, right, bottom] (0-indexed)
+    9-11. dimensions (float): 3D object dimensions [height, width, length] in meters
+    12-14. location (float): 3D object center [x, y, z] in camera coordinates (meters)
+    15. rotation_y (float): Rotation around Y-axis in camera coordinates [-π..π] (yaw angle)
+    
+    Coordinate Systems:
+    ==================
+    - Camera coordinates: X-right, Y-down, Z-forward (rectified camera frame)
+    - LiDAR coordinates: X-forward, Y-left, Z-up (Velodyne frame)
+    - Image coordinates: u-right, v-down (pixel coordinates, 0-indexed)
+    
+    The 3D location (x,y,z) represents the object center bottom in camera coordinates.
+    """
 
     def __init__(self, label_file_line):
+        """
+        Parse a single line from KITTI label file.
+        
+        Args:
+            label_file_line (str): Single line from .txt label file containing 15 space-separated values
+        """
         data = label_file_line.split(" ")
         data[1:] = [float(x) for x in data[1:]]
 
-        # extract label, truncation, occlusion
-        self.type = data[0]  # 'Car', 'Pedestrian', ...
-        self.truncation = data[1]  # truncated pixel ratio [0..1]
-        self.occlusion = int(
-            data[2]
-        )  # 0=visible, 1=partly occluded, 2=fully occluded, 3=unknown
-        self.alpha = data[3]  # object observation angle [-pi..pi]
+        # Object classification and visibility attributes
+        self.type = data[0]  # Object class name (string)
+        self.truncation = data[1]  # Truncation ratio [0..1]: fraction of object outside image bounds
+        self.occlusion = int(data[2])  # Occlusion level: 0=visible, 1=partly, 2=largely, 3=unknown
+        self.alpha = data[3]  # Observation angle [-π..π]: angle between object heading and camera x-axis
 
-        # extract 2d bounding box in 0-based coordinates
-        self.xmin = data[4]  # left
-        self.ymin = data[5]  # top
-        self.xmax = data[6]  # right
-        self.ymax = data[7]  # bottom
+        # 2D bounding box in image pixel coordinates (0-indexed)
+        self.xmin = data[4]  # Left edge of bounding box
+        self.ymin = data[5]  # Top edge of bounding box  
+        self.xmax = data[6]  # Right edge of bounding box
+        self.ymax = data[7]  # Bottom edge of bounding box
         self.box2d = np.array([self.xmin, self.ymin, self.xmax, self.ymax])
 
-        # extract 3d bounding box information
-        self.h = data[8]  # box height
-        self.w = data[9]  # box width
-        self.l = data[10]  # box length (in meters)
-        self.t = (data[11], data[12], data[13])  # location (x,y,z) in camera coord.
-        self.ry = data[14]  # yaw angle (around Y-axis in camera coordinates) [-pi..pi]
+        # 3D bounding box dimensions in meters (object-centric coordinates)
+        self.h = data[8]   # Height (vertical extent)
+        self.w = data[9]   # Width (lateral extent)
+        self.l = data[10]  # Length (longitudinal extent)
+        
+        # 3D object center location in camera coordinates (meters)
+        # Note: This is the center of the bottom face of the 3D bounding box
+        self.t = (data[11], data[12], data[13])  # (x, y, z) in camera frame
+        
+        # Rotation around Y-axis in camera coordinates (yaw angle)
+        self.ry = data[14]  # Rotation [-π..π]: 0 means object faces same direction as camera
 
     def estimate_difficulty(self):
         """ Function that estimate difficulty to detect the object as defined in kitti website"""
@@ -631,17 +661,73 @@ def load_velo_scan(velo_filename, dtype=np.float32, n_vec=4, filterpoints=False,
     return scan
 
 def compute_box_3d(obj, dataset='kitti', transform_to_lidar=False, calib=None):
-    """ Takes an object3D and returns 3D bounding box corners
-        Args:
-            obj: Object3d instance with bounding box parameters
-            dataset: Dataset type ('kitti' or other)
-            transform_to_lidar: If True, transform from camera to LiDAR coordinates
-            calib: Calibration object for coordinate transformation
-        Returns:
-            corners_3d: (8,3) array in rect camera coord or LiDAR coord if transformed
+    """
+    Compute 3D bounding box corners from KITTI object parameters with coordinate transformation support.
+    
+    This is the core function that generates 3D bounding box corner coordinates from KITTI object
+    parameters. It handles the complete transformation pipeline from object-local coordinates
+    to the desired output coordinate system (camera or LiDAR).
+    
+    Mathematical Process:
+    ====================
+    1. Generate 8 corner points in object-local coordinate system
+    2. Apply rotation matrix R_y around Y-axis (yaw rotation)
+    3. Translate to object center position in camera coordinates
+    4. Optionally transform from camera to LiDAR coordinates using calibration
+    
+    KITTI Corner Convention:
+    =======================
+    The function generates corners following KITTI's standard ordering:
+    - Bottom face (y=0): corners [0,1,2,3] in counterclockwise order
+    - Top face (y=-h): corners [4,5,6,7] in counterclockwise order
+    
+    Object-Local Coordinates (before rotation):
+    - X-axis: length direction (forward/backward)
+    - Y-axis: height direction (up/down, y=0 at bottom)
+    - Z-axis: width direction (left/right)
+    
+    Coordinate System Details:
+    =========================
+    Camera Coordinates (KITTI rectified):
+    - X: rightward (positive to the right)
+    - Y: downward (positive downward)
+    - Z: forward (positive into the scene)
+    
+    LiDAR Coordinates (Velodyne):
+    - X: forward (positive forward)
+    - Y: leftward (positive to the left)
+    - Z: upward (positive upward)
+    
+    Transformation Matrix Chain:
+    ===========================
+    Object Local → Camera Rect → LiDAR
+    [R_y * corners + t] → [calib.rect_to_lidar()]
+    
+    Args:
+        obj (Object3d): KITTI object with 3D bounding box parameters
+            - obj.l: Length in meters (X-direction in object frame)
+            - obj.w: Width in meters (Z-direction in object frame)
+            - obj.h: Height in meters (Y-direction in object frame)
+            - obj.t: (x,y,z) center position in camera coordinates
+            - obj.ry: Yaw rotation around Y-axis in camera coordinates [-π,π]
+        dataset (str): Dataset type identifier ('kitti' or other)
+        transform_to_lidar (bool): If True, apply camera-to-LiDAR coordinate transformation
+        calib (KittiCalibration): Calibration object containing transformation matrices
+            Must have rect_to_lidar() method or C2V matrix for coordinate conversion
+    
+    Returns:
+        np.ndarray: (8, 3) array of corner coordinates
+            - If transform_to_lidar=False: corners in camera coordinates
+            - If transform_to_lidar=True: corners in LiDAR coordinates
+            - Returns None if computation fails
+    
+    Note:
+        The Y-coordinate in camera frame represents the bottom center of the 3D box.
+        This is different from some other datasets where it might represent the geometric center.
     """
     print(f"DEBUG: compute_box_3d called with obj.type={obj.type}, transform_to_lidar={transform_to_lidar}, calib={calib is not None}")
     
+    # Create rotation matrix around Y-axis (yaw rotation in camera coordinates)
     if not CALIB_UTILS_AVAILABLE:
         print("Warning: CalibrationUtils not available, using basic rotation")
         # Basic rotation matrix around Y axis
@@ -653,29 +739,29 @@ def compute_box_3d(obj, dataset='kitti', transform_to_lidar=False, calib=None):
     else:
         R = roty(obj.ry)
 
-    # 3d bounding box dimensions
-    l = obj.l  # length (x-direction in object coordinate)
-    w = obj.w  # width (z-direction in object coordinate)  
-    h = obj.h  # height (y-direction in object coordinate)
+    # Extract 3D bounding box dimensions (in meters)
+    l = obj.l  # Length (X-direction in object coordinate system)
+    w = obj.w  # Width (Z-direction in object coordinate system)  
+    h = obj.h  # Height (Y-direction in object coordinate system)
     
     print(f"DEBUG: Box dimensions - l={l}, w={w}, h={h}, ry={obj.ry}")
     print(f"DEBUG: Box center - t={obj.t}")
 
-    # 3d bounding box corners in object coordinate system
-    # KITTI uses a specific corner ordering convention
+    # Generate 8 corner points in object-local coordinate system
+    # KITTI convention: Y=0 is bottom face, Y=-h is top face
     x_corners = [l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2]
-    y_corners = [0, 0, 0, 0, -h, -h, -h, -h]  # y=0 is bottom, y=-h is top
+    y_corners = [0, 0, 0, 0, -h, -h, -h, -h]  # Bottom face at y=0, top face at y=-h
     z_corners = [w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2]
 
-    # Rotate corners by rotation_y around Y-axis
+    # Apply rotation matrix to transform corners from object-local to camera coordinates
     corners_3d = np.dot(R, np.vstack([x_corners, y_corners, z_corners]))
     
-    # Translate to object center position (in camera coordinates)
-    corners_3d[0, :] = corners_3d[0, :] + obj.t[0]
-    corners_3d[1, :] = corners_3d[1, :] + obj.t[1]
-    corners_3d[2, :] = corners_3d[2, :] + obj.t[2]
+    # Translate corners to object center position (in camera coordinates)
+    corners_3d[0, :] = corners_3d[0, :] + obj.t[0]  # X translation
+    corners_3d[1, :] = corners_3d[1, :] + obj.t[1]  # Y translation
+    corners_3d[2, :] = corners_3d[2, :] + obj.t[2]  # Z translation
     
-    # Convert to (8, 3) array
+    # Convert from (3, 8) to (8, 3) array format for easier handling
     corners_3d = np.transpose(corners_3d)
     print(f"DEBUG: Camera coordinates corners shape: {corners_3d.shape}")
     print(f"DEBUG: Camera coordinates corners sample: {corners_3d[0]}")
@@ -685,14 +771,14 @@ def compute_box_3d(obj, dataset='kitti', transform_to_lidar=False, calib=None):
         print("DEBUG: Attempting coordinate transformation to LiDAR")
         try:
             # Transform from camera rect coordinates to LiDAR coordinates
-            # This is crucial for proper alignment with LiDAR point clouds
+            # This transformation is crucial for proper alignment with LiDAR point clouds
             if hasattr(calib, 'rect_to_lidar'):
                 print("DEBUG: Using calib.rect_to_lidar method")
                 corners_3d = calib.rect_to_lidar(corners_3d)
                 print(f"DEBUG: LiDAR coordinates corners sample: {corners_3d[0]}")
             elif hasattr(calib, 'C2V'):
                 print("DEBUG: Using calib.C2V method")
-                # Alternative transformation method
+                # Alternative transformation method using homogeneous coordinates
                 corners_3d_homo = np.hstack([corners_3d, np.ones((corners_3d.shape[0], 1))])
                 corners_lidar = np.dot(calib.C2V, corners_3d_homo.T).T
                 corners_3d = corners_lidar[:, :3]
@@ -1196,7 +1282,80 @@ def datasetinfo(datasetname):
     return camera_index, max_cameracount
 
 def getcalibration(datasetname, calibration_file):
-    """Get calibration object based on dataset type"""
+    """
+    Load calibration object for coordinate transformations between different sensor frames.
+    
+    This function creates calibration objects that contain the transformation matrices
+    necessary to convert coordinates between different sensor coordinate systems in
+    autonomous driving datasets (KITTI, Waymo-KITTI).
+    
+    Calibration Purpose:
+    ===================
+    The calibration object provides essential transformation matrices for:
+    1. Camera intrinsic parameters (focal length, principal point, distortion)
+    2. Camera extrinsic parameters (rotation and translation between cameras)
+    3. LiDAR-to-camera transformation matrices
+    4. Rectification matrices for stereo vision
+    
+    Coordinate System Transformations:
+    =================================
+    The calibration enables transformations between these coordinate frames:
+    
+    1. Raw Camera → Rectified Camera:
+       - Removes lens distortion and aligns stereo cameras
+       - Uses rectification matrix R_rect
+    
+    2. LiDAR (Velodyne) → Camera:
+       - Transforms 3D points from LiDAR to camera coordinate system
+       - Uses rotation matrix R and translation vector T
+       - Formula: P_cam = R * P_lidar + T
+    
+    3. 3D Camera → 2D Image:
+       - Projects 3D points to 2D image coordinates
+       - Uses camera intrinsic matrix K (3x3)
+       - Formula: p_img = K * P_cam
+    
+    KITTI Calibration File Format:
+    =============================
+    Standard KITTI calibration files contain:
+    - P0, P1, P2, P3: Projection matrices for cameras 0-3 (3x4)
+    - R0_rect: Rectification matrix (3x3)
+    - Tr_velo_to_cam: LiDAR to camera transformation (3x4)
+    - Tr_imu_to_velo: IMU to LiDAR transformation (3x4)
+    
+    Waymo-KITTI Calibration:
+    =======================
+    Extended format supporting 5 cameras with additional transformations
+    for multi-camera setups common in Waymo dataset.
+    
+    Args:
+        datasetname (str): Dataset type identifier
+            - 'kitti': Standard KITTI dataset format
+            - 'waymokitti': Waymo dataset in KITTI format
+        calibration_file (str): Path to calibration file (usually calib.txt)
+            Must contain transformation matrices in the expected format
+    
+    Returns:
+        Calibration object (KittiCalibration or WaymoCalibration) or None
+            - Contains methods for coordinate transformations:
+              * rect_to_lidar(): Camera rectified → LiDAR coordinates
+              * lidar_to_rect(): LiDAR → Camera rectified coordinates  
+              * rect_to_img(): Camera rectified → Image coordinates
+              * C2V: Camera to Velodyne transformation matrix
+            - Returns None if calibration loading fails
+    
+    Example Usage:
+        calib = getcalibration('kitti', '/path/to/calib.txt')
+        if calib:
+            # Transform LiDAR points to camera coordinates
+            cam_points = calib.lidar_to_rect(lidar_points)
+            # Project to image coordinates
+            img_points = calib.rect_to_img(cam_points, camera_id=2)
+    
+    Note:
+        Requires CalibrationUtils module to be available. Returns None with
+        warning if the module cannot be imported or calibration file is invalid.
+    """
     if not CALIB_UTILS_AVAILABLE:
         print("Warning: CalibrationUtils not available")
         return None
@@ -1522,13 +1681,51 @@ def project_to_image(pts_3d, P):
         return None
 
 def get_3d_box_corners(obj, transform_to_lidar=False, calib=None):
-    """Get 3D bounding box corners for an object
+    """
+    Compute 3D bounding box corners for a KITTI object with optional coordinate transformation.
+    
+    This function generates the 8 corner points of a 3D bounding box from KITTI object parameters.
+    The corners are computed in the object's local coordinate system and then transformed to
+    the desired coordinate frame (camera or LiDAR).
+    
+    Coordinate System Transformations:
+    =================================
+    1. Object coordinates: Local box frame with center at object location
+    2. Camera coordinates: X-right, Y-down, Z-forward (rectified camera frame)
+    3. LiDAR coordinates: X-forward, Y-left, Z-up (Velodyne frame)
+    
+    The transformation pipeline:
+    Object Local → Camera Coordinates → LiDAR Coordinates (if requested)
+    
+    Box Corner Ordering (standard KITTI convention):
+    ===============================================
+    Bottom face (z=0): [0,1,2,3] - counterclockwise when viewed from above
+    Top face (z=h):    [4,5,6,7] - counterclockwise when viewed from above
+    
+    Corner indices:
+        4 -------- 5
+       /|         /|
+      7 -------- 6 .
+      | |        | |
+      . 0 -------- 1
+      |/         |/
+      3 -------- 2
+    
     Args:
-        obj: Object3d instance
-        transform_to_lidar: If True, transform from camera to LiDAR coordinates
-        calib: Calibration object for coordinate transformation
+        obj (Object3d): KITTI object containing 3D bounding box parameters
+            - obj.l, obj.w, obj.h: Length, width, height in meters
+            - obj.t: (x, y, z) center location in camera coordinates
+            - obj.ry: Rotation around Y-axis (yaw angle) in camera coordinates
+        transform_to_lidar (bool): If True, transform corners from camera to LiDAR coordinates
+        calib (KittiCalibration): Calibration object containing transformation matrices
+            Required if transform_to_lidar=True for accurate coordinate conversion
+    
     Returns:
-        corners_3d: (8,3) array of corner coordinates
+        np.ndarray: (8, 3) array of corner coordinates in requested coordinate system
+                   Returns None if computation fails due to invalid parameters
+    
+    Raises:
+        Exception: If coordinate transformation fails or object parameters are invalid
     """
     print(f"DEBUG: get_3d_box_corners called for {obj.type}")
     try:
@@ -1865,6 +2062,16 @@ def visualize_kitti_sample_lidar(root_path, sample_idx, dataset_type='auto', out
 
             # Create visualization objects list
             vis_objects = [pcd]
+            
+            # Add coordinate frame arrows at the origin (vehicle center) for spatial reference
+            # This helps users understand the coordinate system orientation in 3D space
+            # KITTI coordinate system: X-forward, Y-left, Z-up (LiDAR coordinates)
+            coordinate_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
+                size=5.0,  # Arrow length in meters
+                origin=[0, 0, 0]  # Place at vehicle center (LiDAR origin)
+            )
+            vis_objects.append(coordinate_frame)
+            print("Added coordinate frame arrows: X(red)-forward, Y(green)-left, Z(blue)-up")
             
             # Load and visualize 3D bounding boxes if available (enhanced nuScenes-style)
             if os.path.exists(label_path):

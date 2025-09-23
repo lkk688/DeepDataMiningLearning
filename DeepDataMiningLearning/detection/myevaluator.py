@@ -466,7 +466,18 @@ def yoloevaluate(model, data_loader, preprocess, device):
     coco_ds = COCO()
     # annotation IDs need to start at 1, not 0, see torchvision issue #1530
     ann_id = 1
-    dataset = {"images": [], "categories": [], "annotations": []}
+    dataset = {
+        "images": [], 
+        "categories": [], 
+        "annotations": [],
+        "info": {
+            "description": "YOLO Dataset for Evaluation",
+            "version": "1.0",
+            "year": 2024,
+            "contributor": "DeepDataMiningLearning",
+            "date_created": "2024-01-01"
+        }
+    }
     categories = set()
 
     evalprogress_bar = tqdm(range(len(data_loader)))
