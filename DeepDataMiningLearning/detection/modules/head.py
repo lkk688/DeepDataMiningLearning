@@ -365,7 +365,7 @@ class Detect(nn.Module):
  
         #Dist2bbox Transform distance(ltrb) to box(xywh or xyxy)
             #self.dfl = DFL is integration
-        dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0), xywh=True, dim=1) * self.strides.unsqueeze(0)
+        dbox = dist2bbox(self.dfl(box), self.anchors.unsqueeze(0).transpose(-1, -2), xywh=True, dim=1) * self.strides.unsqueeze(0)
         #[1, 4, 6300] 4=64/reg_max(16)
 
         if self.export and self.format in ('tflite', 'edgetpu'):

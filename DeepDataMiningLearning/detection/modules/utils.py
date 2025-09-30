@@ -1310,6 +1310,11 @@ def yolov8_non_max_suppression(
     nc = nc or (prediction.shape[1] - 4)  # number of classes
     nm = prediction.shape[1] - nc - 4
     mi = 4 + nc  # mask start index
+    
+    # Fix: ensure we don't exceed tensor dimensions
+    if mi > prediction.shape[1]:
+        mi = prediction.shape[1]
+    
     xc = prediction[:, 4:mi].amax(1) > conf_thres  # candidates
 
     # Settings
@@ -1319,6 +1324,10 @@ def yolov8_non_max_suppression(
 
     prediction = prediction.transpose(-1, -2)  # shape(1,84,6300) to shape(1,6300,84)
     prediction[..., :4] = xywh2xyxy(prediction[..., :4])  # xywh to xyxy
+    
+    # Apply sigmoid to class scores for YOLOv8 (logits -> probabilities)
+    if nc > 0:
+        prediction[..., 4:4+nc] = torch.sigmoid(prediction[..., 4:4+nc])
 
     t = time.time()
     output = [torch.zeros((0, 6 + nm), device=prediction.device)] * bs

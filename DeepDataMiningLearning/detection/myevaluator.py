@@ -488,7 +488,8 @@ def yoloevaluate(model, data_loader, preprocess, device):
         #convert from yolo data format to COCO
         img = batch['img'] # [1, 3, 640, 640]
         img_dict = {}
-        image_id = batch['image_id'][0] #batch['image_id'] is tuple, get the 0-th element
+        # Ensure image_id is an integer, not tensor
+        image_id = batch['image_id'][0] if isinstance(batch['image_id'][0], int) else int(batch['image_id'][0])
         targets["image_id"]=image_id
         img_dict["id"] = image_id
         img_dict["height"] = img.shape[-2] #img is CHW
@@ -557,6 +558,10 @@ def yoloevaluate(model, data_loader, preprocess, device):
         model_time = time.time() - model_time
 
         targets = [targets] #make it a list
+        # Ensure image_id in outputs matches the ground truth
+        for output in outputs:
+            if 'image_id' not in output:
+                output['image_id'] = image_id
         res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
         #print("res:", res) #image_id: output['boxes'] ['scores'] ['labels']
         evaluator_time = time.time()
@@ -566,13 +571,19 @@ def yoloevaluate(model, data_loader, preprocess, device):
         evalprogress_bar.update(1)
 
     #for coco evaluation
-    dataset["categories"] = [{"id": i} for i in sorted(categories)]
+    dataset["categories"] = [{"id": i, "name": str(i)} for i in sorted(categories)]
     coco_ds.dataset = dataset
     coco_ds.createIndex()
 
+    # Check if we have any valid predictions before evaluation
+    if not all_res or all(not res for res in all_res):
+        print("No valid predictions found for evaluation. Skipping COCO evaluation.")
+        return
+
     coco_evaluator = CocoEvaluator(coco_ds, iou_types)
     for res in all_res:
-        coco_evaluator.update(res)
+        if res:  # Only update if res is not empty
+            coco_evaluator.update(res)
         
 
     # gather the stats from all processes

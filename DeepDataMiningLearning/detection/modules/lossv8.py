@@ -252,13 +252,14 @@ class v8DetectionLoss:
     3. Bounding box regression loss using IoU + optional DFL
     """
 
-    def __init__(self, model, tal_topk=10):  # model must be de-paralleled
+    def __init__(self, model, tal_topk=10, class_weights=None):  # model must be de-paralleled
         """
         Initialize v8DetectionLoss with the model, defining model-related properties and hyperparameters.
         
         Args:
             model: YOLOv8 detection model (must be de-paralleled, not wrapped in DataParallel)
             tal_topk (int): Top-k parameter for Task Aligned Assigner (default: 10)
+            class_weights (torch.Tensor, optional): Class weights for handling imbalanced datasets
         """
         # Get model device from model parameters
         device = next(model.parameters()).device  # get model device
@@ -269,8 +270,17 @@ class v8DetectionLoss:
         # Get the detection head (last layer of the model)
         m = model.model[-1]  # Detect() module
         
+        # Store class weights for imbalanced dataset handling
+        self.class_weights = class_weights
+        if class_weights is not None:
+            self.class_weights = class_weights.to(device)
+        
         # Initialize binary cross entropy loss for classification
-        self.bce = nn.BCEWithLogitsLoss(reduction='none')
+        # Use pos_weight for class imbalance if class_weights provided
+        if class_weights is not None:
+            self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=class_weights)
+        else:
+            self.bce = nn.BCEWithLogitsLoss(reduction='none')
         
         # Store hyperparameters and model properties
         self.hyp = h  # Hyperparameters object
@@ -513,12 +523,29 @@ class v8DetectionLoss:
 class myv8DetectionLoss:
     """Criterion class for computing training losses."""
 
-    def __init__(self, model, tal_topk=10):  # model must be de-paralleled
-        """Initialize myv8DetectionLoss with the model, defining model-related properties and hyperparameters."""
+    def __init__(self, model, tal_topk=10, class_weights=None):  # model must be de-paralleled
+        """Initialize myv8DetectionLoss with the model, defining model-related properties and hyperparameters.
+        
+        Args:
+            model: YOLOv8 detection model (must be de-paralleled)
+            tal_topk (int): Top-k parameter for Task Aligned Assigner (default: 10)
+            class_weights (torch.Tensor, optional): Class weights for handling imbalanced datasets
+        """
         device = next(model.parameters()).device  # get model device
 
         m = model.model[-1]  # Detect() module
-        self.bce = nn.BCEWithLogitsLoss(reduction='none')
+        
+        # Store class weights for imbalanced dataset handling
+        self.class_weights = class_weights
+        if class_weights is not None:
+            self.class_weights = class_weights.to(device)
+        
+        # Initialize binary cross entropy loss for classification
+        # Use pos_weight for class imbalance if class_weights provided
+        if class_weights is not None:
+            self.bce = nn.BCEWithLogitsLoss(reduction='none', pos_weight=class_weights)
+        else:
+            self.bce = nn.BCEWithLogitsLoss(reduction='none')
         self.hypbox = 7.5  # (float) box loss gain
         self.hypcls = 0.5  # (float) cls loss gain (scale with pixels)
         self.hypdfl = 1.5  # (float) dfl loss gain

@@ -304,16 +304,45 @@ def main(args):
                 print("Failed to convert checkpoint. Training will start from scratch.")
                 args.ckpt = None
     
-    # Enhanced model creation with better KITTI support
-    #model, preprocess, classes = create_detectionmodel(args.model, num_classes, args.trainable, ckpt_file=args.ckpt, fp16=False, device= device, scale=args.scale)
-    # Create YOLOv11 model
-    model, preprocess, classes = create_yolomodel(
-        modelname=args.model, #'yolov11n', 'yolov12n'
-        num_classes=num_classes, #80,
+    # Enhanced model creation with better KITTI support using new yolomodels.py
+    # Create YOLO model (YOLOv8 by default, supports v7, v8, v11, v12)
+    # Use YAML configuration file path instead of model name
+    yaml_path = '/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'
+    model = create_yolomodel(
+        modelname=yaml_path,  # Use YAML config path
+        num_classes=num_classes,
         ckpt_file=args.ckpt,
         device=device, 
-        scale=args.scale
+        scale=args.scale,
+        version='v8'  # Explicitly set to v8
     )
+    
+    # Create preprocessing function - the model has built-in preprocessing
+    from DeepDataMiningLearning.detection.modules.yolotransform import YoloTransform
+    # Create default config for YoloTransform
+    yolo_cfgs = {
+        'conf': 0.25,
+        'iou': 0.45,
+        'agnostic_nms': False,
+        'multi_label': False,
+        'max_det': 300,
+        'classes': None  # None means all classes
+    }
+    preprocess = YoloTransform(
+        min_size=args.img_size,
+        max_size=args.img_size,
+        device=device,
+        fp16=False,
+        cfgs=yolo_cfgs
+    )
+    
+    # Get class names - use model's names if available, otherwise use COCO classes
+    if hasattr(model, 'names') and model.names:
+        classes = model.names
+    else:
+        # Import COCO class names from yolomodels
+        from DeepDataMiningLearning.detection.modules.yolomodels import COCO_CLASSES
+        classes = {i: name for i, name in enumerate(COCO_CLASSES[:num_classes])}
 
     # Print model information for better debugging
     print(f"Model: {args.model}")
@@ -475,10 +504,15 @@ def train_one_epoch(model, optimizer, data_loader, device, preprocess, epoch, pr
         optimizer.zero_grad()
         if scaler is not None:
             scaler.scale(losses).backward()
+            # Gradient clipping to prevent explosion
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             scaler.step(optimizer)
             scaler.update()
         else:
             losses.backward()
+            # Gradient clipping to prevent explosion
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
             optimizer.step()
 
         if lr_scheduler is not None:
