@@ -510,10 +510,10 @@ class KittiDataset(torch.utils.data.Dataset):
         else:
             #negative example, ref: https://github.com/pytorch/vision/issues/2144
             newtarget['boxes'] = torch.zeros((0, 4), dtype=torch.float32)#not empty
-            target['labels'] = labels #torch.as_tensor(np.array(labels), dtype=torch.int64)#empty
-            target['image_id'] =image_id
-            target["area"] = area #torch.as_tensor(np.array(target_areas), dtype=torch.float32)#empty
-            target["iscrowd"] = iscrowd #torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
+            newtarget['labels'] = labels #torch.as_tensor(np.array(labels), dtype=torch.int64)#empty
+            newtarget['image_id'] = image_id
+            newtarget["area"] = area #torch.as_tensor(np.array(target_areas), dtype=torch.float32)#empty
+            newtarget["iscrowd"] = iscrowd #torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
         return newtarget
 
     def __getitem__(self, index: int) -> Union[dict, Tuple[Any, Any]]:

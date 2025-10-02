@@ -138,8 +138,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--test-only",
-        default=False,
-        type=bool, 
+        action="store_true",
         help="Only test the model",
     )
     parser.add_argument(
@@ -159,6 +158,10 @@ def get_args_parser(add_help=True):
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
     parser.add_argument("--expname", default="", help="experiment name, create a sub-folder")
     parser.add_argument("--img-size", "--imgsz", default=640, type=int, help="input image size for training and validation (default: 640)")
+    
+    # New options for model loading and evaluation
+    parser.add_argument("--load-default-model", action="store_true", help="Load default pretrained model without changing class numbers")
+    parser.add_argument("--use-coco-mapping", action="store_true", help="Use COCO class mapping during evaluation for mAP calculation")
     
 
     return parser
@@ -192,7 +195,30 @@ def main(args):
         args.distributed = False
     print(args)
 
-    device = torch.device(args.device)
+    # Safe device setup with CUDA error handling
+    try:
+        device = torch.device(args.device)
+        # Test CUDA availability if using GPU
+        if args.device.startswith('cuda'):
+            if not torch.cuda.is_available():
+                print("Warning: CUDA not available, falling back to CPU")
+                device = torch.device('cpu')
+                args.device = 'cpu'
+            else:
+                # Try to initialize CUDA context safely
+                try:
+                    torch.cuda.init()
+                    print(f"CUDA initialized successfully on device: {device}")
+                except RuntimeError as e:
+                    print(f"CUDA initialization failed: {e}")
+                    print("Falling back to CPU")
+                    device = torch.device('cpu')
+                    args.device = 'cpu'
+    except Exception as e:
+        print(f"Device setup failed: {e}")
+        print("Falling back to CPU")
+        device = torch.device('cpu')
+        args.device = 'cpu'
 
     if args.use_deterministic_algorithms:
         torch.use_deterministic_algorithms(True)
@@ -308,14 +334,60 @@ def main(args):
     # Create YOLO model (YOLOv8 by default, supports v7, v8, v11, v12)
     # Use YAML configuration file path instead of model name
     yaml_path = '/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'
-    model = create_yolomodel(
-        modelname=yaml_path,  # Use YAML config path
-        num_classes=num_classes,
-        ckpt_file=args.ckpt,
-        device=device, 
-        scale=args.scale,
-        version='v8'  # Explicitly set to v8
-    )
+    
+    # Create model with proper class configuration for KITTI
+    if args.dataset in ["kitti", "kitti_yolo"]:
+        # Check if we should load default model without changing class numbers
+        if args.load_default_model:
+            print("Loading default pretrained model without changing class numbers...")
+            model = create_yolomodel(
+                modelname=yaml_path,  # Use YAML config path
+                num_classes=None,  # Keep original class count from pretrained model
+                ckpt_file=args.ckpt,
+                device=device, 
+                scale=args.scale,
+                version='v8'  # Explicitly set to v8
+            )
+            print(f"✅ Default model loaded with original class configuration")
+        else:
+            # For KITTI, we need to override the default YOLO config
+            model = create_yolomodel(
+                modelname=yaml_path,  # Use YAML config path
+                num_classes=num_classes,  # This should be 8 for KITTI
+                ckpt_file=args.ckpt,
+                device=device, 
+                scale=args.scale,
+                version='v8'  # Explicitly set to v8
+            )
+            # Ensure the model's class configuration matches KITTI
+            if hasattr(model, 'nc'):
+                model.nc = num_classes
+            if hasattr(model, 'yaml') and model.yaml:
+                model.yaml['nc'] = num_classes
+            print(f"✅ Model configured for KITTI with {num_classes} classes")
+    else:
+        # Check if we should load default model without changing class numbers
+        if args.load_default_model:
+            print("Loading default pretrained model without changing class numbers...")
+            model = create_yolomodel(
+                modelname=yaml_path,  # Use YAML config path
+                num_classes=None,  # Keep original class count from pretrained model
+                ckpt_file=args.ckpt,
+                device=device, 
+                scale=args.scale,
+                version='v8'  # Explicitly set to v8
+            )
+            print(f"✅ Default model loaded with original class configuration")
+        else:
+            # Create model normally for other datasets
+            model = create_yolomodel(
+                modelname=yaml_path,  # Use YAML config path
+                num_classes=num_classes,
+                ckpt_file=args.ckpt,
+                device=device, 
+                scale=args.scale,
+                version='v8'  # Explicitly set to v8
+        )
     
     # Create preprocessing function - the model has built-in preprocessing
     from DeepDataMiningLearning.detection.modules.yolotransform import YoloTransform
@@ -336,8 +408,13 @@ def main(args):
         cfgs=yolo_cfgs
     )
     
-    # Get class names - use model's names if available, otherwise use COCO classes
-    if hasattr(model, 'names') and model.names:
+    # Get class names - use dataset-specific class names for proper evaluation
+    if args.dataset in ["kitti", "kitti_yolo"]:
+        # Use KITTI class names for proper evaluation
+        kitti_classes = ['Car', 'Van', 'Truck', 'Pedestrian', 'Person_sitting', 'Cyclist', 'Tram', 'Misc']
+        classes = {i: name for i, name in enumerate(kitti_classes[:num_classes])}
+        print(f"Using KITTI class mapping: {classes}")
+    elif hasattr(model, 'names') and model.names:
         classes = model.names
     else:
         # Import COCO class names from yolomodels
@@ -349,7 +426,19 @@ def main(args):
     print(f"Number of classes: {num_classes}")#8
     print(f"Model classes: {classes}")
     
-    #model.to(device)
+    # Safe model device transfer with error handling
+    try:
+        model.to(device)
+        print(f"Model successfully moved to device: {device}")
+    except RuntimeError as e:
+        if "CUDA" in str(e):
+            print(f"Failed to move model to CUDA: {e}")
+            print("Falling back to CPU")
+            device = torch.device('cpu')
+            args.device = 'cpu'
+            model.to(device)
+        else:
+            raise e
     
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -408,10 +497,19 @@ def main(args):
         # Use appropriate evaluator based on dataset type
         if args.dataset in ["kitti", "kitti_yolo"]:
             print("Using YOLO evaluator for KITTI dataset")
-            yoloevaluate(model, data_loader_test, preprocess, device)
+            if args.use_coco_mapping:
+                print("Using COCO class mapping for evaluation...")
+                # Pass the use_coco_mapping flag to the evaluator
+                yoloevaluate(model, data_loader_test, preprocess, device, use_coco_mapping=True)
+            else:
+                yoloevaluate(model, data_loader_test, preprocess, device)
         else:
             # For other datasets, use the standard YOLO evaluator
-            yoloevaluate(model, data_loader_test, preprocess, device)
+            if args.use_coco_mapping:
+                print("Using COCO class mapping for evaluation...")
+                yoloevaluate(model, data_loader_test, preprocess, device, use_coco_mapping=True)
+            else:
+                yoloevaluate(model, data_loader_test, preprocess, device)
         
         return
 

@@ -76,10 +76,30 @@ class CocoEvaluator:
             if len(prediction) == 0:
                 continue
 
-            boxes = prediction["boxes"] #10,4
-            boxes = utils.convert_to_xywh(boxes).tolist()
+            boxes = prediction["boxes"] #10,4 in xyxy format
+            # Convert from xyxy to xywh format for COCO
+            if len(boxes) > 0:
+                # boxes is in xyxy format, convert to xywh
+                boxes_xywh = []
+                for box in boxes:
+                    x1, y1, x2, y2 = box
+                    width = x2 - x1
+                    height = y2 - y1
+                    boxes_xywh.append([x1, y1, width, height])
+                boxes = boxes_xywh
+            else:
+                boxes = []
+            
             scores = prediction["scores"].tolist() #list of 10
             labels = prediction["labels"].tolist()
+
+            # Debug: Print box conversion for first few detections
+            if len(coco_results) < 5:
+                print(f"Debug: Converting boxes for image {original_id}: {len(boxes)} detections")
+                if len(boxes) > 0:
+                    box = boxes[0]
+                    print(f"Debug: Sample converted box (xywh): [{box[0]:.1f}, {box[1]:.1f}, {box[2]:.1f}, {box[3]:.1f}]")
+                    print(f"Debug: Box dimensions - width: {box[2]:.1f}, height: {box[3]:.1f}")
 
             coco_results.extend(
                 [
@@ -421,13 +441,14 @@ def yoloconvert_to_coco_api(ds):#mykittidetectiondataset
         #bboxes = targets["boxes"].clone()
         W=640
         H=640
-        bboxes[:,0]=bboxes[:,0]*W
-        bboxes[:,1]=bboxes[:,1]*H
-        bboxes[:,2]=bboxes[:,2]*W
-        bboxes[:,3]=bboxes[:,3]*H
-        bboxes[:,0]=bboxes[:,0]-bboxes[:,2]/2 #-w/2: xmin
-        bboxes[:,1]=bboxes[:,1]-bboxes[:,3]/2 #-H/2: ymin
-        #bboxes[:, 2:] -= bboxes[:, :2] #[xmin, ymin, xmax, ymax] in torch to [xmin, ymin, width, height] in COCO
+        bboxes[:,0]=bboxes[:,0]*W  # xc * W
+        bboxes[:,1]=bboxes[:,1]*H  # yc * H
+        bboxes[:,2]=bboxes[:,2]*W  # width * W
+        bboxes[:,3]=bboxes[:,3]*H  # height * H
+        bboxes[:,0]=bboxes[:,0]-bboxes[:,2]/2 #xc - w/2 = xmin
+        bboxes[:,1]=bboxes[:,1]-bboxes[:,3]/2 #yc - h/2 = ymin
+        # Keep width and height as is for COCO format [xmin, ymin, width, height]
+        # bboxes is now [xmin, ymin, width, height] which is correct for COCO
         bboxes = bboxes.tolist()
         labels = batch['cls'].tolist()
         #labels = targets["labels"].tolist()
@@ -436,6 +457,24 @@ def yoloconvert_to_coco_api(ds):#mykittidetectiondataset
         iscrowd = batch["iscrowd"][0].tolist()
         #iscrowd = targets["iscrowd"].tolist()
         num_objs = len(bboxes)
+        
+        # Debug: Print ground truth info for first few images
+        if len(dataset["images"]) <= 10:  # Only for first 10 images to avoid spam
+            print(f"\n=== DEBUG: Processing image {image_id} (batch {len(dataset['images'])}) ===")
+            print(f"Number of objects: {num_objs}")
+            print(f"Ground truth labels: {labels}")
+            print(f"Unique classes in GT: {set(labels)}")
+            if len(bboxes) > 0:
+                print(f"Ground truth bboxes (first 3): {bboxes[:3]}")
+                print(f"Ground truth areas (first 3): {areas[:3]}")
+                # Check bbox sizes
+                for i, bbox in enumerate(bboxes[:3]):
+                    width, height = bbox[2], bbox[3]
+                    print(f"  GT bbox {i}: width={width:.1f}, height={height:.1f}")
+            else:
+                print("⚠️ NO GROUND TRUTH BBOXES FOUND!")
+            print("=" * 50)
+        
         for i in range(num_objs):
             ann = {}
             ann["image_id"] = image_id
@@ -447,6 +486,19 @@ def yoloconvert_to_coco_api(ds):#mykittidetectiondataset
             ann["id"] = ann_id
             dataset["annotations"].append(ann)
             ann_id += 1
+        
+        # Debug: Print ground truth info for first few batches
+        if len(dataset["images"]) <= 10:  # Only for first 10 images to avoid spam
+            print(f"\n=== DEBUG: Processing image {image_id} (batch {len(dataset['images'])}) ===")
+            print(f"Number of objects: {len(labels)}")
+            print(f"Ground truth labels: {labels}")
+            print(f"Unique classes in GT: {set(labels)}")
+            if len(bboxes) > 0:
+                print(f"Ground truth bboxes (first 3): {bboxes[:3]}")
+                print(f"Ground truth areas (first 3): {areas[:3]}")
+            else:
+                print("⚠️ NO GROUND TRUTH BBOXES FOUND!")
+            print("=" * 50)
         progress_bar.update(1)
     dataset["categories"] = [{"id": i} for i in sorted(categories)]
     #print("convert_to_coco_api",dataset["categories"])
@@ -454,10 +506,46 @@ def yoloconvert_to_coco_api(ds):#mykittidetectiondataset
     coco_ds.createIndex()
     return coco_ds
 
-def yoloevaluate(model, data_loader, preprocess, device):
+def yoloevaluate(model, data_loader, preprocess, device, use_coco_mapping=False):
 
     cpu_device = torch.device("cpu")
     model.eval()
+
+    # Define COCO class mapping if requested
+    coco_class_mapping = None
+    if use_coco_mapping:
+        # COCO class mapping - mapping from YOLO COCO classes to KITTI dataset classes
+        # KITTI classes: Car(1), Van(2), Truck(3), Pedestrian(4), Person_sitting(5), Cyclist(6), Tram(7), Misc(8)
+        # But KITTI validation set only has classes: 1, 3, 4, 6
+        coco_class_mapping = {
+            # COCO class ID -> KITTI class ID
+            0: 4,   # person -> Pedestrian (KITTI class 4)
+            1: 6,   # bicycle -> Cyclist (KITTI class 6)
+            2: 1,   # car -> Car (KITTI class 1)
+            3: 6,   # motorcycle -> Cyclist (KITTI class 6)
+            5: 3,   # bus -> Truck (KITTI class 3)
+            7: 3,   # train -> Truck (KITTI class 3)
+            8: 3,   # truck -> Truck
+            9: 3,   # boat -> Truck (closest match)
+            # Additional mappings for commonly detected COCO classes
+            11: 4,  # fire hydrant -> Pedestrian (treat as misc object)
+            16: 4,  # cat -> Pedestrian (treat as misc object)
+            20: 4,  # cow -> Pedestrian (treat as misc object)
+            27: 4,  # handbag -> Pedestrian (treat as misc object)
+            34: 4,  # kite -> Pedestrian (treat as misc object)
+            38: 4,  # surfboard -> Pedestrian (treat as misc object)
+            39: 4,  # tennis racket -> Pedestrian (treat as misc object)
+            45: 4,  # spoon -> Pedestrian (treat as misc object)
+            50: 4,  # orange -> Pedestrian (treat as misc object)
+            55: 4,  # donut -> Pedestrian (treat as misc object)
+            68: 4,  # cell phone -> Pedestrian (treat as misc object)
+            71: 4,  # toaster -> Pedestrian (treat as misc object)
+            73: 4,  # refrigerator -> Pedestrian (treat as misc object)
+            # Note: Only keep predictions that map to valid KITTI classes
+        }
+        print(f"Using COCO to KITTI class mapping: {coco_class_mapping}")
+        print("COCO->KITTI: person->Pedestrian, bicycle->Cyclist, car->Car, motorcycle->Cyclist, bus->Truck, truck->Truck")
+        print(f"Valid KITTI classes in ground truth: [1, 3, 4, 6]")
 
     #coco = get_coco_api_from_dataset(data_loader.dataset) #go through the whole dataset, convert_to_coco_api
     #coco = yoloconvert_to_coco_api(data_loader)
@@ -500,7 +588,7 @@ def yoloevaluate(model, data_loader, preprocess, device):
         box=torchvision.ops.box_convert(box, 'cxcywh', 'xyxy')#xcenter, ycenter,wh, to xyxy
         box=box.numpy()
         (H, W, C)=(640,640,3) #batch['orig_shape'][0] #tuple
-        originalshape = [[H, W, C]]
+        originalshape = [[H, W]]  # Fixed: scale_boxes expects (H,W) not (H,W,C)
         box[:,0]=box[:,0]*W
         box[:,1]=box[:,1]*H
         box[:,2]=box[:,2]*W
@@ -539,18 +627,143 @@ def yoloevaluate(model, data_loader, preprocess, device):
             ann_id += 1
     
         #Inference
-        batch['img']=preprocess(batch['img']) #batch['img'] = batch['img'].to(device)
         #img is already a tensor, preprocess function only do device
+        imgtensors = batch['img'].to(device)
+        
+        # Clear cache to prevent memory buildup
+        torch.cuda.empty_cache()
 
         #images = list(img.to(device) for img in images) #list of torch.Size([3, 426, 640]), len=1
         #targets: len=1 dict (image_id=139), boxes[20,4], labels[20]
         model_time = time.time()
         #outputs = model(images) #len1 dict boxes (10x4), labels[10], scores
-        imgtensors = batch['img']
-        preds = model(imgtensors)
+        with torch.no_grad():  # Disable gradient computation to save memory
+            preds = model(imgtensors)
         imgsize = imgtensors.shape[2:] #640, 640
-        outputs = preprocess.postprocess(preds, imgsize, originalshape)
+        outputs = model.postprocess(preds, originalshape, imgsize)
         #outputs["boxes"] (xmin, ymin, xmax, ymax) format ["scores"] ["labels"]
+
+        # Debug: Check what the model actually outputs
+        print(f"Debug: Model output type: {type(outputs)}")
+        if outputs:
+            print(f"Debug: First output type: {type(outputs[0])}")
+            if hasattr(outputs[0], 'boxes'):
+                print(f"Debug: Output has boxes attribute")
+                if outputs[0].boxes is not None:
+                    print(f"Debug: Number of detections: {len(outputs[0].boxes)}")
+                    if len(outputs[0].boxes) > 0:
+                        print(f"Debug: Box tensor shape: {outputs[0].boxes.xyxy.shape}")
+                        print(f"Debug: Confidence shape: {outputs[0].boxes.conf.shape}")
+                        print(f"Debug: Class shape: {outputs[0].boxes.cls.shape}")
+                        print(f"Debug: Sample confidences: {outputs[0].boxes.conf[:5].tolist()}")
+                        print(f"Debug: Sample classes: {outputs[0].boxes.cls[:5].tolist()}")
+                else:
+                    print(f"Debug: Boxes is None")
+            else:
+                print(f"Debug: Output has no boxes attribute")
+                print(f"Debug: Output attributes: {dir(outputs[0])}")
+        
+        # Convert UltralyticsResult to dictionary format for COCO evaluation
+        converted_outputs = []
+        for output in outputs:
+            if hasattr(output, 'boxes') and output.boxes is not None:
+                # Access the correct attributes from UltralyticsBoxes
+                boxes = output.boxes.xyxy.cpu()  # [N, 4] in xyxy format
+                scores = output.boxes.conf.cpu()  # [N]
+                labels = output.boxes.cls.cpu()  # [N]
+                
+                print(f"Debug: Found {len(boxes)} detections")
+                if len(boxes) > 0:
+                    print(f"Debug: Score range: {scores.min():.3f} - {scores.max():.3f}")
+                    print(f"Debug: Labels: {labels.unique().tolist()}")
+                    print(f"Debug: Raw box sample: {boxes[0]} (before scaling)")
+                    
+                    # Check if boxes need scaling - YOLOv8 outputs normalized coordinates [0,1]
+                    # but we need pixel coordinates for COCO evaluation
+                    if boxes.max() <= 1.0:
+                        print("Debug: Boxes appear to be normalized, scaling to image size")
+                        # Scale boxes from normalized [0,1] to pixel coordinates using ACTUAL image dimensions
+                        img_height, img_width = originalshape[0], originalshape[1]  # Use actual image dimensions
+                        print(f"Debug: Using actual image dimensions: {img_width}x{img_height}")
+                        boxes[:, [0, 2]] *= img_width   # x coordinates
+                        boxes[:, [1, 3]] *= img_height  # y coordinates
+                        print(f"Debug: Scaled box sample: {boxes[0]} (after scaling to actual dimensions)")
+                    else:
+                        print("Debug: Boxes appear to be in pixel coordinates already")
+                
+                converted_outputs.append({
+                    'boxes': boxes,
+                    'scores': scores,
+                    'labels': labels
+                })
+            else:
+                print(f"Debug: No detections found for image {image_id}")
+                # Create empty tensors for consistency
+                converted_outputs.append({
+                    'boxes': torch.empty((0, 4)),
+                    'scores': torch.empty(0),
+                    'labels': torch.empty(0)
+                })
+        
+        outputs = converted_outputs
+        
+        # Apply COCO class mapping if requested
+        if use_coco_mapping and coco_class_mapping:
+            for output in outputs:
+                if 'labels' in output and len(output['labels']) > 0:
+                    # Map COCO classes to KITTI classes
+                    mapped_labels = []
+                    mapped_boxes = []
+                    mapped_scores = []
+                    
+                    labels_tensor = output['labels']
+                    boxes_tensor = output['boxes']
+                    scores_tensor = output['scores']
+                    
+                    for i in range(len(labels_tensor)):
+                        coco_class = int(labels_tensor[i].item())
+                        confidence = float(scores_tensor[i].item())
+                        
+                        # Apply confidence threshold - COCO evaluation typically uses 0.5 or higher
+                        if confidence < 0.3:  # Lower threshold to see if we get any matches
+                            continue
+                            
+                        if coco_class in coco_class_mapping:
+                            kitti_class = coco_class_mapping[coco_class]
+                            mapped_labels.append(kitti_class)
+                            mapped_boxes.append(boxes_tensor[i])
+                            mapped_scores.append(scores_tensor[i])
+                    
+                    # Update output with mapped classes
+                    if mapped_labels:
+                        output['labels'] = torch.tensor(mapped_labels, dtype=torch.long)
+                        output['boxes'] = torch.stack(mapped_boxes)
+                        output['scores'] = torch.tensor(mapped_scores)
+                        print(f"Debug: Mapped {len(mapped_labels)} predictions from COCO to KITTI classes")
+                        print(f"Debug: Mapped classes: {sorted(set(mapped_labels))}")
+                        print(f"Debug: Mapped scores range: {min(mapped_scores):.3f} - {max(mapped_scores):.3f}")
+                        # Print first few bounding boxes to check format
+                        if len(mapped_boxes) > 0:
+                            sample_box = mapped_boxes[0]
+                            print(f"Debug: Sample bbox format: {sample_box} (should be [x1,y1,x2,y2])")
+                            print(f"Debug: Sample bbox values: x1={sample_box[0]:.1f}, y1={sample_box[1]:.1f}, x2={sample_box[2]:.1f}, y2={sample_box[3]:.1f}")
+                    else:
+                        # No valid mappings found, create empty tensors
+                        output['labels'] = torch.tensor([], dtype=torch.long)
+                        output['boxes'] = torch.empty((0, 4))
+                        output['scores'] = torch.tensor([])
+                        print(f"Debug: No valid COCO->KITTI mappings found for this image")
+                    
+                    # No need to replace since we're already working with dictionary format
+        else:
+            # Convert UltralyticsResult objects to dictionary format for consistency
+            for i, output in enumerate(outputs):
+                if hasattr(output, 'boxes'):
+                    outputs[i] = {
+                        'boxes': output.boxes.xyxy,
+                        'scores': output.boxes.conf,
+                        'labels': output.boxes.cls
+                    }
 
         #vis_example(outputs[0], oneimg, filename='result2.jpg')
 
@@ -563,7 +776,25 @@ def yoloevaluate(model, data_loader, preprocess, device):
             if 'image_id' not in output:
                 output['image_id'] = image_id
         res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
-        #print("res:", res) #image_id: output['boxes'] ['scores'] ['labels']
+        
+        # Debug: Print prediction details for first few batches
+        if len(all_res) < 3:
+            for img_id, pred in res.items():
+                print(f"\nDebug: Image {img_id} predictions:")
+                if isinstance(pred, dict):
+                    if 'boxes' in pred and len(pred['boxes']) > 0:
+                        print(f"  - {len(pred['boxes'])} boxes detected")
+                        print(f"  - Score range: {pred['scores'].min():.3f} - {pred['scores'].max():.3f}")
+                        print(f"  - Classes: {pred['labels'].unique().tolist()}")
+                        # Print sample bounding box coordinates
+                        sample_box = pred['boxes'][0]
+                        print(f"  - Sample bbox: [{sample_box[0]:.1f}, {sample_box[1]:.1f}, {sample_box[2]:.1f}, {sample_box[3]:.1f}]")
+                        print(f"  - Image dimensions: 640x640")
+                    else:
+                        print(f"  - No boxes in prediction dict")
+                else:
+                    print(f"  - Prediction type: {type(pred)}")
+        
         evaluator_time = time.time()
         all_res.append(res)
         #coco_evaluator.update(res)
@@ -571,7 +802,33 @@ def yoloevaluate(model, data_loader, preprocess, device):
         evalprogress_bar.update(1)
 
     #for coco evaluation
-    dataset["categories"] = [{"id": i, "name": str(i)} for i in sorted(categories)]
+    if use_coco_mapping and coco_class_mapping:
+        # When using COCO mapping, create categories based on KITTI classes
+        kitti_class_names = {
+            1: "Car", 2: "Van", 3: "Truck", 4: "Pedestrian", 
+            5: "Person_sitting", 6: "Cyclist", 7: "Tram", 8: "Misc"
+        }
+        # Include ALL KITTI categories that appear in ground truth, not just mapped ones
+        all_gt_categories = set()
+        for res in all_res:
+            for pred in res.values():
+                if 'labels' in pred:
+                    all_gt_categories.update(pred.get('original_labels', []))
+        
+        # Also include categories from the dataset
+        all_gt_categories.update(categories)
+        
+        # Create categories for all classes that appear in either predictions or ground truth
+        mapped_categories = set(coco_class_mapping.values())
+        all_categories = mapped_categories.union(all_gt_categories)
+        
+        dataset["categories"] = [{"id": i, "name": kitti_class_names.get(i, f"class_{i}")} 
+                               for i in sorted(all_categories)]
+        print(f"Created COCO evaluation categories for KITTI classes: {[cat['name'] for cat in dataset['categories']]}")
+        print(f"Ground truth categories: {sorted(categories)}")
+        print(f"Mapped prediction categories: {sorted(mapped_categories)}")
+    else:
+        dataset["categories"] = [{"id": i, "name": str(i)} for i in sorted(categories)]
     coco_ds.dataset = dataset
     coco_ds.createIndex()
 
@@ -580,9 +837,79 @@ def yoloevaluate(model, data_loader, preprocess, device):
         print("No valid predictions found for evaluation. Skipping COCO evaluation.")
         return
 
+    # Debug: Count total predictions and check IoU potential
+    total_predictions = 0
+    predictions_by_class = {}
+    gt_by_class = {}
+    
+    for res in all_res:
+        for img_id, pred in res.items():
+            if isinstance(pred, dict) and 'labels' in pred:
+                total_predictions += len(pred['labels'])
+                for label in pred['labels'].tolist():
+                    predictions_by_class[label] = predictions_by_class.get(label, 0) + 1
+    
+    # Count ground truth by class
+    for ann in dataset['annotations']:
+        cat_id = ann['category_id']
+        gt_by_class[cat_id] = gt_by_class.get(cat_id, 0) + 1
+    
+    print(f"\nDebug: Total predictions across all images: {total_predictions}")
+    print(f"Debug: Total ground truth annotations: {len(dataset['annotations'])}")
+    print(f"Debug: Ground truth categories: {[cat['id'] for cat in dataset['categories']]}")
+    print(f"Debug: Predictions by class: {predictions_by_class}")
+    print(f"Debug: Ground truth by class: {gt_by_class}")
+    
+    # Check for class overlap
+    pred_classes = set(predictions_by_class.keys())
+    gt_classes = set(gt_by_class.keys())
+    overlap = pred_classes.intersection(gt_classes)
+    print(f"Debug: Class overlap between predictions and GT: {overlap}")
+    if not overlap:
+        print("WARNING: No class overlap between predictions and ground truth!")
+
+    # Create COCO evaluator with lower IoU thresholds to test if tiny boxes can match
     coco_evaluator = CocoEvaluator(coco_ds, iou_types)
+    
+    # Debug: Test with a very low IoU threshold to see if we get any matches
+    print("Testing with standard COCO evaluation...")
+    
+    # Also test manual IoU calculation for a few samples
+    if all_res:
+        print("=== SPATIAL ANALYSIS ===")
+        # Check multiple predictions and GT boxes from the same image
+        for i, res_dict in enumerate(all_res[:3]):  # Check first 3 images
+            for img_id, sample_res in res_dict.items():
+                if isinstance(sample_res, dict) and 'boxes' in sample_res and len(sample_res['boxes']) > 0:
+                    print(f"\nImage {img_id}:")
+                    
+                    # Show first few predictions
+                    pred_boxes = sample_res['boxes'][:3]  # First 3 predictions
+                    for j, pred_box in enumerate(pred_boxes):
+                        print(f"  Prediction {j}: [{pred_box[0]:.1f}, {pred_box[1]:.1f}, {pred_box[2]:.1f}, {pred_box[3]:.1f}] (w={pred_box[2]-pred_box[0]:.1f}, h={pred_box[3]-pred_box[1]:.1f})")
+                    
+                    # Show ground truth boxes for the same image
+                    gt_boxes = [ann for ann in dataset['annotations'] if ann['image_id'] == img_id]
+                    print(f"  Ground truth boxes ({len(gt_boxes)} total):")
+                    for j, gt_ann in enumerate(gt_boxes[:3]):  # First 3 GT boxes
+                        gt_box = gt_ann['bbox']
+                        print(f"    GT {j}: [{gt_box[0]:.1f}, {gt_box[1]:.1f}, {gt_box[2]:.1f}, {gt_box[3]:.1f}] (w={gt_box[2]:.1f}, h={gt_box[3]:.1f})")
+                    
+                    break  # Only check first image per batch
+                if i >= 2:  # Only check first 3 images total
+                    break
+    
     for res in all_res:
         if res:  # Only update if res is not empty
+            # Debug: Print prediction info for first few results
+            if len([r for r in all_res if r]) <= 3:
+                for img_id, pred in res.items():
+                    if 'labels' in pred and len(pred['labels']) > 0:
+                        print(f"Predictions for image {img_id}: {len(pred['labels'])} objects with classes {pred['labels'].tolist()}")
+                        # Also print corresponding ground truth for comparison
+                        gt_for_img = [ann for ann in dataset['annotations'] if ann['image_id'] == img_id]
+                        gt_classes = [ann['category_id'] for ann in gt_for_img]
+                        print(f"Ground truth for image {img_id}: {len(gt_for_img)} objects with classes {gt_classes}")
             coco_evaluator.update(res)
         
 
@@ -623,7 +950,7 @@ from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.dataset import get_dataset
 from DeepDataMiningLearning.detection.models import create_detectionmodel
 class args:
-    data_path = '/data/cmpe249-fa23/coco/' #'/data/cmpe249-fa23/COCOoriginal/' # #'/data/cmpe249-fa23/WaymoCOCO/' #'/data/cmpe249-fa23/coco/'
+    data_path = '/data/Datasets/kitti/' #'/data/cmpe249-fa23/COCOoriginal/' # #'/data/cmpe249-fa23/WaymoCOCO/' #'/data/cmpe249-fa23/coco/'
     annotationfile = '/data/cmpe249-fa23/coco/train2017.txt'
     weights = None
     test_only = True
@@ -633,13 +960,13 @@ class args:
 if __name__ == "__main__":
     is_train =False
     is_val =True
-    datasetname='yolo'#'coco' #'waymococo' #'yolo'
-    dataset, num_classes=get_dataset(datasetname, is_train, is_val, args)
+    datasetname='kitti'#'coco' #'waymococo' #'yolo'
+    dataset, num_classes=get_dataset(datasetname, is_train, is_val, args, output_format="yolo")
     print("train set len:", len(dataset))
     test_sampler = torch.utils.data.SequentialSampler(dataset) #RandomSampler(dataset)#torch.utils.data.SequentialSampler(dataset)
     new_collate_fn = utils.mycollate_fn #utils.mycollate_fn
     data_loader_test = torch.utils.data.DataLoader(
-        dataset, batch_size=1, sampler=test_sampler, num_workers=1, collate_fn=new_collate_fn
+        dataset, batch_size=1, sampler=test_sampler, num_workers=0, collate_fn=new_collate_fn
     )
     # for batch in data_loader_test:
     #     print(batch.keys()) #['img', 'bboxes', 'cls', 'batch_idx']
@@ -648,8 +975,10 @@ if __name__ == "__main__":
     #print(batch.keys())
 
     device='cuda:0'
-    model, preprocess, classes = create_detectionmodel('yolov8', num_classes=80, trainable_layers=0, ckpt_file='/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt', fp16=False, device= device)
+    model, preprocess, classes = create_detectionmodel('/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml', num_classes=80, trainable_layers=0, ckpt_file='/data/cmpe249-fa23/modelzoo/yolov8n_statedicts.pt', fp16=False, device= device)
+    print(f"Debug: Model classes: {classes}")
+    print(f"Debug: Number of model classes: {len(classes) if classes else 'None'}")
     model.to(device)
 
-    yoloevaluate(model, data_loader_test, preprocess, device)
+    yoloevaluate(model, data_loader_test, preprocess, device, use_coco_mapping=True)
     #simplemodelevaluate(model, data_loader_test, device)

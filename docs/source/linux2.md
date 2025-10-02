@@ -99,3 +99,10 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 pip install matplotlib
 pip install opencv-python
 ```
+
+# 5090 Setup
+Install the recommended driver: This is the best approach as ubuntu-drivers automatically uses DKMS to build the module and handle the MOK enrollment process.
+```bash
+sudo ubuntu-drivers devices
+sudo ubuntu-drivers install nvidia:580-open
+```

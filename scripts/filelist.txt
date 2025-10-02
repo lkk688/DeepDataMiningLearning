@@ -1,0 +1,10 @@
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10017090168044687777_6380_000_6400_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10023947602400723454_1120_000_1140_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/1005081002024129653_5313_150_5333_150.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10061305430875486848_1080_000_1100_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10072140764565668044_4060_000_4080_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10072231702153043603_5725_000_5745_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10075870402459732738_1060_000_1080_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10082223140073588526_6140_000_6160_000.parquet
+gs://waymo_open_dataset_v_2_0_1/training/camera_image/10094743350625019937_3420_000_3440_000.parquet

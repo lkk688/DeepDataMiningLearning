@@ -1989,7 +1989,7 @@ def create_yolomodel(modelname, num_classes=None, ckpt_file=None, fp16=False, de
         version (str, optional): YOLO version
         
     Returns:
-        YoloDetectionModel: Configured YOLO model
+        tuple: (model, preprocess, classes) - YoloDetectionModel, preprocessing function, class names
     """
     # Detect version if not provided
     if version is None:
@@ -2007,7 +2007,13 @@ def create_yolomodel(modelname, num_classes=None, ckpt_file=None, fp16=False, de
     if fp16:
         model = model.half()
     
-    return model
+    # Create preprocessing function (using model's built-in preprocessing)
+    preprocess = model.preprocess
+    
+    # Get class names - use COCO classes as default
+    classes = COCO_CLASSES if hasattr(model, 'names') and model.names is None else getattr(model, 'names', COCO_CLASSES)
+    
+    return model, preprocess, classes
 
 
 def detect_yolo_version(model_path_or_name):
@@ -2043,6 +2049,10 @@ def freeze_yolomodel(model, freeze=[]):
     Returns:
         Model with frozen layers
     """
+    if len(freeze) == 0:
+        # No layers to freeze, return model as is
+        return model
+    
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]
     for k, v in model.named_parameters():
         v.requires_grad = True

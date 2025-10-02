@@ -147,10 +147,10 @@ class NuScenesDataset(Dataset):
             raise
         
         # Create lookup dictionaries for efficient access
-        self._create_lookup_dicts()
+        self._create_lookup_dicts2()
         
         # Filter and prepare samples for the specified split
-        self._prepare_samples()
+        self._prepare_samples2()
         
         print(f"✅ Dataset initialized with {len(self.samples)} samples for {split} split")
     
@@ -166,6 +166,26 @@ class NuScenesDataset(Dataset):
         
         print(f"✅ Created lookup dictionaries for efficient data access")
     
+    def _create_lookup_dicts2(self):
+        """Precompute lookup dictionaries for O(1) access."""
+        self.sample_data_lookup = {sd['token']: sd for sd in self.nuscenes_data['sample_data']}
+        self.calibrated_sensor_lookup = {cs['token']: cs for cs in self.nuscenes_data['calibrated_sensors']}
+        self.ego_pose_lookup = {ep['token']: ep for ep in self.nuscenes_data['ego_poses']}
+        self.sensor_lookup = {s['token']: s for s in self.nuscenes_data['sensors']}
+        self.category_lookup = {c['token']: c['name'] for c in self.nuscenes_data['categories']}
+        self.instance_lookup = {i['token']: i for i in self.nuscenes_data['instances']}
+
+        # ✅ Precompute sample+camera → sample_data mapping
+        self.sample_camera_lookup = {}
+        for sd in self.nuscenes_data['sample_data']:
+            cs = self.calibrated_sensor_lookup.get(sd['calibrated_sensor_token'])
+            if cs:
+                sensor = self.sensor_lookup.get(cs['sensor_token'])
+                if sensor:
+                    self.sample_camera_lookup[(sd['sample_token'], sensor['channel'])] = sd
+
+        print("✅ Created lookup dictionaries and sample-camera index")
+
     def _prepare_samples(self):
         """Prepare and filter samples for the dataset."""
         self.samples = []
@@ -216,11 +236,61 @@ class NuScenesDataset(Dataset):
         
         print(f"✅ Prepared {len(self.samples)} samples for {self.split} split")
     
+    def _prepare_samples2(self):
+        """Split samples into train/val/test and filter by required cameras."""
+        self.samples = []
+
+        all_samples = self.nuscenes_data['samples']
+        split_idx = int(0.8 * len(all_samples))
+
+        if self.split == 'train':
+            selected_samples = all_samples[:split_idx]
+        elif self.split == 'val':
+            selected_samples = all_samples[split_idx:]
+        else:  # test or full
+            selected_samples = all_samples
+
+        for sample in selected_samples:
+            # ✅ check all required cameras exist
+            has_all = all(
+                (sample['token'], cam) in self.sample_camera_lookup
+                for cam in self.camera_types
+            )
+            if has_all:
+                self.samples.append(sample)
+
+            if self.max_samples and len(self.samples) >= self.max_samples:
+                break
+
+        print(f"✅ Prepared {len(self.samples)} samples for {self.split} split (fast)")
+
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
         return len(self.samples)
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Get image + target dict for a given index."""
+        sample = self.samples[idx]
+        primary_camera = self.camera_types[0]
+
+        # Direct lookup (no scanning!)
+        sample_data = self.sample_camera_lookup.get((sample['token'], primary_camera))
+        if sample_data is None:
+            raise ValueError(f"No {primary_camera} data for sample {sample['token']}")
+
+        image_path = os.path.join(self.root_dir, sample_data['filename'])
+        image = self.get_image(image_path)
+        target = self.get_target(sample['token'], sample_data)
+
+        if self.transform:
+            image = self.transform(image)
+        if self.target_transform:
+            target = self.target_transform(target)
+
+        return image, target
+
+
+    def __getitem_old__(self, idx: int) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """
         Get a sample from the dataset.
         
@@ -550,11 +620,108 @@ def collate_fn(batch):
     images = torch.stack(images, 0)
     return images, list(targets)
 
+import json
+import os
+from pathlib import Path
+import shutil
+from tqdm import tqdm
+
+def export_nuscenes_to_coco(dataset, output_dir, max_samples=None, step=1):
+    """
+    Export a (subsampled) subset of NuScenesDataset into COCO format.
+
+    Args:
+        dataset: NuScenesDataset object (already loaded).
+        output_dir (str): Output folder to save images + COCO json.
+        max_samples (int or None): Limit number of samples (None = all).
+        step (int): Subsampling step (e.g., 10 = pick 1 out of every 10 images).
+    """
+    output_dir = Path(output_dir)
+    images_dir = output_dir / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+
+    coco = {
+        "info": {"description": f"NuScenes subset (step={step}) exported to COCO"},
+        "licenses": [],
+        "categories": [{"id": i, "name": name} for i, name in enumerate(CATEGORY_NAMES)],
+        "images": [],
+        "annotations": []
+    }
+
+    ann_id = 1
+    total_samples = len(dataset)
+    
+    # Subsample by step
+    selected_indices = list(range(0, total_samples, step))
+    if max_samples:
+        selected_indices = selected_indices[:max_samples]
+
+    print(f"📦 Exporting {len(selected_indices)} / {total_samples} samples to {output_dir} (step={step})...")
+
+    for new_img_id, idx in enumerate(tqdm(selected_indices)):
+        try:
+            img, target = dataset[idx]
+
+            # Convert tensor → uint8 numpy
+            if isinstance(img, torch.Tensor):
+                img = img.permute(1, 2, 0).numpy()
+                if img.max() <= 1.0:
+                    img = (img * 255).astype(np.uint8)
+                elif img.min() < 0:  # normalized
+                    mean = np.array([0.485, 0.456, 0.406])
+                    std = np.array([0.229, 0.224, 0.225])
+                    img = (img * std + mean) * 255
+                    img = np.clip(img, 0, 255).astype(np.uint8)
+
+            filename = f"sample_{new_img_id:06d}.jpg"
+            save_path = images_dir / filename
+            Image.fromarray(img).save(save_path)
+
+            h, w = img.shape[0], img.shape[1]
+            coco["images"].append({
+                "id": new_img_id,
+                "file_name": f"images/{filename}",
+                "width": w,
+                "height": h
+            })
+
+            boxes = target["boxes"].cpu().numpy()
+            labels = target["labels"].cpu().numpy()
+            areas = target["area"].cpu().numpy() if "area" in target else (
+                (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+            )
+
+            for b, l, a in zip(boxes, labels, areas):
+                xmin, ymin, xmax, ymax = b.tolist()
+                coco["annotations"].append({
+                    "id": ann_id,
+                    "image_id": new_img_id,
+                    "category_id": int(l),
+                    "bbox": [xmin, ymin, xmax - xmin, ymax - ymin],
+                    "area": float(a),
+                    "iscrowd": 0
+                })
+                ann_id += 1
+
+        except Exception as e:
+            print(f"⚠️ Skipped sample {idx}: {e}")
+
+    # Save JSON
+    ann_path = output_dir / "annotations.json"
+    with open(ann_path, "w") as f:
+        json.dump(coco, f)
+
+    print(f"✅ Export complete: {len(coco['images'])} images, {len(coco['annotations'])} annotations")
+    print(f"📂 Images saved in {images_dir}")
+    print(f"📄 Annotations saved in {ann_path}")
+
+
 
 def main():
+
     """Test the simplified NuScenes dataset."""
     parser = argparse.ArgumentParser(description='Test NuScenes Dataset')
-    parser.add_argument('--root_dir', type=str, default=DEFAULT_NUSCENES_ROOT,
+    parser.add_argument('--root_dir', type=str, default="/data/Datasets/nuscenes/v1.0-trainval",
                        help='Root directory of NuScenes dataset')
     parser.add_argument('--split', type=str, default='train', choices=['train', 'val', 'test'],
                        help='Dataset split to use')
@@ -575,7 +742,7 @@ def main():
             root_dir=args.root_dir,
             split=args.split,
             camera_types=args.camera_types,
-            max_samples=args.max_samples,
+            #max_samples=args.max_samples,
             transform=create_nuscenes_transforms(train=False),
             validate_on_init=False  # Disable validation for testing
         )
@@ -584,7 +751,7 @@ def main():
         
         # Test loading a few samples with visualization
         print("\nTesting sample loading with 2D bounding box visualization...")
-        for i in range(min(20, len(dataset))):
+        for i in range(min(5, len(dataset))):
             try:
                 image, target = dataset[i] #image:[3, 900, 1600]
                 print(f"  Sample {i}: Image shape: {image.shape}, "
@@ -652,6 +819,15 @@ def main():
             print(f"\nSample 0 info keys: {list(sample_info.keys())}")
         
         print("\n✅ Dataset testing completed successfully!")
+
+        # Save a COCO subset (e.g., 50 samples)
+        #export_nuscenes_to_coco(dataset, output_dir="/data/Datasets/nuscenes_subset_coco", max_samples=2000)
+        export_nuscenes_to_coco(
+            dataset,
+            output_dir="/data/Datasets/nuscenes_subset_coco_step10",
+            max_samples=20000,
+            step=5
+        )
         
     except Exception as e:
         print(f"❌ Dataset testing failed: {e}")

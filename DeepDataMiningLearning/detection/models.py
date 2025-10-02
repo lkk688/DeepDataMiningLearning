@@ -212,7 +212,7 @@ def create_detectionmodel(modelname, num_classes=None, trainable_layers=0, ckpt_
                 model = load_checkpoint(model, ckpt_file, fp16)
         else:
             print("Model name not supported")
-    elif modelname.startswith('yolo'):
+    elif modelname.startswith('yolo') or 'yolo' in modelname.lower():
         model, preprocess, classes=create_yolomodel(modelname, num_classes, ckpt_file, fp16, device, scale)
         model= freeze_yolomodel(model, freeze=[])
         #ckpt file is already loaded in create_yolomodel
