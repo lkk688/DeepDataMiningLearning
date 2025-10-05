@@ -14,7 +14,7 @@ from collections import defaultdict
 import torch
 import DeepDataMiningLearning.detection.transforms as reference_transforms
 from torchvision.transforms import functional as F
-
+import random
 
 WrapNewDict = False
 
@@ -191,8 +191,9 @@ class DetectionPresetEval:
 
 def get_dataset(datasetname, is_train, is_val, args, output_format="torch", img_size=None):
     # Use img_size from args if not explicitly provided
-    if img_size is None:
-        img_size = getattr(args, 'img_size', 640)  # Default to 640 if not found
+    # if img_size is None:
+    #     img_size = getattr(args, 'img_size', 640)  # Default to 640 if not found
+    
     
     if datasetname.lower() == 'coco':
         ds, num_classes = get_cocodataset(is_train, is_val, args, output_format, img_size)
@@ -216,16 +217,210 @@ def get_transform(is_train, args, img_size=640):
         trans = weights.transforms()
         return lambda img, target: (trans(img), target)
     else:
-        return DetectionPresetEval(backend=args.backend, use_v2=args.use_v2, img_size=img_size)
+        return DetectionPresetEval(backend=args.backend, use_v2=args.use_v2, img_size=img_size)  
+
+def get_transform_new(is_train, args, img_size=640):
+    """
+    Unified transform function that keeps image and annotations synchronized.
+    Works for both training and evaluation, even when pretrained weights are used.
+    """
+
+    # 1️⃣ Training mode → DetectionPresetTrain (resizes & augments image + boxes)
+    if is_train:
+        return DetectionPresetTrain(
+            data_augmentation=args.data_augmentation,
+            backend=args.backend,
+            use_v2=args.use_v2,
+            img_size=img_size
+        )
+
+    # 2️⃣ Evaluation mode (test_only=True with weights)
+    elif args.weights and args.test_only:
+        # Load model-defined preprocessing (resize + normalization)
+        weights = torchvision.models.get_weight(args.weights)
+        weight_trans = weights.transforms()  # image-only transform
+
+        # Wrap into a transform that also rescales boxes/masks
+        def transform_with_boxes(img, target):
+            orig_w, orig_h = img.size
+            img = weight_trans(img)
+            new_w, new_h = img.shape[-1], img.shape[-2]
+
+            # If boxes exist → resize them to match new image size
+            if "boxes" in target:
+                boxes = target["boxes"]
+                boxes = resize_boxes(boxes, (orig_h, orig_w), (new_h, new_w))
+                target["boxes"] = boxes
+
+            # Resize masks if present
+            if "masks" in target:
+                target["masks"] = torchvision.transforms.functional.resize(
+                    target["masks"], (new_h, new_w)
+                )
+
+            return img, target
+
+        return transform_with_boxes
+
+    # 3️⃣ Default evaluation (no pretrained weights)
+    else:
+        return DetectionPresetEval(
+            backend=args.backend,
+            use_v2=args.use_v2,
+            img_size=img_size
+        )
+
+def resize_boxes(boxes, original_size, new_size):
+    ratios = [float(new_size[0]) / original_size[0],
+              float(new_size[1]) / original_size[1]]
+    ratio_height, ratio_width = ratios
+    boxes = boxes * torch.tensor([ratio_width, ratio_height, ratio_width, ratio_height])
+    return boxes
+
+def make_train_transform_with_resize(
+    img_size=640,
+    resize_prob=1.0,
+    hflip_prob=0.5,
+    color_jitter=True,
+    normalize=True
+):
+    """
+    Returns a training transform that resizes image + annotations together,
+    applies random horizontal flip and optional color jitter.
+
+    Args:
+        img_size (int): target shorter side for resizing (aspect ratio preserved)
+        resize_prob (float): probability of resizing (1.0 = always resize)
+        hflip_prob (float): probability of horizontal flip
+        color_jitter (bool): apply random brightness/contrast/saturation
+        normalize (bool): apply ImageNet mean/std normalization
+    Returns:
+        transform: callable (img, target) -> (img, target)
+    """
+    IMAGENET_MEAN = [0.485, 0.456, 0.406]
+    IMAGENET_STD = [0.229, 0.224, 0.225]
+
+    def transform(img, target):
+        orig_w, orig_h = img.size if not torch.is_tensor(img) else (img.shape[-1], img.shape[-2])
+
+        # ------------------------
+        # 1. Resize (aspect-ratio preserving)
+        # ------------------------
+        if img_size is not None and random.random() < resize_prob:
+            img = F.resize(img, [img_size])
+            new_w, new_h = img.size if not torch.is_tensor(img) else (img.shape[-1], img.shape[-2])
+
+            if "boxes" in target:
+                boxes = target["boxes"]
+                if not torch.is_tensor(boxes):
+                    boxes = torch.as_tensor(boxes, dtype=torch.float32)
+                boxes = resize_boxes(boxes, (orig_h, orig_w), (new_h, new_w))
+                target["boxes"] = boxes
+
+            #if "masks" in target:
+                #target["masks"] = F.resize(target["masks"], [new_h, new_w])
+
+            if "masks" in target and target["masks"].numel() > 0:
+                target["masks"] = F.resize(target["masks"], [new_h, new_w])
+        # ------------------------
+        # 2. Random horizontal flip
+        # ------------------------
+        if random.random() < hflip_prob:
+            img = F.hflip(img)
+            w, h = img.size
+            if "boxes" in target:
+                boxes = target["boxes"]
+                boxes[:, [0, 2]] = w - boxes[:, [2, 0]]
+                target["boxes"] = boxes
+            if "masks" in target:
+                target["masks"] = target["masks"].flip(-1)
+
+        # ------------------------
+        # 3. Color jitter (brightness/contrast/saturation)
+        # ------------------------
+        if color_jitter:
+            img = F.adjust_brightness(img, 1.0 + (random.random() - 0.5) * 0.2)
+            img = F.adjust_contrast(img, 1.0 + (random.random() - 0.5) * 0.2)
+            img = F.adjust_saturation(img, 1.0 + (random.random() - 0.5) * 0.2)
+
+        # ------------------------
+        # 4. Convert to tensor
+        # ------------------------
+        img = F.to_tensor(img)
+
+        # ------------------------
+        # 5. Normalize (optional)
+        # ------------------------
+        if normalize:
+            img = F.normalize(img, mean=IMAGENET_MEAN, std=IMAGENET_STD)
+
+        return img, target
+
+    return transform
+
+def make_eval_transform_with_resize(img_size=None):
+    """
+    Returns a transform that keeps image and annotations aligned.
+    - If img_size is given (e.g. 640): resize image + boxes/masks with aspect ratio preserved.
+    - If img_size is None: no resizing is performed.
     
+    Args:
+        img_size (int or None): target shorter side length. If None, skip resizing.
+    Returns:
+        transform: callable (img, target) -> (img, target)
+    """
+    def transform(img, target):
+        # Original size (W, H)
+        orig_w, orig_h = img.size if not torch.is_tensor(img) else (img.shape[-1], img.shape[-2])
+
+        # --------------------------
+        # Case 1: resize with aspect ratio
+        # --------------------------
+        if img_size is not None:
+            # Resize image while preserving aspect ratio
+            img = F.resize(img, [img_size])
+
+            # New size (W, H)
+            new_w, new_h = img.size if not torch.is_tensor(img) else (img.shape[-1], img.shape[-2])
+
+            # Scale bounding boxes
+            if "boxes" in target:
+                boxes = target["boxes"]
+                if not torch.is_tensor(boxes):
+                    boxes = torch.as_tensor(boxes, dtype=torch.float32)
+                boxes = resize_boxes(boxes, (orig_h, orig_w), (new_h, new_w))
+                target["boxes"] = boxes
+
+            # Resize masks if present
+            #if "masks" in target:
+                #target["masks"] = F.resize(target["masks"], [new_h, new_w])
+            if "masks" in target and target["masks"].numel() > 0:
+                target["masks"] = F.resize(target["masks"], [new_h, new_w])
+        # --------------------------
+        # Case 2: skip resizing entirely
+        # --------------------------
+        else:
+            # No resizing: just ensure correct tensor type
+            if "boxes" in target and not torch.is_tensor(target["boxes"]):
+                target["boxes"] = torch.as_tensor(target["boxes"], dtype=torch.float32)
+
+        # Convert to tensor before returning
+        img = F.to_tensor(img)
+        return img, target
+
+    return transform
+
 def get_cocodataset(is_train, is_val, args, output_format="torch", img_size=640):
     image_set = "train" if is_train else "val"
     num_classes, mode = {"coco": (91, "instances"), "coco_kp": (2, "person_keypoints")}[args.dataset]
     with_masks = False #"mask" in args.model
+    # def transform(img, target):
+    #     img = F.to_tensor(img)
+    #     return img, target
     ds = get_coco(
         root=args.data_path,
         image_set=image_set,
-        transforms=get_transform(is_train, args, img_size),
+        transforms=make_train_transform_with_resize(img_size) if is_train else make_eval_transform_with_resize(img_size), #, #get_transform_new(is_train, args, img_size),
         mode=mode,
         use_v2=args.use_v2,
         with_masks=with_masks,

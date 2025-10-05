@@ -12,6 +12,7 @@ from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.trainutils import create_aspect_ratio_groups, GroupedBatchSampler
 
 from DeepDataMiningLearning.detection.dataset import get_dataset #get_cocodataset, get_kittidataset, get_transform
+#pip install torchinfo ultralytics
 from DeepDataMiningLearning.detection.models import create_detectionmodel #get_torchvision_detection_models, modify_fasterrcnnheader
 from DeepDataMiningLearning.detection.myevaluator import simplemodelevaluate, modelevaluate
 
@@ -23,6 +24,186 @@ except:
 
 #Select the visible GPU
 #os.environ['CUDA_VISIBLE_DEVICES'] = "0,1,2,3" #"0,1"
+import torch
+import random
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from torchvision.transforms.functional import to_pil_image
+
+# ANSI color codes for cleaner printouts
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+RED = "\033[91m"
+RESET = "\033[0m"
+
+def visualize_dataset_sample(
+    dataset,
+    sample_idx=None,
+    save_path="sample_visualization.jpg",
+    category_names=None,
+    box_format="auto",
+    verbose=True,
+):
+    """
+    Visualize one sample (image + bounding boxes + labels) from a dataset.
+    Automatically detects COCO / VOC / YOLO / custom formats, prints
+    detected data structure, and supports external category name mapping.
+
+    Args:
+        dataset: PyTorch Dataset instance (e.g., get_coco(), CocoDetection, VOC, YOLO, custom)
+        sample_idx (int or None): which sample to visualize (random if None)
+        save_path (str): output image path
+        category_names (dict or list or None): optional mapping from label_id → class name
+        box_format (str): 'xyxy', 'xywh', or 'auto'
+        verbose (bool): whether to print detailed dataset structure
+    """
+    # ------------------------------
+    # 1. Select a random sample
+    # ------------------------------
+    if sample_idx is None:
+        sample_idx = random.randint(0, len(dataset) - 1)
+
+    sample = dataset[sample_idx]
+    if not (isinstance(sample, (list, tuple)) and len(sample) == 2):
+        raise TypeError(f"{RED}Dataset sample must be (image, target), got {type(sample)}{RESET}")
+    img, target = sample
+
+    # ------------------------------
+    # 2. Convert image to PIL for visualization
+    # ------------------------------
+    if torch.is_tensor(img):
+        img = to_pil_image(img)
+    width, height = img.size
+
+    if verbose:
+        print(f"\n{CYAN}=== Dataset Sample Info ==={RESET}")
+        print(f"Index: {sample_idx}")
+        print(f"Image size: {width}x{height}")
+        print(f"Image type: {type(img)}")
+        print(f"Target type: {type(target)}")
+        if isinstance(target, dict):
+            print(f"Target keys: {list(target.keys())}")
+        elif isinstance(target, list) and len(target) > 0:
+            print(f"List of dicts, keys example: {list(target[0].keys())}")
+
+    # ------------------------------
+    # 3. Determine category name mapping
+    # ------------------------------
+    cat_map = None
+    if category_names is not None:
+        if isinstance(category_names, list):
+            cat_map = {i: name for i, name in enumerate(category_names)}
+        elif isinstance(category_names, dict):
+            cat_map = category_names
+        else:
+            raise TypeError(f"{RED}category_names must be a list or dict{RESET}")
+        if verbose:
+            print(f"{GREEN}Using external category_names mapping with {len(cat_map)} entries.{RESET}")
+
+    elif hasattr(dataset, "coco"):
+        try:
+            categories = dataset.coco.loadCats(dataset.coco.getCatIds())
+            cat_map = {c["id"]: c["name"] for c in categories}
+            if verbose:
+                print(f"{GREEN}Detected COCO dataset: loaded {len(cat_map)} category names.{RESET}")
+        except Exception as e:
+            if verbose:
+                print(f"{YELLOW}Warning: Could not load COCO category names: {e}{RESET}")
+
+    else:
+        if verbose:
+            print(f"{YELLOW}No category name mapping detected (labels will be numeric only).{RESET}")
+
+    # ------------------------------
+    # 4. Extract bounding boxes and labels
+    # ------------------------------
+    boxes, labels = [], []
+    dataset_type = "unknown"
+
+    # COCO-style list[dict]
+    if isinstance(target, list) and len(target) > 0 and isinstance(target[0], dict):
+        dataset_type = "COCO (list[dict])"
+        for ann in target:
+            bbox = ann.get("bbox", None)
+            if bbox is None:
+                continue
+            x, y, w, h = bbox
+            boxes.append([x, y, x + w, y + h])  # xywh → xyxy
+            labels.append(ann.get("category_id", 0))
+
+    # dict-style dataset (get_coco, custom)
+    elif isinstance(target, dict):
+        dataset_type = "Custom dict-based dataset"
+        if "boxes" in target:
+            boxes = target["boxes"].tolist() if torch.is_tensor(target["boxes"]) else target["boxes"]
+        if "labels" in target:
+            labels = target["labels"].tolist() if torch.is_tensor(target["labels"]) else target["labels"]
+        elif "classes" in target:
+            labels = target["classes"]
+
+    # YOLO tensor format: [cls, x_center, y_center, w, h]
+    elif isinstance(target, torch.Tensor) and target.ndim == 2 and target.shape[1] >= 5:
+        dataset_type = "YOLO tensor format"
+        labels = target[:, 0].tolist()
+        boxes_xywh = target[:, 1:5].tolist()
+        boxes = [[x - w / 2, y - h / 2, x + w / 2, y + h / 2] for x, y, w, h in boxes_xywh]
+
+    if verbose:
+        print(f"{CYAN}Detected dataset format: {dataset_type}{RESET}")
+        print(f"Number of boxes: {len(boxes)}")
+        if len(labels) > 0:
+            print(f"Label sample: {labels[:5]}")
+
+    if len(boxes) == 0:
+        print(f"{YELLOW}[Warning] No boxes found for sample {sample_idx}.{RESET}")
+        return
+
+    # ------------------------------
+    # 5. Auto-detect box format (xyxy vs xywh)
+    # ------------------------------
+    if box_format == "auto" and len(boxes) > 0:
+        x1, y1, x2, y2 = boxes[0]
+        if x2 < x1 or y2 < y1:
+            boxes = [[x, y, x + w, y + h] for (x, y, w, h) in boxes]
+            print(f"{YELLOW}Auto-detected COCO xywh boxes; converted to xyxy format.{RESET}")
+        else:
+            print(f"{GREEN}Detected xyxy format boxes (no conversion needed).{RESET}")
+            
+    # ------------------------------
+    # 6. Draw boxes and save visualization
+    # ------------------------------
+    fig, ax = plt.subplots(1, figsize=(12, 8))
+    ax.imshow(img)
+    ax.set_title(f"Sample {sample_idx} — {len(boxes)} objects", fontsize=14)
+
+    for i, box in enumerate(boxes):
+        x1, y1, x2, y2 = box
+        color = (random.random(), random.random(), random.random())
+        rect = patches.Rectangle(
+            (x1, y1), x2 - x1, y2 - y1,
+            linewidth=2, edgecolor=color, facecolor="none"
+        )
+        ax.add_patch(rect)
+
+        label_id = int(labels[i]) if i < len(labels) else -1
+        label_text = str(label_id)
+        if cat_map and label_id in cat_map:
+            label_text = f"{cat_map[label_id]} ({label_id})"
+
+        ax.text(
+            x1, max(y1 - 5, 5),
+            label_text,
+            color="white", fontsize=10, weight="bold",
+            bbox=dict(facecolor=color, alpha=0.6, pad=2, edgecolor="none")
+        )
+
+    ax.axis("off")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches="tight")
+    if verbose:
+        print(f"{GREEN}[INFO] Saved visualization to: {save_path}{RESET}")
+    plt.close(fig)
 
 MACHINENAME='HPC'
 USE_AMP=True #AUTOMATIC MIXED PRECISION
@@ -44,15 +225,15 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default=r"E:\Shared\Dataset\coco", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
-    parser.add_argument("--annotationfile", default="", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
+    parser.add_argument("--data-path", default="/mnt/e/Shared/Dataset/coco2017", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
+    parser.add_argument("--annotationfile", default="/mnt/e/Shared/Dataset/coco2017/annotations/instances_val2017.json", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
     parser.add_argument(
         "--dataset",
         default="coco", #waymococo
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
-    parser.add_argument("--model", default="customrcnn_resnet152", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
+    parser.add_argument("--model", default="fasterrcnn_resnet50_fpn_v2", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
     parser.add_argument("--trainable", default=0, type=int, help="number of trainable layers (sequence) of backbone")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -179,7 +360,7 @@ def main(args):
     print("Loading data")
 
     dataset, num_classes = get_dataset(args.dataset, is_train=True, is_val=False, args=args) #get_dataset
-    dataset_test, _ = get_dataset(args.dataset, is_train=False, is_val=True, args=args)
+    dataset_test, _ = get_dataset(args.dataset, is_train=False, is_val=True, args=args, img_size=640)
 
     # split the dataset in train and test set
     # indices = torch.randperm(len(dataset)).tolist()
@@ -189,6 +370,8 @@ def main(args):
     # dataset_test.transform = get_transform(is_train=False, args=args)
     print("train set len:", len(dataset))
     print("Test set len:", len(dataset_test))
+    #visualize_dataset_sample(dataset, sample_idx=0, save_path="datasetcoco_trainsample.jpg")
+    visualize_dataset_sample(dataset_test, sample_idx=0, save_path="datasetcoco_valsample.jpg")
 
     print("Creating data loaders")
     if args.distributed:
@@ -212,6 +395,17 @@ def main(args):
     data_loader_test = torch.utils.data.DataLoader(
         dataset_test, batch_size=1, sampler=test_sampler, num_workers=1, collate_fn=utils.collate_fn
     )
+    # from DeepDataMiningLearning.detection.myevaluator import get_coco_val_dataset
+    # dataset_test = get_coco_val_dataset(args.data_path)
+    # visualize_dataset_sample(dataset_test, sample_idx=0, save_path="datasetcoco_sample2.jpg")
+
+    # data_loader_test = torch.utils.data.DataLoader(
+    #         dataset_test,
+    #         batch_size=1,
+    #         shuffle=False,
+    #         num_workers=4,
+    #         collate_fn=lambda x: tuple(zip(*x)),
+    #     )
 
     print("Creating model")
     #kwargs = {"trainable_backbone_layers": args.trainable_backbone_layers}
@@ -278,6 +472,18 @@ def main(args):
 
     if args.test_only:
         #torch.backends.cudnn.deterministic = True
+        # Load COCO val2017 dataset
+        # from torch.utils.data import DataLoader
+        # from DeepDataMiningLearning.detection.myevaluator import get_coco_val_dataset
+        # dataset = get_coco_val_dataset(args.data_path)
+        # #standarded CocoDetection, returns: (image, [annotation_dict_1, annotation_dict_2, ...])
+        # data_loader = DataLoader(
+        #     dataset,
+        #     batch_size=1,
+        #     shuffle=False,
+        #     num_workers=4,
+        #     collate_fn=lambda x: tuple(zip(*x)),
+        # )
         simplemodelevaluate(model, data_loader_test, device=device)
         #evaluate(model, data_loader_test, device=device)
         #evaluate(model, data_loader, device=device)

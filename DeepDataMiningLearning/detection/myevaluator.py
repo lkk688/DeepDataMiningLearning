@@ -7,6 +7,7 @@ import numpy as np
 from DeepDataMiningLearning.detection import utils
 #from DeepDataMiningLearning.detection.coco_eval import CocoEvaluator
 #from DeepDataMiningLearning.detection.coco_utils import get_coco_api_from_dataset
+#pip install pycocotools
 from pycocotools.coco import COCO #https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocotools/coco.py
 from pycocotools.cocoeval import COCOeval
 from pycocotools import mask as coco_mask
@@ -15,7 +16,10 @@ import copy
 import io
 from contextlib import redirect_stdout
 from tqdm.auto import tqdm
+from torchvision.datasets import CocoDetection
+from torchvision.transforms import functional as F
 
+#https://github.com/pytorch/vision/blob/main/references/detection/coco_eval.py
 class CocoEvaluator:
     def __init__(self, coco_gt, iou_types):
         if not isinstance(iou_types, (list, tuple)):
@@ -94,12 +98,12 @@ class CocoEvaluator:
             labels = prediction["labels"].tolist()
 
             # Debug: Print box conversion for first few detections
-            if len(coco_results) < 5:
-                print(f"Debug: Converting boxes for image {original_id}: {len(boxes)} detections")
-                if len(boxes) > 0:
-                    box = boxes[0]
-                    print(f"Debug: Sample converted box (xywh): [{box[0]:.1f}, {box[1]:.1f}, {box[2]:.1f}, {box[3]:.1f}]")
-                    print(f"Debug: Box dimensions - width: {box[2]:.1f}, height: {box[3]:.1f}")
+            # if len(coco_results) < 5:
+            #     print(f"Debug: Converting boxes for image {original_id}: {len(boxes)} detections")
+            #     if len(boxes) > 0:
+            #         box = boxes[0]
+            #         print(f"Debug: Sample converted box (xywh): [{box[0]:.1f}, {box[1]:.1f}, {box[2]:.1f}, {box[3]:.1f}]")
+            #         print(f"Debug: Box dimensions - width: {box[2]:.1f}, height: {box[3]:.1f}")
 
             coco_results.extend(
                 [
@@ -334,42 +338,278 @@ def convert_to_coco_api(ds):#mykittidetectiondataset
     coco_ds.dataset = dataset
     coco_ds.createIndex()
     return coco_ds
-    
+
+def convert_to_coco_api_new(ds):
+    """
+    Converts a dataset into a COCO-style API-compatible object.
+    Handles both:
+      - custom datasets returning dict targets
+      - CocoDetection datasets returning list-of-dicts targets
+    """
+    coco_ds = COCO()
+    ann_id = 1
+    #dataset = {"images": [], "categories": [], "annotations": []}
+    # Add COCO-required top-level fields
+    dataset = {
+        "info": {
+            "description": "Converted COCO-style dataset",
+            "version": "1.0",
+            "year": 2025,
+            "contributor": "custom script",
+            "date_created": "2025-10-03",
+        },
+        "licenses": [],
+        "images": [],
+        "annotations": [],
+        "categories": [],
+    }
+    categories = set()
+
+    print("Converting dataset to COCO format...")
+
+    for idx in tqdm(range(len(ds)), desc="Building COCO dataset"):
+        img, targets = ds[idx]
+        #[3, 426, 640], list of 20 dicts ('image_id' =139 'bbox' =[493.1, 174.34, 20.29, 108.31])
+        # --- case 1: CocoDetection returns list of annotations ---
+        if isinstance(targets, list):
+            if len(targets) == 0:
+                continue  # skip empty images
+            image_id = targets[0].get("image_id", idx)
+            #height, width = img.shape[-2:]
+            # Handle both Tensor [C,H,W] and PIL.Image
+            if torch.is_tensor(img):
+                height, width = img.shape[-2:]
+            else:
+                width, height = img.size
+            img_dict = {"id": image_id, "height": height, "width": width}
+            dataset["images"].append(img_dict)
+
+            for t in targets:
+                ann = {}
+                ann["image_id"] = image_id
+                bbox = t.get("bbox", [0, 0, 0, 0])
+                ann["bbox"] = [float(x) for x in bbox]
+                ann["category_id"] = int(t.get("category_id", 1))
+                ann["area"] = float(t.get("area", bbox[2] * bbox[3]))
+                ann["iscrowd"] = int(t.get("iscrowd", 0))
+                ann["id"] = ann_id
+                ann_id += 1
+
+                dataset["annotations"].append(ann)
+                categories.add(ann["category_id"])
+
+        # --- case 2: custom dataset returns dict target ---
+        elif isinstance(targets, dict):
+            image_id = (
+                targets["image_id"].item()
+                if torch.is_tensor(targets["image_id"])
+                else targets["image_id"]
+            )
+            #height, width = img.shape[-2:]
+            if torch.is_tensor(img):
+                height, width = img.shape[-2:]
+            else:
+                width, height = img.size
+            img_dict = {"id": image_id, "height": height, "width": width}
+            dataset["images"].append(img_dict)
+
+            boxes = targets["boxes"].clone()
+            boxes[:, 2:] -= boxes[:, :2]
+            boxes = boxes.tolist()
+
+            labels = targets["labels"].tolist()
+            areas = targets.get("area", [b[2] * b[3] for b in boxes])
+            iscrowd = targets.get(
+                "iscrowd", torch.zeros(len(boxes), dtype=torch.int64)
+            ).tolist()
+
+            for i in range(len(boxes)):
+                ann = {
+                    "image_id": image_id,
+                    "bbox": boxes[i],
+                    "category_id": int(labels[i]),
+                    "area": float(areas[i]),
+                    "iscrowd": int(iscrowd[i]),
+                    "id": ann_id,
+                }
+                dataset["annotations"].append(ann)
+                categories.add(int(labels[i]))
+                ann_id += 1
+
+        else:
+            raise TypeError(
+                f"Unsupported target type: {type(targets)}. "
+                "Expected dict or list of dicts."
+            )
+
+    # --- categories section ---
+    dataset["categories"] = [{"id": int(i), "name": str(i)} for i in sorted(categories)]
+
+    coco_ds.dataset = dataset
+    coco_ds.createIndex()
+    return coco_ds
+
+@torch.inference_mode()
 def simplemodelevaluate(model, data_loader, device):
+    """
+    Evaluate a detection model on a COCO-style dataset.
 
+    This version supports both:
+      (1) custom datasets returning a single dict target per image:
+            target = {
+                "boxes": Tensor[N, 4],        # (xmin, ymin, xmax, ymax) in pixel coords
+                "labels": Tensor[N],          # category IDs (int)
+                "image_id": Tensor[1] or int,
+                "area": Tensor[N],            # optional
+                "iscrowd": Tensor[N],         # optional
+            }
+
+      (2) torchvision.datasets.CocoDetection, which returns:
+            (image, list[dict]) where each dict has:
+                {"bbox": [x, y, w, h], "category_id": int, "image_id": int, ...}
+          In this case, this function automatically extracts image_id = target[0]["image_id"]
+
+    Args:
+        model (torch.nn.Module): Trained detection model (e.g. FasterRCNN, DETR)
+        data_loader (torch.utils.data.DataLoader): DataLoader returning (images, targets)
+            where:
+                - images: list[Tensor[C,H,W]] of images
+                - targets: list[dict] with keys {"boxes", "labels", "image_id", ...}
+        device (torch.device): CUDA or CPU device for inference
+
+    Returns:
+        coco_evaluator (CocoEvaluator): COCO evaluation object with accumulated metrics
+    """
+
+    # Device setup: evaluation runs on GPU if available
+    device = torch.device(device)
     cpu_device = torch.device("cpu")
-    model.eval()
 
-    coco = get_coco_api_from_dataset(data_loader.dataset) #go through the whole dataset, convert_to_coco_api
+    model.eval().to(device)
+    print(f"\n[INFO] Starting evaluation on device: {device}")
+
+    ## Get COCO-style API object from dataset (it builds COCO-like ground-truth dict)
+    coco = convert_to_coco_api_new(data_loader.dataset) #go through the whole dataset, convert_to_coco_api
     #coco = convert_to_coco_api(data_loader.dataset)
+    #coco: pycocotools.coco.COCO object (ground truth)
+    
+    print("GT categories:", sorted({ann['category_id'] for ann in coco.dataset['annotations']})) #1-90
+    
+    # Evaluate only bounding boxes
     iou_types = ["bbox"] #_get_iou_types(model)
     coco_evaluator = CocoEvaluator(coco, iou_types)
 
-    evalprogress_bar = tqdm(range(len(data_loader)))
+    # Optional timers for performance diagnostics
+    model_time = 0.0
+    evaluator_time = 0.0
 
-    for images, targets in data_loader: #images, targets are a tuple (tensor, )
-        images = list(img.to(device) for img in images) #list of torch.Size([3, 426, 640]), len=1
+    # tqdm progress bar for visualization
+    progress_bar = tqdm(data_loader, desc="Evaluating", unit="batch")
+
+    #for images, targets in data_loader: #images, targets are a tuple (tensor, )
+    for images, targets in progress_bar:
+        # new---------------------------------------------------------
+        # images: tuple/list of images in this batch
+        #   each image: Tensor[3, H, W], unnormalized, different sizes
+        # targets: tuple/list of per-image annotations
+        #   if using CocoDetection -> list[dict, dict, ...]
+        #   if custom dataset     -> dict with "boxes", "labels", ...
+        # ---------------------------------------------------------
+
+        # images: list[Tensor[3,H,W]], typically batch of 1–4 images
+        # targets: list[dict] with per-image ground truth
+        #images = list(img.to(device) for img in images) #list of torch.Size([3, 426, 640]), len=1
+        # Move inputs to GPU
+        images = [img.to(device, non_blocking=True) for img in images]
+
         #targets: len=1 dict (image_id=139), boxes[20,4], labels[20]
-        model_time = time.time()
-        outputs = model(images) #len1 list of dict boxes tensor (10x4), labels tensor[10], scores
+        # Record inference time
+        start_model_time = time.perf_counter()
+        outputs = model(images)  # forward pass on GPU
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        model_time += time.perf_counter() - start_model_time
 
-        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs] #len1 list of dicts with tensors
-        model_time = time.time() - model_time
+        # ---------------------------------------------------------
+        # outputs: list of dicts, same length as images
+        #   each element:
+        #     {
+        #       "boxes": Tensor[M, 4]  (predicted boxes, xyxy)
+        #       "labels": Tensor[M]    (predicted category IDs)
+        #       "scores": Tensor[M]    (confidence)
+        #     }
+        # ---------------------------------------------------------
 
-        res = {target["image_id"]: output for target, output in zip(targets, outputs)} #dict, key=139, val=dict[boxes] 10,4
-        #print("res:", res)
-        evaluator_time = time.time()
+        # Move predictions to CPU for COCO evaluation (pycocotools requires numpy)
+        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+
+        #print("Sample prediction:", outputs[0]["boxes"][:2], outputs[0]["scores"][:2], outputs[0]["labels"][:2])
+        #print("Pred categories sample:", outputs[0]['labels'][:10])
+        # Prepare results mapping: image_id → predictions
+        # Ensure image_id is converted to Python int (not tensor)
+        #res = {target["image_id"].item(): output for target, output in zip(targets, outputs)}
+        # ---------------------------------------------------------
+        # Prepare results mapping: image_id → model_output
+        # ---------------------------------------------------------
+        res = {}
+        for target, output in zip(targets, outputs):
+            # Case 1: COCO raw format (list of annotation dicts)
+            if isinstance(target, list):
+                if len(target) == 0:
+                    # image has no ground-truth objects; skip
+                    continue
+                image_id = target[0].get("image_id", -1)
+            # Case 2: Dict format from custom dataset
+            elif isinstance(target, dict):
+                image_id = (
+                    target["image_id"].item()
+                    if torch.is_tensor(target["image_id"])
+                    else target["image_id"]
+                )
+            else:
+                raise TypeError(
+                    f"[ERROR] Unexpected target type {type(target)} "
+                    f"— expected dict or list[dict]"
+                )
+        
+            # Optional: filter out low-confidence predictions (<0.05)
+            if "scores" in output and len(output["scores"]) > 0:
+                keep = output["scores"] > 0.05
+                if keep.sum() == 0:
+                    continue  # all predictions below threshold
+                output = {k: v[keep] for k, v in output.items()}
+            else:
+                continue  # no predictions at all
+
+            # image_id must be an integer key
+            res[int(image_id)] = output
+
+
+        # Record evaluator time
+        start_eval_time = time.perf_counter()
+        if len(res) == 0:
+            print("[Warning] No predictions in this batch!")
+            continue
+        else:
+            for img_id, out in res.items():
+                print(f"Debug: Image {img_id}, {len(out['boxes'])} boxes, avg score {out['scores'].mean().item() if len(out['scores'])>0 else 0:.3f}")
         coco_evaluator.update(res)
-        evaluator_time = time.time() - evaluator_time
-        evalprogress_bar.update(1)
+        evaluator_time += time.perf_counter() - start_eval_time
 
-    # gather the stats from all processes
-    #coco_evaluator.synchronize_between_processes()
+    # Final synchronization for distributed setups (optional)
+    # coco_evaluator.synchronize_between_processes()
 
-    # accumulate predictions from all images
+    # Accumulate results and summarize metrics
+    print("\n[INFO] Accumulating COCO metrics...")
     coco_evaluator.accumulate()
     coco_evaluator.summarize()
-    #torch.set_num_threads(n_threads)
+
+    # Print timing breakdown
+    num_images = len(data_loader.dataset)
+    print("\n[INFO] Evaluation complete.")
+    print(f"  • Total images evaluated: {num_images}")
+    print(f"  • Avg model (GPU) inference time per batch: {model_time / len(data_loader):.4f} s")
+    print(f"  • Avg evaluator (CPU) update time per batch: {evaluator_time / len(data_loader):.4f} s\n")
     return coco_evaluator
 
 @torch.inference_mode()
@@ -946,9 +1186,62 @@ def vis_example(onedetection, imgtensor, filename='result.jpg'):
     # save a image using extension
     im.save(filename)
 
+def get_coco_val_dataset(root="/datasets/coco2017"):
+    annFile = f"{root}/annotations/instances_val2017.json"
+    imgDir = f"{root}/val2017"
+
+    # Define a minimal transform to convert PIL to tensor
+    def transform(img, target):
+        img = F.to_tensor(img)
+        return img, target
+
+    dataset = CocoDetection(imgDir, annFile, transforms=transform)
+    return dataset
+
+def test_fasterrcnn_cocoevaluation(dataset_path="/mnt/e/Shared/Dataset/coco2017"):  # <-- change this path
+    from torchvision.models.detection import fasterrcnn_resnet50_fpn
+    from torchvision.models.detection.transform import GeneralizedRCNNTransform
+    from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+    from torch.utils.data import DataLoader
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # load default pretrained model
+    # num_classes = 91
+    # model = fasterrcnn_resnet50_fpn(pretrained=True)
+    # # COCO has 91 classes (including background)
+    # in_features = model.roi_heads.box_predictor.cls_score.in_features
+    # model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    # model.to(device)
+    # model.eval()
+
+    from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
+
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = fasterrcnn_resnet50_fpn(weights=weights)
+    model.to(device).eval()
+
+    # Load COCO val2017 dataset
+    dataset = get_coco_val_dataset(dataset_path)
+    #standarded CocoDetection, returns: (image, [annotation_dict_1, annotation_dict_2, ...])
+    data_loader = DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=False,
+        num_workers=4,
+        collate_fn=lambda x: tuple(zip(*x)),
+    )
+
+    # Run evaluation
+    print("Running evaluation...")
+    coco_evaluator = simplemodelevaluate(model, data_loader, device)
+
+    print("Evaluation finished.")
+    coco_evaluator.summarize()
+
+
 from DeepDataMiningLearning.detection import utils
 from DeepDataMiningLearning.detection.dataset import get_dataset
-from DeepDataMiningLearning.detection.models import create_detectionmodel
 class args:
     data_path = '/data/Datasets/kitti/' #'/data/cmpe249-fa23/COCOoriginal/' # #'/data/cmpe249-fa23/WaymoCOCO/' #'/data/cmpe249-fa23/coco/'
     annotationfile = '/data/cmpe249-fa23/coco/train2017.txt'
@@ -957,7 +1250,10 @@ class args:
     backend = 'PIL' #tensor
     use_v2 = False
     dataset = 'yolo'#'coco'
-if __name__ == "__main__":
+
+
+def yolo_test():
+    from DeepDataMiningLearning.detection.models import create_detectionmodel
     is_train =False
     is_val =True
     datasetname='kitti'#'coco' #'waymococo' #'yolo'
@@ -982,3 +1278,6 @@ if __name__ == "__main__":
 
     yoloevaluate(model, data_loader_test, preprocess, device, use_coco_mapping=True)
     #simplemodelevaluate(model, data_loader_test, device)
+
+if __name__ == "__main__":
+    test_fasterrcnn_cocoevaluation()
