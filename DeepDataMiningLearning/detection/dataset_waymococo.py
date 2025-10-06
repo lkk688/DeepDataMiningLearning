@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 from tqdm import tqdm
 import shutil
+from torchvision.transforms import functional as F
 
 class WaymoCOCODataset(torch.utils.data.Dataset):
     def __init__(self, root, annotation, train=True, transform=None):
@@ -33,14 +34,30 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
         imgToAnns=self.coco.imgToAnns #image_id to list of annotations
         catToImgs =self.coco.catToImgs #three classes, 1,2,4
         cats=self.coco.cats
-        self.numclass = 5 #len(catToImgs) + 1 #three classes + background
+        #self.numclass = 5 #len(catToImgs) + 1 #three classes + background
         #num_classes=5 # ['unknown', 'vehicle', 'pedestrian', 'sign', 'cyclist']
         #previous_num_classes = 4 #Unknown:0, Vehicles: 1, Pedestrians: 2, Cyclists: 3, Signs (removed)
         #Real data only has 
+        self.CLASSES = {
+            1: "Vehicle",
+            2: "Pedestrian",
+            3: "Cyclist",
+            4: "Sign"
+        }
         self.INSTANCE_CATEGORY_NAMES = ['__background__','Vehicles', 'Pedestrians', 'Cyclists', 'Signs']
+        self.numclass = len(self.INSTANCE_CATEGORY_NAMES)
         #self.INSTANCE2id = {'__background__':0, 'Vehicles': 1, 'Pedestrians': 2, 'Cyclists': 4} #background is 0
         #self.id2INSTANCE = {v: k for k, v in self.INSTANCE2id.items()}
         #In annotation, class is 1,2,4
+        self.coco_class_map = {
+            1: 2,   # COCO 'person' → Waymo 'Pedestrian'
+            2: 3,   # COCO 'bicycle' → Waymo 'Cyclist'
+            3: 1,   # COCO 'car' → Waymo 'Vehicle'
+            6: 1,   # COCO 'bus' → Vehicle
+            8: 1,   # COCO 'truck' → Vehicle
+            10: 4,  # COCO 'traffic light' → Sign
+            12: 4,  # COCO 'stop sign' → Sign
+        }
 
     
     def _get_target(self, id):
@@ -98,69 +115,126 @@ class WaymoCOCODataset(torch.utils.data.Dataset):
 
         # List: get annotation id from coco
         #ann_ids = coco.getAnnIds(imgIds=img_id)
-        annolist=[self.coco.imgToAnns[img_id]]
-        anns = list(itertools.chain.from_iterable(annolist))
-        ann_ids = [ann['id'] for ann in anns]
+        # annolist=[self.coco.imgToAnns[img_id]]
+        # anns = list(itertools.chain.from_iterable(annolist))
+        # ann_ids = [ann['id'] for ann in anns]
+        ann_ids = self.coco.getAnnIds(imgIds=img_id)
+        anns = self.coco.loadAnns(ann_ids)
+        
+        boxes, labels, areas, iscrowd = [], [], [], []
+        
+        # --- robust parsing of annotations ---
+        for ann in anns:
+            # Skip broken or missing bbox
+            if "bbox" not in ann or len(ann["bbox"]) != 4:
+                continue
+            x, y, w, h = ann["bbox"]
+            if w <= 1 or h <= 1:  # too small or invalid box
+                continue
+
+            # clip to positive coordinates
+            x1, y1, x2, y2 = max(0, x), max(0, y), x + w, y + h
+            boxes.append([x1, y1, x2, y2])
+
+            # safe category_id
+            cat = ann.get("category_id", 0)
+            labels.append(int(cat))
+
+            # safe area, fallback if missing
+            areas.append(float(ann.get("area", w * h)))
+
+            # safe iscrowd
+            iscrowd.append(int(ann.get("iscrowd", 0)))
+
+        # --- convert to tensors ---
+        boxes = torch.as_tensor(boxes, dtype=torch.float32)
+        labels = torch.as_tensor(labels, dtype=torch.int64)
+        areas = torch.as_tensor(areas, dtype=torch.float32)
+        iscrowd = torch.as_tensor(iscrowd, dtype=torch.int64)
+
+        # --- normalize empty cases ---
+        if boxes.numel() == 0:
+            boxes = boxes.reshape(0, 4)
+            labels = torch.zeros((0,), dtype=torch.int64)
+            areas = torch.zeros((0,), dtype=torch.float32)
+            iscrowd = torch.zeros((0,), dtype=torch.int64)
+
+        target = {
+            "boxes": boxes,
+            "labels": labels,
+            "image_id": torch.tensor([img_id]),
+            "area": areas,
+            "iscrowd": iscrowd,
+        }
+
+        if self.transform:
+            img, target = self.transform(img, target)
+        else:
+            img = F.to_tensor(img)
+
+        return img, target
+
+        
         # Dictionary: target coco_annotation file for an image
         #ref: https://github.com/cocodataset/cocoapi/blob/master/PythonAPI/pycocotools/coco.py
-        targets  = coco.loadAnns(ann_ids)
+        #targets  = coco.loadAnns(ann_ids)
         #targets=self.anns[ann_ids]
         #print("targets:", targets)
         
         #image_id = targets["image_id"].item()
 
         # number of objects in the image
-        num_objs = len(targets)
+        # num_objs = len(targets)
 
-        # Bounding boxes for objects
-        # In coco format, bbox = [xmin, ymin, width, height]
-        # In pytorch, the input should be [xmin, ymin, xmax, ymax]
-        target = {}
-        target_bbox = []
-        target_labels = []
-        target_areas = []
-        target_crowds = []
-        for i in range(num_objs):
-            xmin = targets[i]['bbox'][0]
-            ymin = targets[i]['bbox'][1]
-            width=targets[i]['bbox'][2]
-            xmax = xmin + width
-            height = targets[i]['bbox'][3]
-            ymax = ymin + height
-            if xmin<=xmax and ymin<=ymax and xmin>=0 and ymin>=0 and width>1 and height>1:
-                target_bbox.append([xmin, ymin, xmax, ymax])
-                target_labels.append(targets[i]['category_id'])
-                #target_crowds.append(targets[i]['iscrowd'])
-                target_areas.append(targets[i]['area'])
-        num_objs=len(target_bbox)
-        #print("target_bbox len:", num_objs)
-        if num_objs>0:
-            #print("target_labels:", target_labels)
-            target['boxes'] = torch.as_tensor(target_bbox, dtype=torch.float32)
-            # Labels int value for class
-            target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)
-            #target['image_id'] = torch.tensor([int(img_id)])
-            #target['image_id'] = torch.tensor(int(img_id))
-            target['image_id'] = int(img_id)
-            #torch.tensor([int(frameitem.context.name.split("_")[-2] + str(index))])
-            target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)
-            target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#torch.zeros((len(target['boxes'])), dtype=torch.int64)
-        else:
-            #negative example, ref: https://github.com/pytorch/vision/issues/2144
-            target['boxes'] = torch.zeros((0, 4), dtype=torch.float32)#not empty
-            target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)#empty
-            #target['image_id'] = torch.tensor([int(img_id)])
-            #target['image_id'] = torch.tensor(int(img_id))
-            target['image_id'] = int(img_id)
-            target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)#empty
-            target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
+        # # Bounding boxes for objects
+        # # In coco format, bbox = [xmin, ymin, width, height]
+        # # In pytorch, the input should be [xmin, ymin, xmax, ymax]
+        # target = {}
+        # target_bbox = []
+        # target_labels = []
+        # target_areas = []
+        # target_crowds = []
+        # for i in range(num_objs):
+        #     xmin = targets[i]['bbox'][0]
+        #     ymin = targets[i]['bbox'][1]
+        #     width=targets[i]['bbox'][2]
+        #     xmax = xmin + width
+        #     height = targets[i]['bbox'][3]
+        #     ymax = ymin + height
+        #     if xmin<=xmax and ymin<=ymax and xmin>=0 and ymin>=0 and width>1 and height>1:
+        #         target_bbox.append([xmin, ymin, xmax, ymax])
+        #         target_labels.append(targets[i]['category_id'])
+        #         #target_crowds.append(targets[i]['iscrowd'])
+        #         target_areas.append(targets[i]['area'])
+        # num_objs=len(target_bbox)
+        # #print("target_bbox len:", num_objs)
+        # if num_objs>0:
+        #     #print("target_labels:", target_labels)
+        #     target['boxes'] = torch.as_tensor(target_bbox, dtype=torch.float32)
+        #     # Labels int value for class
+        #     target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)
+        #     #target['image_id'] = torch.tensor([int(img_id)])
+        #     #target['image_id'] = torch.tensor(int(img_id))
+        #     target['image_id'] = int(img_id)
+        #     #torch.tensor([int(frameitem.context.name.split("_")[-2] + str(index))])
+        #     target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)
+        #     target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#torch.zeros((len(target['boxes'])), dtype=torch.int64)
+        # else:
+        #     #negative example, ref: https://github.com/pytorch/vision/issues/2144
+        #     target['boxes'] = torch.zeros((0, 4), dtype=torch.float32)#not empty
+        #     target['labels'] = torch.as_tensor(np.array(target_labels), dtype=torch.int64)#empty
+        #     #target['image_id'] = torch.tensor([int(img_id)])
+        #     #target['image_id'] = torch.tensor(int(img_id))
+        #     target['image_id'] = int(img_id)
+        #     target["area"] = torch.as_tensor(np.array(target_areas), dtype=torch.float32)#empty
+        #     target["iscrowd"] = torch.as_tensor(np.array(target_crowds), dtype=torch.int64)#empty
 
-        # if self.transforms is not None:
-        #     img = self.transforms(img)
-        if self.transform:
-            img, target = self.transform(img, target)
-        #print("target:", target)
-        return img, target
+        # # if self.transforms is not None:
+        # #     img = self.transforms(img)
+        # if self.transform:
+        #     img, target = self.transform(img, target)
+        # #print("target:", target)
+        # return img, target
 
     def __len__(self):
         return len(self.ids)

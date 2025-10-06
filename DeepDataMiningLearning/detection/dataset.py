@@ -202,7 +202,7 @@ def get_dataset(datasetname, is_train, is_val, args, output_format="torch", img_
     elif datasetname.lower() == 'kitti_yolo':
         ds, num_classes = get_kittiyolodataset(is_train, is_val, args, output_format, img_size)
     elif datasetname.lower() == 'waymococo':
-        ds, num_classes = get_waymococodataset(is_train, is_val, args, output_format, img_size)
+        ds, num_classes = get_waymococodataset(is_train, is_val, args.data_path, args.annotationfile, output_format, img_size)
     elif datasetname.lower() == 'yolo':
         ds, num_classes = get_yolodataset(is_train, is_val, args, output_format, img_size)
     return ds, num_classes
@@ -330,8 +330,21 @@ def make_train_transform_with_resize(
             w, h = img.size
             if "boxes" in target:
                 boxes = target["boxes"]
-                boxes[:, [0, 2]] = w - boxes[:, [2, 0]]
-                target["boxes"] = boxes
+                if not torch.is_tensor(boxes):
+                    boxes = torch.as_tensor(boxes, dtype=torch.float32)
+
+                # Skip if no boxes
+                if boxes.numel() == 0: #empty box
+                    target["boxes"] = boxes.reshape(0, 4)
+                else:
+                    # Ensure 2-D shape [N,4]
+                    if boxes.ndim == 1:
+                        boxes = boxes.unsqueeze(0)
+
+                    # Horizontal flip
+                    boxes = boxes.clone()
+                    boxes[:, [0, 2]] = w - boxes[:, [2, 0]]
+                    target["boxes"] = boxes
             if "masks" in target:
                 target["masks"] = target["masks"].flip(-1)
 
@@ -495,21 +508,119 @@ def get_kittiyolodataset(is_train, is_val, args, output_format="yolo", img_size=
     print(f"✅ KITTI YOLO dataset loaded: {len(dataset)} samples, {num_classes} classes, format: {output_format}, img_size: {img_size}")
     return dataset, num_classes
 
-def get_waymococodataset(is_train, is_val, args, output_format="torch", img_size=640):
-    rootPath=args.data_path
-    annotation=args.annotationfile
-    if is_val == True:
-        annotation = os.path.join(rootPath, 'annotations_val20new.json') #'annotations_val50new.json'
-        transformfunc=get_transform(False, args, img_size)
-        dataset = WaymoCOCODataset(rootPath, annotation, train=True, transform=transformfunc)
-    else: #Training
-        annotation = os.path.join(rootPath, 'annotations_train200new.json') 
-        transformfunc=get_transform(True, args, img_size) #add augumentation
-        dataset = WaymoCOCODataset(rootPath, annotation, train=is_train, transform=transformfunc)
-    
+import os
+import json
+import random
+from pycocotools.coco import COCO
+from torch.utils.data import Subset
+import torch
+
+def _split_coco_json(input_json, output_dir, val_ratio=0.2, seed=42):
+    """
+    Split a single COCO JSON file into train/val JSON files.
+
+    Args:
+        input_json (str): Path to full COCO-style annotation file.
+        output_dir (str): Directory to save split files.
+        val_ratio (float): Fraction of images to use for validation.
+        seed (int): Random seed for reproducibility.
+
+    Returns:
+        (str, str): paths to train_json, val_json
+    """
+    random.seed(seed)
+    coco = COCO(input_json)
+    img_ids = list(coco.imgs.keys())
+    random.shuffle(img_ids)
+
+    split_idx = int(len(img_ids) * (1 - val_ratio))
+    train_ids, val_ids = img_ids[:split_idx], img_ids[split_idx:]
+
+    def build_subset(ids):
+        """Return a valid COCO subset dictionary."""
+        subset = {
+            "info": coco.dataset.get("info", {}),
+            "licenses": coco.dataset.get("licenses", []),
+            "categories": coco.dataset["categories"],
+            "images": [coco.imgs[i] for i in ids],
+            "annotations": [a for a in coco.dataset["annotations"] if a["image_id"] in ids],
+        }
+        return subset
+
+    os.makedirs(output_dir, exist_ok=True)
+    train_json = os.path.join(output_dir, "annotations_train_split.json")
+    val_json   = os.path.join(output_dir, "annotations_val_split.json")
+
+    with open(train_json, "w") as f:
+        json.dump(build_subset(train_ids), f)
+    with open(val_json, "w") as f:
+        json.dump(build_subset(val_ids), f)
+
+    print(f"✅ COCO split generated: {len(train_ids)} train / {len(val_ids)} val")
+    print(f"   Train annotations: {train_json}")
+    print(f"   Val annotations:   {val_json}")
+
+    return train_json, val_json
+
+
+def get_waymococodataset(is_train, is_val, data_path, annotationfile, output_format="torch", img_size=640, val_ratio=0.1):
+    """
+    Automatically detect or generate train/val splits for Waymo COCO dataset.
+
+    Args:
+        is_train (bool): whether to return the training dataset.
+        is_val (bool):   whether to return the validation dataset.
+        args:            must contain args.data_path (root dir) and args.annotationfile.
+        output_format (str): description of output format, not used.
+        img_size (int):  target resize for transforms.
+        val_ratio (float): fraction of images to use for validation if splitting.
+    """
+    rootPath = data_path
+    annotation = annotationfile
+
+    # Define expected split paths inside rootPath
+    train_split_path = os.path.join(rootPath, "annotations_train_split.json")
+    val_split_path   = os.path.join(rootPath, "annotations_val_split.json")
+
+    # --- Step 1: Detect if split files already exist ---
+    if not (os.path.exists(train_split_path) and os.path.exists(val_split_path)):
+        print("[INFO] Train/val split files not found. Generating new split...")
+        _split_coco_json(annotation, rootPath, val_ratio=val_ratio)
+    else:
+        print("[INFO] Found existing train/val split files in rootPath. Reusing them.")
+
+    # --- Step 2: Choose which split to load ---
+    if is_val:
+        ann_path = val_split_path
+        transform = make_eval_transform_with_resize(img_size)
+        split_name = "validation"
+    else:
+        ann_path = train_split_path
+        transform = make_train_transform_with_resize(img_size)
+        split_name = "training"
+
+    # --- Step 3: Load dataset ---
+    dataset = WaymoCOCODataset(rootPath, ann_path, train=is_train, transform=transform)
     num_classes = dataset.numclass
-    print(f"✅ Waymo COCO dataset loaded: {len(dataset)} samples, {num_classes} classes, format: {output_format}, img_size: {img_size}")
+    print(f"✅ Waymo COCO {split_name} set loaded: {len(dataset)} samples, {num_classes} classes, img_size={img_size}")
+
     return dataset, num_classes
+
+# def get_waymococodataset(is_train, is_val, args, output_format="torch", img_size=640):
+#     rootPath=args.data_path
+#     annotation=args.annotationfile
+#     if is_val == True:
+#         #annotation = os.path.join(rootPath, 'annotations_val20new.json') #'annotations_val50new.json'
+#         #transformfunc=get_transform_new(False, args, img_size)
+#         dataset = WaymoCOCODataset(rootPath, annotation, train=True, transform=make_eval_transform_with_resize(img_size)) #No augumentation
+#     else: #Training
+#         #annotation = os.path.join(rootPath, 'annotations_train200new.json') 
+#         #transformfunc=get_transform_new(True, args, img_size) #add augumentation
+#         dataset = WaymoCOCODataset(rootPath, annotation, train=is_train, transform=make_train_transform_with_resize(img_size)) #add augumentation
+    
+#     num_classes = dataset.numclass
+#     print(f"✅ Waymo COCO dataset loaded: {len(dataset)} samples, {num_classes} classes, format: {output_format}, img_size: {img_size}")
+#     return dataset, num_classes
     #mykitti = datasets.Kitti(root=rootPath, train= True, transform = get_transform(is_train, args), target_transform = None, download = False)
 
 import yaml

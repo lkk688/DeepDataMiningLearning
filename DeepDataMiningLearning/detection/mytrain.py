@@ -14,7 +14,7 @@ from DeepDataMiningLearning.detection.trainutils import create_aspect_ratio_grou
 from DeepDataMiningLearning.detection.dataset import get_dataset #get_cocodataset, get_kittidataset, get_transform
 #pip install torchinfo ultralytics
 from DeepDataMiningLearning.detection.models import create_detectionmodel #get_torchvision_detection_models, modify_fasterrcnnheader
-from DeepDataMiningLearning.detection.myevaluator import simplemodelevaluate, modelevaluate
+from DeepDataMiningLearning.detection.myevaluator import simplemodelevaluate, modelevaluate, simplemodelevaluate_old
 
 try:
     from torchinfo import summary
@@ -216,8 +216,11 @@ USE_AMP=True #AUTOMATIC MIXED PRECISION
 # else:
 #     DATAPATH='./data'
 
-#dataset: #coco, /data/cmpe249-fa23/COCOoriginal/
+#dataset: #coco, /mnt/e/Shared/Dataset/coco2017
 #kitti /data/cmpe249-fa23/torchvisiondata/Kitti/
+
+#waymococo: /mnt/e/Shared/Dataset/waymodata/waymo_subset_coco_4000step5/
+#/mnt/e/Shared/Dataset/waymodata/waymo_subset_coco_4000step5/annotations.json
 
 #(mycondapy310) [010796032@cs003 detection]$ torchrun --nproc_per_node=4 mytrain.py --batch-size=32
 def get_args_parser(add_help=True):
@@ -225,11 +228,11 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/mnt/e/Shared/Dataset/coco2017", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
-    parser.add_argument("--annotationfile", default="/mnt/e/Shared/Dataset/coco2017/annotations/instances_val2017.json", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
+    parser.add_argument("--data-path", default="/mnt/e/Shared/Dataset/waymodata/waymo_subset_coco_4000step5/", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
+    parser.add_argument("--annotationfile", default="/mnt/e/Shared/Dataset/waymodata/waymo_subset_coco_4000step5/annotations.json", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
     parser.add_argument(
         "--dataset",
-        default="coco", #waymococo
+        default="waymococo", #coco, waymococo
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
@@ -360,7 +363,7 @@ def main(args):
     print("Loading data")
 
     dataset, num_classes = get_dataset(args.dataset, is_train=True, is_val=False, args=args) #get_dataset
-    dataset_test, _ = get_dataset(args.dataset, is_train=False, is_val=True, args=args, img_size=640)
+    dataset_test, _ = get_dataset(args.dataset, is_train=False, is_val=True, args=args, img_size=None)
 
     # split the dataset in train and test set
     # indices = torch.randperm(len(dataset)).tolist()
@@ -371,7 +374,7 @@ def main(args):
     print("train set len:", len(dataset))
     print("Test set len:", len(dataset_test))
     #visualize_dataset_sample(dataset, sample_idx=0, save_path="datasetcoco_trainsample.jpg")
-    visualize_dataset_sample(dataset_test, sample_idx=0, save_path="datasetcoco_valsample.jpg")
+    visualize_dataset_sample(dataset_test, save_path="datasetcoco_valsample.jpg")
 
     print("Creating data loaders")
     if args.distributed:
@@ -416,7 +419,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model, preprocess, classes = create_detectionmodel(args.model, num_classes, args.trainable)
+    model, preprocess, model_classes = create_detectionmodel(args.model, num_classes, customize=False, trainable_layers=args.trainable)
     model.to(device)
     
     if args.distributed and args.sync_bn:
@@ -484,7 +487,12 @@ def main(args):
         #     num_workers=4,
         #     collate_fn=lambda x: tuple(zip(*x)),
         # )
-        simplemodelevaluate(model, data_loader_test, device=device)
+        #simplemodelevaluate(model, data_loader_test, device=device)
+        if hasattr(dataset, "coco_class_map") and (len(model_classes) == 91 or len(model_classes) == 80):
+            simplemodelevaluate(model, data_loader_test, device, class_map=dataset.coco_class_map, class_names=dataset.CLASSES)
+        else:
+            #simplemodelevaluate(model, data_loader_test, device)
+            simplemodelevaluate(model, data_loader_test, device)
         #evaluate(model, data_loader_test, device=device)
         #evaluate(model, data_loader, device=device)
         return
