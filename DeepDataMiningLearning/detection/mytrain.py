@@ -236,7 +236,8 @@ def get_args_parser(add_help=True):
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
-    parser.add_argument("--model", default="fasterrcnn_resnet50_fpn_v2", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
+    parser.add_argument("--model", default="customrcnn_resnet152", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
+    parser.add_argument("--nocustomize", action="store_false", default=True, type=bool, help="whether change the model header for custom num_classes")
     parser.add_argument("--trainable", default=0, type=int, help="number of trainable layers (sequence) of backbone")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -306,9 +307,15 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--test-only",
-        default=True,
+        default=False,
         action="store_true",
         help="Only test the model",
+    )
+    parser.add_argument(
+        "--debugmode",
+        default=False,
+        action="store_true",
+        help="DEBUG output",
     )
     parser.add_argument(
         "--use-deterministic-algorithms", action="store_true", help="Forces the use of deterministic algorithms only."
@@ -325,7 +332,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--amp", action="store_true", help="Use torch.cuda.amp for mixed precision training")
     parser.add_argument("--backend", default="PIL", type=str.lower, help="PIL or tensor - case insensitive")
     parser.add_argument("--use-v2", action="store_true", help="Use V2 transforms")
-    parser.add_argument("--expname", default="0315", help="experiment name, create a sub-folder")
+    parser.add_argument("--expname", default="1005", help="experiment name, create a sub-folder")
 
     return parser
 
@@ -419,7 +426,7 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model, preprocess, model_classes = create_detectionmodel(args.model, num_classes, customize=False, trainable_layers=args.trainable)
+    model, preprocess, model_classes = create_detectionmodel(args.model, num_classes, customize=args.nocustomize, trainable_layers=args.trainable)
     model.to(device)
     
     if args.distributed and args.sync_bn:
@@ -489,10 +496,10 @@ def main(args):
         # )
         #simplemodelevaluate(model, data_loader_test, device=device)
         if hasattr(dataset, "coco_class_map") and (len(model_classes) == 91 or len(model_classes) == 80):
-            simplemodelevaluate(model, data_loader_test, device, class_map=dataset.coco_class_map, class_names=dataset.CLASSES)
+            simplemodelevaluate(model, data_loader_test, device, class_map=dataset.coco_class_map, class_names=dataset.CLASSES, DEBUG=args.debugmode)
         else:
             #simplemodelevaluate(model, data_loader_test, device)
-            simplemodelevaluate(model, data_loader_test, device)
+            simplemodelevaluate(model, data_loader_test, device, DEBUG=args.debugmode)
         #evaluate(model, data_loader_test, device=device)
         #evaluate(model, data_loader, device=device)
         return
@@ -519,7 +526,8 @@ def main(args):
                 utils.save_on_master(checkpoint, os.path.join(args.output_dir, "checkpoint.pth"))
 
             # evaluate after current epoch
-            modelevaluate(model, data_loader_test, device=device)
+            #modelevaluate(model, data_loader_test, device=device)
+            simplemodelevaluate(model, data_loader_test, device)
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -544,7 +552,8 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq, sc
         images = list(image.to(device) for image in images) #list of [3, 1280, 1920]
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets] #tuple to list
         #with torch.cuda.amp.autocast(enabled=scaler is not None):
-        with torch.amp.autocast(enabled=scaler is not None):
+        #with torch.amp.autocast(enabled=scaler is not None):
+        with torch.amp.autocast(device_type=device.type, enabled=scaler is not None):
             loss_dict = model(images, targets)
             losses = sum(loss for loss in loss_dict.values()) #single value
 

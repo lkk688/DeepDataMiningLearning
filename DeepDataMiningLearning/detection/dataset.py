@@ -196,7 +196,7 @@ def get_dataset(datasetname, is_train, is_val, args, output_format="torch", img_
     
     
     if datasetname.lower() == 'coco':
-        ds, num_classes = get_cocodataset(is_train, is_val, args, output_format, img_size)
+        ds, num_classes = get_cocodataset(is_train, args.data_path, args.dataset, output_format, img_size)
     elif datasetname.lower() == 'kitti':
         ds, num_classes = get_kittidataset(is_train, is_val, args, output_format, img_size)
     elif datasetname.lower() == 'kitti_yolo':
@@ -423,19 +423,19 @@ def make_eval_transform_with_resize(img_size=None):
 
     return transform
 
-def get_cocodataset(is_train, is_val, args, output_format="torch", img_size=640):
+def get_cocodataset(is_train, data_path, dataset, output_format="torch", img_size=640):
     image_set = "train" if is_train else "val"
-    num_classes, mode = {"coco": (91, "instances"), "coco_kp": (2, "person_keypoints")}[args.dataset]
+    num_classes, mode = {"coco": (91, "instances"), "coco_kp": (2, "person_keypoints")}[dataset]
     with_masks = False #"mask" in args.model
     # def transform(img, target):
     #     img = F.to_tensor(img)
     #     return img, target
     ds = get_coco(
-        root=args.data_path,
+        root=data_path,
         image_set=image_set,
         transforms=make_train_transform_with_resize(img_size) if is_train else make_eval_transform_with_resize(img_size), #, #get_transform_new(is_train, args, img_size),
         mode=mode,
-        use_v2=args.use_v2,
+        use_v2=False, #args.use_v2,
         with_masks=with_masks,
     )
     print(f"✅ COCO dataset loaded: {len(ds)} samples, {num_classes} classes, format: {output_format}, img_size: {img_size}")
