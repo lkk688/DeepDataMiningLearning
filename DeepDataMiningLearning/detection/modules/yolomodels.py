@@ -2062,348 +2062,6 @@ def freeze_yolomodel(model, freeze=[]):
     return model
 
 
-def test_yolov11_inference_comparison():
-    """
-    Test YOLOv11 model inference comparison between custom and official implementations.
-    YOLOv11 is the latest iteration with enhanced feature extraction and optimized efficiency.
-    """
-    print("\n" + "="*80)
-    print("YOLOV11 MODEL INFERENCE COMPARISON TEST")
-    print("="*80)
-    
-    # Check device availability
-    if torch.cuda.is_available():
-        device = 'cuda:0'
-        print(f"CUDA available, using {device}")
-    else:
-        device = 'cpu'
-        print("CUDA not available, using CPU")
-    
-    fp16 = False
-    imagepath = '/Developer/DeepDataMiningLearning/sampledata/bus.jpg'
-    
-    try:
-        # Import ultralytics for official YOLOv11 model
-        from ultralytics import YOLO
-        
-        print(f"Device: {device}")
-        print(f"Image path: {imagepath}")
-        print("-" * 80)
-        
-        # Test Official YOLOv11 Model
-        print("\n1. TESTING OFFICIAL YOLOV11 MODEL")
-        print("-" * 40)
-        
-        # Load official YOLOv11n model
-        official_model = YOLO('yolo11n.pt')
-        official_model.to(device)
-        print(f"✓ Official YOLOv11n model loaded")
-        
-        # Run inference with official model
-        official_results = official_model(imagepath, conf=0.25, verbose=False)
-        print(f"✓ Official model inference completed")
-        print(f"  Detections: {len(official_results[0].boxes) if official_results[0].boxes is not None else 0}")
-        
-        # Test Custom YOLOv11-style Model (using YOLOv8 architecture as base)
-        print("\n2. TESTING CUSTOM YOLOV11-STYLE MODEL")
-        print("-" * 40)
-        
-        # Use YOLOv8 config as base for custom model (YOLOv11 uses similar architecture)
-        modelcfg_file = '/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'
-        
-        # Import the converter function
-        from DeepDataMiningLearning.detection.ultralytics_converter import ensure_custom_yolo_checkpoint
-        
-        # Try to ensure custom checkpoint exists
-        ckpt_file = ensure_custom_yolo_checkpoint(
-            model_name="yolov8n",  # Use v8 weights as base for custom v11-style model
-            ckpt_path=None,
-            weights_dir="./weights",
-            ckpt_dir="./checkpoints", 
-            num_classes=80,
-            device=device
-        )
-        
-        # Create custom model
-        custom_model = YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3, version='v8')
-        print(f"✓ Custom YOLOv11-style model created: {custom_model.modelname}")
-        
-        # Load checkpoint if available
-        if ckpt_file and os.path.exists(ckpt_file):
-            custom_model = load_checkpoint(custom_model, ckpt_file)
-            print(f"✓ Checkpoint loaded successfully")
-        else:
-            print(f"⚠ No checkpoint loaded - using random weights")
-        
-        # Configure model
-        custom_model.to(device)
-        custom_model.eval()
-        
-        # Run inference with custom model
-        # Load image properly for custom model
-        im0 = cv2.imread(imagepath)
-        custom_results = custom_model.predict_with_official_processing(
-            [im0], conf=0.25, verbose=False
-        )
-        print(f"✓ Custom model inference completed")
-        print(f"  Detections: {len(custom_results) if custom_results else 0}")
-        
-        # Visualization Comparison
-        print("\n3. CREATING YOLOV11 VISUALIZATION COMPARISON")
-        print("-" * 40)
-        
-        # Load image for visualization (keep BGR format)
-        image = cv2.imread(imagepath)
-        
-        # Create individual visualizations
-        print("Creating individual visualizations...")
-        visualize_detections(
-            image, custom_results, 
-            title="Custom YOLOv11-style Model Detections", 
-            conf_threshold=0.25,
-            save_path="custom_yolov11_detections.png"
-        )
-        
-        visualize_detections(
-            image, official_results, 
-            title="Official YOLOv11 Model Detections", 
-            conf_threshold=0.25,
-            save_path="official_yolov11_detections.png"
-        )
-        
-        # Create comparison visualization
-        create_comparison_visualization(
-            image, custom_results, official_results,
-            conf_threshold=0.25,
-            save_path="yolov11_model_comparison.png"
-        )
-        
-        print("✓ YOLOv11 visualizations created and saved")
-        
-        # Performance Comparison
-        print("\n4. YOLOV11 PERFORMANCE BENCHMARKING")
-        print("-" * 40)
-        
-        # Benchmark custom model
-        custom_benchmark = custom_model.benchmark_inference(
-            input_shape=(1, 3, 640, 640), device=device, num_runs=50, warmup=10
-        )
-        
-        # Benchmark official model (simplified)
-        import time
-        warmup_runs = 10
-        benchmark_runs = 50
-        
-        # Warmup
-        for _ in range(warmup_runs):
-            _ = official_model(imagepath, verbose=False)
-        
-        # Benchmark
-        times = []
-        for _ in range(benchmark_runs):
-            start_time = time.time()
-            _ = official_model(imagepath, verbose=False)
-            end_time = time.time()
-            times.append((end_time - start_time) * 1000)  # Convert to ms
-        
-        official_avg_time = sum(times) / len(times)
-        official_fps = 1000 / official_avg_time
-        
-        print("="*60)
-        print("YOLOV11 MODEL INFERENCE BENCHMARK")
-        print("="*60)
-        print(f"Input shape: (1, 3, 640, 640)")
-        print(f"Device: {device}")
-        print(f"Warmup runs: 10")
-        print(f"Benchmark runs: 50")
-        print("-" * 60)
-        print(f"{'Model':<20} {'Time (ms)':<15} {'FPS':<10}")
-        print("-" * 60)
-        print(f"{'Custom YOLOv11':<20} {custom_benchmark['full_model']['avg_time']:<15.2f} {custom_benchmark['full_model']['fps']:<10.1f}")
-        print(f"{'Official YOLOv11':<20} {official_avg_time:<15.2f} {official_fps:<10.1f}")
-        print("="*60)
-        
-        print("✓ YOLOv11 inference comparison completed successfully!")
-        return True
-        
-    except Exception as e:
-        print(f"✗ YOLOv11 test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
-def test_yolov12_inference_comparison():
-    """
-    Test YOLOv12 model inference comparison between custom and official implementations.
-    YOLOv12 introduces attention-centric architecture with area attention mechanism.
-    """
-    print("\n" + "="*80)
-    print("YOLOV12 MODEL INFERENCE COMPARISON TEST")
-    print("="*80)
-    
-    # Check device availability
-    if torch.cuda.is_available():
-        device = 'cuda:0'
-        print(f"CUDA available, using {device}")
-    else:
-        device = 'cpu'
-        print("CUDA not available, using CPU")
-    
-    fp16 = False
-    imagepath = '/Developer/DeepDataMiningLearning/sampledata/bus.jpg'
-    
-    try:
-        # Import ultralytics for official YOLOv12 model
-        from ultralytics import YOLO
-        
-        print(f"Device: {device}")
-        print(f"Image path: {imagepath}")
-        print("-" * 80)
-        
-        # Test Official YOLOv12 Model
-        print("\n1. TESTING OFFICIAL YOLOV12 MODEL")
-        print("-" * 40)
-        
-        # Load official YOLOv12n model
-        official_model = YOLO('yolo12n.pt')
-        official_model.to(device)
-        print(f"✓ Official YOLOv12n model loaded")
-        
-        # Run inference with official model
-        official_results = official_model(imagepath, conf=0.25, verbose=False)
-        print(f"✓ Official model inference completed")
-        print(f"  Detections: {len(official_results[0].boxes) if official_results[0].boxes is not None else 0}")
-        
-        # Test Custom YOLOv12-style Model (using YOLOv8 architecture as base)
-        print("\n2. TESTING CUSTOM YOLOV12-STYLE MODEL")
-        print("-" * 40)
-        
-        # Use YOLOv8 config as base for custom model (YOLOv12 has different attention architecture)
-        modelcfg_file = '/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'
-        
-        # Import the converter function
-        from DeepDataMiningLearning.detection.ultralytics_converter import ensure_custom_yolo_checkpoint
-        
-        # Try to ensure custom checkpoint exists
-        ckpt_file = ensure_custom_yolo_checkpoint(
-            model_name="yolov8n",  # Use v8 weights as base for custom v12-style model
-            ckpt_path=None,
-            weights_dir="./weights",
-            ckpt_dir="./checkpoints", 
-            num_classes=80,
-            device=device
-        )
-        
-        # Create custom model
-        custom_model = YoloDetectionModel(cfg=modelcfg_file, scale='n', ch=3, version='v8')
-        print(f"✓ Custom YOLOv12-style model created: {custom_model.modelname}")
-        
-        # Load checkpoint if available
-        if ckpt_file and os.path.exists(ckpt_file):
-            custom_model = load_checkpoint(custom_model, ckpt_file)
-            print(f"✓ Checkpoint loaded successfully")
-        else:
-            print(f"⚠ No checkpoint loaded - using random weights")
-        
-        # Configure model
-        custom_model.to(device)
-        custom_model.eval()
-        
-        # Run inference with custom model
-        # Load image properly for custom model
-        im0 = cv2.imread(imagepath)
-        custom_results = custom_model.predict_with_official_processing(
-            [im0], conf=0.25, verbose=False
-        )
-        print(f"✓ Custom model inference completed")
-        print(f"  Detections: {len(custom_results) if custom_results else 0}")
-        
-        # Visualization Comparison
-        print("\n3. CREATING YOLOV12 VISUALIZATION COMPARISON")
-        print("-" * 40)
-        
-        # Load image for visualization (keep BGR format)
-        image = cv2.imread(imagepath)
-        
-        # Create individual visualizations
-        print("Creating individual visualizations...")
-        visualize_detections(
-            image, custom_results, 
-            title="Custom YOLOv12-style Model Detections", 
-            conf_threshold=0.25,
-            save_path="custom_yolov12_detections.png"
-        )
-        
-        visualize_detections(
-            image, official_results, 
-            title="Official YOLOv12 Model Detections", 
-            conf_threshold=0.25,
-            save_path="official_yolov12_detections.png"
-        )
-        
-        # Create comparison visualization
-        create_comparison_visualization(
-            image, custom_results, official_results,
-            conf_threshold=0.25,
-            save_path="yolov12_model_comparison.png"
-        )
-        
-        print("✓ YOLOv12 visualizations created and saved")
-        
-        # Performance Comparison
-        print("\n4. YOLOV12 PERFORMANCE BENCHMARKING")
-        print("-" * 40)
-        
-        # Benchmark custom model
-        custom_benchmark = custom_model.benchmark_inference(
-            input_shape=(1, 3, 640, 640), device=device, num_runs=50, warmup=10
-        )
-        
-        # Benchmark official model (simplified)
-        import time
-        warmup_runs = 10
-        benchmark_runs = 50
-        
-        # Warmup
-        for _ in range(warmup_runs):
-            _ = official_model(imagepath, verbose=False)
-        
-        # Benchmark
-        times = []
-        for _ in range(benchmark_runs):
-            start_time = time.time()
-            _ = official_model(imagepath, verbose=False)
-            end_time = time.time()
-            times.append((end_time - start_time) * 1000)  # Convert to ms
-        
-        official_avg_time = sum(times) / len(times)
-        official_fps = 1000 / official_avg_time
-        
-        print("="*60)
-        print("YOLOV12 MODEL INFERENCE BENCHMARK")
-        print("="*60)
-        print(f"Input shape: (1, 3, 640, 640)")
-        print(f"Device: {device}")
-        print(f"Warmup runs: 10")
-        print(f"Benchmark runs: 50")
-        print("-" * 60)
-        print(f"{'Model':<20} {'Time (ms)':<15} {'FPS':<10}")
-        print("-" * 60)
-        print(f"{'Custom YOLOv12':<20} {custom_benchmark['full_model']['avg_time']:<15.2f} {custom_benchmark['full_model']['fps']:<10.1f}")
-        print(f"{'Official YOLOv12':<20} {official_avg_time:<15.2f} {official_fps:<10.1f}")
-        print("="*60)
-        
-        print("✓ YOLOv12 inference comparison completed successfully!")
-        return True
-        
-    except Exception as e:
-        print(f"✗ YOLOv12 test failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-
-
 def test_model_inference_comparison():
     """
     Comprehensive test function that compares custom YOLO model with official Ultralytics model.
@@ -2423,8 +2081,8 @@ def test_model_inference_comparison():
         print("CUDA not available, using CPU")
     
     fp16 = False
-    imagepath = '/Developer/DeepDataMiningLearning/sampledata/bus.jpg'
-    modelcfg_file = '/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'  # Use local file
+    imagepath = 'sampledata/bus.jpg'
+    modelcfg_file = 'DeepDataMiningLearning/detection/modules/yolov8.yaml'  # Use local file
     
     # Import the converter function
     from DeepDataMiningLearning.detection.ultralytics_converter import ensure_custom_yolo_checkpoint
@@ -2440,7 +2098,7 @@ def test_model_inference_comparison():
     )
     
     # Load default configurations - use local file
-    cfgPath = '/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/default.yaml' #'default.yaml'
+    cfgPath = 'DeepDataMiningLearning/detection/modules/default.yaml' #'default.yaml'
     try:
         DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
     except:
@@ -2546,7 +2204,7 @@ def test_model_inference_comparison():
             
             # Post-process predictions using the model's postprocess method
             detections = custom_model.postprocess(preds, origimageshapes, input_shape=imgtensors.shape[2:])
-            
+            #list of UltralyticsResult object
             if len(detections) > 0:
                 custom_detection = detections[0]
                 
@@ -2588,7 +2246,16 @@ def test_model_inference_comparison():
             else:
                 print("✓ Custom model: No detections")
                 detection_data = torch.empty(0, 6)
-                
+
+            # Custom model visualization
+            custom_fig = visualize_detections(
+                image=im0,
+                detections=detections,
+                title="Custom Model Detections",
+                conf_threshold=0.25,
+                save_path="custom_model_detections.png"
+            )
+
     except Exception as e:
         print(f"✗ Custom model inference failed: {e}")
         import traceback
@@ -2619,43 +2286,6 @@ def test_model_inference_comparison():
                     print(f"  - Box coordinates range: [{coords.min():.1f}, {coords.max():.1f}]")
             else:
                 print("✓ Official model: No detections")
-                
-        except Exception as e:
-            print(f"✗ Official model inference failed: {e}")
-            official_available = False
-    
-    # Test 6: Visualization Comparison
-    print("\n6. VISUALIZATION COMPARISON")
-    print("-" * 40)
-    
-    try:
-        # Create visualization comparison if both models have results
-        if 'detections' in locals() and official_results is not None:
-            print("Creating comparison visualization...")
-            
-            # Create comparison visualization
-            comparison_fig = create_comparison_visualization(
-                image=im0,
-                custom_detections=detections,
-                official_detections=official_results,
-                conf_threshold=0.25,
-                save_path="model_comparison.png"
-            )
-            
-            # Show the plot
-            plt.show()
-            
-            # Also create individual visualizations
-            print("Creating individual visualizations...")
-            
-            # Custom model visualization
-            custom_fig = visualize_detections(
-                image=im0,
-                detections=detections,
-                title="Custom Model Detections",
-                conf_threshold=0.25,
-                save_path="custom_model_detections.png"
-            )
             
             # Official model visualization
             official_fig = visualize_detections(
@@ -2665,151 +2295,11 @@ def test_model_inference_comparison():
                 conf_threshold=0.25,
                 save_path="official_model_detections.png"
             )
-            
-            print("✓ Visualizations created and saved")
-            
-        elif 'detections' in locals():
-            print("Creating custom model visualization only...")
-            custom_fig = visualize_detections(
-                image=im0,
-                detections=detections,
-                title="Custom Model Detections",
-                conf_threshold=0.25,
-                save_path="custom_model_detections.png"
-            )
-            plt.show()
-            print("✓ Custom model visualization created")
-            
-        elif official_results is not None:
-            print("Creating official model visualization only...")
-            official_fig = visualize_detections(
-                image=im0,
-                detections=official_results,
-                title="Official Model Detections",
-                conf_threshold=0.25,
-                save_path="official_model_detections.png"
-            )
-            plt.show()
-            print("✓ Official model visualization created")
-            
-        else:
-            print("⚠ No detections available for visualization")
-            
-    except Exception as e:
-        print(f"✗ Visualization failed: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    # Test 7: Detailed Comparison
-    print("\n7. DETAILED COMPARISON ANALYSIS")
-    print("-" * 40)
-    
-    if official_available and official_results is not None:
-        try:
-            # Compare detection counts at different confidence thresholds
-            conf_thresholds = [0.1, 0.25, 0.5, 0.7]
-            
-            print("Confidence Threshold Comparison:")
-            print("Conf\tCustom\tOfficial\tDifference")
-            print("-" * 40)
-            
-            for conf_thresh in conf_thresholds:
-                # Custom model detections above threshold
-                if len(custom_detection) > 0:
-                    custom_count = (custom_detection[:, 4] >= conf_thresh).sum().item()
-                else:
-                    custom_count = 0
-                
-                # Official model detections above threshold
-                if official_results[0].boxes is not None and len(official_results[0].boxes) > 0:
-                    official_count = (official_results[0].boxes.conf >= conf_thresh).sum().item()
-                else:
-                    official_count = 0
-                
-                diff = custom_count - official_count
-                print(f"{conf_thresh:.2f}\t{custom_count}\t{official_count}\t\t{diff:+d}")
-            
-            # Test with different NMS parameters
-            print(f"\nTesting different NMS parameters:")
-            test_params = [
-                {'conf': 0.25, 'iou': 0.45},
-                {'conf': 0.5, 'iou': 0.45},
-                {'conf': 0.25, 'iou': 0.7}
-            ]
-            
-            for params in test_params:
-                try:
-                    # Test custom model with official processing
-                    custom_official_results = custom_model.predict_with_official_processing(
-                        [im0], **params, verbose=False
-                    )
-                    
-                    if len(custom_official_results) > 0 and len(custom_official_results[0]) > 0:
-                        custom_official_count = len(custom_official_results[0])
-                    else:
-                        custom_official_count = 0
-                    
-                    # Test official model with same parameters
-                    official_test_results = official_model(imagepath, **params, verbose=False)
-                    if official_test_results[0].boxes is not None:
-                        official_test_count = len(official_test_results[0].boxes)
-                    else:
-                        official_test_count = 0
-                    
-                    print(f"  conf={params['conf']}, iou={params['iou']}: Custom={custom_official_count}, Official={official_test_count}")
-                    
-                except Exception as e:
-                    print(f"  Error testing params {params}: {e}")
-            
+
         except Exception as e:
-            print(f"✗ Comparison analysis failed: {e}")
-    else:
-        print("⚠ Skipping detailed comparison (official model not available)")
+            print(f"✗ Official model inference failed: {e}")
+            official_available = False
     
-    # Test 7: Component Testing
-    print("\n7. TESTING MODEL COMPONENTS")
-    print("-" * 40)
-    
-    try:
-        test_results = custom_model.test_components(input_shape=(1, 3, 640, 640), device=device, verbose=False)
-        print("✓ Component tests completed successfully")
-        
-        # Print component information
-        component_info = custom_model.get_component_info()
-        print(f"\nModel Architecture Summary:")
-        print(f"  Total parameters: {component_info['total']['params']:,}")
-        print(f"  Backbone parameters: {component_info['backbone']['params']:,}")
-        print(f"  Neck parameters: {component_info['neck']['params']:,}")
-        print(f"  Head parameters: {component_info['head']['params']:,}")
-        
-    except Exception as e:
-        print(f"✗ Component testing failed: {e}")
-    
-    # Test 8: Performance Benchmarking
-    print("\n8. PERFORMANCE BENCHMARKING")
-    print("-" * 40)
-    
-    try:
-        benchmark_results = custom_model.benchmark_inference(
-            input_shape=(1, 3, 640, 640), 
-            device=device, 
-            num_runs=50, 
-            warmup=10
-        )
-        
-        print(f"✓ Inference benchmark completed:")
-        print(f"  Average time: {benchmark_results['avg_time']*1000:.3f}ms")
-        print(f"  FPS: {benchmark_results['fps']:.1f}")
-        print(f"  Memory usage: {benchmark_results['memory_mb']:.1f}MB")
-        
-    except Exception as e:
-        print(f"✗ Performance benchmarking failed: {e}")
-    
-    print("\n" + "="*80)
-    print("INFERENCE COMPARISON TEST COMPLETED")
-    print("="*80)
-    
-    return True
 
 
 # def test_yolov7weights():
@@ -2856,22 +2346,10 @@ if __name__ == "__main__":
     else:
         print("\n✗ Some tests failed. Check the output above for details.")
     
-    # Run YOLOv11 testing
-    print("\n" + "="*60)
-    print("YOLOV11 TESTING")
-    print("="*60)
-    yolov11_success = test_yolov11_inference_comparison()
-    
-    # Run YOLOv12 testing
-    print("\n" + "="*60)
-    print("YOLOV12 TESTING")
-    print("="*60)
-    yolov12_success = test_yolov12_inference_comparison()
-    
     # Optional: Run YOLOv7 test as well
-    print("\n" + "="*60)
-    print("ADDITIONAL YOLOV7 TESTING")
-    print("="*60)
+    # print("\n" + "="*60)
+    # print("ADDITIONAL YOLOV7 TESTING")
+    # print("="*60)
     #test_yolov7weights()
 
 

@@ -6,6 +6,7 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection import FasterRCNN
 from torchvision.models.detection.rpn import AnchorGenerator
 from DeepDataMiningLearning.detection.modules.yolomodels import create_yolomodel, freeze_yolomodel
+from DeepDataMiningLearning.detection.modeling_yolo import TorchvisionYoloModel
 #from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
 import os
 from DeepDataMiningLearning.detection.modeling_rpnfasterrcnn import CustomRCNN
@@ -195,6 +196,7 @@ def create_detectionmodel(modelname, num_classes=None, customize=True, trainable
     model = None
     preprocess = None
     classes = None
+    freezemodel = False
     if trainable_layers==0:
         freezemodel = True
     if modelname == 'fasterrcnn_resnet50_fpn_v2':
@@ -212,10 +214,14 @@ def create_detectionmodel(modelname, num_classes=None, customize=True, trainable
                 model = load_checkpoint(model, ckpt_file, fp16)
         else:
             print("Model name not supported")
-    elif modelname.startswith('yolo') or 'yolo' in modelname.lower():
+    elif modelname.startswith('yolo'):
         model, preprocess, classes=create_yolomodel(modelname, num_classes, ckpt_file, fp16, device, scale)
         model= freeze_yolomodel(model, freeze=[])
         #ckpt file is already loaded in create_yolomodel
+    elif modelname.startswith('torchvisionyolo'):
+        model = TorchvisionYoloModel(model_name="yolov8", scale=scale, num_classes=80)
+        preprocess = None  # TorchvisionYoloModel handles preprocessing internally
+        classes = None     # Uses COCO classes by default
     else:
         print('Model name not supported')
 
