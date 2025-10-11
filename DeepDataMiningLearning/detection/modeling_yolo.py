@@ -32,9 +32,6 @@ import torchvision.transforms as transforms
 from torchvision.utils import draw_bounding_boxes
 from torchvision.transforms.functional import to_pil_image, to_tensor
 
-# YOLO-specific imports
-from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss
-from DeepDataMiningLearning.detection.modules.lossv7 import myv7DetectionLoss
 
 # COCO class names for visualization
 COCO_CLASSES = [
@@ -84,12 +81,13 @@ class TorchvisionYoloModel(nn.Module):
         >>>     predictions = model(images)
     """
     
-    def __init__(self, model_name='yolov8', scale='n', num_classes=80, state_dict_path=None, map_to_torchvision_classes=True, **kwargs):
+    def __init__(self, model_name='yolov8', cfg_file=None, scale='n', num_classes=80, state_dict_path=None, device="cuda", map_to_torchvision_classes=True, **kwargs):
         """
         Initialize TorchvisionYoloModel.
         
         Args:
             model_name (str): YOLO model name ('yolov8', 'yolov11', etc.)
+            cfg_file (str, optional): Path to custom YAML config file for model architecture
             scale (str): Model scale ('n', 's', 'm', 'l', 'x')
             num_classes (int): Number of classes (default: 80 for COCO)
             state_dict_path (str, optional): Path to state_dict file to load weights
@@ -99,26 +97,35 @@ class TorchvisionYoloModel(nn.Module):
         super().__init__()
         
         # Store class mapping preference
-        self.map_to_torchvision_classes = map_to_torchvision_classes
+        if (num_classes == 80 or num_classes == 91) and map_to_torchvision_classes:
+            #only in default COCO case we do the mapping
+            self.map_to_torchvision_classes = True
+        else:
+            self.map_to_torchvision_classes = False
+        #self.map_to_torchvision_classes = map_to_torchvision_classes
         
         # Import required modules
         from DeepDataMiningLearning.detection.modules.yolomodels import YoloDetectionModel, load_defaultcfgs, load_checkpoint
         from DeepDataMiningLearning.detection.modules.yolotransform import YoloTransform
         
         # Use the appropriate YAML configuration file based on model_name
-        if model_name.startswith('yolov8'):
-            cfg = '/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'
-        elif model_name.startswith('yolov11'):
-            cfg = '/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov11.yaml'
-        elif model_name.startswith('yolov12'):
-            cfg = '/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov12.yaml'
+        if cfg_file is not None and os.path.exists(cfg_file):
+            cfg = cfg_file
         else:
-            # Default to yolov8 if model name is not recognized
-            cfg = '/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/yolov8.yaml'
-        
+            if "v8" in model_name:
+                cfg = 'DeepDataMiningLearning/detection/modules/yolov8.yaml'
+            elif "v11" in model_name:
+                cfg = 'DeepDataMiningLearning/detection/modules/yolov11.yaml'
+            elif "v12" in model_name:
+                cfg = 'DeepDataMiningLearning/detection/modules/yolov12.yaml'
+            else:
+                # Default to yolov8 if model name is not recognized
+                cfg = 'DeepDataMiningLearning/detection/modules/yolov8.yaml'
+            
         # Create the underlying YOLO model using correct parameters (cfg, scale, ch=3)
-        self.yolo_model = YoloDetectionModel(cfg=cfg, scale=scale, ch=3, **kwargs)
+        self.yolo_model = YoloDetectionModel(cfg=cfg, scale=scale, ch=3, nc=num_classes, **kwargs)
         self.num_classes = num_classes
+        self.yolo_model = self.yolo_model.to(device)
         
         # Load weights if state_dict_path is provided
         if state_dict_path and os.path.exists(state_dict_path):
@@ -131,7 +138,7 @@ class TorchvisionYoloModel(nn.Module):
                 from DeepDataMiningLearning.detection.ultralytics_converter import ensure_custom_yolo_checkpoint
                 
                 # Determine device for checkpoint conversion
-                device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+                #device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
                 
                 ckpt_file = ensure_custom_yolo_checkpoint(
                     model_name=f"{model_name}{scale}",
@@ -155,7 +162,7 @@ class TorchvisionYoloModel(nn.Module):
             print("⚠ Using random weights")
         
         # Load default configurations for preprocessing
-        cfgPath = '/home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/detection/modules/default.yaml'
+        cfgPath = 'DeepDataMiningLearning/detection/modules/default.yaml'
         try:
             self.DEFAULT_CFG_DICT = load_defaultcfgs(cfgPath)
         except:
@@ -164,9 +171,12 @@ class TorchvisionYoloModel(nn.Module):
         
         # Initialize loss function for training
         if hasattr(self.yolo_model, 'version') and self.yolo_model.version == 'v7':
+            from DeepDataMiningLearning.detection.modules.lossv7 import myv7DetectionLoss
             self.loss_fn = myv7DetectionLoss(self.yolo_model)
         else:
-            self.loss_fn = myv8DetectionLoss(self.yolo_model)
+            from DeepDataMiningLearning.detection.modules.lossv8 import myv8DetectionLoss, v8DetectionLoss
+            #self.loss_fn = myv8DetectionLoss(self.yolo_model)
+            self.loss_fn = v8DetectionLoss(self.yolo_model)
         
         # Transform for input preprocessing using YoloTransform
         self.transform = self._create_transform()
@@ -208,6 +218,62 @@ class TorchvisionYoloModel(nn.Module):
     
     def _forward_training(self, images, targets):
         """
+        Forward pass for YOLOv8 training mode.
+
+        Returns:
+            Dict[str, Tensor]: loss components (box, cls, dfl)
+        """
+        device = next(self.parameters()).device
+
+        # ------------------------------------------------------------------
+        # 1️⃣ Preprocess images with YoloTransform (includes letterbox, normalization)
+        # ------------------------------------------------------------------
+        # Convert tensors to numpy if necessary for the transform
+        processed_images = []
+        for img in images:
+            if isinstance(img, torch.Tensor):
+                img_np = img.permute(1, 2, 0).cpu().numpy()
+                if img_np.max() <= 1.0:
+                    img_np = (img_np * 255).astype('uint8')
+                processed_images.append(img_np)
+            else:
+                processed_images.append(img)
+
+        # YoloTransform returns a padded & normalized batch tensor
+        batch_tensor = self.transform(processed_images)
+        if isinstance(batch_tensor, torch.Tensor):
+            batch_tensor = batch_tensor.to(device, non_blocking=True)
+
+        # ------------------------------------------------------------------
+        # 2️⃣ Convert targets to YOLO format (normalized xywh, letterboxed)
+        # ------------------------------------------------------------------
+        # batch_tensor shape: [B, 3, H, W]
+        yolo_targets = self._convert_targets_to_yolo(targets, batch_tensor.shape)
+
+        # ------------------------------------------------------------------
+        # 3️⃣ Forward through YOLO model and compute loss
+        # ------------------------------------------------------------------
+        preds = self.yolo_model(batch_tensor)
+        total_loss, detached = self.loss_fn(preds, yolo_targets)
+        loss_dict = {
+            "loss_box": detached[0],        # if accessible
+            "loss_cls": detached[1],
+            "loss_dfl": detached[2],
+        }
+        
+        # Return losses directly - torchvision accepts any loss dict format
+        return loss_dict #{"loss_total": total_loss}
+
+        # Return in torchvision-style dict
+        # return {
+        #     "loss_box": detached[0],
+        #     "loss_cls": detached[1],
+        #     "loss_dfl": detached[2],
+        #     "loss_total": total_loss.detach().sum()
+        # }
+    
+    def _forward_training_old(self, images, targets):
+        """
         Forward pass for training mode.
         
         Returns:
@@ -216,6 +282,7 @@ class TorchvisionYoloModel(nn.Module):
         # Convert list of images to batch tensor
         batch_images = self._images_to_batch(images)
         
+        
         # Convert targets to YOLO format
         yolo_targets = self._convert_targets_to_yolo(targets, batch_images.shape)
         
@@ -223,10 +290,15 @@ class TorchvisionYoloModel(nn.Module):
         predictions = self.yolo_model(batch_images)
         
         # Compute losses
-        losses = self.loss_fn(predictions, yolo_targets)
+        total_loss, detached = self.loss_fn(predictions, yolo_targets)
+        loss_dict = {
+            "loss_box": detached[0],        # if accessible
+            "loss_cls": detached[1],
+            "loss_dfl": detached[2],
+        }
         
         # Return losses directly - torchvision accepts any loss dict format
-        return losses
+        return loss_dict #{"loss_total": total_loss}
     
     def _forward_inference(self, images):
         """
@@ -292,52 +364,91 @@ class TorchvisionYoloModel(nn.Module):
         
         return torch.stack(batch_images)
     
-    def _convert_targets_to_yolo(self, targets, image_shape):
-        """Convert torchvision targets to YOLO format."""
+    def _convert_targets_to_yolo(self, targets, image_shape, ratio_pad=None):
+        """
+        Convert torchvision targets to YOLOv8-style format with proper letterbox scaling.
+        """
         batch_size, _, img_h, img_w = image_shape
-        
-        # Create batch dictionary format expected by YOLO loss
-        batch_targets = {
-            'batch_idx': [],
-            'cls': [],
-            'bboxes': []
-        }
-        
+        batch_targets = {'batch_idx': [], 'cls': [], 'bboxes': []}
+
         for i, target in enumerate(targets):
-            boxes = target['boxes']  # [N, 4] in [x1, y1, x2, y2] format
-            labels = target['labels']  # [N]
-            
+            boxes = target['boxes']
+            labels = target['labels']
             if len(boxes) == 0:
                 continue
-                
-            # Convert to YOLO format: [x_center, y_center, width, height]
-            # Normalize coordinates to [0, 1]
+
+            device = boxes.device
+
+            # Optionally adjust for letterbox (ratio, pad)
+            if ratio_pad is not None:
+                r, (pad_w, pad_h) = ratio_pad
+                boxes[:, [0, 2]] = boxes[:, [0, 2]] * r + pad_w
+                boxes[:, [1, 3]] = boxes[:, [1, 3]] * r + pad_h
+
+            # Normalize to [0,1]
             x1, y1, x2, y2 = boxes.unbind(1)
             x_center = (x1 + x2) / 2 / img_w
             y_center = (y1 + y2) / 2 / img_h
             width = (x2 - x1) / img_w
             height = (y2 - y1) / img_h
-            
-            # Stack normalized coordinates
             normalized_boxes = torch.stack([x_center, y_center, width, height], dim=1)
-            
-            # Add to batch
-            batch_idx = torch.full((len(boxes),), i, dtype=torch.float32)
+
+            batch_idx = torch.full((len(boxes),), i, dtype=torch.float32, device=device)
+
             batch_targets['batch_idx'].append(batch_idx)
             batch_targets['cls'].append(labels.float())
             batch_targets['bboxes'].append(normalized_boxes)
-        
-        # Concatenate all targets
+
+        for k in batch_targets:
+            batch_targets[k] = (
+                torch.cat(batch_targets[k]) if batch_targets[k] else torch.empty(0, device=device)
+            )
+
+        return batch_targets
+
+    def _convert_targets_to_yolo_old(self, targets, image_shape):
+        """Convert torchvision targets to YOLO format."""
+        batch_size, _, img_h, img_w = image_shape
+
+        batch_targets = {'batch_idx': [], 'cls': [], 'bboxes': []}
+
+        for i, target in enumerate(targets):
+            boxes = target['boxes']  # [N, 4]
+            labels = target['labels']  # [N]
+            if len(boxes) == 0:
+                continue
+
+            # --- infer device (cuda or cpu) ---
+            device = boxes.device
+
+            # Convert to YOLO normalized format
+            x1, y1, x2, y2 = boxes.unbind(1)
+            x_center = (x1 + x2) / 2 / img_w
+            y_center = (y1 + y2) / 2 / img_h
+            width = (x2 - x1) / img_w
+            height = (y2 - y1) / img_h
+            normalized_boxes = torch.stack([x_center, y_center, width, height], dim=1)
+
+            # ✅ create batch_idx on the same device
+            batch_idx = torch.full((len(boxes),), i, dtype=torch.float32, device=device)
+
+            # Add to batch dict
+            batch_targets['batch_idx'].append(batch_idx)
+            batch_targets['cls'].append(labels.float())
+            batch_targets['bboxes'].append(normalized_boxes)
+
+        # Concatenate or return empty tensors
         if batch_targets['batch_idx']:
             batch_targets['batch_idx'] = torch.cat(batch_targets['batch_idx'])
             batch_targets['cls'] = torch.cat(batch_targets['cls'])
             batch_targets['bboxes'] = torch.cat(batch_targets['bboxes'])
         else:
-            # Empty targets
-            batch_targets['batch_idx'] = torch.empty(0)
-            batch_targets['cls'] = torch.empty(0)
-            batch_targets['bboxes'] = torch.empty(0, 4)
-        
+            # empty batch on same device as model
+            device = next(self.parameters()).device if isinstance(self, nn.Module) else "cpu"
+            batch_targets['batch_idx'] = torch.empty(0, device=device)
+            batch_targets['cls'] = torch.empty(0, device=device)
+            batch_targets['bboxes'] = torch.empty(0, 4, device=device)
+
         return batch_targets
     
     def _convert_detections_to_torchvision(self, detections, original_sizes=None, map_to_torchvision_classes=False):

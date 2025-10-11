@@ -228,16 +228,16 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/DATA10T/Datasets/COCOoriginal/", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
-    parser.add_argument("--annotationfile", default="/DATA10T/Datasets/COCOoriginal/annotations/instances_val2017.json", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
+    parser.add_argument("--data-path", default="/mnt/e/Shared/Dataset/waymodata/waymo_subset_coco_4000step5/", type=str, help="dataset path") #"/data/cmpe249-fa23/WaymoCOCO/"
+    parser.add_argument("--annotationfile", default="/mnt/e/Shared/Dataset/waymodata/waymo_subset_coco_4000step5/annotations.json", type=str, help="dataset annotion file path, e.g., coco json file") #annotations_train200new.json
     parser.add_argument(
         "--dataset",
-        default="coco", #coco, waymococo
+        default="waymococo", #coco, waymococo
         type=str,
         help="dataset name. Use coco for object detection and instance segmentation and coco_kp for Keypoint detection",
     )
     parser.add_argument("--model", default="torchvisionyolov8", type=str, help="model name") #customrcnn_resnet152, fasterrcnn_resnet50_fpn_v2
-    parser.add_argument("--nocustomize", action="store_false", default=True, help="whether change the model header for custom num_classes")
+    parser.add_argument("--nocustomize", action="store_true", default=False, help="whether change the model header for custom num_classes")
     parser.add_argument("--trainable", default=0, type=int, help="number of trainable layers (sequence) of backbone")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -313,7 +313,7 @@ def get_args_parser(add_help=True):
     )
     parser.add_argument(
         "--debugmode",
-        default=True,
+        default=False,
         action="store_true",
         help="DEBUG output",
     )
@@ -426,8 +426,8 @@ def main(args):
         if args.rpn_score_thresh is not None:
             kwargs["rpn_score_thresh"] = args.rpn_score_thresh
     
-    model, preprocess, model_classes = create_detectionmodel(args.model, num_classes, customize=args.nocustomize, trainable_layers=args.trainable)
-    model.to(device)
+    model, preprocess, model_classes = create_detectionmodel(args.model, num_classes, nocustomize=args.nocustomize, trainable_layers=args.trainable)
+    #model.to(device)
     
     if args.distributed and args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -495,7 +495,7 @@ def main(args):
         #     collate_fn=lambda x: tuple(zip(*x)),
         # )
         #simplemodelevaluate(model, data_loader_test, device=device)
-        if hasattr(dataset, "coco_class_map") and (len(model_classes) == 91 or len(model_classes) == 80):
+        if hasattr(dataset, "coco_class_map") and (not args.nocustomize): # and (len(model_classes) == 91 or len(model_classes) == 80):
             simplemodelevaluate(model, data_loader_test, device, class_map=dataset.coco_class_map, class_names=dataset.CLASSES, DEBUG=args.debugmode)
         else:
             #simplemodelevaluate(model, data_loader_test, device)

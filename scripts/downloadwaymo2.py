@@ -31,7 +31,7 @@ from PIL import Image
 import sys
 import tarfile
 import glob
-from google.cloud import storage  # pip install --upgrade google-cloud-storage
+#from google.cloud import storage  # pip install --upgrade google-cloud-storage
 
 # Add project root to path for imports
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -735,7 +735,7 @@ def run_command_line_mode(args):
     else:
         print(f"❌ Unknown mode: {args.mode}")
 
-def main():
+def main2():
     """
     Main function with command-line interface and interactive menu
     """
@@ -816,8 +816,57 @@ Examples:
         import traceback
         traceback.print_exc()
 
+
+import os
+import pyarrow.parquet as pq
+
+def inspect_parquet(path, num_rows=1):
+    """
+    Inspect a parquet file: print schema and a few rows
+    """
+    print("=" * 80)
+    print(f"📂 File: {path}")
+    try:
+        pf = pq.ParquetFile(path)
+
+        # Print schema
+        print("\n--- Schema ---")
+        print(pf.schema_arrow)
+
+        # Print sample rows
+        print("\n--- Sample rows ---")
+        table = pf.read_row_group(0)  # first row group
+        df = table.to_pandas()
+        print(df.head(num_rows))
+    except Exception as e:
+        print(f"❌ Error reading {path}: {e}")
+
+def main(root_dir, split="training"):
+    """
+    Inspect the schemas of Waymo v2.1 shards in a given split (e.g. training).
+    """
+    shard_types = ["camera_image", "camera_box", "lidar", "lidar_box", "camera_calibration"]
+
+    for shard in shard_types:
+        folder = os.path.join(root_dir, split, shard)
+        if not os.path.isdir(folder):
+            print(f"⚠️ Skip: {folder} not found")
+            continue
+
+        # Pick the first parquet file in this folder
+        files = [f for f in os.listdir(folder) if f.endswith(".parquet")]
+        if not files:
+            print(f"⚠️ No parquet files in {folder}")
+            continue
+
+        path = os.path.join(folder, files[0])
+        inspect_parquet(path, num_rows=3)  # print 3 rows as sample
+        
 if __name__ == '__main__':
-    main()
+    #main2()
+    # Change this to your dataset root
+    root = r"E:\Shared\Dataset\waymodata"   # or "/data/Datasets/WaymoV2_1_2D"
+    main(root, split="training")
 
 # Prerequisites:
 # 1. Install Google Cloud Storage library:

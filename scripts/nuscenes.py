@@ -3308,13 +3308,13 @@ def extract_nuscenes_subset(nuscenes_root: str, num_samples: int, output_dir: st
 
 
 # Default paths
-# DEFAULT_DATA_ROOT = "/mnt/e/Shared/Dataset/"
-# DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "NuScenes", "v1.0-trainval")
-# DEFAULT_ZIP_DIR = "/mnt/e/Shared/Dataset/NuScenes/"
+DEFAULT_DATA_ROOT = "/mnt/e/Shared/Dataset/"
+DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "NuScenes", "v1.0-trainval")
+DEFAULT_ZIP_DIR = "/mnt/e/Shared/Dataset/NuScenes/"
 
-DEFAULT_DATA_ROOT = "/data/Datasets/nuscenes"
-DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "v1.0-trainval")
-DEFAULT_ZIP_DIR = "/data/Datasets/nuscenes"
+# DEFAULT_DATA_ROOT = "/data/Datasets/nuscenes"
+# DEFAULT_NUSCENES_DIR = os.path.join(DEFAULT_DATA_ROOT, "v1.0-trainval")
+# DEFAULT_ZIP_DIR = "/data/Datasets/nuscenes"
 
 def main():
     """
