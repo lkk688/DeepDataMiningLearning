@@ -168,7 +168,8 @@ class Evaluator:
                         x, y, _ = batch
                     else:
                         x, y = batch
-                    x, y = [t.to(self.device) for t in batch]
+                    #x, y = [t.to(self.device) for t in batch]
+                    x, y = x.to(self.device), y.to(self.device)
                     T = x.size(1)
                     mask = TransformerLM.causal_mask(T, x.device)
                     logits = self.model(x, attn_mask=mask)
@@ -441,13 +442,29 @@ class Trainer:
 
                 # Forward pass through model
                 logits = self.model(x, attn_mask=attn_mask)  # [B, T, V]
+                # logits: [B, T_pred, V]
+                # y: [B, T_label]
+                # Align lengths (typing target shorter)
+                B, T_pred, V = logits.shape
+                T_label = y.size(1)
+                # Align lengths if mismatch
+                if T_pred != T_label:
+                    min_len = min(T_pred, T_label)
+                    logits = logits[:, :min_len, :]
+                    y = y[:, :min_len]
+
+                loss = F.cross_entropy(
+                    logits.reshape(-1, V),
+                    y.reshape(-1),
+                    ignore_index=pad_idx,   # ✅ correct pad ID
+                )
 
                 # Compute full-sequence cross-entropy loss
-                loss = F.cross_entropy(
-                    logits.view(-1, logits.size(-1)),  # flatten [B*T, V]
-                    y.view(-1),                        # flatten [B*T]
-                    ignore_index=pad_idx,
-                )
+                # loss = F.cross_entropy(
+                #     logits.view(-1, logits.size(-1)),  # flatten [B*T, V]
+                #     y.view(-1),                        # flatten [B*T]
+                #     ignore_index=pad_idx,
+                # )
                 return loss, logits
 
             # ========================================================
@@ -875,7 +892,7 @@ import matplotlib.pyplot as plt
 
 def run_char_typing_experiment(
     hf_name="npvinHnivqn/EnglishDictionary",
-    seq_len=128,
+    seq_len=64, #32,
     batch_size=64,
     epochs=6,
     device="cuda" if torch.cuda.is_available() else "cpu",
@@ -903,28 +920,65 @@ def run_char_typing_experiment(
     args = Args()
     args.files = None
     args.batch_size = batch_size
-    args.task = "typing"
+    args.task = "lm"#"typing"
     args.hf_name = hf_name
     args.hf_split = "train"
     args.hf_features = ["word", "definition"]
     args.tokenizer = "char"
-    args.seq_len = 64
-    args.next_token_window = 1
-    args.num_prefixes_per_sentence = 5
-    args.max_prefix_len = 20
+    args.seq_len = seq_len #64
+    args.stride = 1 #default to seq_len without any overlap
+    # args.next_token_window = 1
+    # args.num_prefixes_per_sentence = 5
+    # args.max_prefix_len = 20
 
     print(f"📘 Building char-level typing dataset from '{hf_name}'...")
     data = build_dataset(args.task, args)
     train_loader, val_loader = data.loaders()
+    inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
+    #size is seq_len-1 for char typing
     print("✅ Dataset ready for training.\n")
 
     # ------------------------------------------------------------
     # 2️⃣ Define model configurations
     # ------------------------------------------------------------
+    # model_configs = {
+    #     "RNN": dict(model_type="RNN", dim=128, layers=1, lr=1e-3, epochs=epochs),
+    #     "LSTM": dict(model_type="LSTM", dim=128, layers=1, lr=1e-3, epochs=epochs),
+    #     "TraditionalTransformerLM": dict(model_type="TraditionalTransformerLM", dim=192, layers=2, heads=4, lr=5e-4, epochs=epochs),
+    #     "TransformerLM": dict(model_type="TransformerLM", dim=192, layers=2, heads=4, lr=5e-4, epochs=epochs),
+    # }
     model_configs = {
-        "RNN": dict(model_type="RNN", dim=128, layers=1, lr=1e-3, epochs=epochs),
-        "LSTM": dict(model_type="LSTM", dim=128, layers=1, lr=1e-3, epochs=epochs),
-        "Transformer": dict(model_type="TransformerLM", dim=192, layers=2, heads=4, lr=5e-4, epochs=epochs),
+        "RNN": dict(
+            model_type="RNN",
+            dim=64,             # ↓ smaller hidden size
+            layers=1,           # short dependencies → shallow ok
+            lr=1e-3,            # relatively high learning rate
+            epochs=epochs,
+        ),
+        "LSTM": dict(
+            model_type="LSTM",
+            dim=64,
+            layers=1,
+            lr=1e-3,
+            epochs=epochs,
+        ),
+        "TraditionalTransformerLM": dict(
+            model_type="TraditionalTransformerLM",
+            dim=128,            # ↓ smaller hidden dimension
+            layers=2,           # still need some capacity for syntax patterns
+            heads=2,            # ↓ fewer attention heads for short seqs
+            ff_dim=256,         # feed-forward dimension ~2x dim
+            lr=8e-4,            # slightly higher LR
+            epochs=epochs,
+        ),
+        "TransformerLM": dict(
+            model_type="TransformerLM",
+            dim=128,
+            layers=2,
+            heads=2,
+            lr=8e-4,
+            epochs=epochs,
+        ),
     }
 
     results = {}

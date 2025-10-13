@@ -1827,13 +1827,14 @@ def run_all_dataset_tests():
     # --------------------------------------------------------
     print("\n⌨️ [1A] Testing Typing Dataset (Character-level)...")
     try:
-        args.task = "typing"
+        args.task = "lm" #"typing"
         args.hf_name = "OpenAssistant/oasst1"
         args.hf_split = "train"
         args.tokenizer = "char"
-
+        args.seq_len = 64
         data = build_dataset(args.task, args)
-        inspect_dataset(data, task="typing", num_batches=2, num_samples=2)
+        inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
+        #x output: torch.Size([32, 63]), y output:  torch.Size([32, 63]), length: torch.Size([32])
     except Exception as e:
         print(f"❌ Typing (char) dataset test failed: {e}")
     
@@ -1847,10 +1848,10 @@ def run_all_dataset_tests():
         args.seq_len = 64
         args.next_token_window = 6
         args.num_prefixes_per_sentence = 3
-        args.next_token_window = 6
         args.max_prefix_len = 12
         data = build_dataset(args.task, args)
-        inspect_dataset(data, task="typing", num_batches=2, num_samples=2)
+        inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
+        #x output: torch.Size([32, 12]), y output: torch.Size([32, 6]), length: torch.Size([32])
     except Exception as e:
         print(f"❌ Typing (char) dataset test failed: {e}")
 
