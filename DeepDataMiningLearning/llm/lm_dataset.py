@@ -433,101 +433,6 @@ class TypingDataset(Dataset):
         assert x.ndim == 1 and y.ndim == 1, "TypingDataset must return 1-D tensors"
         return x, y
     
-from torch.utils.data import Dataset
-from datasets import load_dataset
-import torch
-import random
-import re
-
-class DictionaryTypingDataset(Dataset):
-    """
-    Typing dataset built from English dictionary (word + definition).
-
-    Each sample is a (prefix → next few chars) pair, mimicking
-    partial typing across a word or phrase boundary.
-
-    Example:
-        x='progr'  →  y='amming is the process of writing...'
-    """
-
-    def __init__(
-        self,
-        hf_name: str = "npvinHnivqn/EnglishDictionary",
-        seq_len: int = 64,
-        next_window: int = 5,
-        max_prefix_len: int = 12,
-        lowercase: bool = True,
-        vocab_chars: str | None = None,
-        min_word_len: int = 3,
-        min_def_len: int = 10,
-    ):
-        super().__init__()
-
-        print(f"📚 Loading dictionary dataset: {hf_name}")
-        ds = load_dataset(hf_name, split="train")
-
-        # detect columns dynamically
-        if "word" in ds.features:
-            word_field = "word"
-        else:
-            word_field = list(ds.features.keys())[0]
-        definition_field = "definition" if "definition" in ds.features else None
-
-        # --- Build combined corpus ---
-        entries = []
-        for ex in ds:
-            word = str(ex.get(word_field, "")).strip()
-            definition = str(ex.get(definition_field, "")).strip() if definition_field else ""
-            if len(word) < min_word_len or len(definition) < min_def_len:
-                continue
-            combined = f"{word}: {definition}"
-            entries.append(combined.lower() if lowercase else combined)
-
-        print(f"✅ Loaded {len(entries):,} dictionary entries.")
-
-        # --- Build character vocabulary ---
-        if vocab_chars is None:
-            vocab_chars = sorted(set("".join(entries)))
-        self.vocab = {ch: i + 1 for i, ch in enumerate(vocab_chars)}  # 0 = pad
-        self.inv_vocab = {i: ch for ch, i in self.vocab.items()}
-        self.pad_id = 0
-        self.vocab_size = len(self.vocab) + 1
-        print(f"🔡 Vocab size: {self.vocab_size}")
-
-        # --- Generate (prefix, target) examples ---
-        examples = []
-        for text in entries:
-            if len(text) < next_window + 2:
-                continue
-            # choose random prefix within limits
-            prefix_len = random.randint(1, min(max_prefix_len, len(text) - next_window))
-            prefix = text[:prefix_len]
-            target = text[prefix_len: prefix_len + next_window]
-            examples.append((prefix, target))
-
-        self.examples = examples
-        print(f"✅ Built {len(self.examples):,} typing pairs (prefix → next).")
-
-        self.seq_len = seq_len
-        self.next_window = next_window
-
-    def encode(self, text: str):
-        """Convert text string to list[int]."""
-        return [self.vocab.get(ch, 0) for ch in text]
-
-    def decode(self, ids: list[int]):
-        """Convert list[int] to text."""
-        return "".join(self.inv_vocab.get(i, "") for i in ids if i != self.pad_id)
-
-    def __len__(self):
-        return len(self.examples)
-
-    def __getitem__(self, idx):
-        prefix, target = self.examples[idx]
-        x = torch.tensor(self.encode(prefix), dtype=torch.long)
-        y = torch.tensor(self.encode(target), dtype=torch.long)
-        return x, y
-    
 # ============================================================
 # Hugging Face Dataset Wrapper for Encoder–Decoder Training
 # ============================================================
@@ -778,6 +683,7 @@ class DataConfig:
     Which dataset split to load ('train', 'validation', or 'test').
     Default: 'train'
     """
+    hf_features: Optional[list[str]] = None
 
     # ============================================================
     # 🔤  Tokenizer Configuration
@@ -957,11 +863,22 @@ class DataModule:
         else:
             self._build_lm_dataset(cleaned_text)
 
-    # ------------------------------------------------------------
     def _load_text(self) -> str:
-        """Load text from local files or Hugging Face Hub datasets (auto-config)."""
+        """
+        Load text from local files or Hugging Face Hub datasets (auto-config).
 
-        # --- 1️⃣ Local files ---
+        Supports:
+        - Multi-column text merge (user-specified via cfg.hf_features)
+        - Automatic field detection fallback
+        - Safe handling when requested columns are missing
+        """
+        import os
+        from datasets import load_dataset, get_dataset_config_names
+        from datasets.features import Value
+
+        # ------------------------------------------------------------
+        # 1️⃣ Local files
+        # ------------------------------------------------------------
         if self.cfg.files:
             text = ""
             for p in self.cfg.files:
@@ -972,12 +889,14 @@ class DataModule:
             print(f"📄 Loaded {len(self.cfg.files)} local text file(s).")
             return text
 
-        # --- 2️⃣ Hugging Face datasets ---
+        # ------------------------------------------------------------
+        # 2️⃣ Hugging Face datasets
+        # ------------------------------------------------------------
         elif self.cfg.hf_name:
             repo_path = self.cfg.hf_name.strip()
             print(f"📚 Loading Hugging Face dataset: '{repo_path}'")
 
-            # 🔍 Try to detect dataset configs
+            # 🔍 Detect available configs
             try:
                 configs = get_dataset_config_names(repo_path)
             except Exception as e:
@@ -989,57 +908,78 @@ class DataModule:
                 cfg_name = self.cfg.hf_config
                 print(f"✅ Using specified config: '{cfg_name}'")
             elif configs:
-                cfg_name = configs[0]  # pick first available config
+                cfg_name = configs[0]
                 print(f"🧩 Detected configs: {configs}")
                 print(f"✅ Using first available config: '{cfg_name}'")
-            else:
-                raise ValueError(f"❌ Specified config '{self.cfg.hf_config}' not found and no other configs available: {configs}")
-                
 
-            # Try loading dataset (with config if available)
+            # Load dataset
             try:
                 ds = load_dataset(repo_path, cfg_name) if cfg_name else load_dataset(repo_path)
             except Exception as e:
-                raise RuntimeError(
-                    f"❌ Failed to load dataset '{repo_path}' (config={cfg_name}).\nReason: {e}"
-                )
+                raise RuntimeError(f"❌ Failed to load dataset '{repo_path}' (config={cfg_name}).\nReason: {e}")
 
-            # Select split
+            # Pick split
             split = self.cfg.hf_split if self.cfg.hf_split in ds else list(ds.keys())[0]
             print(f"📗 Using split: '{split}'")
             split_data = ds[split]
+            available_fields = list(split_data.features.keys())
 
-            # --- Prefer 'text' field ---
-            if "text" in split_data.features:
-                text_field = "text"
-                print(f"🔤 Using text field: '{text_field}'")
-            else:
-                # fallback to auto-detect string field
-                candidate_fields = [
-                    k for k, feat in split_data.features.items()
-                    if isinstance(feat, Value) and feat.dtype == "string"
-                ]
-                if not candidate_fields:
-                    print(f"⚠️ No direct 'text' field found. Using first available field.")
-                    candidate_fields = [list(split_data.features.keys())[0]]
-                text_field = candidate_fields[0]
-                print(f"🔍 Using detected text field: '{text_field}'")
+            # ------------------------------------------------------------
+            # 3️⃣ Determine which text features to use
+            # ------------------------------------------------------------
+            user_fields = getattr(self.cfg, "hf_features", None)
+            text_fields = []
 
-            # --- Extract text samples ---
-            raw_texts = split_data[text_field]
-            if isinstance(raw_texts[0], dict):
-                key = "en" if "en" in raw_texts[0] else list(raw_texts[0].keys())[0]
-                raw_texts = [entry[key] for entry in raw_texts if isinstance(entry, dict) and key in entry]
-                print(f"🌐 Flattened translation data using key: '{key}'")
-            elif isinstance(raw_texts[0], list):
-                raw_texts = [" ".join(turn for turn in dialog if isinstance(turn, str)) for dialog in raw_texts]
-                print(f"💬 Flattened list-type dialogues into text strings.")
+            if user_fields:
+                # keep only those that exist
+                text_fields = [f for f in user_fields if f in available_fields]
+                missing = [f for f in user_fields if f not in available_fields]
+                if missing:
+                    print(f"⚠️ Missing feature(s): {missing} (ignored)")
+            if not text_fields:
+                # fallback to default 'text' or first string field
+                if "text" in available_fields:
+                    text_fields = ["text"]
+                else:
+                    candidate_fields = [
+                        k for k, feat in split_data.features.items()
+                        if isinstance(feat, Value) and feat.dtype == "string"
+                    ]
+                    if not candidate_fields:
+                        raise ValueError(f"❌ No string/text features found in dataset '{repo_path}'.")
+                    text_fields = [candidate_fields[0]]
+
+            print(f"🔤 Using text field(s): {text_fields}")
+
+            # ------------------------------------------------------------
+            # 4️⃣ Extract and flatten all text samples
+            # ------------------------------------------------------------
+            raw_texts = []
+            for row in split_data:
+                parts = []
+                for field in text_fields:
+                    val = row.get(field, "")
+                    if isinstance(val, dict):        # multilingual dict
+                        val = val.get("en") or next(iter(val.values()), "")
+                    elif isinstance(val, list):      # list/dialogue
+                        val = " ".join([v for v in val if isinstance(v, str)])
+                    if isinstance(val, str) and val.strip():
+                        parts.append(val.strip())
+
+                # ✅ append individual parts instead of joining
+                if parts:
+                    raw_texts.extend(parts)
+
+            if not raw_texts:
+                raise ValueError(f"❌ No usable text extracted from fields {text_fields}")
 
             text = "\n".join(raw_texts)
-            print(f"✅ Loaded {len(raw_texts):,} samples from '{repo_path}' (config={cfg_name})")
+            print(f"✅ Loaded {len(raw_texts):,} text entries from '{repo_path}' (config={cfg_name})")
             return text
 
-        # --- 3️⃣ No source provided ---
+        # ------------------------------------------------------------
+        # 3️⃣ No source provided
+        # ------------------------------------------------------------
         else:
             raise ValueError("❌ Provide either `files` or `hf_name` in DataConfig.")
     
@@ -1323,77 +1263,82 @@ class DataModule:
         """
         Construct prefix → next-token dataset for typing task.
 
-        Automatically switches to DictionaryTypingDataset if
-        a dictionary-style HF dataset is configured.
+        Unified version for both regular and dictionary-style text.
+        Each (x, y) simulates a user typing prefix x and predicting continuation y.
         """
         import random
         import torch
-        from torch.utils.data import DataLoader
+
+        print("⌨️ Building Typing dataset...")
 
         # ---------------------------------------------------------
-        # 1️⃣ Check if this is a Dictionary dataset (e.g., EnglishDictionary)
+        # 1️⃣ Configuration parameters
         # ---------------------------------------------------------
-        if (
-            self.cfg.hf_name
-            and isinstance(self.cfg.hf_name, str)
-            and "dictionary" in self.cfg.hf_name.lower()
-        ):
-            print("📘 Building DictionaryTypingDataset (word + definition)...")
-
-            # Reuse the dedicated dataset builder
-            dataset = DictionaryTypingDataset(
-                hf_name=self.cfg.hf_name,
-                seq_len=self.cfg.seq_len,
-                next_window=getattr(self.cfg, "next_token_window", 6),
-                max_prefix_len=getattr(self.cfg, "max_prefix_len", 12),
-                lowercase=getattr(self.cfg, "lowercase", True),
-            )
-
-            # Split 90/10 for train/valid
-            total = len(dataset)
-            split = int(self.cfg.split_ratio * total)
-            train_dataset = torch.utils.data.Subset(dataset, range(0, split))
-            valid_dataset = torch.utils.data.Subset(dataset, range(split, total))
-
-            print(
-                f"✅ DictionaryTypingDataset ready | "
-                f"train={len(train_dataset):,} | valid={len(valid_dataset):,} | "
-                f"vocab={dataset.vocab_size}"
-            )
-            return train_dataset, valid_dataset
+        seq_len = getattr(self.cfg, "seq_len", 128)
+        next_window = getattr(self.cfg, "next_token_window", 5)
+        num_prefixes = getattr(self.cfg, "num_prefixes_per_sentence", 3)
+        split_ratio = getattr(self.cfg, "split_ratio", 0.9)
+        max_prefix_len = getattr(self.cfg, "max_prefix_len", 12)
+        max_x_len = getattr(self.cfg, "max_x_len", 32)  # ✅ NEW: maximum x length (tokens)
+        max_samples_per_sentence = getattr(self.cfg, "max_samples_per_sentence", None)
 
         # ---------------------------------------------------------
-        # 2️⃣ Standard typing dataset from self.text
+        # 2️⃣ Split text into sentences / entries
         # ---------------------------------------------------------
-        print("⌨️ Building Typing dataset from raw text...")
-        sentences = self.text.split("\n")
+        sentences = [s.strip() for s in self.text.split("\n") if len(s.strip()) >= 3]
+        print(f"🧾 Processing {len(sentences):,} text entries to build typing samples...")
+
         samples = []
-        for s in sentences:
-            s = s.strip()
-            if len(s) < 3:
-                continue
+
+        # ---------------------------------------------------------
+        # 3️⃣ Generate prefix → target pairs
+        # ---------------------------------------------------------
+        for idx, s in enumerate(sentences):
             ids = self.tok.encode(s)
             L = len(ids)
             if L < 3:
                 continue
 
-            # Generate multiple prefix→target pairs per sentence
-            for _ in range(self.cfg.num_prefixes_per_sentence):
-                prefix_len = random.randint(1, max(2, L - 2))
-                target_len = min(self.cfg.next_token_window, L - prefix_len)
+            # Optional limit on number of prefixes per sentence
+            n_prefixes = num_prefixes
+            if max_samples_per_sentence:
+                n_prefixes = min(n_prefixes, max_samples_per_sentence)
+
+            for _ in range(n_prefixes):
+                # Random prefix length (bounded by both max_prefix_len and token length)
+                prefix_len = random.randint(1, min(max_prefix_len, max(2, L - 2)))
+                target_len = min(next_window, L - prefix_len)
                 if target_len <= 0:
                     continue
 
-                x = torch.tensor(ids[:prefix_len], dtype=torch.long)
-                y = torch.tensor(ids[prefix_len:prefix_len + target_len], dtype=torch.long)
+                # Limit x tensor size explicitly (NEW safeguard)
+                prefix_ids = ids[:prefix_len]
+                if len(prefix_ids) > max_x_len:
+                    prefix_ids = prefix_ids[-max_x_len:]  # keep the last portion (like user typing tail)
+
+                x = torch.tensor(prefix_ids, dtype=torch.long)
+                y = torch.tensor(ids[prefix_len: prefix_len + target_len], dtype=torch.long)
                 samples.append((x, y))
 
-        print(f"✅ Generated {len(samples):,} prefix→next-token pairs for typing.")
-        split = int(self.cfg.split_ratio * len(samples))
+        # ---------------------------------------------------------
+        # 4️⃣ Split into train/validation
+        # ---------------------------------------------------------
+        total = len(samples)
+        if total == 0:
+            raise ValueError("❌ No valid typing samples generated. Check input text or tokenizer output.")
 
-        # Convert to Subset-like dataset lists (for collate)
-        train_samples = samples[:split]
-        valid_samples = samples[split:]
+        split_idx = int(split_ratio * total)
+        train_samples = samples[:split_idx]
+        valid_samples = samples[split_idx:]
+
+        print(
+            f"✅ Generated {total:,} prefix→next-token pairs for typing "
+            f"(max_x_len={max_x_len}, next_window={next_window})"
+        )
+        print(
+            f"📊 Dataset split: train={len(train_samples):,} | "
+            f"valid={len(valid_samples):,} | prefix_max={max_prefix_len}"
+        )
 
         return train_samples, valid_samples
 
@@ -1519,10 +1464,11 @@ def build_dataset(task: str, args):
     # --- 2️⃣  Causal LM or Typing tasks ---
     elif task in ["lm", "typing"]:
         cfg = DataConfig(
-            files=args.files,
+            files=getattr(args, "files", None), #args.files,
             hf_name=args.hf_name,
             hf_config=getattr(args, "hf_config", None),
             hf_split=getattr(args, "hf_split", "train"),
+            hf_features=getattr(args, "hf_features", None),
             tokenizer=getattr(args, "tokenizer", "char"),     # 'char', 'word', 'bpe', or 'hf:<model>'
             vocab_size=getattr(args, "vocab_size", 8000),
             seq_len=args.seq_len,
@@ -1896,8 +1842,11 @@ def run_all_dataset_tests():
         args.task = "typing"
         args.hf_name = "npvinHnivqn/EnglishDictionary"
         args.hf_split = "train"
+        args.hf_features = ["word", "definition"]
         args.tokenizer = "char"
         args.seq_len = 64
+        args.next_token_window = 6
+        args.num_prefixes_per_sentence = 3
         args.next_token_window = 6
         args.max_prefix_len = 12
         data = build_dataset(args.task, args)

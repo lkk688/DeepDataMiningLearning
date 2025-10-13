@@ -874,10 +874,10 @@ import matplotlib.pyplot as plt
 
 
 def run_char_typing_experiment(
-    hf_name="OpenAssistant/oasst1",
+    hf_name="npvinHnivqn/EnglishDictionary",
     seq_len=128,
     batch_size=64,
-    epochs=3,
+    epochs=6,
     device="cuda" if torch.cuda.is_available() else "cpu",
 ):
     """
@@ -901,17 +901,17 @@ def run_char_typing_experiment(
         pass
 
     args = Args()
+    args.files = None
+    args.batch_size = batch_size
     args.task = "typing"
     args.hf_name = hf_name
     args.hf_split = "train"
+    args.hf_features = ["word", "definition"]
     args.tokenizer = "char"
-    args.vocab_size = 256
-    args.seq_len = seq_len
-    args.batch_size = batch_size
-    args.lowercase = True
-    args.mode = "teacher-forced"
-    args.num_prefixes_per_sentence = 3
-    args.next_token_window = 5
+    args.seq_len = 64
+    args.next_token_window = 1
+    args.num_prefixes_per_sentence = 5
+    args.max_prefix_len = 20
 
     print(f"📘 Building char-level typing dataset from '{hf_name}'...")
     data = build_dataset(args.task, args)
@@ -945,13 +945,14 @@ def run_char_typing_experiment(
         margs.heads = cfg.get("heads", 2)
         margs.lr = cfg["lr"]
         margs.seq_len = seq_len
+        margs.rope = False #added
         margs.save = f"checkpoints/{name.lower()}_char_typing.pt"
 
         model, hf_mode = build_model(margs.model_type, data, margs)
 
         # Training configuration
         tcfg = TrainConfig(
-            epochs=cfg["epochs"],
+            epochs=epochs,
             lr=cfg["lr"],
             weight_decay=0.01,
             warmup_steps=100,
@@ -1037,6 +1038,7 @@ def run_qwen_finetune_experiment(
     class Args:
         pass
     args = Args()
+    args.files = None
     args.task = "lm" #"typing"
     args.hf_name = hf_name
     args.files = txt_files
@@ -1204,4 +1206,5 @@ if __name__ == "__main__":
     #main()
     
     #results = run_predictive_typing_experiment()
-    run_qwen_finetune_experiment()
+    #run_qwen_finetune_experiment()
+    run_char_typing_experiment()
