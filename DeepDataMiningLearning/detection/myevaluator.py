@@ -947,7 +947,7 @@ def simplemodelevaluate(
                 print(f"        TP={stats['tp']}, FP={stats['fp']}, FN={stats['fn']}")
 
             res[image_id] = output
-            img_map[image_id] = img.cpu()
+            #img_map[image_id] = img.cpu()
             target_map[image_id] = target
 
             # Visualization (raw xyxy)
