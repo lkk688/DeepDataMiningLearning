@@ -231,7 +231,7 @@ class Trainer:
       ✅ Early stopping
       ✅ Optional Hugging Face model compatibility
     """
-    def __init__(self, model, data, tcfg, mode="teacher-forced", hf_model=False, early_stop_patience=3):
+    def __init__(self, model, data, tcfg, mode="teacher-forced", hf_model=False, early_stop_patience=2):
         """
         Args:
             model: TransformerLM or Hugging Face model (e.g. AutoModelForCausalLM)
@@ -282,7 +282,7 @@ class Trainer:
         if scheduler_type == "reduce":
             print("📉 Using ReduceLROnPlateau scheduler (adaptive LR on validation loss)")
             self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                self.opt, factor=0.5, patience=1, verbose=True
+                self.opt, factor=0.5, patience=1
             )
         elif scheduler_type == "cosine":
             print("🌊 Using CosineAnnealingWarmRestarts scheduler")
