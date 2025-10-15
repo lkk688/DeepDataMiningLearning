@@ -888,28 +888,162 @@ def run_predictive_typing_experiment(
 
 import torch
 import matplotlib.pyplot as plt
+import os, json, torch, random
+import matplotlib.pyplot as plt
+from datetime import datetime
+import torch
+import os
 
+def run_inference(
+    model_path,
+    model_type,
+    prompt,
+    tokenizer,
+    seq_len=128,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    max_new_tokens=50,
+    temperature=1.0,
+    top_k=0,
+    top_p=0.9,
+    num_samples=3,
+):
+    """
+    General-purpose inference function for trained language models.
 
+    This function:
+        - Loads a trained model checkpoint
+        - Tokenizes the given prompt
+        - Generates new tokens autoregressively
+        - Supports multiple sampling methods:
+            * Greedy decoding
+            * Temperature sampling
+            * Top-K sampling
+            * Top-P (nucleus) sampling
+        - Prints multiple output samples for qualitative comparison
+
+    Args:
+        model_path (str): Path to the trained model checkpoint (.pt file).
+        model_type (str): Model type string, e.g., "TransformerLM", "RNN", "LSTM".
+        prompt (str): Text prompt or prefix to condition generation.
+        tokenizer (Tokenizer): Tokenizer object with encode() / decode() methods.
+        seq_len (int): Max context length (window size during generation).
+        device (str): "cuda" or "cpu".
+        max_new_tokens (int): Number of tokens to generate beyond the prompt.
+        temperature (float): Temperature for sampling. Lower = more deterministic.
+        top_k (int): If > 0, keep only top-K highest probability tokens.
+        top_p (float): Nucleus sampling threshold (keep top tokens with cumulative prob ≤ top_p).
+        num_samples (int): How many completions to generate for comparison.
+
+    Example:
+        run_inference(
+            model_path="outputs/checkpoints/transformerlm_char_typing.pt",
+            model_type="TransformerLM",
+            prompt="The cat",
+            tokenizer=data.tok,
+            seq_len=64,
+            temperature=0.8,
+            top_k=40,
+            top_p=0.9,
+            num_samples=3,
+        )
+    """
+    print(f"\n🔮 Loading model checkpoint from: {model_path}")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"❌ Model checkpoint not found: {model_path}")
+
+    # ----------------------------------------------------------------------
+    # 1️⃣ Build and load model
+    # ----------------------------------------------------------------------
+    # We assume build_model(model_type, data, args) is available globally
+    # and returns a (model, hf_mode) pair.
+    model, _ = build_model(model_type, None, None)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
+    model.eval()
+
+    # ----------------------------------------------------------------------
+    # 2️⃣ Helper: sample next token from logits with multiple strategies
+    # ----------------------------------------------------------------------
+    def sample_next_token(logits):
+        """
+        Sample a token index from logits using temperature, top-k, and top-p.
+        """
+        # Temperature scaling
+        logits = logits / max(temperature, 1e-6)
+        probs = torch.softmax(logits, dim=-1)
+
+        # --- Top-K sampling (keep only K most probable tokens)
+        if top_k > 0:
+            top_vals, top_idx = torch.topk(probs, top_k)
+            probs = torch.zeros_like(probs).scatter_(0, top_idx, top_vals)
+            probs = probs / probs.sum()
+
+        # --- Top-P (nucleus) sampling
+        if top_p < 1.0:
+            sorted_probs, sorted_idx = torch.sort(probs, descending=True)
+            cumulative = torch.cumsum(sorted_probs, dim=-1)
+            cutoff = cumulative > top_p
+            if torch.any(cutoff):
+                cutoff_idx = torch.nonzero(cutoff)[0].item()
+                keep_idx = sorted_idx[: cutoff_idx + 1]
+                probs = torch.zeros_like(probs).scatter_(0, keep_idx, probs[keep_idx])
+                probs = probs / probs.sum()
+
+        # Draw one token from the resulting distribution
+        next_id = torch.multinomial(probs, 1).item()
+        return next_id
+
+    # ----------------------------------------------------------------------
+    # 3️⃣ Prepare prompt tokens
+    # ----------------------------------------------------------------------
+    prompt_ids = tokenizer.encode(prompt)
+    print(f"📝 Prompt: '{prompt}'")
+    print(f"🔢 Encoded prompt length: {len(prompt_ids)} tokens")
+
+    # ----------------------------------------------------------------------
+    # 4️⃣ Generate samples
+    # ----------------------------------------------------------------------
+    for i in range(num_samples):
+        ids = prompt_ids.copy()
+        print(f"\n🎯 Generating Sample {i + 1}/{num_samples}...")
+        for step in range(max_new_tokens):
+            # Use only the last seq_len tokens as input context
+            x = torch.tensor(ids[-seq_len:], dtype=torch.long, device=device)[None, :]
+
+            with torch.no_grad():
+                logits = model(x)
+                if isinstance(logits, tuple):  # handle RNN/LSTM returning (output, hidden)
+                    logits = logits[0]
+                logits = logits[0, -1, :]  # last token logits
+
+            next_id = sample_next_token(logits.cpu())
+            ids.append(next_id)
+
+        # ------------------------------------------------------------------
+        # Decode and print generated text
+        # ------------------------------------------------------------------
+        text = tokenizer.decode(ids)
+        print(f"🧩 Sample {i+1} Output:\n{text}")
+        print("-" * 60)
+
+    print("✨ Inference complete.\n")
+     
 def run_char_typing_experiment(
     hf_name="npvinHnivqn/EnglishDictionary",
-    seq_len=64, #32,
+    seq_len=64,
     batch_size=64,
     epochs=6,
     device="cuda" if torch.cuda.is_available() else "cpu",
+    output_dir="outputs"
 ):
     """
-    Simple predictive typing experiment with char-level tokenization.
-
-    Task:
-        - Build a small predictive typing dataset (prefix → next few chars)
-        - Train RNN, LSTM, and Transformer models on the same data
-        - Compare their training/validation loss and accuracy
-
-    Dataset:
-        - English subsamples from OpenAssistant/oasst1
-        - Tokenized at character level (vocab ~100)
+    Character-level predictive typing experiment with configuration saving
+    and general-purpose inference testing.
     """
     print("\n🚀 ===== Character-Level Typing Experiment =====")
+
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "checkpoints"), exist_ok=True)
 
     # ------------------------------------------------------------
     # 1️⃣ Build dataset (char-level typing)
@@ -920,68 +1054,49 @@ def run_char_typing_experiment(
     args = Args()
     args.files = None
     args.batch_size = batch_size
-    args.task = "lm"#"typing"
+    args.task = "lm"
     args.hf_name = hf_name
     args.hf_split = "train"
-    args.hf_features = ["word", "definition"]
+    args.hf_features = ["definition"] #["word"]
     args.tokenizer = "char"
-    args.seq_len = seq_len #64
-    args.stride = 1 #default to seq_len without any overlap
-    # args.next_token_window = 1
-    # args.num_prefixes_per_sentence = 5
-    # args.max_prefix_len = 20
+    args.seq_len = seq_len
+    args.stride = 1
+    args.next_token_window = 1
+    args.num_prefixes_per_sentence = 5
+    args.max_prefix_len = 20
 
     print(f"📘 Building char-level typing dataset from '{hf_name}'...")
     data = build_dataset(args.task, args)
     train_loader, val_loader = data.loaders()
-    inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
-    #size is seq_len-1 for char typing
+    inspect_dataset(data, task=args.task, num_batches=4, num_samples=4)
     print("✅ Dataset ready for training.\n")
 
     # ------------------------------------------------------------
     # 2️⃣ Define model configurations
     # ------------------------------------------------------------
     # model_configs = {
-    #     "RNN": dict(model_type="RNN", dim=128, layers=1, lr=1e-3, epochs=epochs),
-    #     "LSTM": dict(model_type="LSTM", dim=128, layers=1, lr=1e-3, epochs=epochs),
-    #     "TraditionalTransformerLM": dict(model_type="TraditionalTransformerLM", dim=192, layers=2, heads=4, lr=5e-4, epochs=epochs),
-    #     "TransformerLM": dict(model_type="TransformerLM", dim=192, layers=2, heads=4, lr=5e-4, epochs=epochs),
+    #     "RNN": dict(model_type="RNN", dim=64, layers=1, lr=1e-3, epochs=epochs),
+    #     "LSTM": dict(model_type="LSTM", dim=64, layers=1, lr=1e-3, epochs=epochs),
+    #     "TraditionalTransformerLM": dict(
+    #         model_type="TraditionalTransformerLM",
+    #         dim=128, layers=2, heads=2, ff_dim=256, lr=8e-4, epochs=epochs),
+    #     "TransformerLM": dict(
+    #         model_type="TransformerLM",
+    #         dim=128, layers=2, heads=2, lr=8e-4, epochs=epochs),
     # }
     model_configs = {
-        "RNN": dict(
-            model_type="RNN",
-            dim=64,             # ↓ smaller hidden size
-            layers=1,           # short dependencies → shallow ok
-            lr=1e-3,            # relatively high learning rate
-            epochs=epochs,
-        ),
-        "LSTM": dict(
-            model_type="LSTM",
-            dim=64,
-            layers=1,
-            lr=1e-3,
-            epochs=epochs,
-        ),
         "TraditionalTransformerLM": dict(
             model_type="TraditionalTransformerLM",
-            dim=128,            # ↓ smaller hidden dimension
-            layers=2,           # still need some capacity for syntax patterns
-            heads=2,            # ↓ fewer attention heads for short seqs
-            ff_dim=256,         # feed-forward dimension ~2x dim
-            lr=8e-4,            # slightly higher LR
-            epochs=epochs,
-        ),
+            dim=128, layers=2, heads=2, ff_dim=256, lr=8e-4, epochs=epochs),
         "TransformerLM": dict(
             model_type="TransformerLM",
-            dim=128,
-            layers=2,
-            heads=2,
-            lr=8e-4,
-            epochs=epochs,
-        ),
+            dim=128, layers=2, heads=2, lr=8e-4, epochs=epochs),
+        "RNN": dict(model_type="RNN", dim=64, layers=1, lr=1e-3, epochs=epochs),
+        "LSTM": dict(model_type="LSTM", dim=64, layers=1, lr=1e-3, epochs=epochs),
     }
 
     results = {}
+    all_configs = {"dataset_args": vars(args), "models": {}}
 
     # ------------------------------------------------------------
     # 3️⃣ Train and compare models
@@ -999,12 +1114,13 @@ def run_char_typing_experiment(
         margs.heads = cfg.get("heads", 2)
         margs.lr = cfg["lr"]
         margs.seq_len = seq_len
-        margs.rope = False #added
-        margs.save = f"checkpoints/{name.lower()}_char_typing.pt"
+        margs.rope = False
+        margs.save = os.path.join(output_dir, "checkpoints", f"{name.lower()}_char_typing.pt")
+
+        all_configs["models"][name] = {**cfg, "save_path": margs.save}
 
         model, hf_mode = build_model(margs.model_type, data, margs)
 
-        # Training configuration
         tcfg = TrainConfig(
             epochs=epochs,
             lr=cfg["lr"],
@@ -1033,12 +1149,26 @@ def run_char_typing_experiment(
 
         print(f"✅ {name} — loss={val_loss:.4f} | acc={val_acc*100:.2f}% | ppl={val_ppl:.2f}\n")
 
-        # cleanup between models
         del model, trainer, evaluator
         torch.cuda.empty_cache()
 
     # ------------------------------------------------------------
-    # 4️⃣ Plot comparison
+    # 4️⃣ Save configurations and results to JSON
+    # ------------------------------------------------------------
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    cfg_path = os.path.join(output_dir, f"experiment_config_{timestamp}.json")
+    summary = {
+        "args": vars(args),
+        "model_configs": model_configs,
+        "results": results,
+        "timestamp": timestamp,
+    }
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=4)
+    print(f"💾 Saved experiment configuration and results → {cfg_path}")
+
+    # ------------------------------------------------------------
+    # 5️⃣ Plot comparison
     # ------------------------------------------------------------
     plt.figure(figsize=(8, 5))
     for name, metrics in results.items():
@@ -1053,7 +1183,7 @@ def run_char_typing_experiment(
     plt.show()
 
     # ------------------------------------------------------------
-    # 5️⃣ Print summary
+    # 6️⃣ Summary print
     # ------------------------------------------------------------
     print("\n📊 Final Comparison Summary:")
     print(f"{'Model':<15} {'Loss':<10} {'Acc (%)':<10} {'PPL':<10}")
@@ -1062,7 +1192,26 @@ def run_char_typing_experiment(
         print(f"{name:<15} {m['final_loss']:<10.4f} {m['final_acc']*100:<10.2f} {m['final_ppl']:<10.2f}")
     print("\n✅ ===== Experiment Complete =====\n")
 
+
+    # Example inference call
+    for name, cfg in model_configs.items():
+        print(f"\n🔮 Running inference with {name} model...")
+        best_model_path = os.path.join(output_dir, "checkpoints", f"{name.lower()}_char_typing.pt")
+        run_inference(
+            model_path=best_model_path,
+            model_type=cfg["model_type"],
+            prompt="The cat",
+            tokenizer=data.tok,
+            seq_len=64,
+            temperature=0.8,
+            top_k=40,
+            top_p=0.9,
+            num_samples=2,
+        )
+
     return results
+
+
 
 # ============================================================
 # QWEN 2.5–3B FINE-TUNING EXPERIMENT

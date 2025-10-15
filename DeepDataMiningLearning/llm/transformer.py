@@ -787,6 +787,20 @@ def build_model(model_type, data, args):
             dropout=0.1,
             max_seq_len=args.seq_len,
         )
+    elif model_type == "PyTorchTransformer":
+        print("🧩 Initializing PyTorch Built-in Transformer (nn.Transformer)")
+        model = PyTorchTransformer(
+            src_vocab_size=data.tokenizer_src.vocab_size,
+            tgt_vocab_size=data.tokenizer_tgt.vocab_size,
+            dim=args.dim,
+            n_heads=args.heads,
+            num_encoder_layers=args.layers,
+            num_decoder_layers=args.layers,
+            ff_dim=args.dim * 4,
+            dropout=0.1,
+            max_seq_len=args.seq_len,
+            share_embeddings=False,
+        )
 
     # --- Full Transformer (Encoder–Decoder) ---
     elif model_type == "FullTransformer":
