@@ -6,28 +6,26 @@ from typing import Optional, List, Tuple, Dict
 from dataclasses import dataclass
 import random
 import os
-from datasets import load_dataset, get_dataset_config_names, Value
-import os
+import json
+from torch.utils.data import DataLoader
+import torch.nn.functional as F
+from typing import List, Optional
+from collections import Counter
+import numpy as np
 
-# ============================================================
-# 2) DATA MODULE — files / HF datasets; char/word/HF tokenizers
-#     supports teacher-forced (per-token) and final-token modes
-# ============================================================
 try:
-    from datasets import load_dataset
+    from datasets import load_dataset, get_dataset_config_names, Value
 except Exception:
     load_dataset = None
 import re
 import unicodedata
-import nltk
-from nltk.corpus import words
 from typing import List
+from pathlib import Path
+from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS
 
-# Download once if needed
-# nltk.download('words')
 
-EN_WORDS = set(w.lower() for w in words.words())
 
+ 
 def clean_texts(
     texts: List[str],
     keep_lang: str = "ascii",      # 'ascii' | 'en' | 'en_zh' | 'all'
@@ -152,89 +150,6 @@ def clean_texts(
               f"({len(cleaned)/max(total,1)*100:.2f}% retained)")
 
     return cleaned
-
-# --- Tokenizers ---
-#add_eos=True: Keeps each training word independent (great for word lists).
-#You’re training on a continuous text corpus (like WikiText, Tiny Shakespeare, or BooksCorpus).
-#→ In this case, the model should not reset between words — it should learn continuous dependencies.
-class CharTokenizer:
-    def __init__(self, texts: List[str], add_eos=True, add_pad=True):
-        # Build vocabulary from characters
-        vocab = sorted(set("".join(texts)))
-        if add_eos and "<eos>" not in vocab:
-            vocab.append("<eos>")
-        if add_pad and "<pad>" not in vocab:
-            vocab.append("<pad>")
-
-        self.stoi = {ch: i for i, ch in enumerate(vocab)}
-        self.itos = {i: ch for ch, i in self.stoi.items()}
-        self.vocab_size = len(self.stoi)
-        self.pad_token = "<pad>" if add_pad else None
-        self.pad_idx = self.stoi.get("<pad>", None)
-        self.eos_idx = self.stoi.get("<eos>", None)
-
-    def encode(self, s: str) -> List[int]:
-        ids = [self.stoi[c] for c in s if c in self.stoi]
-        if self.eos_idx is not None:
-            ids.append(self.eos_idx)
-        return ids
-
-    def decode(self, ids: List[int]) -> str:
-        return "".join(
-            self.itos[i]
-            for i in ids
-            if self.itos[i] not in ("<pad>", "<eos>")
-        )
-        # chars = []
-        # for i in ids:
-        #     ch = self.itos[i]
-        #     if ch == "<eos>": break
-        #     chars.append(ch)
-        # return "".join(chars)
-    
-class WordTokenizer:
-    def __init__(self, texts: List[str]):
-        import re
-        words = []
-        for t in texts: words += re.findall(r"\b\w+\b", t.lower())
-        vocab = sorted(set(words))
-        self.stoi = {w:i for i,w in enumerate(vocab)}
-        self.itos = {i:w for w,i in self.stoi.items()}
-        self.vocab_size = len(self.stoi)
-    def encode(self, s: str) -> List[int]:
-        import re; ws = re.findall(r"\b\w+\b", s.lower())
-        return [self.stoi[w] for w in ws if w in self.stoi]
-    def decode(self, ids: List[int]) -> str: return " ".join(self.itos[i] for i in ids if i in self.itos)
-
-class HFTokenizerWrapper:
-    """Wrap any HF tokenizer (BPE/WordPiece)."""
-    def __init__(self, name_or_path: str):
-        from transformers import AutoTokenizer
-        self.tok = AutoTokenizer.from_pretrained(name_or_path, use_fast=True)
-        if self.tok.pad_token_id is None:
-            self.tok.pad_token = self.tok.eos_token or self.tok.sep_token or "[PAD]"
-        self.vocab_size = self.tok.vocab_size
-
-    # expose alias
-    @property
-    def tokenizer(self):
-        """Return the underlying HF tokenizer (for compatibility)."""
-        return self.tok
-
-    def encode(self, s: str) -> list[int]:
-        return self.tok(s, add_special_tokens=False)["input_ids"]
-
-    def decode(self, ids: list[int]) -> str:
-        return self.tok.decode(ids, skip_special_tokens=True)
-
-    @property
-    def pad_id(self): return self.tok.pad_token_id
-    @property
-    def bos_id(self): return self.tok.bos_token_id
-    @property
-    def eos_id(self): return self.tok.eos_token_id
-
-
 
 
 #pip install datasets
@@ -432,13 +347,7 @@ class TypingDataset(Dataset):
         # ensure both 1-D
         assert x.ndim == 1 and y.ndim == 1, "TypingDataset must return 1-D tensors"
         return x, y
-    
-# ============================================================
-# Hugging Face Dataset Wrapper for Encoder–Decoder Training
-# ============================================================
-from datasets import load_dataset
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
+
 
 # ============================================================
 # Seq2Seq Dataset (for encoder–decoder Transformers)
@@ -1503,98 +1412,6 @@ def build_dataset(task: str, args):
 # ============================================================
 # DATASET TEST FUNCTION (supports typing, LM, seq2seq, HF)
 # ============================================================
-
-import torch
-from typing import List, Optional
-from collections import Counter
-import numpy as np
-
-
-def test_tokenizer(
-    data,
-    samples: Optional[List[str]] = None,
-    num_samples: int = 3,
-    show_tokens: int = 40,
-):
-    """
-    Standalone tokenizer test utility.
-
-    Performs a quick sanity check of the tokenizer used in a dataset.
-    Fetches or accepts sample text, tokenizes it, prints token IDs, tokens,
-    decoded text, and verifies round-trip consistency.
-
-    Args:
-        data: DataModule or object containing `.tok` (wrapper) or `.tokenizer`.
-        samples (list[str], optional): custom text samples to test.
-        num_samples (int): number of examples to use if pulling from `data.text`.
-        show_tokens (int): how many tokens to display before truncating.
-
-    Example:
-        >>> data = build_dataset("lm", args)
-        >>> test_tokenizer(data)
-    """
-
-    print("\n🔍 ===== TOKENIZER SANITY CHECK =====")
-
-    # --- 1️⃣  Locate tokenizer object ---
-    tok = getattr(data, "tok", None)
-    if tok is None:
-        raise ValueError("❌ No tokenizer found in data object (missing `.tok`).")
-
-    # HFTokenizerWrapper exposes .tokenizer property; otherwise use itself
-    tokenizer = getattr(tok, "tokenizer", tok)
-
-    print(f"🧩 Tokenizer class: {type(tokenizer).__name__}")
-    if hasattr(tokenizer, "name_or_path"):
-        print(f"📘 Tokenizer name/path: {tokenizer.name_or_path}")
-
-    # --- 2️⃣  Determine test samples ---
-    if samples is None:
-        if hasattr(data, "text") and isinstance(data.text, str):
-            lines = [l.strip() for l in data.text.split("\n") if l.strip()]
-            samples = lines[:num_samples]
-        else:
-            raise ValueError(
-                "❌ No text samples provided and data.text not available."
-            )
-    else:
-        samples = samples[:num_samples]
-
-    print(f"📚 Testing {len(samples)} text samples.\n")
-
-    # --- 3️⃣  Test each sample ---
-    for i, s in enumerate(samples):
-        print(f"🔹 Sample {i+1}")
-        print(f"   Input text: {s[:200]}{'...' if len(s) > 200 else ''}")
-
-        # Tokenize
-        try:
-            encoded = tokenizer(s, add_special_tokens=False)
-            ids = encoded["input_ids"]
-        except Exception as e:
-            print(f"⚠️  Tokenization failed: {e}")
-            continue
-
-        tokens = (
-            tokenizer.convert_ids_to_tokens(ids)
-            if hasattr(tokenizer, "convert_ids_to_tokens")
-            else None
-        )
-
-        print(f"   Token IDs  ({len(ids)}): {ids[:show_tokens]}{'...' if len(ids) > show_tokens else ''}")
-        if tokens:
-            print(f"   Tokens     ({len(tokens)}): {tokens[:show_tokens]}{'...' if len(tokens) > show_tokens else ''}")
-
-        # Decode back
-        try:
-            decoded = tokenizer.decode(ids, skip_special_tokens=True)
-            print(f"   🔁 Decoded : {decoded[:200]}{'...' if len(decoded) > 200 else ''}")
-        except Exception as e:
-            print(f"⚠️  Decode failed: {e}")
-
-        print("")
-
-    print("✅ Tokenizer test complete.\n")
 
 
 import torch

@@ -746,26 +746,33 @@ class GRULanguageModel(RecurrentLanguageModelBase):
 # ============================================================
 # MODEL INITIALIZATION FUNCTION (clean version)
 # ============================================================
-def build_model(model_type, data, args):
+def build_model(model_type, data=None, args=None, vocab_size=None):
     """
     Dynamically build the model according to the selected architecture.
 
     Args:
-        model_type (str): Model architecture type.
-        data: DataModule or similar providing vocab sizes.
-        args: CLI arguments with model hyperparameters.
+        model_type (str): Type of model, e.g. "RNN", "LSTM", "TransformerLM".
+        data (DataModule, optional): Dataset module (provides vocab_size, tokenizer, etc.).
+        args (Namespace, optional): Model arguments (dim, layers, etc.).
+        vocab_size (int, optional): Explicit vocab size for inference when data=None.
 
     Returns:
         model (nn.Module): The initialized model.
         hf_mode (bool): Whether this model uses Hugging Face's forward signature.
     """
     hf_mode = False
+    
+    if data is None and vocab_size is None:
+        raise ValueError("❌ Need either data.vocab_size or explicit vocab_size for model construction.")
+
+    # Prefer vocab_size if explicitly given
+    vocab_size = vocab_size or data.vocab_size
 
     # --- Modern Transformer (decoder-only) ---
     if model_type == "TransformerLM":
         print("🚀 Initializing modern TransformerLM (RMSNorm + RoPE + SwiGLU)")
         cfg = ModelConfig(
-            vocab_size=data.vocab_size,
+            vocab_size=vocab_size,
             dim=args.dim,
             n_layers=args.layers,
             n_heads=args.heads,
@@ -779,7 +786,7 @@ def build_model(model_type, data, args):
     elif model_type == "TraditionalTransformerLM":
         print("🧩 Initializing Traditional Transformer (LayerNorm + GELU + AbsPos)")
         model = TraditionalTransformerLM(
-            vocab_size=data.vocab_size,
+            vocab_size=vocab_size,
             dim=args.dim,
             n_layers=args.layers,
             n_heads=args.heads,
@@ -820,7 +827,7 @@ def build_model(model_type, data, args):
     elif model_type == "RNN":
         print("🧠 Initializing traditional RNN Language Model...")
         model = RNNLanguageModel(
-            vocab_size=data.vocab_size,
+            vocab_size=vocab_size,
             embed_dim=args.dim,
             hidden_dim=args.dim,
             num_layers=args.layers,
@@ -831,7 +838,7 @@ def build_model(model_type, data, args):
     elif model_type == "LSTM":
         print("🧠 Initializing LSTM Language Model...")
         model = LSTMLanguageModel(
-            vocab_size=data.vocab_size,
+            vocab_size=vocab_size,
             embed_dim=args.dim,
             hidden_dim=args.dim,
             num_layers=args.layers,
