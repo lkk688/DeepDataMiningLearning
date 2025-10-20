@@ -269,8 +269,53 @@ def visualize_open3d(lidar: torch.Tensor, boxes3d: torch.Tensor | None = None,
     vis.run()
     vis.destroy_window()
 
+def download_waymo_folder(LOCAL_DIR = "/data/Datasets/waymodata/", SPLIT="training"):
+    import os
+    import subprocess
+
+    # Configuration
+    BUCKET_PREFIX = "gs://waymo_open_dataset_v_2_0_1/training/"
+    
+    # Ensure the local directory exists
+    os.makedirs(LOCAL_DIR, exist_ok=True)
+
+    # List all subdirectories in the training bucket
+    # Using `gsutil ls` with a trailing '/' lists only folders.
+    command = f"gsutil ls {BUCKET_PREFIX}"
+    try:
+        result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+        folders_to_download = result.stdout.strip().split('\n')
+    except subprocess.CalledProcessError as e:
+        print(f"Error listing bucket contents: {e.stderr}")
+        exit(1)
+
+    print(f"Found {len(folders_to_download)} folders in the bucket.")
+
+    for remote_folder in folders_to_download:
+        folder_name = os.path.basename(remote_folder.strip('/'))
+        local_folder_path = os.path.join(LOCAL_DIR, SPLIT, folder_name)
+
+        # Check if the local folder already exists
+        if os.path.exists(local_folder_path) or folder_name==SPLIT:
+            print(f"Skipping existing folder: {local_folder_path}")
+        else:
+            print(f"Downloading new folder: {folder_name}...")
+            os.makedirs(local_folder_path, exist_ok=True)
+            # Fix: Copy contents of remote folder to local folder, not the folder itself
+            # Add trailing /* to copy all files inside the remote folder
+            remote_folder_contents = remote_folder.rstrip('/') + '/*'
+            download_command = f"gsutil -m cp -r {remote_folder_contents} {local_folder_path}/"
+            try:
+                subprocess.run(download_command, shell=True, check=True)
+                print(f"Successfully downloaded {folder_name}.")
+            except subprocess.CalledProcessError as e:
+                print(f"Error downloading {folder_name}: {e.stderr}")
+
+    print("Download script finished.")
+
 def main():
-    ds = Waymo3DDataset("/mnt/e/Shared/Dataset/waymodata/", split="training", max_frames=3)
+    #path="/mnt/e/Shared/Dataset/waymodata/"
+    ds = Waymo3DDataset("/data/Datasets/waymodata/", split="training", max_frames=3)
     lidar, target = ds[0]
     print("points:", lidar.shape)
     print("boxes:", target["boxes_3d"].shape)
@@ -278,5 +323,6 @@ def main():
     visualize_open3d(lidar, target["boxes_3d"])
 
 if __name__ == "__main__":
+    download_waymo_folder()
     main()
     #test_parquet()
