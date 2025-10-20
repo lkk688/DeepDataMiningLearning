@@ -1,12 +1,11 @@
 
-from typing import Optional, List, Tuple, Dict
-
+from typing import List, Union, Optional, Tuple, Dict
 import os
 import json
 import numpy as np
 import re
 import unicodedata
-from typing import List
+
 from pathlib import Path
 
 
@@ -27,7 +26,14 @@ try:
     EN_WORDS = set(w.lower() for w in words.words())
 except:
     EN_WORDS = set()  # fallback if nltk words not available
-    
+
+# Optional jieba for Chinese segmentation
+try:
+    import jieba
+    JIEBA_AVAILABLE = True
+except ImportError:
+    JIEBA_AVAILABLE = False
+    print("⚠️  jieba not installed. Install via `pip install jieba` for Chinese word segmentation.")
 
 
 
@@ -220,30 +226,30 @@ class CharTokenizer:
 
 class WordTokenizer:
     """
-    A robust multilingual word-level tokenizer with flexible options.
+    Multilingual word-level tokenizer with English + Chinese + mixed support.
 
     Features:
-      ✅ Handles both English and Chinese text
-      ✅ Optional: keep or remove punctuation
-      ✅ Optional: distinguish between Chinese and English punctuation
-      ✅ Adds <pad>, <eos>, and <unk> special tokens
-      ✅ Default pad_id = -100 (compatible with PyTorch ignore_index)
-      ✅ Optional English vocabulary seeding (from nltk.corpus.words)
-      ✅ Save/load support for persistence
+      ✅ English, Chinese, or mixed en-zh text
+      ✅ Optional jieba for Chinese word segmentation
+      ✅ Keeps or removes punctuation
+      ✅ Distinguishes Chinese vs English punctuation
+      ✅ Adds <pad>, <eos>, and <unk> tokens
+      ✅ Supports save() / load()
     """
 
     def __init__(
         self,
         texts: List[str],
-        lang: str = "en",
+        lang: str = "en", #"zh", "en-zh", "mixed"
         add_eos: bool = True,
         add_pad: bool = True,
         add_unk: bool = True,
         pad_id: int = -100,
         lowercase: bool = True,
         use_english_vocab: bool = False,
-        keep_punct: bool = False,           # ✅ whether to keep punctuation as separate tokens
-        separate_zh_punct: bool = True,     # ✅ distinguish Chinese vs English punctuation
+        keep_punct: bool = False,
+        separate_zh_punct: bool = True,
+        use_jieba: bool = False,        # ✅ new: use jieba for Chinese segmentation
     ):
         self.lang = lang
         self.add_eos = add_eos
@@ -254,69 +260,119 @@ class WordTokenizer:
         self.use_english_vocab = use_english_vocab
         self.keep_punct = keep_punct
         self.separate_zh_punct = separate_zh_punct
+        self.use_jieba = use_jieba and JIEBA_AVAILABLE
 
         # ------------------------------------------------------------
-        # 1️⃣ Normalize text: lowercase and strip whitespace
+        # 1️⃣ Normalize text
         # ------------------------------------------------------------
         if lowercase and lang != "zh":
             texts = [t.lower() for t in texts]
         texts = [t.strip() for t in texts]
 
         # ------------------------------------------------------------
-        # 2️⃣ Define punctuation regex patterns
+        # 2️⃣ Regex for punctuation
         # ------------------------------------------------------------
-        # English punctuation (ASCII)
         EN_PUNCT = r"[!\"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]"
-        # Chinese punctuation (full-width)
         ZH_PUNCT = r"[，。！？、“”‘’《》（）【】……—～：；·]"
+        tokens = []
 
         # ------------------------------------------------------------
-        # 3️⃣ Tokenize text into words (and optionally punctuation)
+        # 3️⃣ Tokenization logic
         # ------------------------------------------------------------
-        tokens = []
         for t in texts:
             if lang == "zh":
-                # For Chinese: treat each character as a token, or include punctuation if needed
-                if keep_punct:
-                    # Keep both Chinese and English punctuation
-                    pattern = r"[\u4e00-\u9fff]+|" + EN_PUNCT + "|" + ZH_PUNCT
-                    tokens.extend(re.findall(pattern, t))
+                # ------------------------------
+                # Chinese only
+                # ------------------------------
+                if self.use_jieba:
+                    # jieba word segmentation
+                    zh_tokens = list(jieba.cut(t))
                 else:
-                    # Only keep Chinese characters (ignore punctuation)
-                    tokens.extend([ch for ch in t if "\u4e00" <= ch <= "\u9fff"])
-            else:
-                # English or mixed-language text
+                    # character-based segmentation
+                    zh_tokens = [ch for ch in t if "\u4e00" <= ch <= "\u9fff"]
+
+                if keep_punct:
+                    puncts = re.findall(EN_PUNCT + "|" + ZH_PUNCT, t)
+                    tokens.extend(zh_tokens + puncts)
+                else:
+                    tokens.extend(zh_tokens)
+
+            elif lang == "en":
+                # ------------------------------
+                # English only
+                # ------------------------------
                 if keep_punct:
                     if separate_zh_punct:
-                        # Keep English words + both EN and ZH punctuation
                         pattern = r"\w+|" + EN_PUNCT + "|" + ZH_PUNCT
                     else:
-                        # Keep words + any punctuation (mixed)
                         pattern = r"\w+|[^\w\s]"
                     tokens.extend(re.findall(pattern, t))
                 else:
-                    # Default: only keep words, ignore punctuation
                     tokens.extend(re.findall(r"\b\w+\b", t))
 
-        # ------------------------------------------------------------
-        # 4️⃣ English word dictionary filtering (if desired)
-        # ------------------------------------------------------------
-        if lang == "en" and EN_WORDS and not use_english_vocab:
-            # Keep tokens that are in the English dictionary OR are punctuation/numbers
-            tokens = [
-                w for w in tokens
-                if (w.isalpha() and w in EN_WORDS) or not w.isalpha()
-            ]
+            elif lang in ("en-zh", "mixed"):
+                pattern = (
+                    r"[\u4e00-\u9fff]+"  # Chinese block
+                    + (f"|{EN_PUNCT}|{ZH_PUNCT}" if keep_punct else "")
+                    + r"|\b\w+\b"        # English words
+                )
+
+                mixed_tokens = re.findall(pattern, t)
+                seg_tokens = []
+                for tok in mixed_tokens:
+                    if re.match(r"[\u4e00-\u9fff]+", tok):
+                        # Pass contiguous Chinese segment to jieba if enabled
+                        if self.use_jieba:
+                            seg_tokens.extend(list(jieba.cut(tok)))
+                        else:
+                            seg_tokens.extend(list(tok))  # fallback: per-character
+                    else:
+                        seg_tokens.append(tok)
+                tokens.extend(seg_tokens)
+
+            else:
+                raise ValueError(f"❌ Unsupported language type: {lang}")
 
         # ------------------------------------------------------------
-        # 5️⃣ English dictionary seeding (optional vocab expansion)
+        # 4️⃣ Optional English dictionary filtering
         # ------------------------------------------------------------
-        if lang == "en" and use_english_vocab and EN_WORDS:
+        if lang in ("en", "en-zh", "mixed") and EN_WORDS and not use_english_vocab:
+            if self.lowercase:
+                # Standard lowercase filtering
+                tokens = [
+                    w for w in tokens
+                    if (w.isalpha() and w in EN_WORDS)
+                    or (not w.isalpha())
+                    or re.match(r"[\u4e00-\u9fff]", w)
+                ]
+            else:
+                # Case-sensitive mode: allow both lowercase and capitalized forms
+                valid_words = set(EN_WORDS)
+                # Add capitalized versions for typical English nouns/proper names
+                capitalized_words = {w.capitalize() for w in EN_WORDS if w.isalpha() and len(w) > 1}
+                valid_words.update(capitalized_words)
+
+                tokens = [
+                    w for w in tokens
+                    if (w.isalpha() and w in valid_words)
+                    or (not w.isalpha())
+                    or re.match(r"[\u4e00-\u9fff]", w)
+                ]
+
+        # ------------------------------------------------------------
+        # 5️⃣ Optional English vocab expansion
+        # ------------------------------------------------------------
+        if lang in ("en", "en-zh", "mixed") and use_english_vocab and EN_WORDS:
             print("📚 Merging English dictionary words into vocabulary...")
-            tokens.extend(list(EN_WORDS))
+            if self.lowercase:
+                tokens.extend(list(EN_WORDS))
+            else:
+                # Add both lowercase and capitalized forms to vocab
+                capitalized_words = [w.capitalize() for w in EN_WORDS if w.isalpha() and len(w) > 1]
+                tokens.extend(list(EN_WORDS) + capitalized_words)
 
         # ------------------------------------------------------------
-        # 6️⃣ Build vocabulary (unique tokens + special symbols)
+        # 6️⃣ Build vocab
         # ------------------------------------------------------------
         vocab = sorted(set(tokens))
         specials = []
@@ -340,41 +396,44 @@ class WordTokenizer:
         self.vocab_size = len(self.stoi)
 
         print(
-            f"✅ WordTokenizer initialized | lang={lang} | keep_punct={keep_punct} | "
-            f"separate_zh_punct={separate_zh_punct} | vocab_size={self.vocab_size} "
+            f"✅ WordTokenizer initialized | lang={lang} | jieba={self.use_jieba} | "
+            f"keep_punct={keep_punct} | vocab_size={self.vocab_size} "
             f"| pad_idx={self.pad_idx} | eos_idx={self.eos_idx} | unk_idx={self.unk_idx}"
         )
-        if use_english_vocab:
-            print("✅ English dictionary words added to vocabulary.")
 
     # ------------------------------------------------------------
-    # 🔹 Encode: convert text → token IDs
+    # 🔹 Encode
     # ------------------------------------------------------------
     def encode(self, text: str, add_eos: bool = True) -> List[int]:
-        """
-        Encode a string into a list of token IDs.
-        Handles punctuation based on configuration.
-        Unknown tokens are mapped to <unk>.
-        """
-        EN_PUNCT = r"[!\"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]"
-        ZH_PUNCT = r"[，。！？、“”‘’《》（）【】……—～：；·]"
-
-        if self.lang == "zh":
-            if self.keep_punct:
-                pattern = r"[\u4e00-\u9fff]+|" + EN_PUNCT + "|" + ZH_PUNCT
-                tokens = re.findall(pattern, text)
-            else:
-                tokens = [ch for ch in text if "\u4e00" <= ch <= "\u9fff"]
-        else:
-            text = text.lower() if self.lowercase else text
-            if self.keep_punct:
-                if self.separate_zh_punct:
-                    pattern = r"\w+|" + EN_PUNCT + "|" + ZH_PUNCT
+        if self.lowercase and self.lang != "zh":
+            text = text.lower()
+        """Encode a string into token IDs."""
+        if self.lang == "zh" and self.use_jieba:
+            tokens = list(jieba.cut(text))
+        elif self.lang in ("en-zh", "mixed") and self.use_jieba:
+            parts = re.findall(r"[\u4e00-\u9fff]+|\b\w+\b|[^\w\s]", text)
+            tokens = []
+            for p in parts:
+                if re.match(r"[\u4e00-\u9fff]+", p):
+                    tokens.extend(list(jieba.cut(p)))
                 else:
-                    pattern = r"\w+|[^\w\s]"
-                tokens = re.findall(pattern, text)
-            else:
-                tokens = re.findall(r"\b\w+\b", text)
+                    tokens.append(p)
+        elif self.lang in ("en-zh", "mixed"):
+            #tokens = re.findall(r"[\u4e00-\u9fff]+|\b\w+\b|[^\w\s]", text)
+            parts = re.findall(r"[\u4e00-\u9fff]+|\b\w+\b|[^\w\s]", text)
+            tokens = []
+            for p in parts:
+                if re.match(r"[\u4e00-\u9fff]+", p):
+                    if self.use_jieba:
+                        tokens.extend(list(jieba.cut(p)))
+                    else:
+                        tokens.extend(list(p))  # ✅ fallback: char-level
+                else:
+                    tokens.append(p)
+        elif self.lang == "zh":
+            tokens = [ch for ch in text if "\u4e00" <= ch <= "\u9fff"]
+        else:
+            tokens = re.findall(r"\b\w+\b|[^\w\s]", text)
 
         ids = [self.stoi.get(tok, self.unk_idx) for tok in tokens]
         if add_eos and self.eos_idx is not None:
@@ -382,14 +441,10 @@ class WordTokenizer:
         return ids
 
     # ------------------------------------------------------------
-    # 🔹 Decode: convert token IDs → string
+    # 🔹 Decode
     # ------------------------------------------------------------
     def decode(self, ids: List[int], skip_specials: bool = True) -> str:
-        """
-        Decode token IDs back into string text.
-        For Chinese: returns concatenated string without spaces.
-        For English: joins tokens with spaces.
-        """
+        """Decode token IDs back into text."""
         words = []
         for i in ids:
             tok = self.itos.get(i, "")
@@ -398,34 +453,42 @@ class WordTokenizer:
             if skip_specials and tok in ("<pad>", "<eos>"):
                 continue
             words.append(tok)
+        # Chinese/mixed: remove spaces between Chinese chars
+        text = " ".join(words)
+        text = re.sub(r"\s*(?=[\u4e00-\u9fff])", "", text)
+        text = re.sub(r"(?<=[\u4e00-\u9fff])\s*", "", text)
+        return text.strip()
 
-        # Chinese: no spaces; English/mixed: use spaces
-        if self.lang == "zh":
-            return "".join(words)
-        return " ".join(words)
-
-    # ------------------------------------------------------------
-    # 🔹 Save tokenizer configuration
+        # ------------------------------------------------------------
+    # 🔹 Save tokenizer to disk
     # ------------------------------------------------------------
     def save(self, path: str):
+        """
+        Save tokenizer configuration and vocabulary to disk in JSON format.
+        """
         os.makedirs(os.path.dirname(path), exist_ok=True)
+
         data = {
             "lang": self.lang,
-            "vocab": self.stoi,
             "add_eos": self.add_eos,
             "add_pad": self.add_pad,
             "add_unk": self.add_unk,
             "pad_id": self.pad_id,
-            "keep_punct": self.keep_punct,
-            "separate_zh_punct": self.separate_zh_punct,
             "lowercase": self.lowercase,
             "use_english_vocab": self.use_english_vocab,
+            "keep_punct": self.keep_punct,
+            "separate_zh_punct": self.separate_zh_punct,
+            "use_jieba": getattr(self, "use_jieba", False),
+            "jieba_available": getattr(self, "use_jieba", False),
             "pad_idx": self.pad_idx,
             "eos_idx": self.eos_idx,
             "unk_idx": self.unk_idx,
+            "vocab": self.stoi,
         }
+
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
+
         print(f"💾 Saved WordTokenizer → {path}")
 
     # ------------------------------------------------------------
@@ -433,11 +496,15 @@ class WordTokenizer:
     # ------------------------------------------------------------
     @staticmethod
     def load(path: str):
+        """
+        Load a WordTokenizer from JSON file.
+        Reconstructs configuration, vocabulary, and index mappings.
+        """
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
         tok = WordTokenizer(
-            [""],
+            [""],  # placeholder text
             lang=data.get("lang", "en"),
             add_eos=data.get("add_eos", True),
             add_pad=data.get("add_pad", True),
@@ -447,57 +514,112 @@ class WordTokenizer:
             use_english_vocab=data.get("use_english_vocab", False),
             keep_punct=data.get("keep_punct", False),
             separate_zh_punct=data.get("separate_zh_punct", True),
+            use_jieba=data.get("use_jieba", False),
         )
-        tok.stoi = data["vocab"]
-        tok.itos = {i: w for w, i in tok.stoi.items()}
-        tok.vocab_size = len(tok.stoi)
+
+        # Restore vocab tables
+        vocab = data.get("vocab", {})
+        tok.stoi = vocab
+        tok.itos = {i: w for w, i in vocab.items()}
+
+        tok.vocab_size = len(vocab)
         tok.pad_idx = data.get("pad_idx", -100)
         tok.eos_idx = data.get("eos_idx", None)
         tok.unk_idx = data.get("unk_idx", None)
 
         print(
-            f"✅ Loaded WordTokenizer from {path} | lang={tok.lang} | keep_punct={tok.keep_punct} "
-            f"| separate_zh_punct={tok.separate_zh_punct} | vocab_size={tok.vocab_size}"
+            f"✅ Loaded WordTokenizer from {path} | lang={tok.lang} | jieba={tok.use_jieba} "
+            f"| keep_punct={tok.keep_punct} | separate_zh_punct={tok.separate_zh_punct} "
+            f"| vocab_size={tok.vocab_size}"
         )
+
         return tok
-    
+
+from transformers import AutoTokenizer
+# Optional: only needed for Byte-Level fix
+try:
+    from tokenizers.pre_tokenizers import ByteLevel as ByteLevelPreTok
+    from tokenizers.decoders import ByteLevel as ByteLevelDecoder
+except Exception:
+    ByteLevelPreTok = None
+    ByteLevelDecoder = None
+
+
+def _safe_dir_name(name: str) -> str:
+    """
+    Make a filesystem-safe directory name from a repo id like 'Qwen/Qwen2-1.5B'.
+    E.g. 'outputs/hf_tok__Qwen__Qwen2-1.5B'
+    """
+    # Replace slashes and spaces with double underscore; keep word chars, dot, dash
+    cleaned = re.sub(r"[^\w.\-]+", "__", name)
+    return cleaned
+
 class HFTokenizerWrapper:
     """
-    Wrapper for any Hugging Face tokenizer (BPE / WordPiece).
+    Robust wrapper around Hugging Face tokenizers that:
+      - Works with remote and local paths
+      - Fixes Byte-Level BPE (GPT-2/Qwen) decoders on reload
+      - Leaves SentencePiece (LLaMA/Mistral) alone
+      - Runs a small Unicode self-test after load
 
-    Features:
-      ✅ Uses transformers.AutoTokenizer (fast version)
-      ✅ Automatically sets <pad> token if missing
-      ✅ Provides save() and load() methods for persistence
-      ✅ Exposes simple encode/decode interface (like CharTokenizer)
-      ✅ Access to underlying tokenizer via `.tokenizer`
+    Notes:
+      * For GPT-2/Qwen-like tokenizers (byte-level BPE), we re-attach the ByteLevel
+        pre-tokenizer + decoder after reload to retain full UTF-8 round-tripping.
+      * For SP models (LLaMA, etc.) we don't touch internals, but we still check
+        that CJK/emoji decoding survives a save→reload cycle.
     """
 
-    def __init__(self, name_or_path: str, add_special_tokens: bool = False):
-        """
-        Initialize tokenizer from pretrained name or local path.
-
-        Args:
-            name_or_path (str): HF model name or tokenizer path.
-            add_special_tokens (bool): Whether to include BOS/EOS tokens by default.
-        """
-        from transformers import AutoTokenizer
-
-        # Load tokenizer (fast implementation preferred)
-        self.tok = AutoTokenizer.from_pretrained(name_or_path, use_fast=True)
-
-        # Ensure pad token exists
-        if self.tok.pad_token_id is None:
-            # Try to reuse existing eos or sep token
-            self.tok.pad_token = self.tok.eos_token or self.tok.sep_token or "[PAD]"
-
-        self.vocab_size = self.tok.vocab_size
+    def __init__(self,
+                 name_or_path: str,
+                 add_special_tokens: bool = True,
+                 trust_remote_code: bool = False):
         self.add_special_tokens = add_special_tokens
 
-        print(
-            f"✅ HFTokenizerWrapper initialized from '{name_or_path}' "
-            f"| vocab_size={self.vocab_size} | pad_id={self.tok.pad_token_id}"
+        # 1) Load tokenizer (remote or local)
+        if os.path.isdir(name_or_path):
+            print(f"📁 Loading tokenizer from local directory: {name_or_path}")
+        else:
+            print(f"🌐 Loading pretrained tokenizer from Hugging Face Hub: {name_or_path}")
+
+        self.tok = AutoTokenizer.from_pretrained(
+            name_or_path,
+            use_fast=True,
+            trust_remote_code=trust_remote_code,
         )
+
+        # 2) Classify tokenizer family
+        self._model_id = getattr(self.tok, "name_or_path", str(name_or_path)).lower()
+        self._tok_class = type(self.tok).__name__.lower()
+
+        # Simple heuristics:
+        self._is_byte_level = any(k in self._model_id for k in ["gpt2", "qwen"]) \
+                              or "bytelevel" in self._tok_class \
+                              or "gpt2" in self._tok_class \
+                              or "qwen" in self._tok_class
+        self._is_sentencepiece = "sentencepiece" in self._tok_class or "llama" in self._model_id
+
+        # 3) Repair byte-level tokenizer plumbing if necessary
+        if self._is_byte_level and hasattr(self.tok, "backend_tokenizer") and ByteLevelDecoder is not None:
+            print("⚙️  Detected Byte-Level BPE family → verifying pre-tokenizer/decoder ...")
+            backend = self.tok.backend_tokenizer
+            pre = getattr(backend, "pre_tokenizer", None)
+            dec = getattr(backend, "decoder", None)
+
+            if not pre or "ByteLevel" not in str(pre):
+                backend.pre_tokenizer = ByteLevelPreTok(add_prefix_space=False)
+                print("🩹 Added ByteLevel pre-tokenizer.")
+            if not dec or "ByteLevel" not in str(dec):
+                backend.decoder = ByteLevelDecoder()
+                print("🩹 Added ByteLevel decoder.")
+
+        # 4) Basic metadata
+        self.vocab_size = getattr(self.tok, "vocab_size", None)
+        self._pad_id = getattr(self.tok, "pad_token_id", None) or getattr(self.tok, "eos_token_id", None)
+        print(f"✅ HFTokenizerWrapper initialized from '{name_or_path}' "
+              f"| vocab_size={self.vocab_size} | pad_id={self._pad_id}")
+
+        # 5) Post-load Unicode sanity check (emoji + CJK)
+        self._unicode_self_test()
 
     # ------------------------------------------------------------
     # 🔹 Expose underlying tokenizer
@@ -508,32 +630,31 @@ class HFTokenizerWrapper:
         return self.tok
 
     # ------------------------------------------------------------
-    # 🔹 Encode text → list of IDs
+    # 🔹 Encode / Decode
     # ------------------------------------------------------------
-    def encode(self, text: str, add_special_tokens: bool = None) -> List[int]:
-        """
-        Encode text into token IDs.
+    # def encode(self, text: str):
+    #     """Convert text to token IDs."""
+    #     return self.tok.encode(text, add_special_tokens=self.add_special_tokens)
 
-        Args:
-            text (str): Input string.
-            add_special_tokens (bool): Whether to include BOS/EOS tokens.
-        """
-        if add_special_tokens is None:
-            add_special_tokens = self.add_special_tokens
-        return self.tok(text, add_special_tokens=add_special_tokens)["input_ids"]
+    # def decode(self, ids):
+    #     """Convert token IDs back to text."""
+    #     return self.tok.decode(ids, skip_special_tokens=True)
+    
+    def encode(self, text: str) -> List[int]:
+        return self.tok.encode(text, add_special_tokens=self.add_special_tokens)
 
-    # ------------------------------------------------------------
-    # 🔹 Decode IDs → text
-    # ------------------------------------------------------------
-    def decode(self, ids: List[int], skip_special_tokens: bool = True) -> str:
-        """Decode list of IDs back to string."""
-        return self.tok.decode(ids, skip_special_tokens=skip_special_tokens)
+    def decode(self, ids: Union[List[int], "np.ndarray"]) -> str:
+        # Disable whitespace cleanup so nothing useful is removed
+        return self.tok.decode(ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
 
     # ------------------------------------------------------------
     # 🔹 Token ID accessors
     # ------------------------------------------------------------
+    # @property
+    # def pad_id(self): return self.tok.pad_token_id
     @property
-    def pad_id(self): return self.tok.pad_token_id
+    def pad_id(self):
+        return getattr(self, "_pad_id", None)
     @property
     def bos_id(self): return self.tok.bos_token_id
     @property
@@ -544,32 +665,112 @@ class HFTokenizerWrapper:
     # ------------------------------------------------------------
     def save(self, path: str):
         """
-        Save the tokenizer to a directory.
-
-        Args:
-            path (str): Directory path to save files.
+        Save tokenizer safely:
+          - If `path` is a bare directory root, we’ll create a safe child folder
+            derived from the model id (to avoid 'Qwen/Qwen2...' nested dirs).
+          - If `path` points to a directory that already looks like a leaf folder,
+            we save directly there.
         """
         os.makedirs(path, exist_ok=True)
-        self.tok.save_pretrained(path)
-        print(f"💾 Saved Hugging Face tokenizer → {path}")
 
-    # ------------------------------------------------------------
-    # 🔹 Load tokenizer from directory
-    # ------------------------------------------------------------
+        # If the caller passed a generic root (e.g., "outputs"), append a safe leaf
+        # Otherwise, if the path already contains a tokenizer.json (leaf), save here
+        leaf = path
+        has_json = os.path.exists(os.path.join(path, "tokenizer.json"))
+        if not has_json:
+            safe_leaf = _safe_dir_name(self._model_id or "hf_tokenizer")
+            leaf = os.path.join(path, f"hf_tok__{safe_leaf}")
+            os.makedirs(leaf, exist_ok=True)
+
+        self.tok.save_pretrained(leaf)
+        print(f"💾 Saved Hugging Face tokenizer → {leaf}")
+
     @staticmethod
-    def load(path: str, add_special_tokens: bool = False):
+    def load(path: str,
+             add_special_tokens: bool = True,
+             trust_remote_code: bool = False) -> "HFTokenizerWrapper":
         """
-        Load tokenizer from a saved directory.
-
-        Args:
-            path (str): Directory path where tokenizer was saved.
-            add_special_tokens (bool): Whether to include BOS/EOS tokens by default.
-
-        Returns:
-            HFTokenizerWrapper
+        Load tokenizer from a saved directory. Works with:
+          - exact leaf dirs (contain tokenizer.json)
+          - parent dirs produced by .save() (auto-detects leaf)
         """
         print(f"🔍 Loading Hugging Face tokenizer from {path} ...")
-        return HFTokenizerWrapper(path, add_special_tokens=add_special_tokens)
+
+        load_dir = path
+        if os.path.isdir(path) and not os.path.exists(os.path.join(path, "tokenizer.json")):
+            # try to find a subdir that contains tokenizer.json
+            candidates = [d for d in os.listdir(path)
+                          if os.path.isdir(os.path.join(path, d))
+                          and os.path.exists(os.path.join(path, d, "tokenizer.json"))]
+            if candidates:
+                load_dir = os.path.join(path, candidates[0])
+
+        wrapper = HFTokenizerWrapper(
+            load_dir, add_special_tokens=add_special_tokens,
+            trust_remote_code=trust_remote_code
+        )
+        print(f"✅ HFTokenizerWrapper reloaded from '{load_dir}' | vocab_size={wrapper.vocab_size}")
+        return wrapper
+
+    # ---------- Helpers ----------
+
+    def _unicode_self_test(self):
+        """
+        Try a tiny probe with emoji + CJK to ensure decode survives.
+        Print a warning (and a quick diff) if it doesn’t.
+        """
+        probe = "Hello world! 👋 你好！"
+        ids = self.encode(probe)
+        out = self.decode(ids)
+
+        if out != probe:
+            # Some models normalize case/quotes; try a softer check
+            # If it still fails, warn loudly.
+            if ("你好" not in out) or ("👋" not in out):
+                print("⚠️  Unicode round-trip changed after load/save.")
+                print(f"   expected: {probe}")
+                print(f"   got     : {out}")
+
+                # For SP models, we can't attach a ByteLevel decoder; just hint.
+                if self._is_sentencepiece:
+                    print("   ℹ️ This tokenizer uses SentencePiece; unknown chars may map to <unk> and be dropped.")
+                else:
+                    print("   ℹ️ This looks like a byte-level BPE family; "
+                          "we already attached ByteLevel decoder. If this persists, "
+                          "ensure you are not normalizing text before encode().")
+    # """
+        # Load tokenizer from a saved directory.
+        # Automatically repairs missing ByteLevelDecoder so UTF-8 (Chinese/emoji) decoding works.
+        # When you load "gpt2" through AutoTokenizer, the underlying Rust ByteLevel pre-tokenizer and decoder are automatically attached.
+
+        # However, when you save + reload from disk, transformers reconstructs the tokenizer from JSON metadata but does not reattach the ByteLevelDecoder object (the JSON does not serialize its internal state completely).
+
+        # So at runtime:
+        #     •	The tokenizer can still encode multi-byte UTF-8 correctly → ✅ encode works.
+        #     •	But it fails to decode those byte sequences back to UTF-8 → ⚠️ decode truncates anything outside ASCII.
+        # """
+        # # Load the high-level Hugging Face tokenizer
+        # tok = AutoTokenizer.from_pretrained(path, use_fast=True)
+
+        # # ✅ Fix: reattach ByteLevel pre-tokenizer and decoder
+        # backend_tok = getattr(tok, "backend_tokenizer", None)
+        # if backend_tok:
+        #     if not backend_tok.pre_tokenizer or "ByteLevel" not in str(backend_tok.pre_tokenizer):
+        #         print("⚙️  Repairing missing ByteLevel pre-tokenizer ...")
+        #         backend_tok.pre_tokenizer = ByteLevel(add_prefix_space=False)
+        #     if not backend_tok.decoder or "ByteLevel" not in str(backend_tok.decoder):
+        #         print("⚙️  Repairing missing ByteLevel decoder ...")
+        #         backend_tok.decoder = ByteLevelDecoder()
+
+        # # Wrap it in your class again
+        # wrapper = HFTokenizerWrapper.__new__(HFTokenizerWrapper)
+        # wrapper.tok = tok
+        # wrapper.vocab_size = tok.vocab_size
+        # wrapper._pad_id = tok.pad_token_id or tok.eos_token_id
+        # wrapper.add_special_tokens = add_special_tokens
+        # print(f"✅ HFTokenizerWrapper reloaded from '{path}' | vocab_size={wrapper.vocab_size}")
+        # return wrapper
+
 
 
 import os
@@ -977,7 +1178,7 @@ def test_tokenizers(
         print(f"⚠️ Hugging Face tokenizer load failed: {e}")
 
     print("\n==================== 🧠 CUSTOM TOKENIZER (ByteBPE) ====================")
-    tok_custom_path = os.path.join(tokenizer_dir, "custom_bytebpe_tokenizer.json")
+    tok_custom_path = None #os.path.join(tokenizer_dir, "custom_bytebpe_tokenizer.json")
     tok_custom = TokenizerFactory.build(
         "custom:bytebpe",
         texts=texts,
@@ -1018,7 +1219,7 @@ def test_custom_tokenizer():
 
 def test_custom_tokenizer2():
     texts = [
-        "Hello, world! 你好，世界！",
+        "Hello, world! Tokenizer.",
         "GPT-2 🤖🚀🔥 Tokenizer test. 字节级别可逆编码。",
     ]
 
@@ -1035,53 +1236,93 @@ def test_char_word_tokenizer():
     texts = [
         "The cat sat on the mat.",
         "Hello world! Python coding.",
-        "机器学习是人工智能的一个分支。"
+        "Machine Learning 是人工智能的一个分支。"
     ]
 
     # English tokenizer
     tok_en = WordTokenizer(texts, lang="en")
     ids_en = tok_en.encode("The dog sat on the mat")
-    print(ids_en)
+    words = [tok_en.itos[i] for i in ids_en]
+    print(words)
+    print(tok_en.decode(ids_en))
+    
+    # English tokenizer
+    tok_en = WordTokenizer(texts, lang="en", lowercase=False)
+    ids_en = tok_en.encode("The dog sat on the mat")
+    words = [tok_en.itos[i] for i in ids_en]
+    print(words)
     print(tok_en.decode(ids_en))
 
     # Chinese tokenizer
     tok_zh = WordTokenizer(texts, lang="zh")
-    ids_zh = tok_zh.encode("机器学习")
-    print(ids_zh)
+    ids_zh = tok_zh.encode("智能机器学习！")
+    words = [tok_zh.itos[i] for i in ids_zh]
+    print(words)
     print(tok_zh.decode(ids_zh))
+    #use_jieba
+    tok_zh = WordTokenizer(texts, lang="zh", use_jieba=True)
+    ids_zh = tok_zh.encode("智能机器, 人工智能学习！")
+    words = [tok_zh.itos[i] for i in ids_zh]
+    print(words)
+    print(tok_zh.decode(ids_zh))
+    
+    # mixed tokenizer
+    tok_mix = WordTokenizer(texts, lang="mixed")
+    ids_mix = tok_mix.encode("Hello:Machine! 智能机器学习！")
+    words = [tok_mix.itos[i] for i in ids_mix]
+    print(words)
+    print(tok_mix.decode(ids_mix))
+    tok_mix = WordTokenizer(texts, lang="mixed", use_jieba=True)
+    ids_mix = tok_mix.encode("Hello:Machine! 智能机器学习！人工智能学习")
+    words = [tok_mix.itos[i] for i in ids_mix]
+    print(words)
+    print(tok_mix.decode(ids_mix))
 
     # Save & Load
     tok_en.save("outputs/word_tokenizer_en.json")
     tok_zh.save("outputs/word_tokenizer_zh.json")
+    tok_mix.save("outputs/word_tokenizer_mix.json")
 
     tok_en2 = WordTokenizer.load("outputs/word_tokenizer_en.json")
+    ids_en = tok_en2.encode("The dog sat on the mat")
+    print(tok_en2.decode(ids_en))
     tok_zh2 = WordTokenizer.load("outputs/word_tokenizer_zh.json")
+    ids_zh = tok_zh2.encode("智能机器, 人工智能学习！")
+    print(tok_zh2.decode(ids_zh))
+    tok_mix2 = WordTokenizer.load("outputs/word_tokenizer_mix.json")
+    ids_mix = tok_mix2.encode("Hello:Machine! 智能机器学习！人工智能学习")
+    print(tok_mix2.decode(ids_mix))
 
-def test_hftokenizer():
+def test_hftokenizer(name="gpt2"):
     #from DeepDataMiningLearning.llm.tokenizer_utils import HFTokenizerWrapper
 
     # 1️⃣ Load pretrained tokenizer
-    tok = HFTokenizerWrapper("gpt2")
+    tok = HFTokenizerWrapper(name)
 
     # 2️⃣ Encode & decode text
-    ids = tok.encode("Hello world!")
+    ids = tok.encode("Hello world! 👋 你好！")
     print("Encoded:", ids)
     print("Decoded:", tok.decode(ids))
 
     # 3️⃣ Save tokenizer
-    tok.save("outputs/hf_tokenizer_gpt2")
+    filename=f"outputs/hf_tokenizer_{name}"
+    tok.save(filename)#"outputs/hf_tokenizer_gpt2")
+    contents = os.listdir(filename)
+    print(contents)
 
     # 4️⃣ Load tokenizer
-    tok2 = HFTokenizerWrapper.load("outputs/hf_tokenizer_gpt2")
+    tok2 = HFTokenizerWrapper.load(filename)
 
     # 5️⃣ Verify it works
-    print(tok2.encode("Hello world!"))
+    print(tok2.encode("Hello world! 👋 你好！"))
     print(tok2.decode(tok2.encode("Hello world!")))
 
 if __name__ == "__main__":
     #huggingface-cli login
     test_char_word_tokenizer()
     test_hftokenizer()
+    test_hftokenizer("Qwen/Qwen2-1.5B")
+    test_hftokenizer("meta-llama/Meta-Llama-3-8B")
     test_custom_tokenizer()
     test_custom_tokenizer2()
     texts = [
