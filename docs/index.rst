@@ -66,12 +66,20 @@ There are three main ways of running the notebooks we recommend:
    source/Windows
 
 .. toctree::
-   :caption: Autonomous System Survey
+   :caption: Autonomous Systems
    :maxdepth: 2
 
    source/autonomous_survey
    source/autonomous_tech
    source/autonomous_llm
+   source/autonomous_tesla
+   source/physical_ai_autonomous_driving
+   source/KITTI_Tutorial
+   source/NuScenes_Tutorial
+   source/WaymoV2_Tutorial
+   source/mydetector3d_tutorial
+   source/mydetector3d_bev
+   source/mydetector3d_nuscenes
 
 
 .. toctree::

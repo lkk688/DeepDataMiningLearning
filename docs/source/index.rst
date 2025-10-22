@@ -64,7 +64,7 @@ There are three main ways of running the notebooks we recommend:
    container
 
 .. toctree::
-   :caption: Autonomous System Survey
+   :caption: Autonomous Systems
    :maxdepth: 2
 
    autonomous_survey
@@ -72,6 +72,12 @@ There are three main ways of running the notebooks we recommend:
    autonomous_llm
    autonomous_tesla
    physical_ai_autonomous_driving
+   KITTI_Tutorial
+   NuScenes_Tutorial
+   WaymoV2_Tutorial
+   mydetector3d_tutorial
+   mydetector3d_bev
+   mydetector3d_nuscenes
 
 
 
