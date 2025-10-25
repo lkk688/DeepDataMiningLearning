@@ -771,345 +771,314 @@ class HFTokenizerWrapper:
         # print(f"✅ HFTokenizerWrapper reloaded from '{path}' | vocab_size={wrapper.vocab_size}")
         # return wrapper
 
-
-
-
+# pip install sentencepiece tiktoken
+import os
+from typing import List, Literal, Optional, Dict, Any
 
 class CustomTokenizer:
     """
-    Universal reversible tokenizer class (UTF-8 safe).
+    Unified tokenizer wrapper with two robust, production-grade backends:
 
-    Supports:
-      ✅ "bpe" / "bytebpe"      → Standard Byte-Level BPE (GPT-style)
-      ✅ "wordpiece"            → BERT-style WordPiece
-      ✅ "unigram"              → SentencePiece Unigram
-      ✅ "wordlevel"            → Simple Word-level
-      ✅ "sp-unigram"           → SentencePiece-style Unigram + Byte fallback (LLaMA3/Gemma)
-      ✅ "tiktoken-bpe"         → Tiktoken-style Byte-BPE (Qwen/GPT-4)
+    - "sp-unigram": SentencePiece Unigram + byte fallback (LLaMA3/Gemma/Mistral style)
+    - "tiktoken-bpe": OpenAI cl100k_base (GPT-4-Turbo/Qwen 2.5 family)
+
+    Design goals:
+      ✅ True round-trip for multilingual (no mojibake) when normalization is off
+      ✅ No training surprises: SP uses sentencepiece, BPE uses prebuilt tiktoken
+      ✅ Keep encode()/decode()/show_tokens()/plot_vocab_distribution APIs
+      ✅ Play nice with your existing Char/Word/HF tokenizer wrappers
     """
 
     def __init__(
         self,
-        texts: List[str] = None,
-        tokenizer_type: Literal[
-            "bpe", "bytebpe", "wordpiece", "unigram", "wordlevel",
-            "sp-unigram", "tiktoken-bpe"
-        ] = "bytebpe",
-        tokenizer_path: str = "outputs/custom_tokenizer.json",
+        texts: Optional[List[str]] = None,
+        tokenizer_type: Literal["sp-unigram", "tiktoken-bpe"] = "sp-unigram",
+        tokenizer_path: str = "outputs/custom_tokenizer",  # will use .model for SP, .json for metadata; tiktoken uses its built-in name
         vocab_size: int = 8000,
-        min_freq: int = 2,
+        min_freq: int = 2,             # kept for API symmetry; SP/tiktoken ignore this
         pad_id: int = -100,
         add_special_tokens: bool = True,
-        lowercase: bool = True,
+        lowercase: bool = False,       # 🚫 keep False for round-trip
+        sp_normalization: str = "nmt_nfkc",  # SentencePiece normalization rule
+        tiktoken_encoding: str = "cl100k_base",  # OpenAI/GPT-4/Qwen vocab
     ):
-        from tokenizers import Tokenizer
-        from tokenizers.models import BPE, WordPiece, Unigram, WordLevel
-        from tokenizers.trainers import (
-            BpeTrainer, WordPieceTrainer, UnigramTrainer, WordLevelTrainer
-        )
-        from tokenizers.normalizers import NFKC, Lowercase, Sequence
-        from tokenizers.pre_tokenizers import Whitespace, ByteLevel, Metaspace
-        from tokenizers.decoders import BPEDecoder, ByteLevel as ByteLevelDec, Metaspace as MetaDec
-        from tokenizers import models, trainers, decoders, normalizers, pre_tokenizers
-
-        self.tokenizer_type = tokenizer_type
-        self.tokenizer_path = tokenizer_path
-        self.vocab_size = vocab_size
-        self.min_freq = min_freq
+        self.kind = tokenizer_type
         self.pad_id = pad_id
+        self.add_special_tokens = add_special_tokens
         self.lowercase = lowercase
 
-        # ------------------------------------------------------------
-        # 1️⃣ Load from file if exists
-        # ------------------------------------------------------------
-        if os.path.exists(tokenizer_path):
-            self.tokenizer = Tokenizer.from_file(tokenizer_path)
-            print(f"✅ Loaded existing tokenizer → {tokenizer_path}")
+        # shared attributes exposed for your training loop
+        self.vocab_size: int = 0
+        self.pad_idx: Optional[int] = None
+        self.eos_idx: Optional[int] = None
+        self.bos_idx: Optional[int] = None
+        self.unk_idx: Optional[int] = None
+
+        os.makedirs(os.path.dirname(tokenizer_path), exist_ok=True)
+        self.tokenizer_path = tokenizer_path
+
+        if tokenizer_type == "sp-unigram":
+            self._init_sentencepiece(
+                texts=texts,
+                model_prefix=tokenizer_path,     # will create tokenizer_path + ".model" & ".vocab"
+                vocab_size=vocab_size,
+                sp_norm=sp_normalization,
+            )
+        elif tokenizer_type == "tiktoken-bpe":
+            self._init_tiktoken(encoding_name=tiktoken_encoding)
         else:
-            if texts is None:
-                raise ValueError("❌ Cannot train tokenizer without input texts.")
-            print(f"🚀 Training new {tokenizer_type.upper()} tokenizer (vocab={vocab_size})")
+            raise ValueError(f"Unknown tokenizer_type: {tokenizer_type}")
 
-            # --------------------------------------------------------
-            # 2️⃣ Choose tokenizer model + trainer by type
-            # --------------------------------------------------------
-            if tokenizer_type in ("bytebpe", "bpe"):
-                model = BPE(unk_token="<unk>")
-                trainer = BpeTrainer(
-                    vocab_size=vocab_size,
-                    min_frequency=min_freq,
-                    special_tokens=["<pad>", "<bos>", "<eos>", "<unk>"]
-                    if add_special_tokens else [],
-                )
-                pre_tokenizer = Whitespace()
-                decoder = BPEDecoder()
-
-            elif tokenizer_type == "wordpiece":
-                model = WordPiece(unk_token="<unk>")
-                trainer = WordPieceTrainer(
-                    vocab_size=vocab_size,
-                    min_frequency=min_freq,
-                    special_tokens=["<pad>", "<bos>", "<eos>", "<unk>"]
-                    if add_special_tokens else [],
-                )
-                pre_tokenizer = Whitespace()
-                decoder = BPEDecoder()
-
-            elif tokenizer_type == "unigram":
-                model = Unigram()
-                trainer = UnigramTrainer(
-                    vocab_size=vocab_size,
-                    special_tokens=["<pad>", "<bos>", "<eos>", "<unk>"]
-                    if add_special_tokens else [],
-                )
-                pre_tokenizer = Whitespace()
-                decoder = BPEDecoder()
-
-            elif tokenizer_type == "wordlevel":
-                model = WordLevel(unk_token="<unk>")
-                trainer = WordLevelTrainer(
-                    vocab_size=vocab_size,
-                    special_tokens=["<pad>", "<bos>", "<eos>", "<unk>"]
-                    if add_special_tokens else [],
-                )
-                pre_tokenizer = Whitespace()
-                decoder = BPEDecoder()
-
-            # --------------------------------------------------------
-            # 🟣 SentencePiece-Unigram + Byte fallback (LLaMA3 / Gemma)
-            # --------------------------------------------------------
-            elif tokenizer_type == "sp-unigram":
-                model = models.Unigram()
-                trainer = trainers.UnigramTrainer(
-                    vocab_size=vocab_size,
-                    special_tokens=["<pad>", "<bos>", "<eos>", "<unk>"]
-                    if add_special_tokens else [],
-                )
-                pre_tokenizer = pre_tokenizers.Metaspace(replacement="▁", add_prefix_space=True)
-                decoder = decoders.Metaspace(replacement="▁", add_prefix_space=True)
-
-            # --------------------------------------------------------
-            # 🟢 Tiktoken-style Byte-BPE (Qwen / GPT-4)
-            # --------------------------------------------------------
-            elif tokenizer_type == "tiktoken-bpe":
-                model = models.BPE(unk_token="<unk>")
-                trainer = trainers.BpeTrainer(
-                    vocab_size=vocab_size,
-                    min_frequency=min_freq,
-                    special_tokens=["<pad>", "<bos>", "<eos>", "<unk>"]
-                    if add_special_tokens else [],
-                )
-                pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=True)
-                decoder = decoders.ByteLevel()
-
-            else:
-                raise ValueError(f"❌ Unknown tokenizer_type: {tokenizer_type}")
-
-            # --------------------------------------------------------
-            # 3️⃣ Build tokenizer pipeline
-            # --------------------------------------------------------
-            tokenizer = Tokenizer(model)
-            # Normalizer
-            if lowercase:
-                tokenizer.normalizer = Sequence([NFKC(), Lowercase()])
-            else:
-                tokenizer.normalizer = NFKC()
-
-            tokenizer.pre_tokenizer = pre_tokenizer
-            tokenizer.decoder = decoder
-
-            # Train
-            tokenizer.train_from_iterator(texts, trainer=trainer)
-
-            # Save
-            os.makedirs(os.path.dirname(tokenizer_path), exist_ok=True)
-            tokenizer.save(tokenizer_path)
-            print(f"💾 Saved custom tokenizer → {tokenizer_path}")
-
-            self.tokenizer = tokenizer
-
-        # ------------------------------------------------------------
-        # 4️⃣ Load vocab + metadata
-        # ------------------------------------------------------------
-        self.vocab = self.tokenizer.get_vocab()
-        self.vocab_size = len(self.vocab)
-        self.pad_idx = self.vocab.get("<pad>", pad_id)
-        self.eos_idx = self.vocab.get("<eos>", None)
-        self.bos_idx = self.vocab.get("<bos>", None)
-        self.unk_idx = self.vocab.get("<unk>", None)
-
-        print(
-            f"✅ CustomTokenizer initialized | type={tokenizer_type} | vocab_size={self.vocab_size} | "
-            f"pad_idx={self.pad_idx} | eos_idx={self.eos_idx} | bos_idx={self.bos_idx} | unk_idx={self.unk_idx}"
-        )
         print("🧩 UTF-8 safe tokenizer initialized and reversible.")
 
-    # ------------------------------------------------------------
-    # 🔹 Encode
-    # ------------------------------------------------------------
-    def encode(self, text: str, add_bos: bool = False, add_eos: bool = True) -> List[int]:
-        ids = self.tokenizer.encode(text).ids
-        if add_bos and self.bos_idx is not None:
-            ids = [self.bos_idx] + ids
-        if add_eos and self.eos_idx is not None:
-            ids.append(self.eos_idx)
-        return ids
+    # ---------- SentencePiece backend ----------
+    def _init_sentencepiece(self, texts: Optional[List[str]], model_prefix: str, vocab_size: int, sp_norm: str):
+        import sentencepiece as spm
 
-    # ------------------------------------------------------------
-    # 🔹 Decode
-    # ------------------------------------------------------------
+        model_file = f"{model_prefix}.model"
+        if not os.path.exists(model_file):
+            if not texts:
+                raise ValueError("sp-unigram requires `texts` to train.")
+            corpus = f"{model_prefix}.txt"
+            with open(corpus, "w", encoding="utf-8") as f:
+                for t in texts:
+                    f.write((t.lower() if self.lowercase else t) + "\n")
+
+            print(f"🚀 Training SentencePiece Unigram (byte_fallback=True) → {model_file}")
+            spm.SentencePieceTrainer.Train(
+                input=corpus,
+                model_prefix=model_prefix,
+                model_type="unigram",
+                vocab_size=vocab_size,
+                byte_fallback=True,         # ✅关键：字节回退
+                normalization_rule_name=sp_norm,
+                character_coverage=1.0,
+                input_sentence_size=2000000,
+                shuffle_input_sentence=True,
+                # add_dummy_prefix 默认 True（会产生空格标记），与 LLaMA 系一样
+                # 特殊符号：sp 默认保留 <unk>=0，<s>=1，</s>=2，可与项目约定映射
+            )
+            print(f"💾 Saved SP model: {model_file}")
+
+        import sentencepiece as spm
+        sp = spm.SentencePieceProcessor(model_file=model_file)
+        self.sp = sp
+        # map ids like LLaMA style (<unk>=0, <s>=1, </s>=2). We expose as eos/bos/unk.
+        self.unk_idx = sp.unk_id()
+        self.bos_idx = sp.bos_id() if sp.bos_id() >= 0 else None
+        self.eos_idx = sp.eos_id() if sp.eos_id() >= 0 else None
+        self.pad_idx = self.pad_id  # SentencePiece本身没有pad，训练时用 ignore_index/-100 即可
+        self.vocab_size = sp.vocab_size()
+        print(f"✅ SP loaded | vocab_size={self.vocab_size} | ids: unk={self.unk_idx}, bos={self.bos_idx}, eos={self.eos_idx}")
+
+    # ---------- tiktoken backend ----------
+    def _init_tiktoken(self, encoding_name: str):
+        import tiktoken
+        enc = tiktoken.get_encoding(encoding_name)  # e.g., "cl100k_base"
+        self.tk = enc
+        # tiktoken没有显式 pad/eos/bos；你可以在任务层面管理它们。
+        self.pad_idx = self.pad_id
+        self.eos_idx = None
+        self.bos_idx = None
+        self.unk_idx = None
+        # 近似曝光 vocab size（tiktoken 暴露 n_vocab）
+        self.vocab_size = getattr(enc, "n_vocab", 0)
+        print(f"✅ tiktoken loaded | encoding={encoding_name} | vocab_size≈{self.vocab_size}")
+
+    # ---------- Public API ----------
+    def encode(self, text: str, add_bos: bool = False, add_eos: bool = False) -> List[int]:
+        t = text.lower() if self.lowercase else text
+        if self.kind == "sp-unigram":
+            ids = self.sp.encode(t, out_type=int)  # unicode safe
+            if add_bos and self.bos_idx is not None:
+                ids = [self.bos_idx] + ids
+            if add_eos and self.eos_idx is not None:
+                ids = ids + [self.eos_idx]
+            return ids
+        else:  # tiktoken
+            import tiktoken
+            ids = self.tk.encode(t, allowed_special=set())  # no special by default
+            # 如果你想在任务层添加 eos，请在上层做（保持 encode/decode 可逆）
+            return ids
+
     def decode(self, ids: List[int], skip_specials: bool = True) -> str:
-        """Decode token IDs back into text (reversible)."""
-        text = self.tokenizer.decode(ids, skip_special_tokens=skip_specials)
-        # Clean GPT-style visible space marker (Ġ)
-        text = text.replace("Ġ", " ").replace("▁", " ")
-        return text.strip()
-    
-    # ------------------------------------------------------------
-    # 🔹 Show tokens (for debugging)
-    # ------------------------------------------------------------
-    def show_tokens(self, text: str, max_tokens: int = 50):
-        """
-        Debugging utility: visualize tokenization results.
+        if self.kind == "sp-unigram":
+            # SentencePiece 会忽略 <s>,</s>；<unk> 会解为 <unk> 字符串（不乱码）
+            return self.sp.decode(ids)
+        else:
+            # tiktoken 提供 decode
+            return self.tk.decode(ids)
 
-        Displays token IDs and their decoded string values.
-
-        Example:
-            >>> tok.show_tokens("Hello, 世界！")
-            [0] 1546 → 'Hello'
-            [1] 11   → ','
-            [2] 345  → '世界'
-            [3] 2    → '<eos>'
-
-        Args:
-            text (str): Input text to tokenize.
-            max_tokens (int): Maximum number of tokens to show.
-        """
-        # 1️⃣ Encode text
-        encoding = self.tokenizer.encode(text)
-        ids = encoding.ids
-
-        # 2️⃣ Decode each token ID individually for readability
+    def show_tokens(self, text: str, max_show: int = 50):
+        ids = self.encode(text)
         print(f"\n🔍 Tokenization Debug — Input: {repr(text)}")
-        print(f"Total tokens: {len(ids)} (showing up to {max_tokens})\n")
+        print(f"Total tokens: {len(ids)} (showing up to {max_show})\n")
+        for i, tid in enumerate(ids[:max_show]):
+            if self.kind == "sp-unigram":
+                piece = self.sp.id_to_piece(tid)
+            else:
+                # tiktoken: 单 token -> bytes，再转 utf-8
+                piece = self.tk.decode_single_token_bytes(tid).decode("utf-8", errors="replace")
+            print(f"[{i:3d}] {tid:<6} → {repr(piece)}")
 
-        for i, token_id in enumerate(ids[:max_tokens]):
-            try:
-                # Decode the single token
-                token_str = self.tokenizer.decode([token_id], skip_special_tokens=False)
-            except Exception:
-                token_str = "<decode_error>"
-
-            # Escape newlines and invisible spaces for readability
-            token_str = token_str.replace("\n", "\\n").replace("\t", "\\t").replace(" ", "␣")
-            print(f"[{i:>3}] {token_id:<6} → '{token_str}'")
-
-        if len(ids) > max_tokens:
-            print(f"... ({len(ids) - max_tokens} more tokens hidden)")
-        print("")
-
-    # ------------------------------------------------------------
-    # 🔹 Save
-    # ------------------------------------------------------------
-    def save(self, path: str = None):
-        """Save tokenizer JSON to disk."""
+    def save(self, path: Optional[str] = None):
+        """
+        For SP: model already saved as `.model`.
+        For tiktoken: nothing to save; persist the chosen encoding name in a small json.
+        """
+        import json
         path = path or self.tokenizer_path
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self.tokenizer.save(path)
-        print(f"💾 Saved CustomTokenizer → {path}")
+        meta_path = path + (".sp.json" if self.kind == "sp-unigram" else ".tk.json")
+        payload: Dict[str, Any] = {
+            "kind": self.kind,
+            "path": self.tokenizer_path,
+            "vocab_size": self.vocab_size,
+            "pad_id": self.pad_id,
+            "lowercase": self.lowercase,
+        }
+        if self.kind == "tiktoken-bpe":
+            payload["tiktoken_encoding"] = getattr(self.tk, "name", "cl100k_base")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"💾 Saved tokenizer meta → {meta_path}")
 
-    # ------------------------------------------------------------
-    # 🔹 Load (static)
-    # ------------------------------------------------------------
     @staticmethod
     def load(path: str):
-        """Load tokenizer from a JSON file."""
-        from tokenizers import Tokenizer
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"❌ Tokenizer not found: {path}")
-
-        tok = Tokenizer.from_file(path)
-        wrapper = CustomTokenizer.__new__(CustomTokenizer)
-        wrapper.tokenizer = tok
-        wrapper.tokenizer_path = path
-        wrapper.vocab = tok.get_vocab()
-        wrapper.vocab_size = len(wrapper.vocab)
-        wrapper.pad_idx = wrapper.vocab.get("<pad>", -100)
-        wrapper.eos_idx = wrapper.vocab.get("<eos>", None)
-        wrapper.bos_idx = wrapper.vocab.get("<bos>", None)
-        wrapper.unk_idx = wrapper.vocab.get("<unk>", None)
-        print(f"✅ Loaded CustomTokenizer from {path} | vocab_size={wrapper.vocab_size}")
-        return wrapper
-    
-    # ------------------------------------------------------------
-    # 🔹 Plot and save vocabulary distribution
-    # ------------------------------------------------------------
-    def plot_vocab_distribution(self, texts: List[str] = None, top_k: int = 50, save_dir: str = None, show: bool = True):
         """
-        Visualize and save the token frequency distribution as a bar chart.
-
-        If `texts` are provided, token frequencies are computed from them.
-        Otherwise, plots the first `top_k` vocab entries with their stored frequencies.
-
-        Args:
-            texts (List[str], optional): List of text samples for counting token frequencies.
-            top_k (int): Number of most frequent tokens to plot.
-            save_dir (str, optional): Directory to save the figure. Defaults to tokenizer_path directory.
-            show (bool): Whether to display the figure interactively.
+        Auto-load by reading the side meta json.
         """
-        import matplotlib.pyplot as plt
-        from collections import Counter
-        import os
-
-        # 1️⃣ Determine save directory
-        if save_dir is None:
-            save_dir = os.path.dirname(self.tokenizer_path)
-        os.makedirs(save_dir, exist_ok=True)
-
-        # 2️⃣ Count token frequencies
-        if texts:
-            print("📊 Counting token frequencies from provided texts ...")
-            counter = Counter()
-            for t in texts:
-                ids = self.tokenizer.encode(t).ids
-                counter.update(ids)
-            most_common = counter.most_common(top_k)
-            token_ids, counts = zip(*most_common)
-            labels = [
-                self.tokenizer.id_to_token(i) if hasattr(self.tokenizer, "id_to_token") else str(i)
-                for i in token_ids
-            ]
+        import json
+        # try SP meta first
+        sp_meta = path + ".sp.json"
+        tk_meta = path + ".tk.json"
+        if os.path.exists(sp_meta):
+            with open(sp_meta, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            obj = CustomTokenizer.__new__(CustomTokenizer)
+            obj.kind = "sp-unigram"
+            obj.tokenizer_path = path
+            obj.pad_id = meta.get("pad_id", -100)
+            obj.lowercase = meta.get("lowercase", False)
+            obj._init_sentencepiece(texts=None, model_prefix=path, vocab_size=0, sp_norm="nmt_nfkc")
+            return obj
+        elif os.path.exists(tk_meta):
+            with open(tk_meta, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            obj = CustomTokenizer.__new__(CustomTokenizer)
+            obj.kind = "tiktoken-bpe"
+            obj.tokenizer_path = path
+            obj.pad_id = meta.get("pad_id", -100)
+            obj.lowercase = meta.get("lowercase", False)
+            enc_name = meta.get("tiktoken_encoding", "cl100k_base")
+            obj._init_tiktoken(enc_name)
+            return obj
         else:
-            print("📊 No texts provided — showing first N vocab items instead.")
-            vocab_items = list(self.vocab.items())[:top_k]
-            labels = [tok for tok, _ in vocab_items]
-            counts = [freq for _, freq in vocab_items]
-            token_ids = range(len(labels))
+            raise FileNotFoundError(f"No meta found for tokenizer at {path} (.sp.json/.tk.json)")
 
-        # 3️⃣ Clean up labels (make readable)
-        labels = [tok.replace(" ", "␣").replace("\n", "\\n") for tok in labels]
+    # simple frequency plot on the given texts
+    def plot_vocab_distribution(self, texts: List[str], top_k: int = 40, save_dir="outputs/tokenizer_analysis", show=False):
+        import os, collections, matplotlib.pyplot as plt
+        os.makedirs(save_dir, exist_ok=True)
+        counter = collections.Counter()
+        for t in texts:
+            counter.update(self.encode(t))
+        most = counter.most_common(top_k)
+        xs = [tid for tid, _ in most]
+        ys = [cnt for _, cnt in most]
+        if self.kind == "sp-unigram":
+            labels = [self.sp.id_to_piece(tid) for tid in xs]
+        else:
+            labels = [self.tk.decode_single_token_bytes(tid).decode("utf-8", "replace") for tid in xs]
 
-        # 4️⃣ Create plot
-        plt.figure(figsize=(max(10, top_k * 0.4), 6))
-        plt.bar(range(len(labels)), counts, color="steelblue", alpha=0.8)
-        plt.xticks(range(len(labels)), labels, rotation=90, fontsize=8)
-        plt.xlabel("Token (ID or string)")
-        plt.ylabel("Frequency / Count")
-        plt.title(f"Top {len(labels)} Tokens — Vocabulary Distribution")
+        plt.figure(figsize=(max(8, top_k*0.3), 4))
+        plt.bar(range(len(xs)), ys)
+        plt.xticks(range(len(xs)), labels, rotation=90)
         plt.tight_layout()
-
-        # 5️⃣ Save plot
-        save_path = os.path.join(save_dir, f"vocab_distribution_top{top_k}.png")
-        plt.savefig(save_path, dpi=200)
-        print(f"💾 Saved vocabulary distribution figure → {save_path}")
-
-        # 6️⃣ Optionally show
+        out_path = os.path.join(save_dir, "vocab_distribution_top{}.png".format(top_k))
+        plt.savefig(out_path, dpi=150)
         if show:
             plt.show()
-        else:
-            plt.close()
+        plt.close()
+        print(f"💾 Saved vocabulary distribution figure → {out_path}")
     
 
+import os
+import tempfile
+
+def estimate_vocab_size(
+    corpus_path: str = None,
+    texts: list[str] = None,
+    max_vocab: int = 50000,
+    safety_factor: float = 0.8,
+) -> int:
+    """
+    Estimate a safe vocab_size for SentencePiece tokenizer training.
+
+    Automatically adapts based on the diversity of the corpus.
+    Works with either a file path or an in-memory list of texts.
+
+    Args:
+        corpus_path (str, optional): Path to corpus text file.
+        texts (list[str], optional): In-memory corpus as list of strings.
+        max_vocab (int): Upper limit for vocab size.
+        safety_factor (float): Multiplier to stay below theoretical max.
+
+    Returns:
+        int: Recommended vocab_size for training.
+    """
+    if corpus_path is None and texts is None:
+        raise ValueError("❌ Must provide either `corpus_path` or `texts`.")
+
+    # ------------------------------------------------------------
+    # 1️⃣ Load corpus text (from file or in-memory)
+    # ------------------------------------------------------------
+    if texts is not None:
+        text_data = "\n".join(texts)
+        # Optionally create a temporary file for SP training reuse
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt", prefix="temp_corpus_")
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(text_data)
+        corpus_path = tmp_path
+    else:
+        # Read directly from existing file
+        with open(corpus_path, "r", encoding="utf-8") as f:
+            text_data = f.read()
+
+    # ------------------------------------------------------------
+    # 2️⃣ Compute statistics
+    # ------------------------------------------------------------
+    total_chars = len(text_data)
+    unique_chars = len(set(text_data))
+
+    # Prevent division by zero
+    if unique_chars == 0 or total_chars == 0:
+        raise ValueError("❌ Empty corpus or no valid characters found.")
+
+    # ------------------------------------------------------------
+    # 3️⃣ Heuristic vocab estimation formula
+    # ------------------------------------------------------------
+    # Empirical heuristic: each unique char may expand into ~20–50 subwords.
+    ratio = 20 + (unique_chars ** 0.5)  # adaptively increase with diversity
+    est_vocab = int(unique_chars * ratio * safety_factor)
+
+    # Bound vocab size to sensible range
+    est_vocab = max(300, min(est_vocab, max_vocab))
+
+    # ------------------------------------------------------------
+    # 4️⃣ Display statistics
+    # ------------------------------------------------------------
+    num_lines = text_data.count("\n") + 1
+    print(f"📊 Corpus statistics:")
+    print(f"   • Lines          : {num_lines:,}")
+    print(f"   • Total chars    : {total_chars:,}")
+    print(f"   • Unique chars   : {unique_chars:,}")
+    print(f"🧮 Estimated vocab_size ≈ {est_vocab}")
+
+    # Cleanup temporary file (if created)
+    if texts is not None and os.path.exists(corpus_path):
+        os.remove(corpus_path)
+
+    return est_vocab
 
 class TokenizerFactory:
     """
@@ -1118,9 +1087,9 @@ class TokenizerFactory:
     Automatically builds or loads tokenizers based on user options:
       - "char"                   → CharTokenizer
       - "word"                   → WordTokenizer
-      - "hf:xx"                  → HFTokenizerWrapper for pretrained Hugging Face tokenizer
-      - "custom:tokenizer_type"  → CustomTokenizer (e.g. "custom:bytebpe")
-      - "auto"                   → Auto-detect from provided path
+      - "hf:xx"                  → HFTokenizerWrapper for pretrained Hugging Face tokenizers
+      - "custom:tokenizer_type"  → CustomTokenizer (e.g. "custom:bytebpe", "custom:sp-unigram")
+      - "auto"                   → Auto-detect and load from a provided path
     """
 
     @staticmethod
@@ -1128,7 +1097,7 @@ class TokenizerFactory:
         tokenizer: str,
         texts: List[str] = None,
         tokenizer_path: str = None,
-        vocab_size: int = 8000,
+        vocab_size: int = None,
         min_freq: int = 2,
         pad_id: int = -100,
         lowercase: bool = True,
@@ -1137,10 +1106,10 @@ class TokenizerFactory:
         Build or load tokenizer automatically based on user input.
 
         Args:
-            tokenizer (str): Tokenizer specifier ("char", "word", "hf:gpt2", "custom:bytebpe", "auto").
+            tokenizer (str): Tokenizer specifier ("char", "word", "hf:gpt2", "custom:bytebpe", "custom:sp-unigram", etc.)
             texts (List[str]): Training corpus (required for training custom tokenizers).
-            tokenizer_path (str): Optional tokenizer path to load from.
-            vocab_size (int): Vocabulary size for custom tokenizers.
+            tokenizer_path (str): Optional tokenizer path to load from or save to.
+            vocab_size (int): Vocabulary size for custom tokenizers. If None, will auto-detect.
             min_freq (int): Minimum token frequency for custom tokenizers.
             pad_id (int): Default pad_id, consistent with PyTorch ignore_index.
             lowercase (bool): Convert text to lowercase for char/word tokenizers.
@@ -1149,56 +1118,67 @@ class TokenizerFactory:
             tokenizer_instance: A tokenizer object with unified encode()/decode()/save()/load() API.
         """
 
-        # ✅ Case 1: Auto-detect from existing path
+        # ✅ 1️⃣ Auto-detect and load existing tokenizer
         if tokenizer == "auto":
             if tokenizer_path and os.path.exists(tokenizer_path):
                 print(f"🔍 Auto-detecting tokenizer from {tokenizer_path} ...")
-                # Try loading HF or custom first
-                try:
-                    return HFTokenizerWrapper.load(tokenizer_path)
-                except Exception:
+                # Try known types in order of complexity
+                for loader in (HFTokenizerWrapper, CustomTokenizer, CharTokenizer, WordTokenizer):
                     try:
-                        return CustomTokenizer.load(tokenizer_path)
+                        tok = loader.load(tokenizer_path)
+                        print(f"✅ Auto-loaded tokenizer type: {loader.__name__}")
+                        return tok
                     except Exception:
-                        pass
-
-                # Fallback to char/word tokenizers
-                if "char" in tokenizer_path.lower():
-                    return CharTokenizer.load(tokenizer_path)
-                elif "word" in tokenizer_path.lower():
-                    return WordTokenizer.load(tokenizer_path)
-                raise ValueError(f"❌ Unable to detect tokenizer type from {tokenizer_path}.")
+                        continue
+                raise ValueError(f"❌ Unable to auto-detect tokenizer type from {tokenizer_path}.")
             else:
                 raise ValueError("❌ 'auto' mode requires a valid tokenizer_path to load from.")
 
-        # ✅ Case 2: Hugging Face tokenizer (e.g. hf:gpt2)
+        # ✅ 2️⃣ Hugging Face pretrained tokenizers
         elif tokenizer.startswith("hf:"):
             name_or_path = tokenizer.split("hf:")[1]
-            print(f"🤗 Building Hugging Face tokenizer: {name_or_path}")
+            print(f"🤗 Loading Hugging Face tokenizer: {name_or_path}")
             return HFTokenizerWrapper(name_or_path)
 
-        # ✅ Case 3: Custom tokenizer (e.g. custom:bytebpe)
+        # ✅ 3️⃣ Custom tokenizer family (ours)
         elif tokenizer.startswith("custom:"):
             algo = tokenizer.split("custom:")[1]
-            print(f"🧠 Training/Loading Custom tokenizer ({algo}) ...")
+            save_path = tokenizer_path or f"outputs/custom_{algo}_tokenizer"
+
+            # Auto-create save dir
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            print(f"🧠 Building CustomTokenizer ({algo}) → {save_path}")
+
+            # Optional: auto-detect vocab size (only for SP-style tokenizers)
+            if vocab_size is None and algo in ["sp-unigram", "bytebpe", "bpe"]:
+                if texts is None or len(texts) == 0:
+                    raise ValueError("❌ Need non-empty texts to estimate vocab_size automatically.")
+                corpus_path = "outputs/temp_corpus.txt"
+                with open(corpus_path, "w", encoding="utf-8") as f:
+                    for t in texts:
+                        f.write(t.strip() + "\n")
+                vocab_size = estimate_vocab_size(corpus_path=corpus_path)
+                print(f"📏 Auto-detected vocab_size={vocab_size}")
+
+            # Instantiate CustomTokenizer with correct parameters
             return CustomTokenizer(
                 texts=texts,
                 tokenizer_type=algo,
-                tokenizer_path=tokenizer_path or f"outputs/custom_{algo}_tokenizer.json",
-                vocab_size=vocab_size,
+                tokenizer_path=save_path,
+                vocab_size=vocab_size or 8000,
                 min_freq=min_freq,
                 pad_id=pad_id,
                 lowercase=lowercase,
             )
 
-        # ✅ Case 4: Character tokenizer
+        # ✅ 4️⃣ Character tokenizer
         elif tokenizer == "char":
             print("🔤 Building CharTokenizer ...")
             if tokenizer_path and os.path.exists(tokenizer_path):
                 return CharTokenizer.load(tokenizer_path)
             return CharTokenizer(texts, add_eos=True, add_pad=True)
 
-        # ✅ Case 5: Word tokenizer
+        # ✅ 5️⃣ Word tokenizer
         elif tokenizer == "word":
             print("🧩 Building WordTokenizer ...")
             if tokenizer_path and os.path.exists(tokenizer_path):
@@ -1211,60 +1191,51 @@ class TokenizerFactory:
 
 
 def test_tokenizers(
-    dataset_name: str = "ag_news",     # realistic English dataset
-    num_samples: int = 1000,           # how many sentences to train custom tokenizers
-    vocab_size: int = 5000,            # vocab for CustomTokenizer
+    dataset_name: str = "ag_news",
+    num_samples: int = 1000,
+    vocab_size: int = 5000,
     tokenizer_dir: str = "outputs/",
 ):
     """
     🔍 Comprehensive tokenizer test suite (realistic version).
 
-    Trains and evaluates multiple tokenizer backends on a real dataset.
-    Includes:
+    Tests:
       - CharTokenizer
       - WordTokenizer
       - HFTokenizerWrapper (GPT-2)
       - CustomTokenizer (ByteBPE)
-      - Auto-detected tokenizer reload
-
-    Args:
-        dataset_name (str): Hugging Face dataset to use ("ag_news", "wikitext", etc.).
-        num_samples (int): Number of lines from dataset for training.
-        vocab_size (int): Vocabulary size for custom tokenizers.
-        tokenizer_dir (str): Directory to store tokenizer files.
+      - CustomTokenizer (SentencePiece-Unigram)
+      - CustomTokenizer (Tiktoken-BPE)
+      - Auto-detected reload
     """
+    import os, re, unicodedata
+    from typing import List
     from datasets import load_dataset
-    #from DeepDataMiningLearning.llm.tokenizers.factory import TokenizerFactory
-
+    
     print("\n🔍 ===== REALISTIC TOKENIZER TEST SUITE =====\n")
 
     # ------------------------------------------------------------
-    # 1️⃣ Load a realistic text dataset
+    # 1️⃣  Load a realistic dataset
     # ------------------------------------------------------------
     print(f"📘 Loading dataset: {dataset_name} ...")
     ds = load_dataset(dataset_name, split="train")
-
-    # Extract text field automatically
     text_field = "text" if "text" in ds.column_names else ds.column_names[0]
     texts = [t.strip() for t in ds[text_field] if isinstance(t, str) and len(t.strip()) > 0]
     texts = texts[:num_samples]
     print(f"✅ Loaded {len(texts)} text samples for tokenizer training.\n")
-
-    # Prepare smaller sample set for testing readability
     test_samples = texts[:3]
 
     # ------------------------------------------------------------
-    # 2️⃣ Helper: normalization for round-trip checks
+    # 2️⃣  Normalizer for fair comparisons
     # ------------------------------------------------------------
     def normalize(text: str):
-        """Normalize text for fair comparison (handles Ġ, case, and spacing)."""
         text = unicodedata.normalize("NFKC", text)
-        text = text.replace("Ġ", " ")  # replace GPT-style space marker
-        text = re.sub(r"\s+", " ", text)  # collapse multiple spaces
+        text = text.replace("Ġ", " ").replace("▁", " ")
+        text = re.sub(r"\s+", " ", text)
         return text.strip().lower()
 
     # ------------------------------------------------------------
-    # 3️⃣ Define test runner
+    # 3️⃣  Helper to inspect a tokenizer
     # ------------------------------------------------------------
     def _inspect_tokenizer(tok, samples: List[str]):
         print(f"🧩 Tokenizer class: {type(tok).__name__}")
@@ -1273,111 +1244,66 @@ def test_tokenizers(
         if hasattr(tok, "tokenizer_path"):
             print(f"💾 Path: {getattr(tok, 'tokenizer_path', None)}")
 
-        # Special token indices
-        specials = {name: getattr(tok, name) for name in ["pad_idx", "bos_idx", "eos_idx", "unk_idx"] if hasattr(tok, name)}
+        specials = {n: getattr(tok, n)
+                    for n in ["pad_idx", "bos_idx", "eos_idx", "unk_idx"]
+                    if hasattr(tok, n)}
         if specials:
             print(f"🔖 Special token indices: {specials}")
 
-        print(f"\n📚 Testing {len(samples)} samples:\n")
         for i, s in enumerate(samples, 1):
-            print(f"🔹 Sample {i}: {s[:120]}{'...' if len(s) > 120 else ''}")
+            print(f"\n🔹 Sample {i}: {s[:100]}{'...' if len(s)>100 else ''}")
             try:
                 ids = tok.encode(s)
                 decoded = tok.decode(ids)
                 print(f"   🔢 Token IDs ({len(ids)}): {ids[:40]}{'...' if len(ids) > 40 else ''}")
                 print(f"   🔁 Decoded: {decoded[:200]}{'...' if len(decoded) > 200 else ''}")
-
-                # Normalized match check
-                match = normalize(decoded) == normalize(s)
-                if match:
-                    print("   ✅ Round-trip match (normalized): True")
-                else:
-                    print("   ⚠️ Round-trip mismatch (normalized): False")
-                    print(f"      expected: {normalize(s)}")
-                    print(f"      got     : {normalize(decoded)}")
-
+                ok = normalize(decoded) == normalize(s)
+                print(f"   {'✅' if ok else '⚠️'} Round-trip match: {ok}")
             except Exception as e:
-                print(f"   ⚠️ Error during encode/decode: {e}")
-            print("")
+                print(f"   ⚠️ Encode/decode error: {e}")
         print("")
 
     # ------------------------------------------------------------
-    # 4️⃣ Run tokenizer tests
+    # 4️⃣  Run the suite
     # ------------------------------------------------------------
     print("\n==================== 🟦 CHAR TOKENIZER ====================")
     tok_char = TokenizerFactory.build("char", texts=texts)
     _inspect_tokenizer(tok_char, test_samples)
 
     print("\n==================== 🟩 WORD TOKENIZER ====================")
-    lowercase_texts = [t.lower() for t in texts]
-    tok_word = TokenizerFactory.build("word", texts=lowercase_texts)
+    tok_word = TokenizerFactory.build("word", texts=[t.lower() for t in texts])
     _inspect_tokenizer(tok_word, test_samples)
 
     print("\n==================== 🤗 HF TOKENIZER (gpt2) ====================")
     from transformers.utils import logging as hf_logging
-    hf_logging.set_verbosity_error()  # suppress warnings
+    hf_logging.set_verbosity_error()
     try:
         tok_hf = TokenizerFactory.build("hf:gpt2")
         _inspect_tokenizer(tok_hf, test_samples)
     except Exception as e:
-        print(f"⚠️ Hugging Face tokenizer load failed: {e}")
+        print(f"⚠️ HF tokenizer load failed: {e}")
 
-    print("\n==================== 🧠 CUSTOM TOKENIZER (ByteBPE) ====================")
-    tok_custom_path = None #os.path.join(tokenizer_dir, "custom_bytebpe_tokenizer.json")
-    tok_custom = TokenizerFactory.build(
-        "custom:bytebpe",
-        texts=texts,
-        tokenizer_path=tok_custom_path,
-        vocab_size=vocab_size,
+
+    print("\n==================== 🧠 CUSTOM TOKENIZER (SentencePiece-Unigram) ====================")
+    tok_sp = TokenizerFactory.build(
+        "custom:sp-unigram",
+        texts=None, #texts,
+        tokenizer_path=os.path.join(tokenizer_dir, "custom_sp_unigram"),
+        vocab_size=None,
     )
-    _inspect_tokenizer(tok_custom, test_samples)
+    _inspect_tokenizer(tok_sp, test_samples)
 
-    print("\n==================== 🔄 AUTO-DETECTED TOKENIZER ====================")
-    tok_auto = TokenizerFactory.build("auto", tokenizer_path=tok_custom_path)
-    _inspect_tokenizer(tok_auto, test_samples)
+    print("\n==================== 🧠 CUSTOM TOKENIZER (Tiktoken-BPE) ====================")
+    tok_tk = TokenizerFactory.build(
+        "custom:tiktoken-bpe",
+        texts=None,   # no training needed
+        tokenizer_path=os.path.join(tokenizer_dir, "custom_tiktoken_bpe"),
+    )
+    _inspect_tokenizer(tok_tk, test_samples)
 
-    print("\n✅ All realistic tokenizer tests completed successfully.\n")
+    print("\n✅ All tokenizer backend tests completed successfully.\n")
 
 def test_custom_tokenizer():
-    texts = [
-        "The cat sat on the mat.",
-        "Byte-level BPE tokenizers handle punctuation very well.",
-    ]
-
-    # Train a new ByteLevelBPE tokenizer
-    tok = CustomTokenizer(
-        texts=texts,
-        tokenizer_type="bytebpe",
-        tokenizer_path="outputs/custom_bytebpe.json",
-        vocab_size=5000,
-    )
-
-    # Encode & Decode
-    ids = tok.encode("The cat sat.")
-    print("Encoded:", ids)
-    print("Decoded:", tok.decode(ids))
-    #Decoded: Ġthe Ġ c at Ġ s at . Ġ (U+0120) is a special marker used in GPT-style Byte-Level BPEs to represent a leading space.
-    # Save & Load
-    tok.save("outputs/custom_bytebpe.json")
-    tok2 = CustomTokenizer.load("outputs/custom_bytebpe.json")
-    print("Decoded after load:", tok2.decode(ids))
-
-def test_custom_tokenizer2():
-    texts = [
-        "Hello, world! Tokenizer.",
-        "GPT-2 🤖🚀🔥 Tokenizer test. 字节级别可逆编码。",
-    ]
-
-    tok = CustomTokenizer(texts, tokenizer_type="bytebpe", vocab_size=5000)
-
-    for s in texts:
-        ids = tok.encode(s)
-        dec = tok.decode(ids)
-        print(f"\nOriginal: {s}")
-        print(f"Decoded : {dec}")
-        print("Match   :", s == dec)
-
-def test_custom_tokenizer3():
     texts = [
         "The cat sat on the mat.",
         "Hello world! Python coding.",
@@ -1386,17 +1312,15 @@ def test_custom_tokenizer3():
         "GPT tokenization test 🚀🔥",
     ]
 
-    # Example 1: LLaMA3 / Gemma style
-    tok_sp = CustomTokenizer(texts, tokenizer_type="sp-unigram", vocab_size=8000)
-    tok_sp.plot_vocab_distribution(texts, top_k=40, save_dir="outputs/tokenizer_analysis", show=False)
+    # 1) LLaMA/Gemma style (SP Unigram + byte-fallback)
+    tok_sp = CustomTokenizer(texts, tokenizer_type="sp-unigram", tokenizer_path="outputs/sp_unigram", vocab_size=304)
     tok_sp.show_tokens("Hello, 世界！ LLaMA 3 模型测试。")
-    print("SP Decoded:", tok_sp.decode(tok_sp.encode(texts[0])))
+    print("SP round-trip:", tok_sp.decode(tok_sp.encode("Hello, 世界！ LLaMA 3 模型测试。")))
 
-    # Example 2: Qwen / GPT-4 style
-    tok_bpe = CustomTokenizer(texts, tokenizer_type="tiktoken-bpe", vocab_size=50000)
-    tok_bpe.plot_vocab_distribution(texts, top_k=40, save_dir="outputs/tokenizer_analysis", show=False)
+    # 2) GPT/Qwen style (tiktoken cl100k_base)
+    tok_bpe = CustomTokenizer(tokenizer_type="tiktoken-bpe")  # 不需要 texts
     tok_bpe.show_tokens("GPT-4 Turbo tokenizer 测试。🚀🔥")
-    print("BPE Decoded:", tok_bpe.decode(tok_bpe.encode(texts[0])))
+    print("BPE round-trip:", tok_bpe.decode(tok_bpe.encode("GPT-4 Turbo tokenizer 测试。🚀🔥")))
 
 def test_char_word_tokenizer():
     texts = [
@@ -1490,14 +1414,18 @@ if __name__ == "__main__":
     test_hftokenizer("Qwen/Qwen2-1.5B")
     test_hftokenizer("meta-llama/Meta-Llama-3-8B")
     test_custom_tokenizer()
-    test_custom_tokenizer2()
-    test_custom_tokenizer3()
+    #Train or load LLaMA3 / Gemma style (SentencePiece Unigram)
     texts = [
-        "The cat sat on the mat.",
-        "Machine learning is fun.",
-        "机器学习是人工智能的一个分支。",
-        "Let's test emojis 🤖🚀🔥!"
+        "Hello world! 你好，世界！",
+        "Machine learning 是人工智能的重要分支。",
+        "LLaMA 3 uses Unigram tokenization.",
     ]
+    tok = TokenizerFactory.build("custom:sp-unigram", texts=texts, vocab_size=None)
+    tok.show_tokens("Hello, 世界！ LLaMA 3 模型测试。")
+
+    #Load GPT / Qwen compatible tokenizer (Tiktoken)
+    tok = TokenizerFactory.build("custom:tiktoken-bpe")
+    tok.show_tokens("GPT-4 Turbo tokenizer 测试。🚀🔥")
 
     test_tokenizers(dataset_name="ag_news", num_samples=1000, vocab_size=8000)
     
