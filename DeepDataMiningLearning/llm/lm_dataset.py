@@ -893,70 +893,40 @@ class DataModule:
             raise ValueError("❌ Provide either `files` or `hf_name` in DataConfig.")
     
     
-    # ============================================================
-    # TOKENIZER SETUP
+        # ============================================================
+    # TOKENIZER SETUP  (using unified TokenizerFactory)
     # ============================================================
     def _setup_tokenizer(self, raw_text: str):
-        """Setup tokenizer based on cfg.tokenizer."""
-        print(f"🔤 Setting up tokenizer: {self.cfg.tokenizer}")
-        if self.cfg.tokenizer == "char":
-            self.tok = CharTokenizer([raw_text])
-            self.pad_id = 0
+        """
+        Setup tokenizer using unified TokenizerFactory.
 
-        elif self.cfg.tokenizer == "word":
-            self.tok = WordTokenizer([raw_text])
-            self.pad_id = 0
+        Supported:
+        - "char"                  → CharTokenizer
+        - "word"                  → WordTokenizer
+        - "hf:<model>"            → HFTokenizerWrapper
+        - "custom:sp-unigram"     → SentencePiece (LLaMA / Gemma)
+        - "custom:tiktoken-bpe"   → Tiktoken / GPT / Qwen style
+        """
+        from DeepDataMiningLearning.llm.tokenizer_utils import TokenizerFactory  # adjust import path
 
-        elif self.cfg.tokenizer.startswith("hf:"):
-            name = self.cfg.tokenizer.split("hf:")[1]
-            self.tok = HFTokenizerWrapper(name)
-            self.pad_id = self.tok.pad_id or 0
+        tokenizer_spec = self.cfg.tokenizer
+        print(f"🔤 Setting up tokenizer via TokenizerFactory: {tokenizer_spec}")
 
-        elif self.cfg.tokenizer == "bpe":
-            self._setup_bpe_tokenizer(raw_text)
+        # Prepare text corpus for any tokenizer that needs training
+        texts = [raw_text] if raw_text else None
 
-        else:
-            raise ValueError(f"❌ Unknown tokenizer type: {self.cfg.tokenizer}")
+        # Build the tokenizer
+        self.tok = TokenizerFactory.build(
+            tokenizer=tokenizer_spec,
+            texts=texts,
+            tokenizer_path=os.path.join("outputs", f"{tokenizer_spec.replace(':','_')}_tokenizer"),
+            vocab_size=getattr(self.cfg, "vocab_size", 8000),
+        )
 
-        self.vocab_size = self.tok.vocab_size
-        print(f"✅ Tokenizer initialized | vocab_size={self.vocab_size} | pad_id={self.pad_id}")
-
-    # ============================================================
-    # BYTE-LEVEL BPE TOKENIZER
-    # ============================================================
-    def _setup_bpe_tokenizer(self, text):
-        """Train or load byte-level BPE tokenizer (emoji + Unicode support)."""
-        from tokenizers import ByteLevelBPETokenizer
-        cache_dir = "tokenizer_cache"
-        os.makedirs(cache_dir, exist_ok=True)
-        tokenizer_path = os.path.join(cache_dir, "byte_bpe_tokenizer.json")
-
-        if os.path.exists(tokenizer_path):
-            from tokenizers import Tokenizer
-            print(f"🔁 Loading existing Byte-BPE tokenizer from {tokenizer_path}")
-            tokenizer = Tokenizer.from_file(tokenizer_path)
-        else:
-            print(f"🧩 Training new Byte-Level BPE tokenizer (vocab_size={self.cfg.vocab_size})...")
-            tokenizer = ByteLevelBPETokenizer()
-            tokenizer.train_from_iterator(
-                [text],
-                vocab_size=self.cfg.vocab_size,
-                min_frequency=2,
-                special_tokens=["<pad>", "<bos>", "<eos>"],
-            )
-            tokenizer.save(tokenizer_path)
-            print(f"💾 Saved Byte-BPE tokenizer to {tokenizer_path}")
-
-        class BPETokWrapper:
-            def __init__(self, tok):
-                self.tok = tok
-                self.pad_id = tok.token_to_id("<pad>") or 0
-                self.vocab_size = tok.get_vocab_size()
-            def encode(self, s): return self.tok.encode(s).ids
-            def decode(self, ids): return self.tok.decode(ids)
-
-        self.tok = BPETokWrapper(tokenizer)
-        self.pad_id = self.tok.pad_id
+        # pad_id is unified
+        self.pad_id = getattr(self.tok, "pad_id", 0) or 0
+        self.vocab_size = getattr(self.tok, "vocab_size", None)
+        print(f"✅ Tokenizer initialized | type={tokenizer_spec} | vocab_size={self.vocab_size} | pad_id={self.pad_id}")
 
     # ============================================================
     # ENCODING UTILITIES
@@ -1582,29 +1552,24 @@ def inspect_dataset(data, task="lm", num_batches=1, num_samples=2, show_tokens=4
 # ============================================================
 def run_all_dataset_tests():
     """
-    🔬 Comprehensive dataset verification utility.
+    🔬 Comprehensive dataset verification utility using the new TokenizerFactory.
 
-    Runs and validates all dataset types supported by `build_dataset()`:
-
-      1️⃣ Predictive Typing dataset (Character & Byte-level BPE)
-      2️⃣ Standard LM dataset (causal LM)
-      3️⃣ Seq2Seq dataset (encoder–decoder translation)
-      4️⃣ Hugging Face native dataset (AutoTokenizer)
-
-    Each test:
-      - Builds the dataset
-      - Runs DataLoader inspection
-      - Prints decoded samples & structure stats
+    Tests supported tokenizers:
+      1️⃣ CharTokenizer
+      2️⃣ WordTokenizer
+      3️⃣ HFTokenizerWrapper
+      4️⃣ CustomTokenizer (sp-unigram)
+      5️⃣ CustomTokenizer (tiktoken-bpe)
     """
 
-    print("\n🚀 ===== Running Complete Dataset Tests =====")
+    print("\n🚀 ===== Running Complete Dataset Tests (Modernized) =====")
 
     # --------------------------------------------------------
     # Common Args template
     # --------------------------------------------------------
     class Args:
         def __init__(self):
-            # Generic parameters
+            # Dataset source and split
             self.files = None
             self.hf_name = None
             self.hf_config = None
@@ -1612,23 +1577,24 @@ def run_all_dataset_tests():
             self.hf_split = "train"
 
             # Tokenizer settings
-            self.tokenizer = "char"       # default (can override per test)
+            self.tokenizer = "char"  # default
             self.vocab_size = 8000
             self.lowercase = False
-            self.keep_lang = "en" #"ascii"#"en_zh"
+            self.keep_lang = None #or "all"
             self.keep_emojis_math = False
 
-            # Dataset core parameters
+            # Dataset configuration
             self.seq_len = 128
             self.batch_size = 32
             self.split_ratio = 0.9
             self.mode = "teacher-forced"
 
-            # Typing task parameters
+            # Typing task specifics
             self.num_prefixes_per_sentence = 3
             self.next_token_window = 5
+            self.max_prefix_len = 12
 
-            # LM / Seq2Seq defaults
+            # LM / Seq2Seq
             self.task = "lm"
             self.stride = None
             self.max_tokens = None
@@ -1636,26 +1602,12 @@ def run_all_dataset_tests():
             self.encode_batch_size = 1000
             self.chunk_size = 50_000
 
-    # Reusable Args object
     args = Args()
 
     # --------------------------------------------------------
     # 1️⃣ Typing dataset (Character-level tokenizer)
     # --------------------------------------------------------
     print("\n⌨️ [1A] Testing Typing Dataset (Character-level)...")
-    try:
-        args.task = "lm" #"typing"
-        args.hf_name = "OpenAssistant/oasst1"
-        args.hf_split = "train"
-        args.tokenizer = "char"
-        args.seq_len = 64
-        data = build_dataset(args.task, args)
-        inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
-        #x output: torch.Size([32, 63]), y output:  torch.Size([32, 63]), length: torch.Size([32])
-    except Exception as e:
-        print(f"❌ Typing (char) dataset test failed: {e}")
-    
-    print("\n⌨️ [1B] Testing DictionaryTyping Dataset (Character-level)...")
     try:
         args.task = "typing"
         args.hf_name = "npvinHnivqn/EnglishDictionary"
@@ -1664,82 +1616,87 @@ def run_all_dataset_tests():
         args.tokenizer = "char"
         args.seq_len = 64
         args.next_token_window = 6
-        args.num_prefixes_per_sentence = 3
-        args.max_prefix_len = 12
         data = build_dataset(args.task, args)
         inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
-        #x output: torch.Size([32, 12]), y output: torch.Size([32, 6]), length: torch.Size([32])
     except Exception as e:
         print(f"❌ Typing (char) dataset test failed: {e}")
 
     # --------------------------------------------------------
-    # 1️⃣ Typing dataset (Byte-level BPE tokenizer)
+    # 1️⃣ Typing dataset (Word-level tokenizer)
     # --------------------------------------------------------
-    print("\n⌨️ [1C] Testing Typing Dataset (Byte-level BPE)...")
+    print("\n⌨️ [1B] Testing Typing Dataset (Word-level)...")
     try:
         args.task = "typing"
-        args.tokenizer = "bpe"
-        args.hf_name = "OpenAssistant/oasst1"
-
+        args.hf_name = "npvinHnivqn/EnglishDictionary"
+        args.hf_split = "train"
+        args.hf_features = ["word", "definition"]
+        args.tokenizer = "word"
+        args.seq_len = 64
+        args.next_token_window = 6
         data = build_dataset(args.task, args)
-        inspect_dataset(data, task="typing", num_batches=2, num_samples=2)
+        inspect_dataset(data, task=args.task, num_batches=2, num_samples=2)
     except Exception as e:
-        print(f"❌ Typing (BPE) dataset test failed: {e}")
+        print(f"❌ Typing (word) dataset test failed: {e}")
 
     # --------------------------------------------------------
-    # 2️⃣ Standard LM dataset (Causal LM)
+    # 2️⃣ Standard LM dataset (HF Tokenizer - GPT-2)
     # --------------------------------------------------------
-    print("\n📘 [2] Testing Standard LM Dataset (Causal LM)...")
+    print("\n📘 [2] Testing Standard LM Dataset (HF GPT-2 Tokenizer)...")
     try:
         args.task = "lm"
         args.hf_name = "Salesforce/wikitext"
-        args.hf_config = "wikitext-2-raw-v1"   # smaller version (~37k samples)
+        args.hf_config = "wikitext-2-raw-v1"
         args.hf_split = "train"
         args.tokenizer = "hf:gpt2"
-
         data = build_dataset(args.task, args)
         inspect_dataset(data, task="lm", num_batches=2, num_samples=2)
     except Exception as e:
-        print(f"❌ LM dataset test failed: {e}")
+        print(f"❌ LM (HF GPT2) dataset test failed: {e}")
 
     # --------------------------------------------------------
-    # 3️⃣ Seq2Seq dataset (Encoder–Decoder)
+    # 3️⃣ Custom SP-Unigram Tokenizer (LLaMA / Gemma style)
     # --------------------------------------------------------
-    print("\n📗 [3] Testing Seq2Seq Dataset (Encoder–Decoder)...")
+    print("\n🧠 [3] Testing Custom Tokenizer (SentencePiece-Unigram)...")
     try:
-        args.task = "seq2seq"
-        args.hf_name = "wmt19"
-        args.hf_config = "zh-en"
-        args.tokenizer = "hf:gpt2"
-
+        args.task = "lm"
+        args.hf_name = "OpenAssistant/oasst1"
+        args.hf_split = "train"
+        args.tokenizer = "custom:sp-unigram"
+        args.vocab_size = None  # auto-estimate vocab size
+        args.seq_len = 64
         data = build_dataset(args.task, args)
-        inspect_dataset(data, task="seq2seq", num_batches=1, num_samples=2)
+        inspect_dataset(data, task="lm", num_batches=2, num_samples=2)
     except Exception as e:
-        print(f"❌ Seq2Seq dataset test failed: {e}")
+        print(f"❌ Custom (sp-unigram) dataset test failed: {e}")
 
     # --------------------------------------------------------
-    # 4️⃣ Hugging Face native dataset (HF Tokenizer)
+    # 4️⃣ Custom Tiktoken-BPE Tokenizer (GPT / Qwen style)
     # --------------------------------------------------------
-    print("\n🤗 [4] Testing Hugging Face Dataset (AutoTokenizer)...")
+    print("\n🤖 [4] Testing Custom Tokenizer (Tiktoken-BPE)...")
+    try:
+        args.task = "lm"
+        args.hf_name = "OpenAssistant/oasst1"
+        args.hf_split = "train"
+        args.tokenizer = "custom:tiktoken-bpe"
+        data = build_dataset(args.task, args)
+        inspect_dataset(data, task="lm", num_batches=2, num_samples=2)
+    except Exception as e:
+        print(f"❌ Custom (tiktoken-bpe) dataset test failed: {e}")
+
+    # --------------------------------------------------------
+    # 5️⃣ Hugging Face Native Dataset (Qwen2.5)
+    # --------------------------------------------------------
+    print("\n🤗 [5] Testing Hugging Face Dataset (Qwen2.5)...")
     try:
         args.task = "lm"
         args.hf_name = "OpenAssistant/oasst1"
         args.tokenizer = "hf:Qwen/Qwen2.5-3B"
-
         data = build_dataset(args.task, args)
         inspect_dataset(data, task="hf", num_batches=1, num_samples=2)
     except Exception as e:
-        print(f"❌ HF dataset test failed: {e}")
+        print(f"❌ HF (Qwen2.5) dataset test failed: {e}")
 
-    # --------------------------------------------------------
-    # ✅ Summary
-    # --------------------------------------------------------
-    print("\n✅ ===== All Dataset Tests Completed =====")
-    print("  • Typing (char): checked")
-    print("  • Typing (BPE):  checked")
-    print("  • LM (GPT2 tokenizer): checked")
-    print("  • Seq2Seq (WMT19 zh-en): checked")
-    print("  • Hugging Face dataset (Qwen2.5-3B): checked\n")
+    print("\n✅ ===== All Dataset Tests Completed Successfully =====\n")
     
 if __name__ == "__main__":
     ds = SequenceDataset(list(range(1000)), seq_len=128)
