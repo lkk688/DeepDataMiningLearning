@@ -38,15 +38,6 @@ def _read_list_column(col):
     raise TypeError(f"Unsupported column type: {type(col)}")
 
 
-def _decode_range_image(row):
-    vals = _read_list_column(row[RI_VALS1])
-    shape = _read_list_column(row[RI_SHAPE1])
-    if len(shape) < 3:
-        raise ValueError(f"Invalid range image shape: {shape}")
-    H, W, C = map(int, shape[:3])
-    arr = np.array(vals, dtype=np.float32).reshape(H, W, C)
-    return arr
-
 
 def _spherical_to_cartesian(range_img, inclinations, extrinsic):
     """
@@ -397,39 +388,60 @@ import pyarrow.parquet as pq
 from torch.utils.data import Dataset
 
 
+import os
+import numpy as np
+import torch
+import pyarrow.parquet as pq
+from torch.utils.data import Dataset
+
+
 class Waymo3DDataset(Dataset):
     """
-    Waymo v2.x → 3D LiDAR dataset (safe baseline).
-    Step 1: Reconstruct point cloud in VEHICLE frame (only LiDAR→Vehicle extrinsic).
-    Step 2 (optional): If return_world=True, also transform to WORLD using vehicle_pose.
+    Waymo Open Dataset v2.x → Unified 3D LiDAR + Box Dataset.
+
+    This class loads:
+        - LiDAR range images (Parquet format)
+        - LiDAR calibration (beam inclinations + extrinsic)
+        - Vehicle poses (for world frame)
+        - 3D bounding boxes (LiDARBoxComponent)
+    and converts them into consistent Vehicle or World coordinates.
+
+    ✅ Coordinate conventions:
+        Vehicle frame: +X forward, +Y left, +Z up  (Right-handed)
+        LiDAR extrinsic:  T_vehicle←lidar  (row-major, no inverse)
+        Box heading:      clockwise in dataset → negated to CCW
     """
 
     def __init__(self, root_dir, split="training", max_frames=None, return_world=False):
+        """
+        Args:
+            root_dir:    Path to Waymo dataset root.
+            split:       "training" | "validation" | "testing"
+            max_frames:  Limit number of frames (for debugging)
+            return_world: If True, transforms points and boxes into World frame.
+        """
         self.root = root_dir
         self.split = split
         self.return_world = return_world
 
-        self.lidar_dir  = os.path.join(root_dir, split, "lidar")
-        self.calib_dir  = os.path.join(root_dir, split, "lidar_calibration")
-        self.box_dir    = os.path.join(root_dir, split, "lidar_box")
-        self.vpose_dir  = os.path.join(root_dir, split, "vehicle_pose")  # 仅当 return_world=True 时使用
+        # --- Dataset folder paths ---
+        self.lidar_dir = os.path.join(root_dir, split, "lidar")
+        self.calib_dir = os.path.join(root_dir, split, "lidar_calibration")
+        self.box_dir = os.path.join(root_dir, split, "lidar_box")
+        self.vpose_dir = os.path.join(root_dir, split, "vehicle_pose")
 
-        for p in [self.lidar_dir, self.calib_dir, self.box_dir]:
+        for p in [self.lidar_dir, self.calib_dir, self.box_dir, self.vpose_dir]:
             if not os.path.isdir(p):
                 raise FileNotFoundError(p)
-        if self.return_world and not os.path.isdir(self.vpose_dir):
-            raise FileNotFoundError(self.vpose_dir)
 
+        # --- Index all lidar frames ---
         files = [f for f in os.listdir(self.lidar_dir) if f.endswith(".parquet")]
         valid = [f for f in files if os.path.exists(os.path.join(self.box_dir, f))]
-        if not valid:
-            raise RuntimeError("No matching lidar/lidar_box shards found.")
-
         self.frame_index = []
         total = 0
         for fname in valid:
             pf = pq.ParquetFile(os.path.join(self.lidar_dir, fname))
-            df = pf.read_row_group(0, columns=["key.segment_context_name","key.frame_timestamp_micros"]).to_pandas()
+            df = pf.read_row_group(0, columns=["key.segment_context_name", "key.frame_timestamp_micros"]).to_pandas()
             for seg, ts in zip(df["key.segment_context_name"], df["key.frame_timestamp_micros"]):
                 self.frame_index.append((fname, int(ts), seg))
                 total += 1
@@ -438,78 +450,222 @@ class Waymo3DDataset(Dataset):
             if max_frames and total >= max_frames:
                 break
 
-        print(f"✅ Waymo3DDataset frames: {len(self.frame_index)} | return_world={self.return_world}")
+        print(f"✅ Waymo3DDataset initialized with {len(self.frame_index)} frames | return_world={self.return_world}")
 
-
-    @staticmethod
-    def _decode_pixel_pose(row):
-        kv = "[LiDARPoseComponent].range_image_return1.values"
-        ks = "[LiDARPoseComponent].range_image_return1.shape"
-        vals = row[kv].as_py() if hasattr(row[kv], "as_py") else row[kv]
-        shp  = row[ks].as_py() if hasattr(row[ks], "as_py") else row[ks]
-        arr  = np.array(vals, np.float32).reshape(shp, order="C")  # [H,W,6]
-        return arr
-
+    # ---------------------------------------------------------------------
     @staticmethod
     def _decode_range_image(row, return_id=1):
+        """
+        Decode one range image (Parquet: flattened float list).
+        Returns a numpy array [H,W,C] (float32).
+        """
         kv = f"[LiDARComponent].range_image_return{return_id}.values"
         ks = f"[LiDARComponent].range_image_return{return_id}.shape"
         vals = row[kv].as_py() if hasattr(row[kv], "as_py") else row[kv]
-        shp  = row[ks].as_py() if hasattr(row[ks], "as_py") else row[ks]
-        arr  = np.array(vals, dtype=np.float32).reshape(shp, order="C")
-        return arr  # [H,W,C], C>=2: range,intensity,...
+        shp = row[ks].as_py() if hasattr(row[ks], "as_py") else row[ks]
+        arr = np.array(vals, np.float32).reshape(shp, order="C")  # Waymo = row-major
+        return arr
 
+    # ---------------------------------------------------------------------
     def __getitem__(self, idx):
         fname, ts, seg = self.frame_index[idx]
 
-        # ---------- 1) read one LiDAR return (per-sensor row) ----------
+        # ---------- 1️⃣ Read all LiDAR rows for this frame ----------
         pf = pq.ParquetFile(os.path.join(self.lidar_dir, fname))
         df = pf.read_row_group(0).to_pandas()
-        row = df[(df["key.segment_context_name"] == seg) &
-                 (df["key.frame_timestamp_micros"] == ts)].iloc[0]
-        laser_id = int(row["key.laser_name"])
+        rows_t = df[(df["key.segment_context_name"] == seg) &
+                    (df["key.frame_timestamp_micros"] == ts)]
+        if len(rows_t) == 0:
+            raise RuntimeError("No LiDAR rows for this frame.")
+            
 
-        ri = self._decode_range_image(row, return_id=1)
-        rng   = np.nan_to_num(ri[..., 0], nan=0.0); rng[rng < 0] = 0.0
-        inten = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(rng)
-        H, W  = rng.shape
-
-        # ---------- 2) calibration (beam inclinations + LiDAR→Vehicle extrinsic) ----------
+        # ---------- 2️⃣ Identify the TOP LiDAR (highest mount) ----------
         pf_cal = pq.ParquetFile(os.path.join(self.calib_dir, fname))
         df_cal = pf_cal.read_row_group(0).to_pandas()
-        crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
-                      (df_cal["key.laser_name"] == laser_id)].iloc[0]
 
-        inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
-        inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
-        inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32)
+        if idx == 0:
+            print("Available calibration entries in this file:")
+            print(df_cal[["key.segment_context_name", "key.laser_name",
+                        "[LiDARCalibrationComponent].beam_inclination.min",
+                        "[LiDARCalibrationComponent].beam_inclination.max"]].head(10))
+
+        def get_T_vl(lid):
+            """Robustly fetch LiDAR→Vehicle extrinsic, ensuring correct ID match."""
+            # Force both sides to int32 for comparison
+            lid_int = int(lid)
+            key_lids = df_cal["key.laser_name"].astype(np.int32)
+            seg_mask = df_cal["key.segment_context_name"] == seg
+            lid_mask = key_lids == lid_int
+            sel = df_cal[seg_mask & lid_mask]
+            if len(sel) == 0:
+                raise RuntimeError(f"No calibration row found for seg={seg}, laser_name={lid_int}.")
+            crow = sel.iloc[0]
+
+            # Extract extrinsic (row-major)
+            extr_cols = [c for c in crow.index if "extrinsic" in str(c)]
+            extr_col = min(extr_cols, key=len)
+            extr_vals = crow[extr_col]
+            extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
+            extr = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
+
+            # Quick sanity check: TOP LiDAR translation ~[1.4, 0, 2.0], yaw≈0°
+            t = extr[:3, 3]
+            yaw_deg = np.degrees(np.arctan2(extr[1, 0], extr[0, 0]))
+            print(f"[CALIB_CHECK] lid={lid_int}  trans={t.round(3)}  yaw={yaw_deg:.1f}°")
+            return extr
+
+        if idx == 0:
+            for lid in sorted(rows_t["key.laser_name"].unique()):
+                _ = get_T_vl(lid)
+
+        # Pick LiDAR with largest Z translation (the TOP sensor)
+        cand_ids = sorted(rows_t["key.laser_name"].unique().tolist())
+        heights = {}
+        for lid in cand_ids:
+            T_vl = get_T_vl(lid)
+            heights[lid] = float(T_vl[2, 3])
+        laser_id = max(heights, key=heights.get)
+        row = rows_t[rows_t["key.laser_name"] == laser_id].iloc[0]
+
+        # ---------- Detect RAW vs VIRTUAL range image ----------
+        pose_key = "[LiDARComponent].range_image_pose.values"
+        pose_shape_key = "[LiDARComponent].range_image_pose.shape"
+
+        if pose_key in row and pose_shape_key in row:
+            vals = row[pose_key]
+            # Waymo stores as list<float> for [H,W,6]; empty if virtual
+            if hasattr(vals, "as_py"):
+                vals = vals.as_py()
+            is_raw = len(vals) > 0
+        else:
+            # Newer parquet files might use 'pose_compressed' instead
+            compressed_key = "[LiDARComponent].range_image_pose_compressed"
+            if compressed_key in row:
+                data = row[compressed_key]
+                if hasattr(data, "as_py"):
+                    data = data.as_py()
+                is_raw = data is not None and len(data) > 0
+            else:
+                is_raw = False
+
+        mode = "RAW (needs extrinsic)" if is_raw else "VIRTUAL (already in vehicle frame)"
+        print(f"[INFO] Range image type detected: {mode}")
+
+
+        # ---------- Build LiDAR→Vehicle extrinsic (row-major) ----------
+        T_vl = get_T_vl(laser_id)
+
+        # Compute yaw from its rotation block
+        R = T_vl[:3, :3]
+        yaw_deg = float(np.degrees(np.arctan2(R[1, 0], R[0, 0])))
+
+        # --- Fix mixed calibration: enforce TOP yaw≈0 for z>2 m sensors ---
+        # if T_vl[2, 3] > 1.8 and abs(yaw_deg) > 30.0:
+        #     print(f"[CALIB_FIX] Detected bad yaw ({yaw_deg:.1f}°) for TOP LiDAR; resetting rotation to identity.")
+        #     T_vl[:3, :3] = np.eye(3, dtype=np.float32)
+        #     yaw_deg = 0.0
+        # Keep translation t, preserve pitch/roll, remove only the bad yaw
+        t = T_vl[:3, 3].copy()
+
+        # Extract the (wrong) yaw from R (already computed as yaw_deg)
+        yaw_rad = np.deg2rad(yaw_deg)
+
+        # Build Z-rotation that cancels that yaw
+        cy, sy = np.cos(-yaw_rad), np.sin(-yaw_rad)
+        Rz_fix = np.array([[cy, -sy, 0.0],
+                        [sy,  cy, 0.0],
+                        [0.0, 0.0, 1.0]], dtype=np.float32)
+
+        # Apply on the RIGHT to remove yaw while preserving the original tilt:
+        # R_corrected = R * Rz(-yaw)
+        R_corr = R @ Rz_fix
+
+        T_vl[:3, :3] = R_corr
+        T_vl[:3,  3] = t
+        yaw_deg = 0.0  # yaw corrected to ~0 for logging
+
+
+        print(f"[INFO] Using LiDAR id={laser_id} "
+            f"(height={T_vl[2,3]:.2f} m, yaw≈{yaw_deg:.1f}°)")
+
+        # ---------- 3️⃣ Decode the range image ----------
+        ri = self._decode_range_image(row, return_id=1)
+        rng = np.clip(np.nan_to_num(ri[..., 0], nan=0.0), 0.0, 300.0)
+        inten = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(rng)
+        H, W = rng.shape
+
+        # ---------- 4️⃣ Beam inclinations ----------
+        # crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
+        #               (df_cal["key.laser_name"] == laser_id)].iloc[0]
+        # inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
+        # inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
+        # inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32)
+        # if np.max(np.abs(inclinations)) > np.pi:
+        #     inclinations = np.deg2rad(inclinations)
+        # ---------- 4️⃣ Beam inclinations (prefer full vector) ----------
+        crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
+                    (df_cal["key.laser_name"] == laser_id)].iloc[0]
+
+        # Try to read the full non-uniform vector first (name may vary depending on your export)
+        cand_cols = [
+            "[LiDARCalibrationComponent].beam_inclinations.values",
+            "[LiDARCalibrationComponent].beam_inclination.values",
+            "beam_inclinations",  # some exporters shorten names
+        ]
+        inc_vals = None
+        for c in cand_cols:
+            if c in crow and crow[c] is not None:
+                v = crow[c]
+                if hasattr(v, "as_py"): v = v.as_py()
+                if v is not None and len(v) > 0:
+                    inc_vals = np.array(v, dtype=np.float32)
+                    break
+
+        if inc_vals is not None:
+            inclinations = inc_vals
+        else:
+            # fallback: uniform spacing if vector not provided
+            inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
+            inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
+            inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32)
+
+        # Units: some parquet dumps keep degrees; convert if needed
         if np.max(np.abs(inclinations)) > np.pi:
             inclinations = np.deg2rad(inclinations)
 
-        # extrinsic 4x4 (row-major)
-        extr_col = max([c for c in crow.index if ("extrinsic" in c or str(c).endswith("item"))], key=len)
-        extr_vals = crow[extr_col]
-        extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
-        T_vl = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="C")  # LiDAR->Vehicle
+        # Sanity
+        if len(inclinations) != H:
+            # Rare exporter mismatch: resample to H to avoid misalignment
+            inclinations = np.interp(
+                np.linspace(0, len(inclinations)-1, H),
+                np.arange(len(inclinations)),
+                inclinations
+            ).astype(np.float32)
 
-        # ---------- 3) spherical → LiDAR Cartesian (pay attention to signs/order) ----------
-        incl = inclinations[::-1].reshape(H, 1)                      # vertical flip (bottom→top)
-        az   = np.linspace(np.pi, -np.pi, W, endpoint=False, dtype=np.float32)  # azimuth decreases right→left
-
+        # ---------- 5️⃣ Convert Spherical → LiDAR Cartesian ----------
+        # Waymo’s convention: +X forward, +Y left, +Z up
+        incl = inclinations[::-1].reshape(H, 1)                    # flip vertically
+        az = np.linspace(-np.pi, np.pi, W, endpoint=False, dtype=np.float32)
         cos_i, sin_i = np.cos(incl), np.sin(incl)
-        cos_a, sin_a = np.cos(az),   np.sin(az)
+        cos_a, sin_a = np.cos(az), np.sin(az)
 
         Xl = rng * cos_i * cos_a
-        Yl = -rng * cos_i * sin_a   # ← Waymo 的 Y 方向需要负号
+        Yl = rng * cos_i * sin_a
         Zl = rng * sin_i
-
         pts_l = np.stack([Xl, Yl, Zl, np.ones_like(Zl)], axis=-1).reshape(-1, 4)
 
-        # ---------- 4) LiDAR→Vehicle (一次、且仅一次) ----------
-        pts_v = (pts_l @ T_vl.T)[:, :3]   # Vehicle frame point cloud (baseline对齐坐标)
+        # ---------- 6️⃣ LiDAR → Vehicle (apply extrinsic) ----------
+        #pts_v = (pts_l @ T_vl.T)[:, :3]
+        is_raw = True
+        if is_raw:    # range_image_pose_compressed exists
+            pts_v = (pts_l @ T_vl.T)[:, :3]
+        else:          # virtual range image
+            ## For virtual range images, the points are already in vehicle frame
+            pts_v = pts_l[:, :3]
+        
         xyz_vehicle = np.nan_to_num(pts_v, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # ---------- 5) Vehicle→World (可选；若需要就对点和框一起变换) ----------
+        # ---------- 7️⃣ Optional Vehicle → World ----------
         if self.return_world:
             pf_vp = pq.ParquetFile(os.path.join(self.vpose_dir, fname))
             df_vp = pf_vp.read_row_group(0).to_pandas()
@@ -517,30 +673,29 @@ class Waymo3DDataset(Dataset):
                          (df_vp["key.frame_timestamp_micros"] == ts)].iloc[0]
             vp_vals = vrow["[VehiclePoseComponent].world_from_vehicle.transform"]
             vp_vals = vp_vals.as_py() if hasattr(vp_vals, "as_py") else vp_vals
-            T_wv = np.array(vp_vals, dtype=np.float32).reshape(4, 4, order="C")  # row-major
-
-            pts_vh = np.concatenate([xyz_vehicle, np.ones((xyz_vehicle.shape[0],1), np.float32)], axis=1)
+            T_wv = np.array(vp_vals, np.float32).reshape(4, 4, order="C")
+            pts_vh = np.concatenate([xyz_vehicle, np.ones((xyz_vehicle.shape[0], 1), np.float32)], axis=1)
             xyz_world = (pts_vh @ T_wv.T)[:, :3]
             XYZ = xyz_world
         else:
             T_wv = None
             XYZ = xyz_vehicle
 
-        # ---------- 6) intensity normalize ----------
+        # ---------- 8️⃣ Normalize intensity ----------
         inten = inten.reshape(-1, 1).astype(np.float32)
         inten = inten / (inten.max() + 1e-6)
         lidar = torch.tensor(np.concatenate([XYZ, inten], axis=1), dtype=torch.float32)
 
-        # ---------- 7) 3D boxes (Vehicle frame; do NOT transform here) ----------
+        # ---------- 9️⃣ Load and Transform 3D Boxes ----------
         pf_box = pq.ParquetFile(os.path.join(self.box_dir, fname))
         df_box = pf_box.read_row_group(0).to_pandas()
-        rows = df_box[(df_box["key.segment_context_name"] == seg) &
-                      (df_box["key.frame_timestamp_micros"] == ts)]
-        if len(rows) == 0:
-            boxes_v = torch.zeros((0, 7), dtype=torch.float32)
-            labels  = torch.zeros((0,), dtype=torch.int64)
+        rows_b = df_box[(df_box["key.segment_context_name"] == seg) &
+                        (df_box["key.frame_timestamp_micros"] == ts) ]
+        if len(rows_b) == 0:
+            boxes_any = torch.zeros((0, 7), dtype=torch.float32)
+            labels = torch.zeros((0,), dtype=torch.int64)
         else:
-            box_fields = [
+            f = [
                 "[LiDARBoxComponent].box.center.x",
                 "[LiDARBoxComponent].box.center.y",
                 "[LiDARBoxComponent].box.center.z",
@@ -549,28 +704,75 @@ class Waymo3DDataset(Dataset):
                 "[LiDARBoxComponent].box.size.z",
                 "[LiDARBoxComponent].box.heading",
             ]
-            label_field = "[LiDARBoxComponent].type"
-            boxes_v = torch.tensor(rows[box_fields].to_numpy(), dtype=torch.float32)
-            labels  = torch.tensor(rows[label_field].to_numpy(), dtype=torch.int64)
+            arr = rows_b[f].to_numpy().astype(np.float32)
+            # 6] = -arr[:, 6]  # clockwise → CCW (right-handed yaw)
+            # --- Boxes are in VEHICLE frame, but appear mirrored about +X (left/right flipped).
+            # Fix handedness by reflecting across X: y -> -y and yaw -> -yaw.
+            arr[:, 1] *= -1.0        # y
+            arr[:, 6] *= -1.0        # yaw (CCW)
 
-        # ---------- 8) assemble ----------
+            # # --- LiDAR → Vehicle centers ---
+            # centers_l = arr[:, :3]
+            # centers_l_h = np.concatenate([centers_l, np.ones((centers_l.shape[0], 1), np.float32)], axis=1)
+            # centers_v = (centers_l_h @ T_vl.T)[:, :3]
+
+            # # --- Adjust headings by LiDAR yaw ---
+            # lidar_yaw_rad = np.deg2rad(yaw_deg)
+            # headings_v = arr[:, 6] + lidar_yaw_rad
+            # headings_v = (headings_v + np.pi) % (2 * np.pi) - np.pi
+            # sizes = arr[:, 3:6]
+
+            # # Combine back to VEHICLE frame boxes
+            # boxes_vehicle = np.concatenate([centers_v, sizes, headings_v[:, None]], axis=1)
+            # --- Boxes are already in VEHICLE frame ---
+            centers_v  = arr[:, :3]        # use directly
+            sizes      = arr[:, 3:6]
+            headings_v = arr[:, 6]         # already vehicle-frame yaw (after CW→CCW flip)
+
+            # boxes_vehicle = np.concatenate(
+            #     [centers_v, sizes, headings_v[:, None]], axis=1
+            # )
+            boxes_vehicle = np.concatenate([centers_v, sizes, headings_v[:, None]], axis=1).astype(np.float32)
+
+            # --- Optionally: Vehicle → World for boxes (if return_world=True) ---
+            if self.return_world:
+                centers_v_h = np.concatenate([centers_v, np.ones((centers_v.shape[0], 1), np.float32)], axis=1)
+                centers_w = (centers_v_h @ T_wv.T)[:, :3]
+                yaw_wv = float(np.arctan2(T_wv[1, 0], T_wv[0, 0]))  # vehicle yaw in world
+                headings_w = headings_v + yaw_wv
+                headings_w = (headings_w + np.pi) % (2 * np.pi) - np.pi
+                boxes_any = torch.tensor(np.concatenate([centers_w, sizes, headings_w[:, None]], axis=1),
+                                         dtype=torch.float32)
+            else:
+                boxes_any = torch.tensor(boxes_vehicle, dtype=torch.float32)
+
+            labels = torch.tensor(rows_b["[LiDARBoxComponent].type"].to_numpy(), dtype=torch.int64)
+
+
+        z_pts = np.percentile(xyz_vehicle[:,2], [1, 50, 99])
+        z_box_bottom = centers_v[:,2] - sizes[:,2]*0.5
+        print(f"[CHECK] points Z p01/50/99 = {z_pts}")
+        print(f"[CHECK] box bottom z: mean={float(z_box_bottom.mean()):.2f}  min={float(z_box_bottom.min()):.2f}")
+
+
+        # ---------- 🔟 Assemble final output ----------
         target = {
-            "boxes_3d": boxes_v,             # Vehicle frame
+            "boxes_3d": boxes_any,        # same frame as lidar (Vehicle or World)
             "labels": labels,
             "segment": seg,
             "timestamp": ts,
-            "laser_id": laser_id,
+            "laser_id": int(laser_id),
         }
         if self.return_world:
             target["world_from_vehicle"] = torch.tensor(T_wv, dtype=torch.float32)
 
-        # ---------- 9) quick debug (first frame) ----------
+        # ---------- 🧭 Debug summary ----------
         if idx == 0:
-            rng_stats = (XYZ[:,0].min(), XYZ[:,0].max(), XYZ[:,1].min(), XYZ[:,1].max(), XYZ[:,2].min(), XYZ[:,2].max())
-            print(f"[DEBUG] points={lidar.shape[0]}  range XYZ: X[{rng_stats[0]:.1f},{rng_stats[1]:.1f}] "
-                  f"Y[{rng_stats[2]:.1f},{rng_stats[3]:.1f}] Z[{rng_stats[4]:.1f},{rng_stats[5]:.1f}]")
-            if self.return_world:
-                print("[DEBUG] T_wv trans:", T_wv[:3,3])
+            print(f"[DEBUG] Frame {idx}: {len(lidar)} pts | "
+                  f"X[{XYZ[:,0].min():.1f},{XYZ[:,0].max():.1f}] "
+                  f"Y[{XYZ[:,1].min():.1f},{XYZ[:,1].max():.1f}] "
+                  f"Z[{XYZ[:,2].min():.1f},{XYZ[:,2].max():.1f}] "
+                  f"| boxes={len(boxes_any)}")
 
         return lidar, target
 
@@ -887,8 +1089,8 @@ def _diagnose_yaw_config_vehicle(points_xyz, boxes_vehicle, radius=4.0):
 def main():
 
     # 先在 Vehicle 下检查：return_world=False
-    ds = Waymo3DDataset("/data/Datasets/waymodata/", split="training", max_frames=3, return_world=False)
-    lidar, target = ds[0]
+    ds = Waymo3DDataset("/data/Datasets/waymodata/", split="training", max_frames=40, return_world=False)
+    lidar, target = ds[30]
 
     print("\n========== BASIC INFO ==========")
     print("points:", lidar.shape)
