@@ -939,9 +939,366 @@ def merge_and_debug_lidars(root, split="training", fname=None, frame_idx=0, save
 import open3d as o3d
 import numpy as np
 
+# ============================================================================
+# Waymo Visualization Functions (Based on Official Tutorial)
+# ============================================================================
+
+def plot_range_image_helper(data, name, layout, vmin=0, vmax=1, cmap='gray'):
+    """
+    Plots range image based on official Waymo tutorial.
+    
+    Args:
+        data: range image data
+        name: the image title
+        layout: plt layout
+        vmin: minimum value of the passed data
+        vmax: maximum value of the passed data
+        cmap: color map
+    """
+    import matplotlib.pyplot as plt
+    plt.subplot(*layout)
+    plt.imshow(data, cmap=cmap, vmin=vmin, vmax=vmax)
+    plt.title(name)
+    plt.grid(False)
+    plt.axis('off')
+
+def visualize_range_images(root, split="training", fname=None, frame_idx=0, save_path=None):
+    """
+    Visualize range images for all LiDAR sensors based on official tutorial.
+    
+    Args:
+        root: Waymo dataset root path
+        split: dataset split (training/validation/testing)
+        fname: specific parquet file name
+        frame_idx: frame index to visualize
+        save_path: optional path to save the visualization
+    """
+    import matplotlib.pyplot as plt
+    
+    lidar_dir = os.path.join(root, split, "lidar")
+    calib_dir = os.path.join(root, split, "lidar_calibration")
+    
+    files = sorted([f for f in os.listdir(lidar_dir) if f.endswith(".parquet")])
+    if not files:
+        raise FileNotFoundError(f"No lidar parquet found in {lidar_dir}")
+    if fname is None:
+        fname = files[0]
+    
+    print(f"✅ Visualizing range images from: {fname}")
+    
+    # Load lidar data
+    pf = pq.ParquetFile(os.path.join(lidar_dir, fname))
+    df = pf.read_row_group(0).to_pandas()
+    
+    seg = df.iloc[0]["key.segment_context_name"]
+    ts = int(df.iloc[frame_idx]["key.frame_timestamp_micros"])
+    lasers = sorted(df["key.laser_name"].unique())
+    
+    print(f"Segment: {seg}, Timestamp: {ts}")
+    print(f"Available LiDAR sensors: {lasers}")
+    
+    # Create figure for all range images
+    plt.figure(figsize=(20, 12))
+    
+    layout_idx = 1
+    for laser_id in lasers:
+        # Get data for this laser
+        laser_rows = df[df["key.laser_name"] == laser_id]
+        if len(laser_rows) == 0:
+            continue
+            
+        row = laser_rows.iloc[frame_idx % len(laser_rows)]
+        
+        # Decode range image
+        ri = _decode_range_image(row)
+        if ri is None:
+            print(f"⚠️ Failed to decode range image for laser {laser_id}")
+            continue
+            
+        # Extract channels
+        range_data = np.nan_to_num(ri[..., 0], nan=0.0, posinf=0.0, neginf=0.0)
+        intensity_data = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(range_data)
+        elongation_data = ri[..., 2] if ri.shape[-1] > 2 else np.zeros_like(range_data)
+        
+        # Create mask for valid points
+        valid_mask = range_data > 0
+        range_data = np.where(valid_mask, range_data, np.ones_like(range_data) * 1e10)
+        
+        # Plot range, intensity, and elongation
+        plot_range_image_helper(
+            range_data, f'Laser {laser_id} - Range', 
+            [len(lasers), 3, layout_idx], vmax=75, cmap='gray'
+        )
+        plot_range_image_helper(
+            intensity_data, f'Laser {laser_id} - Intensity', 
+            [len(lasers), 3, layout_idx + 1], vmax=1.5, cmap='gray'
+        )
+        plot_range_image_helper(
+            elongation_data, f'Laser {laser_id} - Elongation', 
+            [len(lasers), 3, layout_idx + 2], vmax=1.5, cmap='gray'
+        )
+        
+        layout_idx += 3
+    
+    plt.tight_layout()
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Range images saved to: {save_path}")
+    plt.show()
+
+def convert_range_image_to_point_cloud(root, split="training", fname=None, frame_idx=0, 
+                                     return_index=0, include_intensity=True):
+    """
+    Convert range images to point cloud based on official tutorial methodology.
+    
+    Args:
+        root: Waymo dataset root path
+        split: dataset split
+        fname: parquet file name
+        frame_idx: frame index
+        return_index: 0 for first return, 1 for second return
+        include_intensity: whether to include intensity information
+        
+    Returns:
+        points: (N, 3) or (N, 4) array of points [x, y, z] or [x, y, z, intensity]
+        laser_labels: (N,) array indicating which laser each point came from
+    """
+    lidar_dir = os.path.join(root, split, "lidar")
+    calib_dir = os.path.join(root, split, "lidar_calibration")
+    
+    files = sorted([f for f in os.listdir(lidar_dir) if f.endswith(".parquet")])
+    if fname is None:
+        fname = files[0]
+    
+    # Load data
+    pf = pq.ParquetFile(os.path.join(lidar_dir, fname))
+    df = pf.read_row_group(0).to_pandas()
+    
+    pf_cal = pq.ParquetFile(os.path.join(calib_dir, fname))
+    df_cal = pf_cal.read_row_group(0).to_pandas()
+    
+    ts = int(df.iloc[frame_idx]["key.frame_timestamp_micros"])
+    
+    all_points = []
+    all_laser_labels = []
+    
+    for laser_id in sorted(df["key.laser_name"].unique()):
+        # Get calibration for this laser
+        calib_row = df_cal[df_cal["key.laser_name"] == laser_id].iloc[0]
+        extr_col = max([c for c in calib_row.index if ("extrinsic" in c or str(c).endswith("item"))], key=len)
+        extr_vals = calib_row[extr_col]
+        if hasattr(extr_vals, "as_py"):
+            extr_vals = extr_vals.as_py()
+        
+        extr = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="C")
+        
+        # Get beam inclination range
+        inc_min = float(calib_row["[LiDARCalibrationComponent].beam_inclination.min"])
+        inc_max = float(calib_row["[LiDARCalibrationComponent].beam_inclination.max"])
+        
+        # Get range image data
+        laser_rows = df[df["key.laser_name"] == laser_id]
+        row = laser_rows[laser_rows["key.frame_timestamp_micros"] == ts]
+        if len(row) == 0:
+            continue
+        row = row.iloc[0]
+        
+        # Decode range image (handle both returns)
+        if return_index == 0:
+            vals_key = "[LiDARComponent].range_image_return1.values"
+            shape_key = "[LiDARComponent].range_image_return1.shape"
+        else:
+            vals_key = "[LiDARComponent].range_image_return2.values"
+            shape_key = "[LiDARComponent].range_image_return2.shape"
+            
+        if vals_key not in row or shape_key not in row:
+            continue
+            
+        vals = row[vals_key]
+        shp = row[shape_key]
+        if hasattr(vals, "as_py"):
+            vals = vals.as_py()
+        if hasattr(shp, "as_py"):
+            shp = shp.as_py()
+            
+        if not vals or not shp:
+            continue
+            
+        H, W, C = shp
+        ri = np.array(vals, dtype=np.float32).reshape(H, W, C)
+        
+        # Extract range and intensity
+        range_data = np.nan_to_num(ri[..., 0], nan=0.0, posinf=0.0, neginf=0.0)
+        intensity_data = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(range_data)
+        
+        # Create spherical coordinates
+        inclination = np.linspace(inc_min, inc_max, H, dtype=np.float32)[::-1].reshape(H, 1)
+        azimuth = np.linspace(np.pi, -np.pi, W, endpoint=False, dtype=np.float32)
+        
+        # Convert to Cartesian coordinates (LiDAR frame)
+        cos_incl = np.cos(inclination)
+        sin_incl = np.sin(inclination)
+        cos_az = np.cos(azimuth)
+        sin_az = np.sin(azimuth)
+        
+        x = range_data * cos_incl * cos_az
+        y = range_data * cos_incl * sin_az
+        z = range_data * sin_incl
+        
+        # Transform to vehicle frame
+        points_lidar = np.stack([x, y, z, np.ones_like(z)], axis=-1).reshape(-1, 4)
+        points_vehicle = (points_lidar @ extr.T)[:, :3]
+        
+        # Filter valid points
+        valid_mask = range_data.reshape(-1) > 0
+        points_vehicle = points_vehicle[valid_mask]
+        
+        if include_intensity:
+            intensity_flat = intensity_data.reshape(-1)[valid_mask]
+            points_vehicle = np.column_stack([points_vehicle, intensity_flat])
+        
+        all_points.append(points_vehicle)
+        all_laser_labels.extend([laser_id] * len(points_vehicle))
+    
+    if not all_points:
+        return np.empty((0, 4 if include_intensity else 3)), np.array([])
+    
+    points = np.vstack(all_points)
+    laser_labels = np.array(all_laser_labels)
+    
+    print(f"✅ Converted {len(points):,} points from {len(set(all_laser_labels))} LiDAR sensors")
+    return points, laser_labels
+
+def rgba_from_range(r):
+    """
+    Generates a color based on range (from official tutorial).
+    
+    Args:
+        r: the range value of a given point
+    Returns:
+        The color for a given range
+    """
+    import matplotlib.pyplot as plt
+    c = plt.get_cmap('jet')((r % 20.0) / 20.0)
+    c = list(c)
+    c[-1] = 0.5  # alpha
+    return c
+
+def plot_camera_image(camera_image):
+    """Plot camera image (from official tutorial)."""
+    import matplotlib.pyplot as plt
+    plt.figure(figsize=(20, 12))
+    plt.imshow(camera_image)
+    plt.grid(False)
+    plt.axis('off')
+
+def visualize_camera_projection(root, split="training", fname=None, frame_idx=0, 
+                              camera_name=1, save_path=None):
+    """
+    Visualize LiDAR points projected onto camera image based on official tutorial.
+    
+    Args:
+        root: Waymo dataset root path
+        split: dataset split
+        fname: parquet file name
+        frame_idx: frame index
+        camera_name: camera ID (1=FRONT, 2=FRONT_LEFT, etc.)
+        save_path: optional path to save visualization
+    """
+    import matplotlib.pyplot as plt
+    
+    # Load camera image
+    camera_dir = os.path.join(root, split, "camera_image")
+    files = sorted([f for f in os.listdir(camera_dir) if f.endswith(".parquet")])
+    if fname is None:
+        fname = files[0]
+    
+    pf_cam = pq.ParquetFile(os.path.join(camera_dir, fname))
+    df_cam = pf_cam.read_row_group(0).to_pandas()
+    
+    # Get camera image
+    cam_rows = df_cam[df_cam["key.camera_name"] == camera_name]
+    if len(cam_rows) == 0:
+        print(f"No camera data found for camera {camera_name}")
+        return
+    
+    cam_row = cam_rows.iloc[frame_idx % len(cam_rows)]
+    img_data = cam_row["[CameraImageComponent].image"]
+    if hasattr(img_data, "as_py"):
+        img_data = img_data.as_py()
+    
+    # Decode JPEG image
+    from PIL import Image
+    import io
+    camera_image = np.array(Image.open(io.BytesIO(img_data)))
+    
+    # Get point cloud
+    points, _ = convert_range_image_to_point_cloud(root, split, fname, frame_idx, include_intensity=True)
+    
+    # Load camera calibration
+    calib_dir = os.path.join(root, split, "camera_calibration")
+    pf_cal = pq.ParquetFile(os.path.join(calib_dir, fname))
+    df_cal = pf_cal.read_row_group(0).to_pandas()
+    
+    cam_calib = df_cal[df_cal["key.camera_name"] == camera_name].iloc[0]
+    
+    # Get intrinsic matrix
+    intrinsic_vals = cam_calib["[CameraCalibrationComponent].intrinsic"]
+    if hasattr(intrinsic_vals, "as_py"):
+        intrinsic_vals = intrinsic_vals.as_py()
+    intrinsic = np.array(intrinsic_vals, dtype=np.float32).reshape(3, 3)
+    
+    # Get extrinsic matrix
+    extr_col = max([c for c in cam_calib.index if ("extrinsic" in c or str(c).endswith("item"))], key=len)
+    extr_vals = cam_calib[extr_col]
+    if hasattr(extr_vals, "as_py"):
+        extr_vals = extr_vals.as_py()
+    extrinsic = np.array(extr_vals, dtype=np.float32).reshape(4, 4)
+    
+    # Project points to camera
+    points_homo = np.column_stack([points[:, :3], np.ones(len(points))])
+    points_cam = (points_homo @ extrinsic.T)[:, :3]
+    
+    # Filter points in front of camera
+    front_mask = points_cam[:, 2] > 0
+    points_cam = points_cam[front_mask]
+    ranges = np.linalg.norm(points[:, :3][front_mask], axis=1)
+    
+    # Project to image plane
+    points_2d = (points_cam @ intrinsic.T)
+    points_2d = points_2d[:, :2] / points_2d[:, 2:3]
+    
+    # Filter points within image bounds
+    h, w = camera_image.shape[:2]
+    valid_mask = ((points_2d[:, 0] >= 0) & (points_2d[:, 0] < w) & 
+                  (points_2d[:, 1] >= 0) & (points_2d[:, 1] < h))
+    
+    points_2d = points_2d[valid_mask]
+    ranges = ranges[valid_mask]
+    
+    # Visualize
+    plt.figure(figsize=(20, 12))
+    plt.imshow(camera_image)
+    
+    # Plot projected points with range-based colors
+    colors = [rgba_from_range(r) for r in ranges]
+    plt.scatter(points_2d[:, 0], points_2d[:, 1], c=colors, s=1, alpha=0.8)
+    
+    plt.title(f'Camera {camera_name} with LiDAR Projection (Frame {frame_idx})')
+    plt.grid(False)
+    plt.axis('off')
+    
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f"Camera projection saved to: {save_path}")
+    plt.show()
+    
+    print(f"✅ Projected {len(points_2d):,} LiDAR points onto camera {camera_name}")
+
 def visualize_merged_open3d(merged_points, calibs=None, boxes3d=None, axis_size=5.0):
     """
     Visualize merged multi-LiDAR point cloud + sensor positions + boxes in Open3D.
+    Enhanced version based on official tutorial patterns.
 
     Args:
         merged_points: (N,4) array [x,y,z,intensity]  (vehicle frame)
@@ -949,24 +1306,16 @@ def visualize_merged_open3d(merged_points, calibs=None, boxes3d=None, axis_size=
         boxes3d: optional (M,7) [x,y,z,dx,dy,dz,yaw] in vehicle frame
         axis_size: world coordinate axis size
     """
+    import open3d as o3d
 
     geoms = []
 
-    # --- point cloud ---
-    # xyz = merged_points[:, :3]
-    # inten = merged_points[:, 3] if merged_points.shape[1] > 3 else np.ones(len(xyz))
-    # inten = (inten - inten.min()) / (inten.ptp() + 1e-6)
-    # pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(xyz))
-    # pcd.colors = o3d.utility.Vector3dVector(np.stack([inten]*3, axis=1))
-    # geoms.append(pcd)
-
-    # --- point cloud ---
+    # --- Point cloud with intensity-based coloring ---
     xyz = merged_points[:, :3]
-    # intensity channel or constant 1
     inten = merged_points[:, 3] if merged_points.shape[1] > 3 else np.ones(len(merged_points), np.float32)
     inten = np.asarray(inten, np.float32)
 
-    # --- robust normalization for NumPy 2.x (no .ptp) ---
+    # Robust normalization for NumPy 2.x compatibility
     i_min = float(np.min(inten)) if inten.size else 0.0
     i_max = float(np.max(inten)) if inten.size else 1.0
     i_range = i_max - i_min
@@ -975,35 +1324,44 @@ def visualize_merged_open3d(merged_points, calibs=None, boxes3d=None, axis_size=
     else:
         inten_norm = (inten - i_min) / (i_range + 1e-6)
 
+    # Create point cloud with jet colormap (similar to tutorial)
+    import matplotlib.pyplot as plt
+    colormap = plt.get_cmap('jet')
+    colors = colormap(inten_norm)[:, :3]  # RGB only
+    
     pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(xyz))
-    pcd.colors = o3d.utility.Vector3dVector(np.stack([inten_norm]*3, axis=1))
+    pcd.colors = o3d.utility.Vector3dVector(colors)
     geoms.append(pcd)
 
-    # --- 3D boxes (Waymo Vehicle Frame: +X forward, +Y left, +Z up) ---
+    # --- 3D bounding boxes (Waymo Vehicle Frame) ---
     if boxes3d is not None and len(boxes3d) > 0:
         if hasattr(boxes3d, "detach"):
             boxes3d = boxes3d.detach().cpu().numpy()
-        for b in boxes3d:
+        for i, b in enumerate(boxes3d):
             x, y, z, dx, dy, dz, yaw = map(float, b[:7])
-            # yaw: CCW from +X (right-hand system)
+            # Waymo uses right-hand coordinate system
             c, s = np.cos(yaw), np.sin(yaw)
             R = np.array([[ c,-s,0],[s,c,0],[0,0,1]], np.float32)
             obb = o3d.geometry.OrientedBoundingBox(center=[x,y,z], R=R, extent=[dx,dy,dz])
-            obb.color = (1.0, 0.0, 0.0)
+            # Color boxes by index for better visibility
+            box_colors = [(1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0), 
+                         (1.0, 1.0, 0.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)]
+            obb.color = box_colors[i % len(box_colors)]
             geoms.append(obb)
 
-    # --- 每个 LiDAR 的位置 + 朝向箭头 ---
+    # --- LiDAR sensor positions and orientations ---
     if calibs is not None:
         for lid, v in calibs.items():
             t = np.asarray(v["t"], np.float32)
             yaw = np.deg2rad(v["yaw"])
-            dx, dy = np.cos(yaw), np.sin(yaw)
-            # 小球表示位置
+            
+            # Position marker (sphere)
             sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.15)
             sphere.translate(t)
             sphere.paint_uniform_color([0.0, 0.8, 0.0])
             geoms.append(sphere)
-            # 箭头表示朝向
+            
+            # Orientation arrow
             arrow = o3d.geometry.TriangleMesh.create_arrow(
                 cone_height=0.2, cone_radius=0.05,
                 cylinder_height=0.8, cylinder_radius=0.03)
@@ -1013,29 +1371,65 @@ def visualize_merged_open3d(merged_points, calibs=None, boxes3d=None, axis_size=
             arrow.paint_uniform_color([0.1, 0.1, 0.9])
             geoms.append(arrow)
 
-    # --- 世界坐标轴 ---
+    # --- Coordinate frame ---
     axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=axis_size, origin=[0,0,0])
     geoms.append(axis)
 
-    # --- viewer ---
-    vis = o3d.visualization.Visualizer()
-    vis.create_window("Waymo merged LiDAR + boxes", width=1440, height=810)
-    for g in geoms:
-        vis.add_geometry(g)
+    # --- Visualization setup ---
+    try:
+        vis = o3d.visualization.Visualizer()
+        window_created = vis.create_window("Waymo LiDAR Visualization (Tutorial Style)", width=1440, height=810)
+        
+        if not window_created:
+            print("⚠️ Cannot create Open3D window (headless environment). Saving point cloud instead...")
+            # Save point cloud as PLY file for offline viewing
+            if len(geoms) > 0 and hasattr(geoms[0], 'points'):
+                o3d.io.write_point_cloud("/tmp/waymo_pointcloud.ply", geoms[0])
+                print("✅ Point cloud saved to /tmp/waymo_pointcloud.ply")
+            return
+        
+        for g in geoms:
+            vis.add_geometry(g)
 
-    opt = vis.get_render_option()
-    opt.point_size = 1.0
-    opt.background_color = np.asarray([0.93, 0.93, 0.93])
-    opt.show_coordinate_frame = False
+        # Render options
+        opt = vis.get_render_option()
+        if opt is not None:
+            opt.point_size = 2.0  # Slightly larger points for better visibility
+            opt.background_color = np.asarray([0.1, 0.1, 0.1])  # Dark background like tutorial
+            opt.show_coordinate_frame = True
 
-    ctr = vis.get_view_control()
-    ctr.set_up([0,0,1])
-    ctr.set_front([0,-1,0])   # top view
-    ctr.set_lookat([0,0,0])
-    ctr.set_zoom(0.5)
+        # Camera setup for bird's eye view (common in autonomous driving)
+        ctr = vis.get_view_control()
+        if ctr is not None:
+            ctr.set_up([0, 0, 1])      # Z-up
+            ctr.set_front([0, -1, 0])  # Look from positive Y towards negative Y
+            ctr.set_lookat([0, 0, 0])  # Look at origin
+            ctr.set_zoom(0.3)
 
-    vis.run()
-    vis.destroy_window()
+        vis.run()
+        vis.destroy_window()
+        
+    except Exception as e:
+        print(f"⚠️ Open3D visualization failed: {e}")
+        print("This is normal in headless environments. Saving point cloud data instead...")
+        
+        # Fallback: save point cloud data
+        if len(geoms) > 0:
+            for i, geom in enumerate(geoms):
+                if hasattr(geom, 'points') and len(geom.points) > 0:
+                    filename = f"/tmp/waymo_geometry_{i}.ply"
+                    o3d.io.write_point_cloud(filename, geom)
+                    print(f"✅ Geometry {i} saved to {filename}")
+        
+        # Print summary statistics
+        total_points = sum(len(g.points) if hasattr(g, 'points') else 0 for g in geoms)
+        print(f"📊 Visualization Summary:")
+        print(f"   • Total geometries: {len(geoms)}")
+        print(f"   • Total points: {total_points:,}")
+        if boxes3d is not None:
+            print(f"   • Bounding boxes: {len(boxes3d)}")
+        if calibs is not None:
+            print(f"   • LiDAR sensors: {len(calibs)}")
 
 import os
 import numpy as np

@@ -25,8 +25,89 @@ It's written for researchers and developers who want to deeply understand how Wa
 
 ## 1️⃣ Dataset Overview
 
-Waymo Open Dataset (WOD) provides synchronized **LiDAR** and **camera** data with ground-truth **3D bounding boxes**.  
-The **v2.1 Parquet version** is designed for efficient columnar access and includes:
+### 📊 Dataset Scale & Format
+Waymo Open Dataset (WOD) provides synchronized **LiDAR** and **camera** data with ground-truth **3D bounding boxes**.
+
+- **2,030 segments** of 20s each, collected at 10Hz (**390,000 frames**)
+- Diverse geographies and conditions
+- **Perception object assets** data in a modular format (v2.0.0)
+- Extracted perception objects from multi-sensor data: all 5 cameras and the top lidar
+
+### 🔧 Sensor Configuration
+**LiDAR Sensors:**
+- 1 mid-range lidar
+- 4 short-range lidars
+
+**Camera Sensors:**
+- 5 cameras (front and sides)
+
+**Data Synchronization:**
+- Synchronized lidar and camera data
+- Lidar to camera projections
+- Sensor calibrations and vehicle poses
+
+### 🏷️ Annotation Categories
+
+#### **3D Bounding Box Labels**
+- **4 object classes**: Vehicles, Pedestrians, Cyclists, Signs
+- **High-quality labels for lidar data**: 1,200 segments
+- **12.6M 3D bounding box labels** with tracking IDs on lidar data
+
+#### **2D Bounding Box Labels**
+- **High-quality labels for camera data**: 1,000 segments  
+- **11.8M 2D bounding box labels** with tracking IDs on camera data
+
+#### **2D Video Panoptic Segmentation**
+- **Subset**: 100k camera images
+- **28 classes** including:
+  - **Vehicles**: Car, Bus, Truck, Other Large Vehicle, Trailer, Ego Vehicle, Motorcycle, Bicycle
+  - **People**: Pedestrian, Cyclist, Motorcyclist
+  - **Animals**: Ground Animal, Bird
+  - **Infrastructure**: Pole, Sign, Traffic Light, Construction Cone, Pedestrian Object, Building
+  - **Road Elements**: Road, Sidewalk, Road Marker, Lane Marker
+  - **Environment**: Vegetation, Sky, Ground
+  - **Motion States**: Static, Dynamic
+- **Instance segmentation** labels for Vehicle, Pedestrian and Cyclist classes
+- Consistent both across cameras and over time
+
+#### **Key Point Labels**
+- **2 object classes**: Pedestrians and Cyclists
+- **14 key points** from nose to ankle
+- **200k object frames** with 2D key point labels
+- **10k object frames** with 3D key point labels
+
+#### **3D Semantic Segmentation**
+- **Segmentation labels**: 1,150 segments
+- **23 classes** including:
+  - **Vehicles**: Car, Truck, Bus, Other Vehicle
+  - **People**: Motorcyclist, Bicyclist, Pedestrian
+  - **Objects**: Bicycle, Motorcycle, Sign, Traffic Light, Pole, Construction Cone
+  - **Environment**: Building, Vegetation, Tree Trunk, Curb
+  - **Road Elements**: Road, Lane Marker, Walkable, Sidewalk, Other Ground
+  - **Undefined**: Undefined
+
+### 🗺️ Map Data
+- **3D road graph data** for each segment
+- Includes: lane centers, lane boundaries, road boundaries, crosswalks, speed bumps, stop signs, and entrances to driveways
+
+### 🔗 Cross-Modal Associations
+- **Association of 2D and 3D bounding boxes**
+- Corresponding object IDs provided for **2 object classes**: Pedestrians and Cyclists
+
+### 🎯 Challenge Data
+- **3D Camera-Only Detection Challenge**: 80 segments of 20s camera imagery
+
+### 🚀 Advanced Features
+LiDAR features include:
+- **3D point cloud sequences** that support 3D object shape reconstruction
+
+Camera features include:
+- Sequences of camera patches from the most_visible_camera
+- Projected lidar returns on the corresponding camera
+- Per-pixel camera rays information
+- Auto-labeled 2D panoptic segmentation that supports **object NeRF reconstruction**
+
+The **v2.0.1 Parquet version** is designed for efficient columnar access and includes:
 
 | Component | Folder | Description | Schema Columns |
 |------------|---------|-------------|----------------|
@@ -55,7 +136,7 @@ Inside each data folder (e.g., `training/lidar/`), files contain rows correspond
 
 ### Parquet Schema Structure
 
-All Waymo v2.1 data follows a consistent schema pattern:
+All Waymo v2.01 data follows a consistent schema pattern:
 
 ```
 Key Fields (Common across all data types):

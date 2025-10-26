@@ -390,442 +390,187 @@ def _median_yaw_error(xyz, boxes3d):
     return None if len(ds)==0 else float(np.median(ds))
 
 
-class Waymo3DDataset(Dataset):
-    """Waymo v2.1 → 3D Dataset (range image → point cloud)."""
+import os
+import torch
+import numpy as np
+import pyarrow.parquet as pq
+from torch.utils.data import Dataset
 
-    def __init__(self, root_dir, split="training", max_frames=None):
+
+class Waymo3DDataset(Dataset):
+    """
+    Waymo v2.x → 3D LiDAR dataset (safe baseline).
+    Step 1: Reconstruct point cloud in VEHICLE frame (only LiDAR→Vehicle extrinsic).
+    Step 2 (optional): If return_world=True, also transform to WORLD using vehicle_pose.
+    """
+
+    def __init__(self, root_dir, split="training", max_frames=None, return_world=False):
         self.root = root_dir
         self.split = split
-        self.lidar_dir = os.path.join(root_dir, split, "lidar")
-        self.box_dir   = os.path.join(root_dir, split, "lidar_box")
-        self.calib_dir = os.path.join(root_dir, split, "lidar_calibration")
+        self.return_world = return_world
 
-        if not os.path.isdir(self.lidar_dir):
-            raise FileNotFoundError(self.lidar_dir)
-        if not os.path.isdir(self.calib_dir):
-            raise FileNotFoundError(self.calib_dir)
-        if not os.path.isdir(self.box_dir):
-            raise FileNotFoundError(self.box_dir)
+        self.lidar_dir  = os.path.join(root_dir, split, "lidar")
+        self.calib_dir  = os.path.join(root_dir, split, "lidar_calibration")
+        self.box_dir    = os.path.join(root_dir, split, "lidar_box")
+        self.vpose_dir  = os.path.join(root_dir, split, "vehicle_pose")  # 仅当 return_world=True 时使用
 
-        # shard matching
+        for p in [self.lidar_dir, self.calib_dir, self.box_dir]:
+            if not os.path.isdir(p):
+                raise FileNotFoundError(p)
+        if self.return_world and not os.path.isdir(self.vpose_dir):
+            raise FileNotFoundError(self.vpose_dir)
+
         files = [f for f in os.listdir(self.lidar_dir) if f.endswith(".parquet")]
         valid = [f for f in files if os.path.exists(os.path.join(self.box_dir, f))]
         if not valid:
-            raise RuntimeError("No matching lidar/lidar_box shards found")
+            raise RuntimeError("No matching lidar/lidar_box shards found.")
 
         self.frame_index = []
         total = 0
         for fname in valid:
             pf = pq.ParquetFile(os.path.join(self.lidar_dir, fname))
-            ts = pf.read_row_group(0, columns=[KEY_TS])[KEY_TS].to_numpy()
-            seg = pf.read_row_group(0, columns=[KEY_SEG])[KEY_SEG].to_numpy()
-            for i, (s, t) in enumerate(zip(seg, ts)):
-                self.frame_index.append((fname, i, int(t), s))
+            df = pf.read_row_group(0, columns=["key.segment_context_name","key.frame_timestamp_micros"]).to_pandas()
+            for seg, ts in zip(df["key.segment_context_name"], df["key.frame_timestamp_micros"]):
+                self.frame_index.append((fname, int(ts), seg))
                 total += 1
                 if max_frames and total >= max_frames:
                     break
             if max_frames and total >= max_frames:
                 break
 
-        print(f"✅ Waymo3DDataset initialized with {len(self.frame_index)} frames using lidar_calibration/")
+        print(f"✅ Waymo3DDataset frames: {len(self.frame_index)} | return_world={self.return_world}")
 
-    def __len__(self): return len(self.frame_index)
+
+    @staticmethod
+    def _decode_pixel_pose(row):
+        kv = "[LiDARPoseComponent].range_image_return1.values"
+        ks = "[LiDARPoseComponent].range_image_return1.shape"
+        vals = row[kv].as_py() if hasattr(row[kv], "as_py") else row[kv]
+        shp  = row[ks].as_py() if hasattr(row[ks], "as_py") else row[ks]
+        arr  = np.array(vals, np.float32).reshape(shp, order="C")  # [H,W,6]
+        return arr
+
+    @staticmethod
+    def _decode_range_image(row, return_id=1):
+        kv = f"[LiDARComponent].range_image_return{return_id}.values"
+        ks = f"[LiDARComponent].range_image_return{return_id}.shape"
+        vals = row[kv].as_py() if hasattr(row[kv], "as_py") else row[kv]
+        shp  = row[ks].as_py() if hasattr(row[ks], "as_py") else row[ks]
+        arr  = np.array(vals, dtype=np.float32).reshape(shp, order="C")
+        return arr  # [H,W,C], C>=2: range,intensity,...
 
     def __getitem__(self, idx):
-        """
-        Waymo v2.1 (parquet) → One LiDAR frame:
-        returns:
-            lidar  : torch.Tensor [N,4] (x,y,z,intensity) in VEHICLE frame
-            target : dict {boxes_3d [M,7], labels [M], segment, timestamp, laser_id}
-        Conventions (aligned with WOD official utils):
-        - Vehicle frame: +X forward, +Y left, +Z up
-        - Spherical→Cartesian (sensor frame):
-            x = r*cos(incl)*cos(az), y = r*cos(incl)*sin(az), z = r*sin(incl)
-        - Extrinsic is LiDAR→Vehicle: p_V = (p_L,1) @ extrinsic^T (NO inverse)
-        - Azimuth grid: az = linspace(+pi, −pi, W, endpoint=False)
-        - flip_rows=True, flip_cols=False
-        """
-        import numpy as np, torch, pyarrow.parquet as pq
+        fname, ts, seg = self.frame_index[idx]
 
-        # ---------- locate this frame ----------
-        fname, row_idx, ts, seg = self.frame_index[idx]
-
-        # ---------- 1) read range image ----------
+        # ---------- 1) read one LiDAR return (per-sensor row) ----------
         pf = pq.ParquetFile(os.path.join(self.lidar_dir, fname))
         df = pf.read_row_group(0).to_pandas()
-        row = df.iloc[row_idx]
-        laser_id = int(row[LASER_NAME])
+        row = df[(df["key.segment_context_name"] == seg) &
+                 (df["key.frame_timestamp_micros"] == ts)].iloc[0]
+        laser_id = int(row["key.laser_name"])
 
-        ri = _decode_range_image(row)
-        if ri is None:
-            raise RuntimeError("Range image decode failed.")
-        rng = np.nan_to_num(ri[..., 0], nan=0.0, posinf=0.0, neginf=0.0)
-        rng = np.clip(rng, 0.0, 300.0)
+        ri = self._decode_range_image(row, return_id=1)
+        rng   = np.nan_to_num(ri[..., 0], nan=0.0); rng[rng < 0] = 0.0
         inten = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(rng)
-        H, W = rng.shape
+        H, W  = rng.shape
 
-        # ---------- 2) read calibration (beam inclinations + extrinsic) ----------
+        # ---------- 2) calibration (beam inclinations + LiDAR→Vehicle extrinsic) ----------
         pf_cal = pq.ParquetFile(os.path.join(self.calib_dir, fname))
         df_cal = pf_cal.read_row_group(0).to_pandas()
-        crow = df_cal[(df_cal[KEY_SEG] == seg) & (df_cal["key.laser_name"] == laser_id)]
-        if len(crow) == 0:
-            raise RuntimeError(f"No calibration row for seg={seg}, laser={laser_id}")
-        crow = crow.iloc[0]
+        crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
+                      (df_cal["key.laser_name"] == laser_id)].iloc[0]
 
-        # beam inclinations
         inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
         inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
         inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32)
         if np.max(np.abs(inclinations)) > np.pi:
             inclinations = np.deg2rad(inclinations)
 
-        # extrinsic (LiDAR→Vehicle), from list<double> (row-major in your parquet)
+        # extrinsic 4x4 (row-major)
         extr_col = max([c for c in crow.index if ("extrinsic" in c or str(c).endswith("item"))], key=len)
         extr_vals = crow[extr_col]
-        if hasattr(extr_vals, "as_py"):
-            extr_vals = extr_vals.as_py()
-        extr = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="C")
-        R = extr[:3, :3]; t = extr[:3, 3]
-        # quick sanity print
-        yaw_deg = float(np.rad2deg(np.arctan2(R[1,0], R[0,0])))
-        print(f"[CALIB] laser={laser_id} yaw(deg)={yaw_deg:.1f}  t={t}")
+        extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
+        T_vl = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="C")  # LiDAR->Vehicle
 
-        # ---------- 3) spherical → Cartesian (sensor frame) ----------
-        flip_rows, flip_cols = True, False
-        if flip_rows:
-            inclinations = inclinations[::-1]
-        incl = inclinations.reshape(H, 1)
-
-        # 修复：根据测试结果，使用原始的方位角范围但调整起始方向
-        # 测试显示原始方案在单帧中表现最好
-        az = np.linspace(-np.pi, np.pi, W, endpoint=False, dtype=np.float32)
-        if flip_cols:
-            az = az[::-1]
+        # ---------- 3) spherical → LiDAR Cartesian (pay attention to signs/order) ----------
+        incl = inclinations[::-1].reshape(H, 1)                      # vertical flip (bottom→top)
+        az   = np.linspace(np.pi, -np.pi, W, endpoint=False, dtype=np.float32)  # azimuth decreases right→left
 
         cos_i, sin_i = np.cos(incl), np.sin(incl)
-        cos_a, sin_a = np.cos(az),  np.sin(az)
+        cos_a, sin_a = np.cos(az),   np.sin(az)
 
-        # 修复：Waymo LiDAR坐标系转换
-        Xl = rng * cos_i * cos_a   # X: 前向
-        Yl = rng * cos_i * sin_a   # Y: 左向  
-        Zl = rng * sin_i           # Z: 上向
-
-        pts_h = np.stack([Xl, Yl, Zl, np.ones_like(Zl)], axis=-1).reshape(-1, 4)
-
-        # ---------- 4) LiDAR → Vehicle ----------
-        # 修复：正确使用外参矩阵进行坐标变换
-        # 外参矩阵 extr 是从LiDAR坐标系到Vehicle坐标系的变换
-        xyz = (pts_h @ extr.T)[:, :3]
-        xyz = np.nan_to_num(xyz, nan=0.0, posinf=0.0, neginf=0.0)
-        
-        # 修复：补偿LiDAR传感器的yaw角度偏移
-        # Waymo的LiDAR传感器（特别是TOP LiDAR）可能有显著的yaw偏移
-        # 需要将点云旋转回标准的Vehicle坐标系方向
-        if abs(yaw_deg) > 10.0:  # 如果yaw偏移超过10度，进行补偿
-            # 计算补偿旋转矩阵（绕Z轴旋转-yaw_deg）
-            yaw_rad = np.deg2rad(-yaw_deg)  # 负号表示反向旋转
-            cos_yaw, sin_yaw = np.cos(yaw_rad), np.sin(yaw_rad)
-            rotation_matrix = np.array([
-                [cos_yaw, -sin_yaw, 0],
-                [sin_yaw,  cos_yaw, 0],
-                [0,        0,       1]
-            ], dtype=np.float32)
-            
-            # 应用yaw补偿旋转
-            xyz = xyz @ rotation_matrix.T
-            print(f"[CALIB] 应用yaw补偿: {yaw_deg:.1f}° -> 0°")
-        
-        # 修复：应用坐标偏移来改善对齐
-        # 根据测试结果，应用+5米X轴偏移来改善对齐
-        # 这可能是由于LiDAR到Vehicle坐标系转换中的系统性偏移
-        coordinate_offset = np.array([5.0, 0.0, 0.0], dtype=np.float32)
-        xyz = xyz + coordinate_offset
-        print(f"[CALIB] 应用坐标偏移修复: ({coordinate_offset[0]:.1f}, {coordinate_offset[1]:.1f}, {coordinate_offset[2]:.1f})")
-        
-        # 添加调试信息：检查转换后的点云分布
-        if idx == 0:  # 只在第一帧打印调试信息
-            print(f"[DEBUG] 外参矩阵 yaw: {yaw_deg:.1f}度, 平移: {t}")
-            print(f"[DEBUG] 转换前点云范围: X[{pts_h[:, 0].min():.1f}, {pts_h[:, 0].max():.1f}]")
-            print(f"[DEBUG] 转换后点云范围: X[{xyz[:, 0].min():.1f}, {xyz[:, 0].max():.1f}] Y[{xyz[:, 1].min():.1f}, {xyz[:, 1].max():.1f}] Z[{xyz[:, 2].min():.1f}, {xyz[:, 2].max():.1f}]")
-
-        # ---------- 5) intensity normalize ----------
-        inten = np.clip(inten.reshape(-1, 1), 0, None).astype(np.float32)
-        inten = inten / (inten.max() + 1e-6) if inten.max() > 0 else np.full_like(inten, 0.5)
-        lidar = torch.tensor(np.concatenate([xyz, inten], axis=1), dtype=torch.float32)
-
-        # ---------- diagnostics (to understand "front & up" offsets) ----------
-        z_p05 = float(np.percentile(xyz[:,2], 5.0))
-        z_p50 = float(np.percentile(xyz[:,2], 50.0))
-        print(f"[INFO] Frame {idx}: X[{xyz[:,0].min():.1f},{xyz[:,0].max():.1f}] "
-            f"Y[{xyz[:,1].min():.1f},{xyz[:,1].max():.1f}] "
-            f"Z[{xyz[:,2].min():.1f},{xyz[:,2].max():.1f}]  "
-            f"Zp05={z_p05:.2f} Zmed={z_p50:.2f}")
-
-        # ---------- 6) load 3D boxes (vehicle frame) ----------
-        pf_box = pq.ParquetFile(os.path.join(self.box_dir, fname))
-        df_box = pf_box.read_row_group(0).to_pandas()
-        rows = df_box[(df_box[KEY_SEG] == seg) & (df_box[KEY_TS] == ts)]
-        if len(rows) == 0:
-            boxes3d = torch.zeros((0,7), dtype=torch.float32)
-            labels  = torch.zeros((0,), dtype=torch.int64)
-        else:
-            arr = rows[[BOX_X, BOX_Y, BOX_Z, BOX_L, BOX_W, BOX_H, BOX_HEADING]].to_numpy()
-            boxes3d = torch.tensor(arr, dtype=torch.float32)
-            labels  = torch.tensor(rows[BOX_TYPE].to_numpy(), dtype=torch.int64)
-
-        target = {
-            "boxes_3d": boxes3d,
-            "labels": labels,
-            "segment": seg,
-            "timestamp": ts,
-            "laser_id": laser_id,
-            "yaw_sign": 1,  # 保持原始yaw，不在数据层面修改
-        }
-        
-        # 添加调试信息：检查边界框和点云的基本对齐
-        if len(boxes3d) > 0 and idx == 0:
-            print(f"[DEBUG] 边界框数量: {len(boxes3d)}")
-            print(f"[DEBUG] 第一个边界框: 中心({boxes3d[0, 0]:.2f}, {boxes3d[0, 1]:.2f}, {boxes3d[0, 2]:.2f}) yaw={boxes3d[0, 6]:.3f}")
-            # 检查边界框周围的点云密度
-            if len(boxes3d) > 0:
-                box_center = boxes3d[0, :3].numpy() if hasattr(boxes3d[0], 'numpy') else boxes3d[0, :3]
-                distances = np.sqrt(np.sum((xyz - box_center)**2, axis=1))
-                nearby_points = np.sum(distances < 5.0)
-                print(f"[DEBUG] 第一个边界框5米内点数: {nearby_points}")
-        
-        return lidar, target
-
-    def __getitem_old2__(self, idx):
-        import numpy as np, torch, pyarrow.parquet as pq
-
-        fname, row_idx, ts, seg = self.frame_index[idx]
-
-        # ---------- load range image ----------
-        pf = pq.ParquetFile(os.path.join(self.lidar_dir, fname))
-        row = pf.read_row_group(0).to_pandas().iloc[row_idx]
-        laser_id = int(row[LASER_NAME])
-
-        ri = _decode_range_image(row)
-        if ri is None:
-            raise RuntimeError("Range image decode failed.")
-        rng = np.nan_to_num(ri[..., 0], nan=0.0, posinf=0.0, neginf=0.0)
-        rng = np.clip(rng, 0.0, 300.0)
-        inten = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(rng)
-        H, W = rng.shape
-
-        # ---------- load calibration ----------
-        pf_cal = pq.ParquetFile(os.path.join(self.calib_dir, fname))
-        df_cal = pf_cal.read_row_group(0).to_pandas()
-        crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
-                    (df_cal["key.laser_name"] == laser_id)].iloc[0]
-
-        # beam inclinations (min→max)，Waymo 值通常为负到正（下→上）
-        inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
-        inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
-        inc = np.linspace(inc_min, inc_max, H, dtype=np.float32)
-
-        # extrinsic（LiDAR→Vehicle），注意你这套 parquet 需要 C-order
-        # 动态找 extrinsic 列（包含 "extrinsic" 或 以 "item" 结尾 的那列）
-        idx_keys = list(crow.index)
-        extr_col = max([c for c in idx_keys if ("extrinsic" in c or c.endswith("item"))],
-                    key=len)
-        extr_vals = crow[extr_col]
-        if hasattr(extr_vals, "as_py"):
-            extr_vals = extr_vals.as_py()
-        extr = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="C")
-        # 现在 extr[:3,3] 应该是非零（你之前看到 [1.43,0,2.184]）
-        R = extr[:3, :3]
-        yaw_lidar = np.rad2deg(np.arctan2(R[1,0], R[0,0]))
-        print("LiDAR extrinsic yaw (deg):", yaw_lidar)
-
-        # ---------- build azimuth grid ----------
-        # 统一方位角生成方式：与spherical_to_cartesian_general保持一致
-        # 使用 (2π*i/W) - π 的方式，确保坐标变换的一致性
-        az = (2 * np.pi * np.arange(W, dtype=np.float32) / W) - np.pi
-
-        # 垂直方向按官方常见约定：flip_rows=True（自下而上）
-        inc = inc[::-1].reshape(H, 1)
-
-        # ---------- spherical -> Cartesian in LiDAR frame ----------
-        cos_i, sin_i = np.cos(inc), np.sin(inc)
-        cos_a, sin_a = np.cos(az),  np.sin(az)
-
-        # 与官方 range_image_utils 一致：z = r * sin(inclination)
         Xl = rng * cos_i * cos_a
-        Yl = rng * cos_i * sin_a
+        Yl = -rng * cos_i * sin_a   # ← Waymo 的 Y 方向需要负号
         Zl = rng * sin_i
 
-        pts_h = np.stack([Xl, Yl, Zl, np.ones_like(Zl)], axis=-1).reshape(-1, 4)
+        pts_l = np.stack([Xl, Yl, Zl, np.ones_like(Zl)], axis=-1).reshape(-1, 4)
 
-        # ---------- LiDAR -> Vehicle ----------
-        # xyz = (pts_h @ extr.T)[:, :3]
-        # xyz = np.nan_to_num(xyz, nan=0.0, posinf=0.0, neginf=0.0)
-        # ---- apply LiDAR->Vehicle transform ----
-        # try both, keep the one with Z≈[-3,5]
-        use_inv = False   # ✅ 改成 True 测试
-        if use_inv:
-            xyz = (pts_h @ np.linalg.inv(extr).T)[:, :3]
+        # ---------- 4) LiDAR→Vehicle (一次、且仅一次) ----------
+        pts_v = (pts_l @ T_vl.T)[:, :3]   # Vehicle frame point cloud (baseline对齐坐标)
+        xyz_vehicle = np.nan_to_num(pts_v, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # ---------- 5) Vehicle→World (可选；若需要就对点和框一起变换) ----------
+        if self.return_world:
+            pf_vp = pq.ParquetFile(os.path.join(self.vpose_dir, fname))
+            df_vp = pf_vp.read_row_group(0).to_pandas()
+            vrow = df_vp[(df_vp["key.segment_context_name"] == seg) &
+                         (df_vp["key.frame_timestamp_micros"] == ts)].iloc[0]
+            vp_vals = vrow["[VehiclePoseComponent].world_from_vehicle.transform"]
+            vp_vals = vp_vals.as_py() if hasattr(vp_vals, "as_py") else vp_vals
+            T_wv = np.array(vp_vals, dtype=np.float32).reshape(4, 4, order="C")  # row-major
+
+            pts_vh = np.concatenate([xyz_vehicle, np.ones((xyz_vehicle.shape[0],1), np.float32)], axis=1)
+            xyz_world = (pts_vh @ T_wv.T)[:, :3]
+            XYZ = xyz_world
         else:
-            xyz = (pts_h @ extr.T)[:, :3]
+            T_wv = None
+            XYZ = xyz_vehicle
 
-        xyz = np.nan_to_num(xyz, nan=0.0, posinf=0.0, neginf=0.0)
+        # ---------- 6) intensity normalize ----------
+        inten = inten.reshape(-1, 1).astype(np.float32)
+        inten = inten / (inten.max() + 1e-6)
+        lidar = torch.tensor(np.concatenate([XYZ, inten], axis=1), dtype=torch.float32)
 
-        # ---------- intensity normalize ----------
-        inten = np.clip(inten.reshape(-1, 1), 0, None).astype(np.float32)
-        inten = inten / (inten.max() + 1e-6) if inten.max() > 0 else np.full_like(inten, 0.5)
-        lidar = torch.tensor(np.concatenate([xyz, inten], axis=1), dtype=torch.float32)
-
-        # ---------- load boxes (vehicle frame) ----------
+        # ---------- 7) 3D boxes (Vehicle frame; do NOT transform here) ----------
         pf_box = pq.ParquetFile(os.path.join(self.box_dir, fname))
         df_box = pf_box.read_row_group(0).to_pandas()
         rows = df_box[(df_box["key.segment_context_name"] == seg) &
-                    (df_box["key.frame_timestamp_micros"] == ts)]
+                      (df_box["key.frame_timestamp_micros"] == ts)]
         if len(rows) == 0:
-            boxes3d = torch.zeros((0,7), dtype=torch.float32)
+            boxes_v = torch.zeros((0, 7), dtype=torch.float32)
             labels  = torch.zeros((0,), dtype=torch.int64)
         else:
-            arr = rows[[BOX_X, BOX_Y, BOX_Z, BOX_L, BOX_W, BOX_H, BOX_HEADING]].to_numpy()
-            boxes3d = torch.tensor(arr, dtype=torch.float32)
-            labels  = torch.tensor(rows[BOX_TYPE].to_numpy(), dtype=torch.int64)
+            box_fields = [
+                "[LiDARBoxComponent].box.center.x",
+                "[LiDARBoxComponent].box.center.y",
+                "[LiDARBoxComponent].box.center.z",
+                "[LiDARBoxComponent].box.size.x",
+                "[LiDARBoxComponent].box.size.y",
+                "[LiDARBoxComponent].box.size.z",
+                "[LiDARBoxComponent].box.heading",
+            ]
+            label_field = "[LiDARBoxComponent].type"
+            boxes_v = torch.tensor(rows[box_fields].to_numpy(), dtype=torch.float32)
+            labels  = torch.tensor(rows[label_field].to_numpy(), dtype=torch.int64)
 
+        # ---------- 8) assemble ----------
         target = {
-            "boxes_3d": boxes3d,
+            "boxes_3d": boxes_v,             # Vehicle frame
             "labels": labels,
             "segment": seg,
             "timestamp": ts,
             "laser_id": laser_id,
-            "yaw_sign": 1,  # 仅绘制时用 -yaw
         }
-        xyz_rot = rotate_z(lidar[:, :3].numpy(), deg=-yaw_lidar)
-        lidar[:, :3] = torch.from_numpy(xyz_rot)
-        mde = _median_yaw_error(xyz_rot, boxes3d)
-        if mde is not None:
-            print(f"[diag] median yaw error vs boxes (deg): {np.rad2deg(mde):.1f}")
-            
-        return lidar, target
+        if self.return_world:
+            target["world_from_vehicle"] = torch.tensor(T_wv, dtype=torch.float32)
 
-    def __getitem_old__(self, idx):
-        """
-        Load ONE Waymo LiDAR frame and return:
-            - lidar: torch.Tensor [N,4] (x,y,z,intensity)
-            - target: dict with 3D boxes, labels, segment info
-
-        This version includes:
-        • range image → Cartesian conversion
-        • extrinsic reshape fix (column-major)
-        • auto-calibration (flip_rows, flip_cols, azimuth offset)
-        • normalized intensity
-        """
-        import numpy as np
-        import torch
-
-        # ===============================================================
-        # 1️⃣  Retrieve file and row information
-        # ===============================================================
-        fname, row_idx, ts, seg = self.frame_index[idx]
-        lidar_path = os.path.join(self.lidar_dir, fname)
-        pf = pq.ParquetFile(lidar_path)
-        df = pf.read_row_group(0).to_pandas()
-        row = df.iloc[row_idx]
-        laser_id = int(row[LASER_NAME])
-
-        # ===============================================================
-        # 2️⃣  Decode range image (polar data)
-        # ===============================================================
-        ri = _decode_range_image(row)
-        if ri is None:
-            raise RuntimeError("Range image decode failed.")
-        range_img = ri[..., 0]                                    # distance (meters)
-        intensity = ri[..., 1] if ri.shape[-1] > 1 else np.zeros_like(range_img)
-
-        # Sanitize
-        range_img = np.nan_to_num(range_img, nan=0.0, posinf=0.0, neginf=0.0)
-        range_img = np.clip(range_img, 0.0, 300.0)
-
-        # ===============================================================
-        # 3️⃣  Read calibration (beam inclinations + extrinsic)
-        # ===============================================================
-        calib_path = os.path.join(self.calib_dir, fname)
-        cf = pq.ParquetFile(calib_path)
-        fields = _get_calibration_fields(cf)
-        cdf = cf.read().to_pandas()
-        crow = cdf[(cdf[KEY_SEG] == seg) & (cdf["key.laser_name"] == laser_id)]
-        if len(crow) == 0:
-            raise RuntimeError(f"No calibration for {seg}, laser={laser_id}")
-        crow = crow.iloc[0]
-
-        # --- Beam inclinations ---
-        if fields["beam_mode"] == "values":
-            inc_vals = _read_list_column(crow[fields["beam_field"]])
-            inclinations = np.array(inc_vals, dtype=np.float32)
-        else:
-            minv = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
-            maxv = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
-            num_beams = range_img.shape[0]
-            inclinations = np.linspace(minv, maxv, num_beams, dtype=np.float32)
-
-        # Convert to radians if values look like degrees
-        if np.max(np.abs(inclinations)) > np.pi:
-            inclinations = np.deg2rad(inclinations)
-            print("[WARN] Beam inclinations appear to be degrees — converted to radians.")
-
-        # --- Extrinsic matrix (column-major reshape) ---
-        if fields["extr_mode"] == "matrix":
-            extr_vals = _read_list_column(crow[fields["extr_field"]])
-            extrinsic = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="F")
-        else:
-            extrinsic = np.eye(4, dtype=np.float32)
-
-        # ===============================================================
-        # 4️⃣  Load 3D boxes (labels in VEHICLE frame)
-        # ===============================================================
-        box_path = os.path.join(self.box_dir, fname)
-        bpf = pq.ParquetFile(box_path)
-        bcols = [BOX_X, BOX_Y, BOX_Z, BOX_L, BOX_W, BOX_H, BOX_HEADING,
-                BOX_TYPE, KEY_SEG, KEY_TS]
-        bdf = bpf.read_row_group(0, columns=bcols).to_pandas()
-        boxes = bdf[(bdf[KEY_SEG] == seg) & (bdf[KEY_TS] == ts)]
-
-        if len(boxes) == 0:
-            boxes3d = torch.zeros((0, 7), dtype=torch.float32)
-            labels  = torch.zeros((0,), dtype=torch.int64)
-        else:
-            arr = boxes[[BOX_X, BOX_Y, BOX_Z,
-                        BOX_L, BOX_W, BOX_H, BOX_HEADING]].to_numpy()
-            boxes3d = torch.tensor(arr, dtype=torch.float32)
-            labels  = torch.tensor(boxes[BOX_TYPE].to_numpy(), dtype=torch.int64)
-
-        # ===============================================================
-        # 5️⃣  Convert range image → point cloud with auto-calibration
-        # ===============================================================
-        # Try multiple flip/offset configs to find alignment with boxes.
-        xyz_best, cfg = auto_calibrate_range_to_vehicle(range_img, inclinations, extrinsic, boxes3d.numpy())
-        print(f"[AUTO] Frame {idx} best config:", cfg)
-
-        # Normalize or fill intensity for visualization
-        inten = intensity.reshape(-1, 1).astype(np.float32)
-        inten = np.clip(inten, 0, None)
-        inten = inten / (inten.max() + 1e-6) if inten.max() > 0 else np.full_like(inten, 0.5)
-        lidar = torch.tensor(np.concatenate([xyz_best, inten], axis=1), dtype=torch.float32)
-
-        # Diagnostics
-        xyz_min, xyz_max = xyz_best.min(axis=0), xyz_best.max(axis=0)
-        print(f"[INFO] Frame {idx}: {lidar.shape[0]} valid points | "
-            f"X:[{xyz_min[0]:.1f},{xyz_max[0]:.1f}]  "
-            f"Y:[{xyz_min[1]:.1f},{xyz_max[1]:.1f}]  "
-            f"Z:[{xyz_min[2]:.1f},{xyz_max[2]:.1f}]")
-
-        # ===============================================================
-        # 6️⃣  Assemble output
-        # ===============================================================
-        target = {
-            "boxes_3d": boxes3d,           # (M,7)
-            "labels": labels,              # (M,)
-            "segment": seg,                # string segment id
-            "timestamp": ts,               # frame timestamp (μs)
-            "laser_id": laser_id,          # LiDAR sensor id
-            "auto_cfg": cfg                # flip/offset config used for conversion
-        }
+        # ---------- 9) quick debug (first frame) ----------
+        if idx == 0:
+            rng_stats = (XYZ[:,0].min(), XYZ[:,0].max(), XYZ[:,1].min(), XYZ[:,1].max(), XYZ[:,2].min(), XYZ[:,2].max())
+            print(f"[DEBUG] points={lidar.shape[0]}  range XYZ: X[{rng_stats[0]:.1f},{rng_stats[1]:.1f}] "
+                  f"Y[{rng_stats[2]:.1f},{rng_stats[3]:.1f}] Z[{rng_stats[4]:.1f},{rng_stats[5]:.1f}]")
+            if self.return_world:
+                print("[DEBUG] T_wv trans:", T_wv[:3,3])
 
         return lidar, target
 
@@ -836,38 +581,51 @@ def test_parquet():
 
 import open3d as o3d
 import numpy as np
-
 def visualize_open3d(
     lidar: "torch.Tensor|np.ndarray",
     boxes3d: "torch.Tensor|np.ndarray|None" = None,
     labels: "torch.Tensor|np.ndarray|None" = None,
     point_size: float = 1.0,
     color_by_intensity: bool = True,
-    invert_yaw_for_open3d: bool = True,  # ← 关键开关：False 试试看
+    invert_yaw_for_open3d: bool = True,
     axis_size: float = 5.0,
+    save_ply_path: str | None = None,
 ):
     """
-    Interactive LiDAR + 3D boxes viewer using Open3D.
+    Interactive Open3D visualization for LiDAR point clouds + 3D bounding boxes.
 
-    Waymo Vehicle Frame (数据坐标系约定):
-        +X: forward
-        +Y: left
-        +Z: up
+    Coordinate Convention (Waymo Vehicle Frame):
+        +X : forward
+        +Y : left
+        +Z : up
 
-    参数:
-      - invert_yaw_for_open3d: 是否在渲染时把 yaw 取反。
-         如果在 Open3D 里看到“整体偏转一个大角度”，把它改为 False 再看一眼。
-      - axis_size: 场景原点绘制固定坐标轴，红=X(前)、绿=Y(左)、蓝=Z(上)。
+    Parameters
+    ----------
+    lidar : torch.Tensor | np.ndarray
+        LiDAR points, shape [N,4] or [N,3], (x, y, z, intensity)
+    boxes3d : torch.Tensor | np.ndarray | None
+        3D boxes, shape [M,7] (x, y, z, dx, dy, dz, yaw)
+    labels : torch.Tensor | np.ndarray | None
+        Class labels for boxes (optional)
+    point_size : float
+        Size of rendered points in Open3D viewer
+    color_by_intensity : bool
+        If True, map grayscale colors by intensity value
+    invert_yaw_for_open3d : bool
+        Some datasets have opposite yaw convention.
+        Set False if boxes appear globally rotated.
+    axis_size : float
+        Length of coordinate axes drawn at origin
+    save_ply_path : str | None
+        If provided, saves the point cloud and boxes as PLY files to this path.
+        Example: "frame_0000.ply"
     """
-    try:
-        import open3d as o3d
-    except Exception as e:
-        print("Open3D not installed:", e)
-        return
 
     import numpy as np
+    import open3d as o3d
+    import os
 
-    # --- to numpy ---
+    # --- Convert to NumPy arrays ---
     if hasattr(lidar, "detach"):
         lidar = lidar.detach().cpu().numpy()
     if boxes3d is not None and hasattr(boxes3d, "detach"):
@@ -875,28 +633,31 @@ def visualize_open3d(
     if labels is not None and hasattr(labels, "detach"):
         labels = labels.detach().cpu().numpy()
 
-    # --- point cloud ---
+    # --- Create Open3D point cloud ---
     pts = lidar[:, :3]
     pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
 
     if color_by_intensity and lidar.shape[1] >= 4:
         inten = lidar[:, 3].astype(np.float32)
-        i_min = float(np.min(inten)) if inten.size else 0.0
-        i_ptp = float(np.ptp(inten)) if inten.size else 0.0  # NumPy 2.0-safe
-        if i_ptp < 1e-12:
-            colors = np.full((inten.shape[0], 3), 0.7, dtype=np.float32)
-        else:
-            norm = (inten - i_min) / (i_ptp + 1e-12)
-            colors = np.stack([norm, norm, norm], axis=1)
+
+        # Use np.ptp for NumPy 2.0 compatibility (old .ptp() removed)
+        i_min = float(np.min(inten))
+        i_max = float(np.max(inten))
+        i_ptp = np.ptp(inten) if hasattr(np, "ptp") else (i_max - i_min)
+
+        # Normalize intensity to [0, 1]
+        inten = (inten - i_min) / (i_ptp + 1e-12)
+        colors = np.stack([inten, inten, inten], axis=1)
         pcd.colors = o3d.utility.Vector3dVector(colors)
     else:
         pcd.paint_uniform_color([0.7, 0.7, 0.7])
 
     geoms = [pcd]
 
-    # --- 3D boxes ---
+    # --- Draw 3D bounding boxes ---
     if boxes3d is not None and len(boxes3d) > 0:
         def color_for(k):
+            """Color palette for distinct class labels."""
             tab10 = [
                 (0.121, 0.466, 0.705), (1.000, 0.498, 0.054), (0.172, 0.627, 0.172),
                 (0.839, 0.153, 0.157), (0.580, 0.404, 0.741), (0.549, 0.337, 0.294),
@@ -907,42 +668,91 @@ def visualize_open3d(
 
         for i, b in enumerate(boxes3d):
             x, y, z, dx, dy, dz, yaw = map(float, b[:7])
-            # 左手/右手差异：有些场景需要 -yaw，有些不需要
             yaw_draw = -yaw if invert_yaw_for_open3d else yaw
 
+            # Build rotation matrix for yaw
             R = o3d.geometry.get_rotation_matrix_from_xyz((0.0, 0.0, yaw_draw))
             obb = o3d.geometry.OrientedBoundingBox(center=[x, y, z], R=R, extent=[dx, dy, dz])
 
+            # Assign color
             if labels is not None and i < len(labels):
                 obb.color = color_for(labels[i])
             else:
-                obb.color = (1.0, 0.5, 0.0)  # 橙色，和点云灰色对比明显
+                obb.color = (1.0, 0.3, 0.0)
             geoms.append(obb)
 
-    # --- 固定世界坐标轴 (红=X前, 绿=Y左, 蓝=Z上) ---
-    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=axis_size, origin=[0.0, 0.0, 0.0])
+    # --- Add coordinate axes (X=red, Y=green, Z=blue) ---
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=axis_size, origin=[0, 0, 0])
     geoms.append(axis)
 
-    # --- viewer ---
+    # --- Save to .PLY file (optional) ---
+    if save_ply_path is not None:
+        base, _ = os.path.splitext(save_ply_path)
+        ply_pcd_path = base + "_points.ply"
+        o3d.io.write_point_cloud(ply_pcd_path, pcd)
+        print(f"[SAVE] Point cloud saved to: {ply_pcd_path}")
+
+        if boxes3d is not None and len(boxes3d) > 0:
+            # Collect all bounding box edges as a single LineSet
+            all_points, all_lines, all_colors = [], [], []
+            point_offset = 0
+            for obb in geoms:
+                if isinstance(obb, o3d.geometry.OrientedBoundingBox):
+                    ls = o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
+                    pts = np.asarray(ls.points)
+                    lines = np.asarray(ls.lines) + point_offset
+                    cols = np.asarray(ls.colors)
+                    all_points.append(pts)
+                    all_lines.append(lines)
+                    all_colors.append(cols)
+                    point_offset += len(pts)
+
+            if all_points:
+                box_lineset = o3d.geometry.LineSet()
+                box_lineset.points = o3d.utility.Vector3dVector(np.vstack(all_points))
+                box_lineset.lines  = o3d.utility.Vector2iVector(np.vstack(all_lines))
+                box_lineset.colors = o3d.utility.Vector3dVector(np.vstack(all_colors))
+
+                box_ply_path = base + "_boxes.ply"
+                o3d.io.write_line_set(box_ply_path, box_lineset)
+                print(f"[SAVE] Bounding boxes saved to: {box_ply_path}")
+
+    # --- Create interactive viewer ---
+    # --- Create interactive viewer (robust for headless systems) ---
     vis = o3d.visualization.Visualizer()
-    vis.create_window("Waymo LiDAR + Boxes", width=1440, height=810)
+    success = vis.create_window("Waymo LiDAR + Boxes", width=1440, height=810, visible=True)
+
+    if not success:
+        print("[WARN] Open3D failed to create a window (likely headless mode). "
+            "Skipping interactive visualization. PLY files have been saved if requested.")
+        return
+
+    # Add geometries to viewer
     for g in geoms:
         vis.add_geometry(g)
 
+    # Render options (safe)
     opt = vis.get_render_option()
-    opt.point_size = float(point_size)
-    opt.background_color = np.asarray([0.93, 0.93, 0.93])
-    opt.show_coordinate_frame = False  # 我们自己画更大的轴
+    if opt is not None:
+        opt.point_size = float(point_size)
+        opt.background_color = np.asarray([0.93, 0.93, 0.93])
+        opt.show_coordinate_frame = False
+    else:
+        print("[WARN] Render options unavailable (headless Open3D build).")
 
-    # 设定“顶视 BEV”视角：让 +Z 朝上、面向 -Y 方向，+X 在屏幕右侧
+    # View control (safe)
     ctr = vis.get_view_control()
-    ctr.set_up([0.0, 0.0, 1.0])        # Z up
-    ctr.set_front([0.0, -1.0, 0.0])    # look towards -Y
-    ctr.set_lookat([0.0, 0.0, 0.0])    # focus origin
-    ctr.set_zoom(0.5)
+    if ctr is not None:
+        ctr.set_up([0.0, 0.0, 1.0])       # Z up
+        ctr.set_front([0.0, -1.0, 0.0])   # look toward -Y
+        ctr.set_lookat([0.0, 0.0, 0.0])   # focus origin
+        ctr.set_zoom(0.5)
+    else:
+        print("[WARN] View control unavailable (headless Open3D build).")
 
     vis.run()
     vis.destroy_window()
+
 
 def download_waymo_folder(LOCAL_DIR = "/data/Datasets/waymodata/", SPLIT="training"):
     import os
@@ -988,22 +798,121 @@ def download_waymo_folder(LOCAL_DIR = "/data/Datasets/waymodata/", SPLIT="traini
 
     print("Download script finished.")
 
-def main():
-    #path="/mnt/e/Shared/Dataset/waymodata/"
-    ds = Waymo3DDataset("/data/Datasets/waymodata/", split="training", max_frames=3)
-    lidar, target = ds[0]
-    print("points:", lidar.shape)
-    print("boxes:", target["boxes_3d"].shape)
-    inten = lidar[:, 3].numpy()
-    print("Intensity min/max:", inten.min(), inten.max())
 
-    import matplotlib.pyplot as plt
+
+import numpy as np
+import torch
+import matplotlib.pyplot as plt
+
+def transform_boxes_to_world(boxes_3d, world_from_vehicle):
+    """Vehicle → World for 3D boxes."""
+    if boxes_3d is None or boxes_3d.numel() == 0:
+        return boxes_3d.clone() if torch.is_tensor(boxes_3d) else boxes_3d
+    centers = torch.cat(
+        [boxes_3d[:, :3], torch.ones((boxes_3d.size(0), 1), dtype=boxes_3d.dtype)],
+        dim=1
+    )
+    centers_w = centers @ world_from_vehicle.T
+    centers_w = centers_w[:, :3]
+    R = world_from_vehicle[:3, :3]
+    yaw_off = torch.atan2(R[1, 0], R[0, 0])
+    yaw_w = boxes_3d[:, 6] + yaw_off
+    sizes = boxes_3d[:, 3:6]
+    return torch.cat([centers_w, sizes, yaw_w.unsqueeze(1)], dim=1)
+
+def _median_signed_angle_diff(a, b):
+    """median of wrapped (a-b) in [-pi,pi]."""
+    d = a - b
+    d = (d + np.pi) % (2*np.pi) - np.pi
+    return np.median(d), np.median(np.abs(d))
+
+def _pca_yaw(points_xy):
+    """coarse yaw estimate via PCA (principal axis) in [-pi,pi]."""
+    if points_xy.shape[0] < 20:
+        return None
+    P = points_xy - points_xy.mean(0, keepdims=True)
+    C = np.cov(P.T)
+    vals, vecs = np.linalg.eigh(C)
+    v = vecs[:, np.argmax(vals)]  # principal axis
+    yaw = np.arctan2(v[1], v[0])  # [-pi,pi]
+    return yaw
+
+def _diagnose_yaw_config_vehicle(points_xyz, boxes_vehicle, radius=4.0):
+    """
+    在 Vehicle 模式下，用 PCA 估出每个 box 周围点的主方向，与 box.yaw 做对比。
+    输出两套常见投影约定(A/B)的中位角误差，帮助你判断应使用哪一套。
+    """
+    if boxes_vehicle is None or boxes_vehicle.numel() == 0:
+        print("[DIAG] no boxes to diagnose yaw config.")
+        return
+
+    pts = points_xyz
+    yaw_gt = []
+    yaw_est = []
+
+    for b in boxes_vehicle.numpy():
+        x, y, z, dx, dy, dz, yaw = b
+        mask = (np.abs(pts[:, 0] - x) < max(dx, radius)) & \
+               (np.abs(pts[:, 1] - y) < max(dy, radius)) & \
+               (np.abs(pts[:, 2] - z) < max(dz, 2.0))
+        local = pts[mask][:, :2]
+        est = _pca_yaw(local)
+        if est is not None:
+            yaw_gt.append(yaw)
+            yaw_est.append(est)
+
+    if len(yaw_gt) < 3:
+        print("[DIAG] not enough points around boxes for PCA yaw diagnosis.")
+        return
+
+    yaw_gt = np.array(yaw_gt)
+    yaw_est = np.array(yaw_est)
+
+    # 配置 A: 你当前常用的一套（例如：Yl = - r*cos(i)*sin(az)，az: π→-π）
+    # 配置 B: 另一套等价约定（Yl = + r*cos(i)*sin(az)，az: -π→π）
+    # NOTE: 这里我们只能从角度差来“相对”判断，哪一套更接近 0 就选哪一套。
+    med_signed_A, med_abs_A = _median_signed_angle_diff(yaw_gt, yaw_est)
+    # B 相当于把 yaw 的符号翻转（或 +π），用 -yaw_gt 对比看是否更小
+    med_signed_B, med_abs_B = _median_signed_angle_diff(-yaw_gt, yaw_est)
+
+    print(f"[DIAG] yaw median diff (A) signed={np.degrees(med_signed_A):.1f}° | abs={np.degrees(med_abs_A):.1f}°")
+    print(f"[DIAG] yaw median diff (B) signed={np.degrees(med_signed_B):.1f}° | abs={np.degrees(med_abs_B):.1f}°")
+
+    if med_abs_B + 1e-3 < med_abs_A:
+        print("[DIAG] → 建议切换到方案 B（把 box yaw 取反，或改用 Yl=+r*cos(i)*sin(az) 与 az: -π→π 的组合）。")
+    else:
+        print("[DIAG] → 继续使用方案 A（你当前的组合更接近真实）。")
+
+
+def main():
+
+    # 先在 Vehicle 下检查：return_world=False
+    ds = Waymo3DDataset("/data/Datasets/waymodata/", split="training", max_frames=3, return_world=False)
+    lidar, target = ds[0]
+
+    print("\n========== BASIC INFO ==========")
+    print("points:", lidar.shape)
+    print("boxes :", target["boxes_3d"].shape)
+    if len(target["labels"]):
+        try:
+            print("labels:", target["labels"].unique())
+        except Exception:
+            print("labels: ok")
+
+    inten = lidar[:, 3].numpy()
+    print(f"Intensity range: {inten.min():.3f} → {inten.max():.3f}")
+
+    # Vehicle 模式下做角度诊断
+    _diagnose_yaw_config_vehicle(lidar[:, :3].numpy(), target["boxes_3d"], radius=4.0)
+
+    # ===== Vehicle frame BEV 可视化 =====
+    print("\n========== MATPLOTLIB (VEHICLE FRAME) ==========")
     pts = lidar[:, :3].numpy()
-    plt.figure(figsize=(6,6))
-    plt.scatter(pts[:,0], pts[:,1], s=0.1, c='k', alpha=0.3)
+    plt.figure(figsize=(7, 7))
+    plt.scatter(pts[:, 0], pts[:, 1], s=0.1, c='k', alpha=0.3)
     for b in target["boxes_3d"].numpy():
-        x,y,z,dx,dy,dz,yaw = b
-        yaw = -yaw
+        x, y, z, dx, dy, dz, yaw = b
+        # 注意：Vehicle 下先不要取反 yaw，若诊断显示应当取反，再改。
         cs, sn = np.cos(yaw), np.sin(yaw)
         poly = np.array([
             [x + dx/2*cs - dy/2*sn, y + dx/2*sn + dy/2*cs],
@@ -1011,20 +920,58 @@ def main():
             [x - dx/2*cs + dy/2*sn, y - dx/2*sn - dy/2*cs],
             [x + dx/2*cs + dy/2*sn, y + dx/2*sn - dy/2*cs],
         ])
-        plt.plot(*np.vstack([poly,poly[0]]).T, 'r-')
-    plt.axis('equal'); plt.show()
+        plt.plot(*np.vstack([poly, poly[0]]).T, 'r-', lw=1)
+    plt.axis("equal"); plt.title("BEV (Vehicle)"); plt.xlabel("X"); plt.ylabel("Y"); plt.grid(True)
+    plt.show()
 
-    # lidar_np = np.asarray(lidar)
-    # mask = np.isfinite(lidar_np).all(1)
-    # lidar_np = lidar_np[mask]
-    # lidar_np[:, :3] -= lidar_np[:, :3].mean(0, keepdims=True)
-    # lidar = torch.from_numpy(lidar_np)
-    #visualize_open3d(lidar, target["boxes_3d"], point_size=2.0)
-    
+    print("\n========== OPEN3D (VEHICLE FRAME) ==========")
+    visualize_open3d(
+        lidar,                      # Vehicle 下的点
+        target["boxes_3d"],         # Vehicle 下的框
+        labels=target["labels"],
+        invert_yaw_for_open3d=False, # 先保持 False；若诊断建议 B，再切 True/或在绘制时用 -yaw
+        save_ply_path="output/frame_0000.ply"
+    )
 
-    visualize_open3d(lidar, target["boxes_3d"], labels=target["labels"], invert_yaw_for_open3d=False)
+    # ===== World frame 测试（不再对点云做二次变换！）=====
+    print("\n========== WORLD FRAME TEST ==========")
+    ds_w = Waymo3DDataset("/data/Datasets/waymodata/", split="training", max_frames=1, return_world=True)
+    lidar_w, target_w = ds_w[0]
+
+    print("[WORLD] points:", lidar_w.shape, " | boxes:", target_w["boxes_3d"].shape)
+    # 关键：此时点云已经在 World；**只**把 boxes 变到 World：
+    boxes_world = transform_boxes_to_world(target_w["boxes_3d"], target_w["world_from_vehicle"])
+
+    # 简单检查：点云坐标可能离原点很远（正常），但 boxes_world 应与点云同处一团
+    pts_w = lidar_w[:, :3].numpy()
+    print(f"[WORLD] points XYZ range: X[{pts_w[:,0].min():.1f},{pts_w[:,0].max():.1f}] "
+          f"Y[{pts_w[:,1].min():.1f},{pts_w[:,1].max():.1f}] Z[{pts_w[:,2].min():.1f},{pts_w[:,2].max():.1f}]")
+    print(f"[WORLD] T_wv translation: {target_w['world_from_vehicle'][:3,3].numpy()}")
+
+    # BEV（World）
+    plt.figure(figsize=(7, 7))
+    plt.scatter(pts_w[:, 0], pts_w[:, 1], s=0.1, c='k', alpha=0.3)
+    for b in boxes_world.numpy():
+        x, y, z, dx, dy, dz, yaw = b
+        cs, sn = np.cos(yaw), np.sin(yaw)
+        poly = np.array([
+            [x + dx/2*cs - dy/2*sn, y + dx/2*sn + dy/2*cs],
+            [x - dx/2*cs - dy/2*sn, y - dx/2*sn + dy/2*cs],
+            [x - dx/2*cs + dy/2*sn, y - dx/2*sn - dy/2*cs],
+            [x + dx/2*cs + dy/2*sn, y + dx/2*sn - dy/2*cs],
+        ])
+        plt.plot(*np.vstack([poly, poly[0]]).T, 'r-', lw=1)
+    plt.axis("equal"); plt.title("BEV (World)"); plt.xlabel("X"); plt.ylabel("Y"); plt.grid(True)
+    plt.show()
+
+    print("\n========== OPEN3D (WORLD FRAME) ==========")
+    visualize_open3d(
+        lidar_w,            # 已在 World 的点
+        boxes_world,        # 变到 World 的框
+        labels=target_w["labels"],
+        invert_yaw_for_open3d=False,
+        save_ply_path="output/frame_0000_2.ply"
+    )
 
 if __name__ == "__main__":
-    #download_waymo_folder()
     main()
-    #test_parquet()
