@@ -44,6 +44,21 @@ def load_ply_and_visualize(ply_points_path: str, ply_boxes_path: str | None = No
         point_show_normal=False
     )
 
+import os
 if __name__ == "__main__":
-    #from visualize_open3d import load_ply_and_visualize
-    load_ply_and_visualize("frame_0000_points.ply", "frame_0000_boxes.ply")
+    import open3d as o3d
+        #from visualize_open3d import load_ply_and_visualize
+    dir_path="/Users/kaikailiu/Downloads"
+    points_path=os.path.join(dir_path, "frame_0000_points.ply")
+    boxes_path=os.path.join(dir_path, "frame_0000_boxes.ply")
+
+    pcd = o3d.io.read_point_cloud(points_path)
+    boxes = o3d.io.read_line_set(boxes_path)   # ← use read_line_set
+    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=5.0)
+
+    o3d.visualization.draw_geometries([pcd, boxes, axis],
+                                    window_name="Point cloud + boxes",
+                                    width=1440, height=810)
+
+
+    #load_ply_and_visualize(points_path, boxes_path)
