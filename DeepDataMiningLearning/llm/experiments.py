@@ -5,14 +5,18 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import os   
-
+import datetime, json
+from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS, test_tokenizers
+from DeepDataMiningLearning.llm.lm_dataset import build_dataset, inspect_dataset
+from DeepDataMiningLearning.llm.train_lm import TrainConfig, build_model, Trainer, Evaluator
+from DeepDataMiningLearning.llm.inference_utils import run_inference
 
 def test_charmodel():
     # ------------------------------------------------------------
     # Create a text file from the English word corpus
     # ------------------------------------------------------------
     with open("english_words.txt", "w", encoding="utf-8") as f:
-        for w in words.words():
+        for w in EN_WORDS: #.words():
             if w.isalpha() and len(w) > 2:
                 f.write(w.lower() + "\n")
 
@@ -309,7 +313,7 @@ def run_qwen_finetune_experiment(
     data = build_dataset(args.task, args)
     train_loader, val_loader = data.loaders()
     inspect_dataset(data)
-    test_tokenizer(data)
+    test_tokenizers(data)
     print("✅ Dataset ready for fine-tuning.\n")
     
 
