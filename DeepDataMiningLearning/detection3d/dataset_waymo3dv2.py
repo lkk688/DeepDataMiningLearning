@@ -59,10 +59,13 @@ class Waymo3DDataset(Dataset):
         self.vpose_dir = os.path.join(root_dir, split, "vehicle_pose")
         self.image_dir = os.path.join(root_dir, split, "camera_image")
         self.box_2d_dir = os.path.join(root_dir, split, "camera_box")
+        # --- NEW: Add this path ---
+        self.cam_calib_dir = os.path.join(root_dir, split, "camera_calibration")
 
-        # Check that all required directories exist
+        # --- NEW: Add self.cam_calib_dir to the check ---
         check_dirs = [self.lidar_dir, self.calib_dir, self.box_dir, 
-                      self.vpose_dir, self.image_dir]
+                      self.vpose_dir, self.image_dir, self.cam_calib_dir]
+
         if split != "testing":
              check_dirs.append(self.box_2d_dir) # 2D boxes may not exist for test
         
@@ -331,14 +334,23 @@ class Waymo3DDataset(Dataset):
         df_cal = pf_cal.read_row_group(0).to_pandas() #(5, 6)
 
         def get_T_vl(lid):
-            """Get LiDAR→Vehicle extrinsic (4×4, row-major)"""
-            crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
-                          (df_cal["key.laser_name"] == lid)].iloc[0]
-            extr_col = max([c for c in crow.index if "extrinsic" in str(c)], key=len)
+            """Robustly fetch LiDAR→Vehicle extrinsic, ensuring correct ID match."""
+            lid_int = int(lid)
+            key_lids = df_cal["key.laser_name"].astype(np.int32)
+            sel = df_cal[(df_cal["key.segment_context_name"] == seg) & (key_lids == lid_int)]
+            if len(sel) == 0:
+                raise RuntimeError(f"No calibration row found for seg={seg}, laser_name={lid_int}.")
+            crow = sel.iloc[0]
+
+            extr_cols = [c for c in crow.index if "extrinsic" in str(c)]
+            # --- FIX: Use min(key=len) to find the *shortest* extrinsic name ---
+            # This avoids nested/alternative component names
+            extr_col = min(extr_cols, key=len) 
             extr_vals = crow[extr_col]
             extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
             return np.array(extr_vals, np.float32).reshape(4, 4, order="C")
 
+        # Pick LiDAR with largest Z translation (the TOP sensor)
         cand_ids = sorted(rows_t["key.laser_name"].unique().tolist()) #5 lidars: [1, 2, 3, 4, 5]
         heights = {}
         for lid in cand_ids:
@@ -346,7 +358,22 @@ class Waymo3DDataset(Dataset):
         laser_id = max(heights, key=heights.get) #1 is highest
         row = rows_t[rows_t["key.laser_name"] == laser_id].iloc[0] #get TOP lidar (7,)
         T_vl = get_T_vl(laser_id) # (4, 4) LiDAR -> Vehicle
-        R_vl = T_vl[:3, :3]
+        
+        # --- FIX: Add calibration yaw correction (from "working" code) ---
+        R_vl = T_vl[:3, :3].copy()
+        t_vl = T_vl[:3, 3].copy()
+        yaw_deg = float(np.degrees(np.arctan2(R_vl[1, 0], R_vl[0, 0])))
+
+        # Check for and correct bad yaw values
+        if T_vl[2, 3] > 1.8 and abs(yaw_deg) > 30.0:
+            print(f"[CALIB_FIX] Detected bad yaw ({yaw_deg:.1f}°) for TOP LiDAR; correcting.")
+            yaw_rad = np.deg2rad(yaw_deg)
+            cy, sy = np.cos(-yaw_rad), np.sin(-yaw_rad)
+            Rz_fix = np.array([[cy, -sy, 0.0], [sy,  cy, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+            # Apply on the RIGHT: R_corrected = R_original * Rz(-yaw)
+            R_vl = R_vl @ Rz_fix
+            T_vl[:3, :3] = R_vl
+            # T_vl[:3, 3] = t_vl # Translation is unchanged
         
         # ---------- 3️⃣ Decode the range image ----------
         ri = self._decode_range_image(row, return_id=1) #(64, 2650, 4)
@@ -357,15 +384,53 @@ class Waymo3DDataset(Dataset):
         # ---------- 4️⃣ Beam inclinations ----------
         crow = df_cal[(df_cal["key.segment_context_name"] == seg) &
                       (df_cal["key.laser_name"] == laser_id)].iloc[0]
-        inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
-        inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
-        inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32) #(64,)
+        """
+        The Waymo LiDAR sensor has non-uniform beam spacing. Using linspace creates a warped or "curved" point cloud, making alignment with the straight-edged boxes impossible.
+        The new code (in Step 4) fixes this by loading the actual inclination vector from the calibration file, which provides the precise angle for each beam:
+        """
+        # inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
+        # inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
+        # inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32) #(64,)
+        # if np.max(np.abs(inclinations)) > np.pi:
+        #     inclinations = np.deg2rad(inclinations)
+        # --- FIX: Load the full non-uniform inclination vector ---
+        cand_cols = [
+            "[LiDARCalibrationComponent].beam_inclinations.values",
+            "[LiDARCalibrationComponent].beam_inclination.values",
+        ]
+        inc_vals = None
+        for c in cand_cols:
+            if c in crow and crow[c] is not None:
+                v = crow[c]
+                if hasattr(v, "as_py"): v = v.as_py()
+                if v is not None and len(v) > 0:
+                    inc_vals = np.array(v, dtype=np.float32)
+                    break
+
+        if inc_vals is not None:
+            inclinations = inc_vals
+        else:
+            # Fallback: uniform spacing
+            inc_min = float(crow["[LiDARCalibrationComponent].beam_inclination.min"])
+            inc_max = float(crow["[LiDARCalibrationComponent].beam_inclination.max"])
+            inclinations = np.linspace(inc_min, inc_max, H, dtype=np.float32)
+
         if np.max(np.abs(inclinations)) > np.pi:
             inclinations = np.deg2rad(inclinations)
+            
+        if len(inclinations) != H:
+            # Resample if H doesn't match inclinations vector length
+            inclinations = np.interp(
+                np.linspace(0, len(inclinations)-1, H),
+                np.arange(len(inclinations)),
+                inclinations
+            ).astype(np.float32)
 
         # ---------- 5️⃣ Convert Spherical → LiDAR Cartesian ----------
         incl = inclinations[::-1].reshape(H, 1) # flip vertically (64, 1)
+        # Azimuth from -pi to pi (Waymo default)
         az = np.linspace(-np.pi, np.pi, W, endpoint=False, dtype=np.float32) #(2650,)
+        
         cos_i, sin_i = np.cos(incl), np.sin(incl) #(64, 1)
         cos_a, sin_a = np.cos(az), np.sin(az) #(2650,)
 
@@ -391,6 +456,7 @@ class Waymo3DDataset(Dataset):
         $$ \\ P\_v = T\_{v \leftarrow l} \cdot P\_l$$
         The code uses (pts @ T.T), which is the row-vector equivalent of 
         the standard column-vector math $P_v = T_{v \leftarrow l} \cdot P_l$.
+        The range image in Waymo can be RAW or virtual, here we use RAW
         """
         pts_v = (pts_l @ T_vl.T)[:, :3] #(169600, 3)
         xyz_vehicle = np.nan_to_num(pts_v, nan=0.0, posinf=0.0, neginf=0.0)
@@ -449,7 +515,7 @@ class Waymo3DDataset(Dataset):
         df_box = pf_box.read_row_group(0).to_pandas()
         
         # [DEBUG] You can add this line to see the 21 columns you have:
-        print(df_box.columns.to_list()) 
+        #print(df_box.columns.to_list()) 
         #['key.segment_context_name', 'key.frame_timestamp_micros', 'key.laser_object_id', '[LiDARBoxComponent].box.center.x', '[LiDARBoxComponent].box.center.y', '[LiDARBoxComponent].box.center.z', '[LiDARBoxComponent].box.size.x', '[LiDARBoxComponent].box.size.y', '[LiDARBoxComponent].box.size.z', '[LiDARBoxComponent].box.heading', '[LiDARBoxComponent].type', '[LiDARBoxComponent].num_lidar_points_in_box', '[LiDARBoxComponent].num_top_lidar_points_in_box', '[LiDARBoxComponent].speed.x', '[LiDARBoxComponent].speed.y', '[LiDARBoxComponent].speed.z', '[LiDARBoxComponent].acceleration.x', '[LiDARBoxComponent].acceleration.y', '[LiDARBoxComponent].acceleration.z', '[LiDARBoxComponent].difficulty_level.detection', '[LiDARBoxComponent].difficulty_level.tracking']
         
         # --- FIX: Remove the 'key.laser_name' filter ---
@@ -465,51 +531,42 @@ class Waymo3DDataset(Dataset):
                  "[LiDARBoxComponent].box.size.y", "[LiDARBoxComponent].box.size.z",
                  "[LiDARBoxComponent].box.heading"]
             arr = rows_b[f].to_numpy().astype(np.float32)
+            # --- FIX: Boxes are in VEHICLE frame, but flipped handedness ---
+            arr[:, 1] *= -1.0        # y -> -y
+            arr[:, 6] *= -1.0        # heading -> -heading
             
-            centers_l = arr[:, :3]
+            centers_v = arr[:, :3]
             sizes = arr[:, 3:6]
-            headings_l = -arr[:, 6]  # clockwise → CCW
+            headings_v = arr[:, 6]
 
-            # --- 1. Reconstruct 8 corners in LiDAR frame (where they are "flat") ---
-            # Create (N, 7) box parameters in LiDAR frame
-            boxes_l_7d = np.concatenate([centers_l, sizes, headings_l[:, None]], axis=1)
-            
-            # Use _get_box_corners to get (N, 8, 3) corners in LiDAR frame
-            # This MUST be the "bottom-face" version of the function
-            corners_l = self._get_box_corners(boxes_l_7d) 
-
-            # --- 2. Transform 8 corners from LiDAR -> Vehicle ---
-            # Make corners homogeneous (N*8, 4)
-            corners_l_h = np.concatenate(
-                [corners_l.reshape(-1, 3), np.ones((corners_l.shape[0] * 8, 1), np.float32)], 
-                axis=1
-            )
-            # Apply T_vl transform (LiDAR -> Vehicle)
-            corners_v_h = corners_l_h @ T_vl.T
-            
-            # Reshape back to (N, 8, 3)
-            corners_v = corners_v_h[:, :3].reshape(-1, 8, 3)
+            boxes_vehicle = np.concatenate([centers_v, sizes, headings_v[:, None]], axis=1)
 
             # --- 3. Optionally: Vehicle -> World ---
             if self.return_world:
-                # Make vehicle corners homogeneous
-                corners_v_h = np.concatenate(
-                    [corners_v.reshape(-1, 3), np.ones((corners_v.shape[0] * 8, 1), np.float32)],
-                    axis=1
-                )
-                # Apply T_wv (Vehicle -> World) transform
-                corners_w_h = corners_v_h @ T_wv.T
-                corners_any = corners_w_h[:, :3].reshape(-1, 8, 3)
+                R_wv = T_wv[:3, :3]
+                
+                # Transform centers
+                centers_v_h = np.concatenate([centers_v, np.ones((centers_v.shape[0], 1), np.float32)], axis=1)
+                centers_w = (centers_v_h @ T_wv.T)[:, :3]
+
+                # Transform headings (using the correct 3D method)
+                cos_h_v, sin_h_v = np.cos(headings_v), np.sin(headings_v)
+                R_wb_00 = R_wv[0, 0] * cos_h_v + R_wv[0, 1] * sin_h_v
+                R_wb_10 = R_wv[1, 0] * cos_h_v + R_wv[1, 1] * sin_h_v
+                headings_w = np.arctan2(R_wb_10, R_wb_00)
+                
+                boxes_any = torch.tensor(np.concatenate([centers_w, sizes, headings_w[:, None]], axis=1),
+                                         dtype=torch.float32)
             else:
-                corners_any = corners_v
+                boxes_any = torch.tensor(boxes_vehicle, dtype=torch.float32)
                 
             # --- 4. Output corners and labels ---
-            boxes_any = torch.tensor(corners_any, dtype=torch.float32) 
+            #boxes_any = torch.tensor(corners_any, dtype=torch.float32) 
             labels = torch.tensor(rows_b["[LiDARBoxComponent].type"].to_numpy(), dtype=torch.int64)
 
         # ---------- 🔟 Assemble final output dict for this frame ----------
         target = {
-            "boxes_3d": boxes_any,        # In Vehicle or World frame
+            "boxes_3d": boxes_any,        #(N, 7) In Vehicle or World frame
             "labels": labels,
             "segment": seg,
             "timestamp": ts,
@@ -519,12 +576,17 @@ class Waymo3DDataset(Dataset):
             "world_from_vehicle": torch.tensor(T_wv, dtype=torch.float32),
         }
 
-        # ---------- 1️⃣1️⃣ Load Surround Images & 2D Boxes ----------
+        # ---------- 1️⃣1️⃣ Load Surround Images & 2D Boxes (and Camera Calibration) ----------
         pf_img = pq.ParquetFile(os.path.join(self.image_dir, fname))
         df_img = pf_img.read_row_group(0).to_pandas()
         rows_img = df_img[(df_img["key.segment_context_name"] == seg) &
                           (df_img["key.frame_timestamp_micros"] == ts)]
         
+        # --- FIX: Load from self.cam_calib_dir, NOT self.calib_dir ---
+        pf_cal_cam = pq.ParquetFile(os.path.join(self.cam_calib_dir, fname)) 
+        df_cal_cam = pf_cal_cam.read_row_group(0).to_pandas()
+        rows_cal_cam = df_cal_cam[(df_cal_cam["key.segment_context_name"] == seg)]
+
         df_b2d = None
         if self.box_2d_dir:
             pf_b2d = pq.ParquetFile(os.path.join(self.box_2d_dir, fname))
@@ -542,6 +604,43 @@ class Waymo3DDataset(Dataset):
             img_pil = Image.open(io.BytesIO(img_bytes))
             img_np = np.array(img_pil, dtype=np.uint8)
 
+            # --- NEW: Get Camera Calibration for THIS camera ---
+            cam_cal_row = rows_cal_cam[rows_cal_cam["key.camera_name"] == cam_id]
+            if len(cam_cal_row) == 0:
+                print(f"[WARN] No calibration found for camera {cam_id} - skipping.")
+                continue
+            cam_cal_row = cam_cal_row.iloc[0]
+
+            # Intrinsic Matrix (3x3)
+            # K_vals = cam_cal_row["[CameraCalibrationComponent].intrinsic.values"]
+            # K_vals = K_vals.as_py() if hasattr(K_vals, "as_py") else K_vals
+            # K = np.array(K_vals, np.float32).reshape(3, 3, order="C")
+            # --- NEW: Manually construct Intrinsic Matrix (3x3) ---
+            f_u = float(cam_cal_row["[CameraCalibrationComponent].intrinsic.f_u"])
+            f_v = float(cam_cal_row["[CameraCalibrationComponent].intrinsic.f_v"])
+            c_u = float(cam_cal_row["[CameraCalibrationComponent].intrinsic.c_u"])
+            c_v = float(cam_cal_row["[CameraCalibrationComponent].intrinsic.c_v"])
+            
+            K = np.array([
+                [f_u, 0.0, c_u],
+                [0.0, f_v, c_v],
+                [0.0, 0.0, 1.0]
+            ], dtype=np.float32)
+
+            # Extrinsic Matrix (4x4) from Vehicle to Camera
+            T_cv_vals = cam_cal_row["[CameraCalibrationComponent].extrinsic.transform"]
+            T_cv_vals = T_cv_vals.as_py() if hasattr(T_cv_vals, "as_py") else T_cv_vals
+            T_cv = np.array(T_cv_vals, np.float32).reshape(4, 4, order="C")
+            
+
+            # --- NEW: Get Image Dimensions (from image itself or calibration) ---
+            # It's safest to get from the image itself, but calibration usually has it too.
+            img_H, img_W = img_np.shape[0], img_np.shape[1]
+            img_H_from_calib = int(cam_cal_row["[CameraCalibrationComponent].height"])
+            img_W_from_calib = int(cam_cal_row["[CameraCalibrationComponent].width"])
+            
+
+
             boxes_xyxy, labels_2d = np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.int64)
             if df_b2d is not None:
                 box_rows = rows_b2d[rows_b2d["key.camera_name"] == cam_id]
@@ -556,17 +655,23 @@ class Waymo3DDataset(Dataset):
                     boxes_xyxy[:, 3] = boxes_cwh[:, 1] + boxes_cwh[:, 3] / 2.0 # y_max
                     labels_2d = box_rows["[CameraBoxComponent].type"].to_numpy().astype(np.int64)
             
+            surround_views.append({
+                "image": torch.tensor(img_np), 
+                "boxes_2d": torch.tensor(boxes_xyxy),
+                "labels_2d": torch.tensor(labels_2d), 
+                "camera_name": cam_name,
+                "camera_id": cam_id,
+                "K": torch.tensor(K, dtype=torch.float32),          # NEW
+                "T_cv": torch.tensor(T_cv, dtype=torch.float32),    # NEW
+                "image_dims": (img_H, img_W)                        # NEW
+            })
+            
             # Surround view data format for each camera:
             # Each dict in surround_views list contains:
             #   - "image": torch.Tensor of shape (H, W, 3) containing RGB image data (uint8)
             #   - "boxes_2d": torch.Tensor of shape (K, 4) containing 2D bounding boxes [x_min, y_min, x_max, y_max]
             #   - "labels_2d": torch.Tensor of shape (K,) containing 2D object class IDs matching 3D labels
             #   - "camera_name": int, camera sensor ID (1=FRONT, 2=FRONT_LEFT, 3=FRONT_RIGHT, 4=SIDE_LEFT, 5=SIDE_RIGHT)
-            surround_views.append({
-                "image": torch.tensor(img_np), "boxes_2d": torch.tensor(boxes_xyxy),
-                "labels_2d": torch.tensor(labels_2d), "camera_name": cam_name,
-                "camera_id": cam_id  # <-- New
-            })
             
         target["surround_views"] = surround_views
         
@@ -591,7 +696,7 @@ class Waymo3DDataset(Dataset):
         Converts (N, 7) 3D box format [cx, cy, cz, dx, dy, dz, heading]
         to (N, 8, 3) corners.
         
-        NOTE: Assumes 'cz' is the center of the BOTTOM face.
+        NOTE: Assumes 'cz' is the GEOMETRIC center (z = -h/2 to h/2).
         """
         if isinstance(boxes_7d, torch.Tensor):
             boxes_7d = boxes_7d.cpu().numpy()
@@ -602,19 +707,22 @@ class Waymo3DDataset(Dataset):
         if N == 0:
             return np.zeros((0, 8, 3), dtype=np.float32)
 
-        centers = boxes_7d[:, :3] # (N, 3) [cx, cy, cz_bottom]
+        centers = boxes_7d[:, :3] # (N, 3) [cx, cy, cz_geom]
         dims = boxes_7d[:, 3:6]    # (N, 3) [l, w, h]
         headings = boxes_7d[:, 6]  # (N,)
 
         # --- 1. Get 8 corners in local box frame (axis-aligned) ---
-        l, w, h = dims[:, 0:1], dims[:, 1:2], dims[:, 2:3]
-        
-        # Z-axis offsets [0, h]
-        z_corners = np.concatenate([np.zeros_like(h), np.zeros_like(h), np.zeros_like(h), np.zeros_like(h), h, h, h, h], axis=1) # (N, 8)
+        lwh = dims / 2.0 # (N, 3)
+
         # X-axis offsets [-l/2, l/2]
-        l_corners = np.concatenate([-l/2,  l/2,  l/2, -l/2, -l/2,  l/2,  l/2, -l/2], axis=1) # (N, 8)
+        l_corners = np.concatenate([-lwh[:, 0:1],  lwh[:, 0:1],  lwh[:, 0:1], -lwh[:, 0:1],
+                                    -lwh[:, 0:1],  lwh[:, 0:1],  lwh[:, 0:1], -lwh[:, 0:1]], axis=1) # (N, 8)
         # Y-axis offsets [-w/2, w/2] (Waymo is +Y left)
-        w_corners = np.concatenate([ w/2,  w/2, -w/2, -w/2,  w/2,  w/2, -w/2, -w/2], axis=1) # (N, 8)
+        w_corners = np.concatenate([ lwh[:, 1:2],  lwh[:, 1:2], -lwh[:, 1:2], -lwh[:, 1:2],
+                                     lwh[:, 1:2],  lwh[:, 1:2], -lwh[:, 1:2], -lwh[:, 1:2]], axis=1) # (N, 8)
+        # Z-axis offsets [-h/2, h/2]
+        z_corners = np.concatenate([-lwh[:, 2:], -lwh[:, 2:], -lwh[:, 2:], -lwh[:, 2:],
+                                     lwh[:, 2:],  lwh[:, 2:],  lwh[:, 2:],  lwh[:, 2:]], axis=1) # (N, 8)
 
         corners_local = np.stack([l_corners, w_corners, z_corners], axis=2) # (N, 8, 3)
 
@@ -631,9 +739,6 @@ class Waymo3DDataset(Dataset):
         corners_rotated = (R @ corners_local.transpose(0, 2, 1)).transpose(0, 2, 1)
 
         # --- 3. Translate corners ---
-        # The 'centers' are [cx, cy, cz_bottom].
-        # The rotated local corners have z=[0, h].
-        # Adding them together places the box correctly from cz_bottom to cz_bottom + h.
         corners_global = corners_rotated + centers[:, np.newaxis, :]
         return corners_global  # (N, 8, 3)
 
@@ -651,12 +756,272 @@ class Waymo3DDataset(Dataset):
         v = np.clip(np.floor(v), 0, H - 1).astype(np.int32)
         return np.stack([u, v], axis=-1)
 
-    # ( ... Other visualization methods: visualize_range_image, visualize_bev, 
-    #   visualize_3d, visualize_surround_view ... )
-    # (These are unchanged from your previous versions)
+    @staticmethod
+    def _project_lidar_to_camera_image(points_vehicle, K, T_cv, image_dims):
+        """
+        Projects 3D LiDAR points (in Vehicle frame) onto a 2D camera image.
+        """
+        # --- 1. Slice to get XYZ ---
+        # Input `points_vehicle` is (N, 5) in a RIGHT-HANDED system (+Y Left)
+        points_xyz = points_vehicle[:, :3].copy()
+        
+        if points_xyz.shape[0] == 0:
+            return np.zeros((0, 2)), np.zeros((0,)), np.zeros(0, dtype=bool)
+
+        H, W = image_dims
+
+        # --- 2. FIX: Convert to LEFT-HANDED system for camera extrinsics ---
+        # The T_cv matrix expects a vehicle frame with +Y Right.
+        # We must mirror our points by flipping the Y coordinate.
+        points_xyz[:, 1] *= -1.0  # Y -> -Y
+
+        # --- 3. Transform points from Vehicle Frame to Camera Frame ---
+        # Make points homogeneous (N, 4)
+        points_h_vehicle = np.concatenate([points_xyz, np.ones((points_xyz.shape[0], 1), dtype=np.float32)], axis=1)
+        
+        # Apply T_cv (Camera from Vehicle) extrinsic transform
+        # This now works because T_cv is receiving the (Left-Handed) points it expects.
+        points_h_camera = points_h_vehicle @ T_cv.T 
+        
+        # Extract 3D camera coordinates (N, 3)
+        points_camera = points_h_camera[:, :3]
+
+        # --- 4. Filter points: only keep those in front of the camera ---
+        # In the Waymo camera frame, +Z is forward.
+        depths = points_camera[:, 2] 
+        in_front_mask = depths > 0.01 
+        
+        # --- 5. Apply Intrinsic Projection (Camera Frame to Image Plane) ---
+        # (This part of your code was already correct)
+        points_normalized_camera = points_camera[in_front_mask, :2] / depths[in_front_mask, None]
+        points_normalized_h = np.concatenate([points_normalized_camera, np.ones((points_normalized_camera.shape[0], 1))], axis=1)
+        uv_homogeneous = points_normalized_h @ K.T
+        projected_coords = uv_homogeneous[:, :2] / uv_homogeneous[:, 2:]
+        
+        # --- 6. Filter points: only keep those within image bounds ---
+        u_coords = projected_coords[:, 0]
+        v_coords = projected_coords[:, 1]
+        
+        in_image_mask = (u_coords >= 0) & (u_coords < W) & \
+                        (v_coords >= 0) & (v_coords < H)
+        
+        # (Rest of the function to build the final mask is unchanged)
+        final_projected_coords = projected_coords[in_image_mask]
+        final_depths = depths[in_front_mask][in_image_mask]
+
+        visible_mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+        temp_mask_indices = np.where(in_front_mask)[0]
+        if temp_mask_indices.shape[0] > 0:
+             visible_mask[temp_mask_indices[in_image_mask]] = True
+        
+        return final_projected_coords.astype(np.int32), final_depths, visible_mask
+        
+    @staticmethod
+    def _project_lidar_to_camera_image_old(points_vehicle, K, T_cv, image_dims):
+        """
+        Projects 3D LiDAR points (in Vehicle frame) onto a 2D camera image.
+        
+        Args:
+            points_vehicle (np.ndarray): (N, 3) XYZ points in the Vehicle frame.
+            K (np.ndarray): (3, 3) Camera intrinsic matrix.
+            T_cv (np.ndarray): (4, 4) Extrinsic matrix (Camera from Vehicle).
+            image_dims (tuple): (H, W) of the camera image.
+            
+        Returns:
+            projected_coords (np.ndarray): (N_visible, 2) (u, v) pixel coordinates.
+            visible_points_depth (np.ndarray): (N_visible,) depth values for visible points.
+            visible_mask (np.ndarray): (N,) boolean mask indicating which input points are visible.
+        """
+        # --- FIX: Ensure points are (N, 3) by slicing ---
+        # The input might be (N, 4) or (N, 5) with intensity/time.
+        points_vehicle = points_vehicle[:, :3]
+
+        if points_vehicle.shape[0] == 0:
+            return np.zeros((0, 2)), np.zeros((0,)), np.zeros(0, dtype=bool)
+
+        H, W = image_dims
+
+        # --- 1. Transform points from Vehicle Frame to Camera Frame ---
+        # Make points homogeneous (N, 4)
+        points_h_vehicle = np.concatenate([points_vehicle, np.ones((points_vehicle.shape[0], 1), dtype=np.float32)], axis=1)
+        
+        # Apply T_cv (Camera from Vehicle) extrinsic transform
+        # The result 'points_h_camera' is (N, 4) in the camera's homogeneous coordinate system
+        points_h_camera = points_h_vehicle @ T_cv.T 
+        
+        # Extract 3D camera coordinates (N, 3)
+        points_camera = points_h_camera[:, :3]
+
+        # --- 2. Filter points: only keep those in front of the camera ---
+        # In camera coordinates, +Z is typically forward.
+        # Points behind the camera (Z < 0) are not visible.
+        depths = points_camera[:, 2] # Z-coordinate in camera frame is depth
+        
+        # Filter 1: Z > 0 (in front of camera)
+        # Add a small epsilon to avoid issues at Z=0.
+        in_front_mask = depths > 0.01 
+        
+        # --- 3. Apply Intrinsic Projection (Camera Frame to Image Plane) ---
+        # (u, v) = K @ (X_c / Z_c, Y_c / Z_c)
+        # Divide X_c, Y_c by Z_c to get normalized homogeneous coordinates
+        points_normalized_camera = points_camera[in_front_mask, :2] / depths[in_front_mask, None] # (N_front, 2)
+        
+        # Pad with 1s for matrix multiplication with K
+        points_normalized_h = np.concatenate([points_normalized_camera, np.ones((points_normalized_camera.shape[0], 1))], axis=1) # (N_front, 3)
+        
+        # Apply intrinsic matrix K to get pixel coordinates (u, v, w)
+        uv_homogeneous = points_normalized_h @ K.T # (N_front, 3)
+        
+        # Normalize by the third component (w) to get (u, v)
+        projected_coords = uv_homogeneous[:, :2] / uv_homogeneous[:, 2:] # (N_front, 2)
+        
+        # --- 4. Filter points: only keep those within image bounds ---
+        u_coords = projected_coords[:, 0]
+        v_coords = projected_coords[:, 1]
+        
+        # Filter 2: within image width [0, W-1] and height [0, H-1]
+        in_image_mask = (u_coords >= 0) & (u_coords < W) & \
+                        (v_coords >= 0) & (v_coords < H)
+        
+        # Apply final filter
+        final_projected_coords = projected_coords[in_image_mask]
+        final_depths = depths[in_front_mask][in_image_mask]
+
+        # Reconstruct the full boolean mask for the original input points
+        visible_mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+        temp_mask_indices = np.where(in_front_mask)[0]
+        visible_mask[temp_mask_indices[in_image_mask]] = True
+        
+        return final_projected_coords.astype(np.int32), final_depths, visible_mask
     # ---------------------------------------------------------------------
     # ---------- START: 2D VISUALIZATION METHOD ----------
     # ---------------------------------------------------------------------
+
+    @staticmethod
+    def visualize_camera_with_lidar(camera_data_item, lidar_points_vehicle, 
+                                    boxes_7d_vehicle=None, boxes_labels_3d=None, 
+                                    title="", ax=None):
+        """
+        Draws 3D LiDAR points (colored by depth) and optionally 3D boxes 
+        onto a 2D camera image.
+        
+        Args:
+            camera_data_item (dict): A single dictionary item from 'surround_views' 
+                                     containing 'image', 'K', 'T_cv', 'image_dims'.
+            lidar_points_vehicle (torch.Tensor or np.ndarray): (N, 3) XYZ points 
+                                                                in the Vehicle frame.
+            boxes_7d_vehicle (torch.Tensor or np.ndarray, optional): (M, 7) boxes 
+                                                                     in Vehicle frame.
+            boxes_labels_3d (torch.Tensor or np.ndarray, optional): (M,) int labels for 3D boxes.
+            title (str): Title for the plot.
+            ax (matplotlib.axis, optional): Axis to plot on.
+        """
+        
+        # --- 1. Extract Camera Data ---
+        image = camera_data_item["image"].cpu().numpy()
+        K = camera_data_item["K"].cpu().numpy()
+        T_cv = camera_data_item["T_cv"].cpu().numpy()
+        image_dims = camera_data_item["image_dims"]
+        camera_name = camera_data_item["camera_name"]
+
+        # --- 2. Prepare LiDAR Points ---
+        if isinstance(lidar_points_vehicle, torch.Tensor):
+            lidar_points_vehicle = lidar_points_vehicle.cpu().numpy()
+        
+        if lidar_points_vehicle.shape[0] == 0:
+            print("[WARN] No LiDAR points to project.")
+            return
+
+        # --- 3. Project LiDAR Points onto the Camera Image ---
+        # This returns (u, v) pixel coordinates, their depth, and a mask
+        projected_uv, projected_depths, visible_mask = \
+            Waymo3DDataset._project_lidar_to_camera_image(lidar_points_vehicle, K, T_cv, image_dims)
+
+        # --- 4. Setup Plot ---
+        if ax is None:
+            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+            
+        ax.imshow(image)
+        ax.set_title(f"{title} - {camera_name} (LiDAR Projected)")
+        ax.axis('off')
+
+        # --- 5. Plot Projected LiDAR Points ---
+        if projected_uv.shape[0] > 0:
+            # Color points by inverse depth (closer points are brighter/warmer)
+            # Clip depth to a reasonable range (e.g., 0-80m) for better visualization
+            display_depths = np.clip(projected_depths, 0, 80) 
+            
+            # Normalize depths for colormap
+            if display_depths.max() > display_depths.min():
+                norm_depths = (display_depths - display_depths.min()) / (display_depths.max() - display_depths.min())
+            else:
+                norm_depths = np.zeros_like(display_depths)
+
+            # Use a colormap (e.g., 'viridis' or 'hot')
+            cmap = plt.cm.viridis
+            colors = cmap(1.0 - norm_depths) # 1.0 - norm_depths to make closer points warmer
+
+            # Scatter plot points
+            ax.scatter(projected_uv[:, 0], projected_uv[:, 1], 
+                       s=5, c=colors, marker='.', alpha=0.7) # Adjust size (s) and alpha as needed
+        else:
+            print("[INFO] No LiDAR points visible in this camera view.")
+
+        # --- 6. Optionally: Project and Plot 3D Bounding Boxes ---
+        if boxes_7d_vehicle is not None and boxes_7d_vehicle.shape[0] > 0:
+            if isinstance(boxes_7d_vehicle, torch.Tensor):
+                boxes_7d_vehicle = boxes_7d_vehicle.cpu().numpy()
+            if isinstance(boxes_labels_3d, torch.Tensor):
+                boxes_labels_3d = boxes_labels_3d.cpu().numpy()
+
+            # --- Get 8 corners for each box in Vehicle Frame ---
+            corners_vehicle = Waymo3DDataset._get_box_corners(boxes_7d_vehicle) # (M, 8, 3)
+            
+            # --- Define box lines for drawing (same as visualize_3d) ---
+            box_lines = [
+                [0, 1], [1, 2], [2, 3], [3, 0], # Bottom face
+                [4, 5], [5, 6], [6, 7], [7, 4], # Top face
+                [0, 4], [1, 5], [2, 6], [3, 7]  # Vertical pillars
+            ]
+            
+            label_colors_map = {
+                1: 'green',  # Vehicle
+                2: 'red',    # Pedestrian
+                4: 'yellow', # Cyclist
+            }
+
+            for i in range(boxes_7d_vehicle.shape[0]):
+                single_box_corners_vehicle = corners_vehicle[i] # (8, 3)
+                
+                # Project all 8 corners of this box
+                box_projected_uv, box_projected_depths, box_visible_mask = \
+                    Waymo3DDataset._project_lidar_to_camera_image(
+                        single_box_corners_vehicle, K, T_cv, image_dims
+                    )
+                
+                # Check if at least some corners are visible
+                if box_projected_uv.shape[0] > 0:
+                    # Get the color for the box
+                    label_id = int(boxes_labels_3d[i]) if boxes_labels_3d is not None and i < len(boxes_labels_3d) else 0
+                    box_color = label_colors_map.get(label_id, 'orange') # Default orange for unknown
+
+                    # Draw the 12 lines of the box
+                    for line in box_lines:
+                        p1_idx, p2_idx = line[0], line[1]
+                        
+                        # Only draw line if both points are visible
+                        if box_visible_mask[p1_idx] and box_visible_mask[p2_idx]:
+                            p1_uv = box_projected_uv[np.where(np.where(box_visible_mask)[0] == p1_idx)[0]][0]
+                            p2_uv = box_projected_uv[np.where(np.where(box_visible_mask)[0] == p2_idx)[0]][0]
+                            
+                            ax.plot([p1_uv[0], p2_uv[0]], [p1_uv[1], p2_uv[1]],
+                                    color=box_color, linewidth=1.5, alpha=0.8)
+                        # Optional: Draw partially visible lines if one point is visible
+                        # This would be more complex, involving clipping lines at image boundaries.
+                        # For simplicity, we only draw if both endpoints are visible.
+
+        if 'fig' in locals():
+            plt.show()
 
     @staticmethod
     def visualize_surround_view(surround_views, label_map=None):
@@ -755,15 +1120,16 @@ class Waymo3DDataset(Dataset):
         plt.show()
     
     @staticmethod
-    def visualize_3d(lidar_points, boxes_8_corners=None, labels=None, label_map=None,
+    def visualize_3d(lidar_points, boxes_7d=None, labels=None, label_map=None,
                      headless=False, save_path="scene_vis.ply"):
         """
         Visualizes LiDAR points and 3D boxes using Open3D.
+        This function expects boxes in (N, 7) format and calls
+        _get_box_corners() internally.
 
         - Points are colored by height (Z-axis).
-        - A coordinate frame is drawn at the origin.
-        - 3D labels are drawn on top of boxes.
-        - In headless mode, saves geometry to .ply files (labels are lost).
+        - A coordinate frame is drawn at the origin with XYZ labels.
+        - 3D labels are drawn close to the top-center of boxes.
         
         Args:
             lidar_points (torch.Tensor or np.ndarray): (N, 3+) XYZ...
@@ -782,8 +1148,6 @@ class Waymo3DDataset(Dataset):
         # --- 1. Prepare Data ---
         if isinstance(lidar_points, torch.Tensor):
             lidar_points = lidar_points.cpu().numpy()
-        if isinstance(boxes_8_corners, torch.Tensor):
-            boxes_8_corners = boxes_8_corners.cpu().numpy()
         if isinstance(labels, torch.Tensor):
             labels = labels.cpu().numpy()
 
@@ -791,7 +1155,6 @@ class Waymo3DDataset(Dataset):
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(lidar_points[:, :3])
         
-        # Color by Z-height
         z_values = lidar_points[:, 2]
         if z_values.max() > z_values.min():
             z_norm = (z_values - z_values.min()) / (z_values.max() - z_values.min())
@@ -801,36 +1164,30 @@ class Waymo3DDataset(Dataset):
         pcd.colors = o3d.utility.Vector3dVector(colors)
 
         # --- 3. Create Coordinate Frame Geometry ---
-        # X=Red, Y=Green, Z=Blue
         mesh_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
             size=1.5, origin=[0, 0, 0]
         )
-
+        
         # --- 4. Create Box & Label Geometries ---
         box_geometries = []
-        box_labels_3d = [] # For O3DVisualizer
+        box_labels_3d = [] 
         
-        if boxes_8_corners is not None and len(boxes_8_corners) > 0:
-            # --- FIX: Input is now corners, not 7D boxes ---
-            if isinstance(boxes_8_corners, torch.Tensor):
-                corners_3d = boxes_8_corners.cpu().numpy() # (M, 8, 3)
-            else:
-                corners_3d = boxes_8_corners
+        if boxes_7d is not None and len(boxes_7d) > 0:
             
-            # --- REMOVED THE CALL TO _get_box_corners ---
+            # --- CRITICAL: Call _get_box_corners ---
+            try:
+                # Assuming Waymo3DDataset class is available or _get_box_corners is a static method
+                corners_3d = Waymo3DDataset._get_box_corners(boxes_7d) # (N, 8, 3)
+            except Exception as e:
+                print(f"[ERROR] Failed to call _get_box_corners: {e}")
+                return
 
-        
-            # Standard 12 lines for a box
-            # This order assumes the corner_offsets from your _get_box_corners:
-            # [(-1,1,-1), (1,1,-1), (1,-1,-1), (-1,-1,-1),
-            #  (-1,1,1), (1,1,1), (1,-1,1), (-1,-1,1)]
             lines = [
-                [0, 1], [1, 2], [2, 3], [3, 0], # Bottom 4
-                [4, 5], [5, 6], [6, 7], [7, 4], # Top 4
-                [0, 4], [1, 5], [2, 6], [3, 7]  # Vertical
+                [0, 1], [1, 2], [2, 3], [3, 0], # Bottom face (corners 0,1,2,3 from _get_box_corners)
+                [4, 5], [5, 6], [6, 7], [7, 4], # Top face (corners 4,5,6,7)
+                [0, 4], [1, 5], [2, 6], [3, 7]  # Vertical pillars
             ]
             
-            # Use different colors for different classes
             label_colors = {
                 1: [0, 1, 0], # Vehicle (Green)
                 2: [1, 0, 0], # Pedestrian (Red)
@@ -840,9 +1197,8 @@ class Waymo3DDataset(Dataset):
 
             for i in range(corners_3d.shape[0]):
                 box_corners = corners_3d[i]
-                label_id = int(labels[i]) if labels is not None else 0
+                label_id = int(labels[i]) if labels is not None and i < len(labels) else 0
                 
-                # --- Create LineSet for the box ---
                 line_set = o3d.geometry.LineSet()
                 line_set.points = o3d.utility.Vector3dVector(box_corners)
                 line_set.lines = o3d.utility.Vector2iVector(lines)
@@ -850,13 +1206,15 @@ class Waymo3DDataset(Dataset):
                 line_set.paint_uniform_color(color)
                 box_geometries.append(line_set)
                 
-                # --- Prepare 3D Label ---
+                # --- Prepare 3D Label (Close to Box) ---
                 label_text = str(label_id)
                 if label_map and label_id in label_map:
                     label_text = label_map[label_id]
                 
-                # Position label at the top-center of the box
-                label_pos = box_corners[4:].mean(axis=0) + [0, 0, 0.2] # 20cm above top
+                # Position label at the center of the TOP face of the box
+                # Corners 4,5,6,7 form the top face. Averaging them gives the top center.
+                # Adjusted to be only slightly above the box (e.g., +0.1m)
+                label_pos = box_corners[4:].mean(axis=0) + [0, 0, 0.1] 
                 box_labels_3d.append((label_pos, label_text))
 
         # --- 5. Combine Geometries ---
@@ -864,89 +1222,88 @@ class Waymo3DDataset(Dataset):
 
         # --- 6. Execute Visualization or Save ---
         if headless:
-            print(f"[INFO] Headless mode: Saving {len(geometries)} geometries to {save_path} prefix.")
-            print("       NOTE: 3D text labels cannot be saved to .ply files.")
-            
-            # --- Save to File ---
-            # We must save different geometry types to different files.
-            # .ply supports PointCloud and TriangleMesh (but not LineSet well)
-            points_path = save_path.replace(".ply", "_points.ply")
-            o3d.io.write_point_cloud(points_path, pcd)
-            print(f"       ... Saved points to {points_path}")
-
-            # For boxes, we must convert LineSet to a TriangleMesh (thin cylinders)
-            # Combine frame and all box meshes into one
-            scene_mesh = mesh_frame
-            for i, line_set in enumerate(box_geometries):
-                # create_from_line_set is only in o3d 0.17+
-                # A more compatible way is to just save the line sets
-                box_path = save_path.replace(".ply", f"_box_{i:03d}.ply")
-                o3d.io.write_line_set(box_path, line_set)
-            
-            frame_path = save_path.replace(".ply", "_frame.ply")
-            o3d.io.write_triangle_mesh(frame_path, mesh_frame)
-            print(f"       ... Saved boxes and frame to multiple files.")
-
+            print(f"[INFO] Headless mode: Saving geometries to {save_path}...")
+            # If in headless, combine all meshes and save (Open3D doesn't easily save scenes with labels)
+            # This is a simplified saving, for full scene you'd need custom logic
+            full_mesh = o3d.geometry.TriangleMesh()
+            full_mesh.points = pcd.points
+            full_mesh.colors = pcd.colors
+            # You might need to add other geometries to the mesh for a single .ply
+            o3d.io.write_point_cloud(save_path, pcd) # Saving just points for simplicity
+            print(f"[INFO] Point cloud saved to {save_path}")
         else:
             # --- Open Interactive Window ---
             print("[INFO] Opening 3D visualizer... (Press 'Q' to close)")
             try:
-                # Use the new (v0.15+) O3DVisualizer to support 3D labels
                 app = gui.Application.instance
                 app.initialize()
 
                 vis = o3d.visualization.O3DVisualizer("Waymo 3D Visualization", 1280, 720)
                 
-                # Add geometries with unique names
                 vis.add_geometry("points", pcd)
                 vis.add_geometry("frame", mesh_frame)
+                
+                # --- Add XYZ labels to the coordinate frame ---
+                # Create a material for the labels
+                text_material = rendering.MaterialRecord()
+                text_material.base_color = [0.8, 0.8, 0.8, 1.0] # Light gray
+                text_material.shader = "defaultLit"
+                text_material.line_width = 2
+                
+                vis.add_3d_label([1.6, 0, 0], "X") # Slightly beyond the red axis
+                vis.add_3d_label([0, 1.6, 0], "Y") # Slightly beyond the green axis
+                vis.add_3d_label([0, 0, 1.6], "Z") # Slightly beyond the blue axis
+
                 for i, box_geom in enumerate(box_geometries):
                     vis.add_geometry(f"box_{i}", box_geom)
                 
-                # Add 3D labels
+                # Add 3D labels for boxes
                 for i, (pos, text) in enumerate(box_labels_3d):
                     vis.add_3d_label(pos, text)
                     
-                # Set camera view (optional, but nice)
-                # (Point cloud center, look-at, up-vector)
+                # Set camera to a reasonable default and reset for best view
                 vis.setup_camera(60.0, pcd.get_center(), [0, 0, 30], [0, 0, 1])
-                vis.reset_camera_to_default()
-
+                vis.reset_camera_to_default() # This is often crucial after setup_camera
+                
                 app.run()
                 
             except Exception as e:
-                print(f"[ERROR] Failed to start O3DVisualizer: {e}")
-                print("       Falling back to simple visualizer (no labels).")
+                # Fallback to simple visualizer if O3DVisualizer fails
+                print(f"[ERROR] Failed to start O3DVisualizer (likely due to missing GUI or version mismatch): {e}")
+                print("       Falling back to simple visualizer (no labels, limited camera control).")
                 o3d.visualization.draw_geometries(geometries)
     
     @staticmethod
-    def visualize_bev(lidar_points, boxes_8_corners=None, ax=None, 
+    def visualize_bev(lidar_points, boxes_7d=None, ax=None, 
                       point_size=0.1, range_m=80.0, title="BEV Visualization"):
         """
-        Visualizes LiDAR points and boxes in Bird's-Eye View (BEV).
+        Visualizes LiDAR points and 3D boxes in Bird's-Eye View (BEV).
+        This function expects boxes in (N, 7) format and calls
+        _get_box_corners() internally.
+        
         Assumes points and boxes are in the *same* coordinate frame.
         
         Args:
-            lidar_points: (N, 3+) torch.Tensor or np.ndarray (XYZ...)
-            boxes_7d: (M, 7) torch.Tensor or np.ndarray [cx,cy,cz,dx,dy,dz,h]
-            ax: Optional matplotlib axis.
-            point_size: Size of plotted points.
-            range_m: Plot range. Can be float (e.g., 80.0 for +/-80m) 
-                     or tuple ((-x,x), (-y,y)).
-            title: Plot title.
+            lidar_points (torch.Tensor or np.ndarray): (N, 3+) XYZ...
+            boxes_7d (torch.Tensor or np.ndarray): (M, 7) [cx,cy,cz,dx,dy,dz,h]
+            ax (matplotlib.axis, optional): Axis to plot on.
+            point_size (float): Size of plotted points.
+            range_m (float or tuple): Plot range. Can be float (e.g., 80.0 for +/-80m) 
+                                     or tuple ((-x,x), (-y,y)).
+            title (str): Plot title.
         """
         
-        # 1. --- Handle Inputs ---
+        # --- 1. Handle Inputs ---
         if isinstance(lidar_points, torch.Tensor):
             lidar_points = lidar_points.cpu().numpy()
-        if isinstance(boxes_8_corners, torch.Tensor):
-            boxes_8_corners = boxes_8_corners.cpu().numpy()
-
-        # 2. --- Setup Plot ---
-        if ax is None:
-            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
-            ax.set_aspect('equal')
         
+        # --- 2. Setup Plot ---
+        if ax is None:
+            # Create new plot if one isn't provided
+            fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+            ax.set_aspect('equal') # Critical for BEV
+        
+        # Configure plot range
         if isinstance(range_m, (int, float)):
             x_range = y_range = (-range_m, range_m)
         else:
@@ -959,61 +1316,70 @@ class Waymo3DDataset(Dataset):
         ax.set_title(title)
         ax.grid(True, linestyle='--', alpha=0.5)
 
-        # 3. --- Plot Ego Vehicle ---
-        # (Assumes 0,0 is the origin, which is true for Vehicle Frame)
-        ax.plot(0, 0, 'rx', markersize=10, mew=2, label="Ego Vehicle")
+        # --- 3. Plot Ego Vehicle ---
+        # Draw a marker at (0,0) to show the vehicle's origin
+        ax.plot(0, 0, 'rx', markersize=10, mew=2, label="Ego Origin (0,0)")
         
-        # 4. --- Plot LiDAR Points ---
-        # Filter points outside the range to speed up plotting
+        # --- 4. Plot LiDAR Points ---
+        # Filter points to be within the plot range for performance
         mask = (lidar_points[:, 0] >= x_range[0]) & (lidar_points[:, 0] <= x_range[1]) & \
                (lidar_points[:, 1] >= y_range[0]) & (lidar_points[:, 1] <= y_range[1])
         points_filtered = lidar_points[mask]
         
-        # Use intensity for color if available (assuming 4th col)
+        # Color points by intensity (column 3) if available, else by height (column 2)
         if points_filtered.shape[1] > 3:
             colors = points_filtered[:, 3] # Intensity
             cmap = 'gray'
         else:
-            colors = 'k'
-            cmap = None
+            colors = points_filtered[:, 2] # Z-height
+            cmap = 'jet'
             
         ax.scatter(points_filtered[:, 0], points_filtered[:, 1], 
                    s=point_size, c=colors, cmap=cmap, alpha=0.5)
 
-        # 5. --- Plot Boxes ---
-        if boxes_8_corners is not None and len(boxes_8_corners) > 0:
-            if isinstance(boxes_8_corners, torch.Tensor):
-                corners_3d = boxes_8_corners.cpu().numpy() # (M, 8, 3)
-            else:
-                corners_3d = boxes_8_corners
+        # --- 5. Plot Boxes ---
+        if boxes_7d is not None and len(boxes_7d) > 0:
             
-            # --- REMOVED THE CALL TO _get_box_corners ---
+            # --- CRITICAL: Call _get_box_corners ---
+            # Convert (N, 7) [c, d, h] format to (N, 8, 3) corners
+            # This requires the Waymo3DDataset class to be available
+            try:
+                corners_3d = Waymo3DDataset._get_box_corners(boxes_7d) # (N, 8, 3)
+            except Exception as e:
+                print(f"[ERROR] Failed to call _get_box_corners: {e}")
+                return
 
-            # Get the bottom 4 corners (XY plane)
-            # This assumes the corner ordering from your _get_box_corners:
-            # 0: back-left-bottom
-            # 1: front-left-bottom
-            # 2: front-right-bottom
-            # 3: back-right-bottom
-            bev_corners = corners_3d[:, [0, 1, 2, 3], :2] # (M, 4, 2)
+            # --- Get the 4 bottom corners for the 2D polygon ---
+            # The _get_box_corners (geometric center) function produces this order:
+            # 0: [-l/2,  w/2, -h/2] (Back-Left-Bottom)
+            # 1: [ l/2,  w/2, -h/2] (Front-Left-Bottom)
+            # 2: [ l/2, -w/2, -h/2] (Front-Right-Bottom)
+            # 3: [-l/2, -w/2, -h/2] (Back-Right-Bottom)
+            bev_corners = corners_3d[:, [0, 1, 2, 3], :2] # (N, 4, 2)
             
+            # Draw each box
             for i in range(bev_corners.shape[0]):
-                # Draw the polygon
+                # Draw the 2D polygon
                 ax.add_patch(patches.Polygon(bev_corners[i],
                                              closed=True,
                                              color='b',
                                              fill=False,
                                              linewidth=1.5))
                 
-                # Draw heading indicator (line from center to front-mid)
+                # --- Draw heading indicator line ---
+                # Get the center of the bottom face
+                center = bev_corners[i].mean(axis=0)
+                # Get the midpoint of the front-bottom edge (corners 1 and 2)
                 front_mid = bev_corners[i, [1, 2], :].mean(axis=0)
-                center = bev_corners[i].mean(axis=0) # Get center of bottom face
+                
+                # Draw line from center to front
                 ax.plot([center[0], front_mid[0]],
                         [center[1], front_mid[1]],
                         'b-', linewidth=1.5, alpha=0.8)
 
         ax.legend(loc='upper right')
         
+        # Show plot if it was created by this function
         if 'fig' in locals():
             plt.show()
 
@@ -1024,11 +1390,12 @@ def main():
     # ==================================================================
     print("\n\n========== TEST 1: Vehicle Frame (Single Sweep) ==========")
     # ==================================================================
+    return_world = False
     ds_vehicle = Waymo3DDataset(
         DATA_ROOT, 
         split="training", 
         max_frames=80, 
-        return_world=False,
+        return_world=return_world,
         num_sweeps=1
     )
     lidar, target = ds_vehicle[70] # Get the first frame
@@ -1051,6 +1418,22 @@ def main():
         target["surround_views"], 
         ds_vehicle.label_map_2d
     )
+
+    # Lidar to Image
+    if target["surround_views"]:
+        print("[INFO] Calling Camera with LiDAR Visualizer...")
+        for i, camera_data in enumerate(target["surround_views"]):
+            # Create a separate subplot for each camera
+            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+            Waymo3DDataset.visualize_camera_with_lidar(
+                camera_data_item=camera_data,
+                lidar_points_vehicle=lidar, # Pass the vehicle-frame LiDAR points
+                boxes_7d_vehicle=target["boxes_3d"] if not return_world else None, # Only pass vehicle-frame boxes
+                boxes_labels_3d=target["labels"],
+                title=f"Lidar on Camera {camera_data['camera_name']}",
+                ax=ax
+            )
+
 
     # --- Test BEV ---
     Waymo3DDataset.visualize_bev(

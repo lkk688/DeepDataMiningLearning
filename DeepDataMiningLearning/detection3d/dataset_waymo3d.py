@@ -1085,7 +1085,47 @@ def _diagnose_yaw_config_vehicle(points_xyz, boxes_vehicle, radius=4.0):
     else:
         print("[DIAG] → 继续使用方案 A（你当前的组合更接近真实）。")
 
+# ---------- LiDAR → Image projection function (for your CameraCalibration schema) ----------
+def project_lidar_to_image_v2(points_vehicle: np.ndarray, camera_row):
+    """Project LiDAR points (Vehicle frame) onto camera image plane (Waymo v2.x schema)."""
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
 
+    # Distortion (optional)
+    k1 = float(camera_row["[CameraCalibrationComponent].intrinsic.k1"])
+    k2 = float(camera_row["[CameraCalibrationComponent].intrinsic.k2"])
+    p1 = float(camera_row["[CameraCalibrationComponent].intrinsic.p1"])
+    p2 = float(camera_row["[CameraCalibrationComponent].intrinsic.p2"])
+    k3 = float(camera_row["[CameraCalibrationComponent].intrinsic.k3"])
+
+    # Vehicle → Camera extrinsic
+    extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
+    T_cv = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
+
+    pts_vh = np.concatenate([points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)], axis=1)
+    pts_c = (pts_vh @ T_cv.T)[:, :3]
+    Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+
+    mask = Zc > 1e-3
+    Xc, Yc, Zc = Xc[mask], Yc[mask], Zc[mask]
+
+    u = fx * Xc / Zc + cx
+    v = fy * Yc / Zc + cy
+    uv = np.stack([u, v], axis=-1)
+
+    valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    uv = uv[valid]
+    depth = Zc[valid]
+    final_mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+    final_mask[np.where(mask)[0][valid]] = True
+
+    return uv, depth, final_mask, width, height
+import cv2
 def main():
 
     # 先在 Vehicle 下检查：return_world=False
@@ -1134,6 +1174,35 @@ def main():
         invert_yaw_for_open3d=False, # 先保持 False；若诊断建议 B，再切 True/或在绘制时用 -yaw
         save_ply_path="output/frame_0000.ply"
     )
+
+    # ===== LiDAR → Image Projection =====
+    print("\n========== LIDAR → CAMERA PROJECTION ==========")
+    points_vehicle = lidar[:, :3].numpy()
+
+    # Load camera calibration file for the same segment
+    fname = ds.frame_index[30][0]
+    pf_cam = pq.ParquetFile(os.path.join(ds.root, ds.split, "camera_calibration", fname))
+    df_cam = pf_cam.read_row_group(0).to_pandas()
+
+    # Select FRONT camera (key.camera_name = 1)
+    cam_row = df_cam[df_cam["key.camera_name"] == 1].iloc[0]
+
+    uv, depth, mask, width, height = project_lidar_to_image_v2(points_vehicle, cam_row)
+    print(f"[INFO] Projected {len(uv)} LiDAR points into FRONT camera image.")
+
+    # Load camera image
+    pf_img = pq.ParquetFile(os.path.join(ds.root, ds.split, "camera_image", fname))
+    df_img = pf_img.read_row_group(0).to_pandas()
+    img_row = df_img[df_img["key.camera_name"] == 1].iloc[0]
+    img_bytes = img_row["[CameraImageComponent].image"]
+    img = cv2.imdecode(np.frombuffer(img_bytes.as_py(), np.uint8), cv2.IMREAD_COLOR)
+
+    # Draw projected points
+    for (u, v) in uv.astype(int):
+        cv2.circle(img, (u, v), 1, (0, 255, 0), -1)
+    cv2.imshow("LiDAR → Camera (Front)", img)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
     # ===== World frame 测试（不再对点云做二次变换！）=====
     print("\n========== WORLD FRAME TEST ==========")
