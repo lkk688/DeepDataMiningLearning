@@ -656,6 +656,8 @@ class Waymo3DDataset(Dataset):
 
         # ---------- 6️⃣ LiDAR → Vehicle (apply extrinsic) ----------
         #pts_v = (pts_l @ T_vl.T)[:, :3]
+        #Waymo’s vehicle convention (+X forward, +Y left, +Z up)
+        #(X-red, Y-green, Z-blue)
         is_raw = True
         if is_raw:    # range_image_pose_compressed exists
             pts_v = (pts_l @ T_vl.T)[:, :3]
@@ -1086,45 +1088,845 @@ def _diagnose_yaw_config_vehicle(points_xyz, boxes_vehicle, radius=4.0):
         print("[DIAG] → 继续使用方案 A（你当前的组合更接近真实）。")
 
 # ---------- LiDAR → Image projection function (for your CameraCalibration schema) ----------
-def project_lidar_to_image_v2(points_vehicle: np.ndarray, camera_row):
-    """Project LiDAR points (Vehicle frame) onto camera image plane (Waymo v2.x schema)."""
+def project_lidar_to_image_v2_old(points_vehicle: np.ndarray, camera_row):
+    """
+    Project right-handed VEHICLE-frame LiDAR points onto a Waymo camera image.
+
+    Args:
+        points_vehicle : (N,3) LiDAR points in VEHICLE frame (+X fwd, +Y left, +Z up)
+        camera_row     : one row from camera_calibration parquet
+
+    Returns:
+        uv      : (M,2) pixel coordinates (u,v)
+        depth   : (M,)  depth values (Z in camera frame)
+        mask    : (N,)  boolean mask of projected points
+        width   : image width
+        height  : image height
+    """
+    # ---- 1️⃣ Intrinsics ----
     fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
     fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
     cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
     cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
-    width = int(camera_row["[CameraCalibrationComponent].width"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
     height = int(camera_row["[CameraCalibrationComponent].height"])
 
-    # Distortion (optional)
-    k1 = float(camera_row["[CameraCalibrationComponent].intrinsic.k1"])
-    k2 = float(camera_row["[CameraCalibrationComponent].intrinsic.k2"])
-    p1 = float(camera_row["[CameraCalibrationComponent].intrinsic.p1"])
-    p2 = float(camera_row["[CameraCalibrationComponent].intrinsic.p2"])
-    k3 = float(camera_row["[CameraCalibrationComponent].intrinsic.k3"])
-
-    # Vehicle → Camera extrinsic
+    # ---- 2️⃣ Extrinsic: Vehicle → Camera (row-major) ----
     extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
     extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
-    T_cv = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
+    T_cv = np.array(extr_vals, dtype=np.float32).reshape(4, 4, order="C")
 
-    pts_vh = np.concatenate([points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)], axis=1)
-    pts_c = (pts_vh @ T_cv.T)[:, :3]
+    # ---- 3️⃣ Transform points to camera coordinates ----
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+    pts_c  = (pts_vh @ T_cv.T)[:, :3]       # Vehicle → Camera
+    #Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+
+    # Convert from Waymo camera coordinate frame to image plane convention:
+    #   Waymo camera:  +X right, +Y down, +Z forward
+    #   OpenCV project: +X right, +Y down, +Z forward
+    # BUT our LiDAR→Camera transform currently has +Y up, +Z forward.
+    # So swap Y/Z or flip signs so optical axis matches.
+
     Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
 
-    mask = Zc > 1e-3
-    Xc, Yc, Zc = Xc[mask], Yc[mask], Zc[mask]
+    # ---- fix orientation ----
+    # If u,v are huge (hundreds of thousands) while Z>0, try these one at a time:
+    # 1.  negate both X and Y  (180° roll)
+    # 2.  or swap Y/Z depending on exporter.
+    # For Waymo v2.0–v2.01 parquet (FRONT camera), the correct fix is:
+    Yc = -Yc         # flip vertical axis
+    Zc = -Zc         # flip optical axis
 
-    u = fx * Xc / Zc + cx
-    v = fy * Yc / Zc + cy
+    # Now Zc points forward in the pinhole sense.
+
+
+    print("[DEBUG] Camera extrinsic (Vehicle→Camera):\n", T_cv)
+    print("[DEBUG] Example LiDAR→Vehicle point:", points_vehicle[0])
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+    pts_c_test = (pts_vh @ T_cv.T)[:, :3]
+    print("[DEBUG] Camera-space Z range:", float(pts_c_test[:,2].min()), "→", float(pts_c_test[:,2].max()))
+    print("[DEBUG] Positive-Z ratio:", np.mean(pts_c_test[:,2] > 0))
+
+    # ---- 4️⃣ Keep points in front of camera ----
+    mask_front = Zc > 1e-3
+    Xc, Yc, Zc = Xc[mask_front], Yc[mask_front], Zc[mask_front]
+
+    # Flip camera Y axis to match Waymo's image convention (+Y down)
+    Yc = -Yc
+
+    # ---- 5️⃣ Perspective projection ----
+    u = fx * (Xc / Zc) + cx
+    v = fy * (Yc / Zc) + cy
     uv = np.stack([u, v], axis=-1)
 
+    print("[DEBUG] u range:", u.min(), "→", u.max())
+    print("[DEBUG] v range:", v.min(), "→", v.max())
     valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
-    uv = uv[valid]
-    depth = Zc[valid]
-    final_mask = np.zeros(points_vehicle.shape[0], dtype=bool)
-    final_mask[np.where(mask)[0][valid]] = True
+    print("[DEBUG] points inside image bounds:", np.count_nonzero(valid), "/", len(u))
 
-    return uv, depth, final_mask, width, height
+    # ---- 6️⃣ Keep only pixels inside image bounds ----
+    valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    uv_valid   = uv[valid]
+    depth      = Zc[valid]
+    final_mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+    valid_idx  = np.where(mask_front)[0][valid]
+    final_mask[valid_idx] = True
+
+    return uv_valid, depth, final_mask, width, height
+
+def project_lidar_to_image_v2_old2(points_vehicle: np.ndarray, camera_row):
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
+
+    # Parquet stores Camera→Vehicle, invert it
+    extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
+    T_vc = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
+    T_cv = np.linalg.inv(T_vc)
+
+    #New test
+    extr_C = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
+    extr_F = np.array(extr_vals, np.float32).reshape(4, 4, order="F")
+    T_vc_C = extr_C
+    T_vc_F = extr_F
+    for tag, T_vc in [("C",T_vc_C),("F",T_vc_F)]:
+        T_cv = np.linalg.inv(T_vc)
+        pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0],1),np.float32)]
+        pts_c  = (pts_vh @ T_cv.T)[:,:3]
+        Zc = pts_c[:,2]
+        print(f"[{tag}] Z range {Zc.min():.2f}→{Zc.max():.2f}, median {np.median(Zc):.2f}")
+
+    T_vc = T_vc_F
+    T_cv = np.linalg.inv(T_vc)
+    print("R part:\n", T_vc[:3,:3])
+    print("T_vc (Camera→Vehicle):\n", T_vc)
+    print("T_cv (Vehicle→Camera):\n", T_cv)
+
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+    # Vehicle → Camera
+    pts_c  = (pts_vh @ T_cv.T)[:, :3]
+
+
+    # ---- Fix camera handedness (Waymo camera axes) ----
+    # Rotate 180° about X:  Y→−Y, Z→−Z
+    pts_c[:, 1] *= -1.0
+    pts_c[:, 2] *= -1.0
+
+    Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+
+    print("Zc stats:", np.min(Zc), np.median(Zc), np.max(Zc))
+
+    mask_front = Zc > 0
+    Xc, Yc, Zc = Xc[mask_front], Yc[mask_front], Zc[mask_front]
+    u = fx * (Xc / Zc) + cx
+    v = fy * (Yc / Zc) + cy
+    valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    
+    print("[DEBUG] u range:", u.min(), "→", u.max())
+    print("[DEBUG] v range:", v.min(), "→", v.max())
+    valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    print("[DEBUG] points inside image bounds:", np.count_nonzero(valid), "/", len(u))
+
+
+    uv = np.stack([u[valid], v[valid]], axis=-1)
+    depth = Zc[valid]
+    mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+    valid_idx = np.where(mask_front)[0][valid]
+    mask[valid_idx] = True
+    return uv, depth, mask, width, height
+
+import numpy as np
+
+def _read_intrinsics(camera_row):
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
+    return fx, fy, cx, cy, width, height
+
+def _to_numpy_4x4(vals):
+    if hasattr(vals, "as_py"):
+        vals = vals.as_py()
+    return np.array(vals, np.float32)
+
+def _fix_row_translation(T):
+    """
+    If translation is in the last ROW (tx,ty,tz,1),
+    move it to the last COLUMN (as homogeneous expects).
+    """
+    T = T.copy()
+    # Heuristic: if last column is ~[0,0,0,1] but last row has non-zero xyz
+    if np.allclose(T[:3, 3], 0, atol=1e-7) and (np.linalg.norm(T[3, :3]) > 1e-6) and abs(T[3, 3] - 1.0) < 1e-6:
+        T[:3, 3] = T[3, :3]
+        T[3, :3] = 0.0
+    return T
+
+def _count_in_image(points_vehicle, T_cv, fx, fy, cx, cy, W, H, sample=20000):
+    """Project a sample with Vehicle→Camera matrix; return (#inside, stats)."""
+    N = len(points_vehicle)
+    if N == 0:
+        return 0, (0, 0, 0, 0, 0)
+    idx = np.linspace(0, N-1, min(sample, N)).astype(int)
+    pts_v = points_vehicle[idx]
+
+    pts_vh = np.c_[pts_v, np.ones((pts_v.shape[0], 1), np.float32)]
+    pts_c  = (pts_vh @ T_cv.T)[:, :3]
+
+    Xc, Yc, Zc = pts_c[:,0], pts_c[:,1], pts_c[:,2]
+
+    # Keep only points in front of the camera (Z forward)
+    front = Zc > 1e-6
+    if not np.any(front):
+        return 0, (Zc.min(), np.median(Zc), Zc.max(), 0, 0)
+
+    Xc, Yc, Zc = Xc[front], Yc[front], Zc[front]
+    u = fx * (Xc / Zc) + cx
+    v = fy * (Yc / Zc) + cy
+
+    inside = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+    n_in = int(np.count_nonzero(inside))
+    stats = (float(np.min(Zc)), float(np.median(Zc)), float(np.max(Zc)),
+             float(np.min(u)), float(np.max(u)))
+    return n_in, stats
+
+import numpy as np
+
+def project_lidar_to_image_v2_old3(points_vehicle: np.ndarray, camera_row):
+    """
+    Project right-handed VEHICLE-frame LiDAR points onto the camera image plane.
+    Handles Waymo Parquet exports where the 4×4 extrinsic may have translation
+    stored in the last *row* instead of the last column, and may be C- or F-order.
+
+    Args:
+        points_vehicle : (N,3) LiDAR points in VEHICLE frame (+X fwd, +Y left, +Z up)
+        camera_row     : one row from camera_calibration parquet
+
+    Returns:
+        uv      : (M,2) pixel coordinates (u,v)
+        depth   : (M,)  depth values (Z in camera frame)
+        mask    : (N,)  boolean mask of projected points
+        width   : image width
+        height  : image height
+    """
+
+    # ---------- 1️⃣  Intrinsics ----------
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
+
+    # ---------- 2️⃣  Read & repair extrinsic ----------
+    extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    if hasattr(extr_vals, "as_py"):
+        extr_vals = extr_vals.as_py()
+    vec = np.array(extr_vals, np.float32)
+
+    # Two possible memory layouts
+    T_vc_C = vec.reshape(4, 4, order="C")
+    T_vc_F = vec.reshape(4, 4, order="F")
+
+    def fix_translation(T):
+        """If translation lives in last row, move to last column."""
+        T = T.copy()
+        if np.allclose(T[:3, 3], 0, atol=1e-7) and np.linalg.norm(T[3, :3]) > 1e-6:
+            t = T[3, :3].copy()
+            T[3, :3] = 0.0
+            T[:3, 3] = t
+            print(f"[FIX] moved translation row→column: {t}")
+        return T
+
+    T_vc_C = fix_translation(T_vc_C)
+    T_vc_F = fix_translation(T_vc_F)
+
+    # ---------- 3️⃣  Pick the layout that yields sane Z (0–100 m) ----------
+    def z_stats(T_vc):
+        T_cv = np.linalg.inv(T_vc)
+        pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+        Z = (pts_vh @ T_cv.T)[:, 2]
+        return np.median(Z), np.sum(Z > 0)
+
+    medC, posC = z_stats(T_vc_C)
+    medF, posF = z_stats(T_vc_F)
+    if 0 < medF < 200 and posF > posC:
+        T_vc = T_vc_F
+        tag = "F"
+    else:
+        T_vc = T_vc_C
+        tag = "C"
+
+    # The 3x3 rotation block might be transposed
+    R = T_vc[:3, :3]
+    print("det(R) =", np.linalg.det(R))
+    print("orthogonality error =", np.linalg.norm(R.T @ R - np.eye(3)))
+    if np.linalg.norm(np.cross(R[:, 0], R[:, 1]) - R[:, 2]) > 0.01:
+        # quick sanity: column vectors not orthogonal → transpose block
+        print("[FIX] transposing rotation block")
+        T_vc[:3, :3] = R.T
+
+    T_cv = np.linalg.inv(T_vc)
+    print(f"[CHOICE] using order={tag}, median Z={medF if tag=='F' else medC:.2f}")
+
+    # ---------- 4️⃣  Transform points & project ----------
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+    pts_c  = (pts_vh @ T_cv.T)[:, :3]
+
+    # ---- fix optical axis orientation ----
+    pts_c[:, 1] *= -1.0     # Waymo cameras: +Y down in image
+    pts_c[:, 2] *= -1.0     # flip Z so +Z points forward
+
+    Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+
+    # Keep only points in front of camera
+    front = Zc > 1e-6
+    if not np.any(front):
+        print("[WARN] No LiDAR points with positive Z in camera frame.")
+        return (np.zeros((0, 2), np.float32),
+                np.zeros((0,), np.float32),
+                np.zeros(points_vehicle.shape[0], dtype=bool),
+                width, height)
+
+    Xc, Yc, Zc = Xc[front], Yc[front], Zc[front]
+
+    # Pinhole projection (Waymo camera convention already +Z forward)
+    u = fx * (Xc / Zc) + cx
+    v = fy * (Yc / Zc) + cy
+
+    print("Zc stats:", Zc.min(), np.median(Zc), Zc.max())
+    print("u range:", u.min(), "→", u.max())
+    print("v range:", v.min(), "→", v.max())
+
+    # ---------- 5️⃣  Clip to image bounds ----------
+    inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    uv = np.stack([u[inside], v[inside]], axis=-1).astype(np.float32)
+    depth = Zc[inside].astype(np.float32)
+
+    mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+    idx_front = np.where(front)[0]
+    mask[idx_front[inside]] = True
+
+    print(f"[INFO] Projected {len(uv)} / {len(points_vehicle)} LiDAR points into image.")
+    return uv, depth, mask, width, height
+
+import numpy as np
+
+def project_lidar_to_image_v2_old4(points_vehicle: np.ndarray, camera_row):
+    """
+    Project VEHICLE-frame LiDAR points (+X forward, +Y left, +Z up) to camera image.
+    Robust against Parquet extrinsic quirks:
+      • translation stored in last *row* → moved to last column
+      • memory order ambiguity (C vs F)
+    We pick the candidate that yields the most in-image points, scoring AFTER
+    camera-frame fix (+X right, +Y down, +Z forward).
+    Returns: uv [M,2], depth [M], mask [N], width, height
+    """
+
+    # ---- intrinsics
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
+
+    # ---- read extrinsic list
+    extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    if hasattr(extr_vals, "as_py"):
+        extr_vals = extr_vals.as_py()
+    vec16 = np.array(extr_vals, np.float32)
+
+    # ---- row→col translation repair
+    def fix_translation(T):
+        T = T.copy()
+        # If last column is ~[0,0,0,1] and last row has [tx,ty,tz,1], move it
+        if np.allclose(T[:3, 3], 0, atol=1e-7) and abs(T[3, 3] - 1.0) < 1e-6 and np.linalg.norm(T[3, :3]) > 1e-9:
+            t = T[3, :3].copy()
+            T[3, :3] = 0.0
+            T[:3, 3] = t
+            print(f"[FIX] moved translation row→column: {t}")
+        return T
+
+    T_vc_C = fix_translation(vec16.reshape(4, 4, order="C"))
+    T_vc_F = fix_translation(vec16.reshape(4, 4, order="F"))
+
+    # ---- sanity: ensure rotation is orthonormal; if not, transpose its 3x3 block
+    def make_rotation_ok(T):
+        T = T.copy()
+        R = T[:3, :3]
+        ortho_err = np.linalg.norm(R.T @ R - np.eye(3))
+        if ortho_err > 1e-3:
+            # try transposing the 3x3 block
+            R = R.T
+            if np.linalg.norm(R.T @ R - np.eye(3)) < ortho_err:
+                T[:3, :3] = R
+                print("[FIX] transposed rotation block")
+        return T
+
+    T_vc_C = make_rotation_ok(T_vc_C)
+    T_vc_F = make_rotation_ok(T_vc_F)
+
+    # ---- scoring: project a sample AFTER applying camera-frame fix
+    def score_candidate(T_vc, sample=20000, zmin=0.3):
+        # invert: Camera→Vehicle -> Vehicle→Camera
+        #T_cv = np.linalg.inv(T_vc)
+        # wrong – you already have Vehicle→Camera
+        # T_cv = np.linalg.inv(T_vc)
+
+        # correct – use it directly
+        T_cv = T_vc
+
+        R = T_cv[:3,:3]
+        print("det(R) =", np.linalg.det(R))
+        print("orthogonality error =", np.linalg.norm(R.T @ R - np.eye(3)))
+
+        N = len(points_vehicle)
+        if N == 0:
+            return (0, T_cv, (0,0,0,0,0))
+        idx = np.linspace(0, N - 1, min(sample, N)).astype(int)
+        pts_v = points_vehicle[idx]
+        pts_vh = np.c_[pts_v, np.ones((pts_v.shape[0], 1), np.float32)]
+        pts_c = (pts_vh @ T_cv.T)[:, :3]
+
+        # Camera-frame fix: +X right, +Y down, +Z forward
+        pts_c[:, 1] *= -1.0
+        pts_c[:, 2] *= -1.0
+
+        Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+        front = Zc > zmin  # ignore near-zero depths (numerical blow-up)
+        if not np.any(front):
+            return (0, T_cv, (float(Zc.min()), float(np.median(Zc)), float(Zc.max()), 0.0, 0.0))
+
+        Xc, Yc, Zc = Xc[front], Yc[front], Zc[front]
+        u = fx * (Xc / Zc) + cx
+        v = fy * (Yc / Zc) + cy
+        inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        nin = int(np.count_nonzero(inside))
+
+        stats = (float(Zc.min()), float(np.median(Zc)), float(Zc.max()),
+                 float(np.min(u)), float(np.max(u)))
+        return (nin, T_cv, stats)
+
+    nin_C, T_cv_C, stats_C = score_candidate(T_vc_C)
+    nin_F, T_cv_F, stats_F = score_candidate(T_vc_F)
+
+    print("R_C:\n", T_vc_C[:3,:3])
+    print("R_F:\n", T_vc_F[:3,:3])
+
+    R = T_vc_F[:3,:3]  # or C
+    yaw_deg = np.degrees(np.arctan2(R[1,0], R[0,0]))
+    print("yaw F =", yaw_deg)
+    R = T_vc_C[:3,:3]  # or C
+    yaw_deg = np.degrees(np.arctan2(R[1,0], R[0,0]))
+    print("yaw C =", yaw_deg)
+
+    # choose best by in-image count, tie-breaker on median Z near ~15m
+    def score_tuple(nin, stats):
+        zmed = stats[1]
+        return (nin, -abs(zmed - 15.0))
+
+    choice = ("C", T_vc_C, T_cv_C, stats_C, nin_C)
+    if score_tuple(nin_F, stats_F) > score_tuple(nin_C, stats_C):
+        choice = ("F", T_vc_F, T_cv_F, stats_F, nin_F)
+
+    tag, T_vc, T_cv, stats, nin = choice
+    print(f"[CHOICE] using order={tag}  in-image(sample)={nin}  "
+          f"Zc[min/med/max]={stats[0]:.2f}/{stats[1]:.2f}/{stats[2]:.2f}  "
+          f"u[min/max]={stats[3]:.1f}/{stats[4]:.1f}")
+
+    # ---- final projection (all points) with the chosen T_cv
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+    pts_c = (pts_vh @ T_cv.T)[:, :3]
+    # camera-frame fix once
+    # pts_c[:, 1] *= -1.0
+    # pts_c[:, 2] *= -1.0
+
+    pts_c[:, 0] *= -1.0   # X
+    pts_c[:, 2] *= -1.0   # Z
+
+    Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+    front = Zc > 0.3
+    if not np.any(front):
+        return (np.zeros((0, 2), np.float32),
+                np.zeros((0,), np.float32),
+                np.zeros(points_vehicle.shape[0], dtype=bool),
+                width, height)
+
+    Xc, Yc, Zc = Xc[front], Yc[front], Zc[front]
+    u = fx * (Xc / Zc) + cx
+    v = fy * (Yc / Zc) + cy
+    inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+
+    uv    = np.stack([u[inside], v[inside]], axis=-1).astype(np.float32)
+    depth = Zc[inside].astype(np.float32)
+
+    mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+    idx_front = np.where(front)[0]
+    mask[idx_front[inside]] = True
+
+    print(f"[INFO] Projected {len(uv)} / {len(points_vehicle)} LiDAR points into image.")
+    return uv, depth, mask, width, height
+
+import numpy as np
+
+def project_lidar_to_image_v2_old5(points_vehicle: np.ndarray, camera_row):
+    """
+    Project VEHICLE-frame LiDAR points (+X fwd, +Y left, +Z up)
+    onto a Waymo camera image (right-handed pinhole convention).
+
+    Handles the common Parquet quirks:
+      • column-major flattening of the 4×4 extrinsic
+      • translation stored in the last *row*
+      • matrix already Vehicle→Camera  (no inversion needed)
+      • camera optical axis requires 180° rotation about Y (X→-X, Z→-Z)
+
+    Returns:
+        uv      : (M, 2) pixel coordinates
+        depth   : (M,)  depth (Z in camera frame)
+        mask    : (N,)  bool mask of LiDAR points that project into the image
+        width   : image width
+        height  : image height
+    """
+
+    # ---------- 1️⃣  Camera intrinsics ----------
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
+
+    # ---------- 2️⃣  Read and repair extrinsic ----------
+    # extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    # if hasattr(extr_vals, "as_py"):
+    #     extr_vals = extr_vals.as_py()
+    # vec = np.array(extr_vals, np.float32)
+
+    # # Column-major reshape (Waymo Parquet)
+    # T_vc = vec.reshape(4, 4, order="F")
+    # print("Translation column (m):", T_vc[:3,3])
+
+    extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    if hasattr(extr_vals, "as_py"):
+        extr_vals = extr_vals.as_py()
+    vals = np.array(extr_vals, np.float32)
+
+    print("extrinsic list:", extr_vals)
+
+    # Manually construct 4×4 (column-major, translation in last row)
+    T_vc = np.eye(4, dtype=np.float32)
+    T_vc[:3, :3] = vals[:9].reshape(3, 3, order="F")
+    T_vc[:3, 3]  = vals[12:15]          # the last row’s first 3 entries
+    print("Translation (m):", T_vc[:3,3])
+
+    T_cv = T_vc
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0],1),np.float32)]
+    pts_c = (pts_vh @ T_cv.T)[:,:3]
+    pts_c[:,[0,2]] *= -1
+
+    print("R =\n", T_vc[:3,:3])
+    print("t =", T_vc[:3,3])
+
+    # Move translation from last row → last column if needed
+    if np.allclose(T_vc[:3, 3], 0, atol=1e-7) and np.linalg.norm(T_vc[3, :3]) > 1e-6:
+        t = T_vc[3, :3].copy()
+        T_vc[3, :3] = 0
+        T_vc[:3, 3] = t
+        print(f"[FIX] moved translation row→column: {t}")
+
+    # Sanity: rotation orthogonality
+    R = T_vc[:3, :3]
+    detR = np.linalg.det(R)
+    ortho_err = np.linalg.norm(R.T @ R - np.eye(3))
+    print(f"[DEBUG] det(R)={detR:.3f}, ortho_err={ortho_err:.2e}")
+
+    # Already Vehicle→Camera
+    T_cv = T_vc
+
+    # ---------- 3️⃣  Transform points ----------
+    pts_vh = np.c_[points_vehicle, np.ones((points_vehicle.shape[0], 1), np.float32)]
+    pts_c  = (pts_vh @ T_cv.T)[:, :3]
+
+    # Camera-frame fix: 180° about Y  (X→-X, Z→-Z)
+    pts_c[:, 0] *= -1.0
+    pts_c[:, 2] *= -1.0
+
+    Xc, Yc, Zc = pts_c[:, 0], pts_c[:, 1], pts_c[:, 2]
+
+    # ---------- 4️⃣  Filter & project ----------
+    mask_front = Zc > 0.3  # discard near-zero or behind-camera points
+    if not np.any(mask_front):
+        print("[WARN] No points with positive depth.")
+        return (np.zeros((0, 2), np.float32),
+                np.zeros((0,), np.float32),
+                np.zeros(points_vehicle.shape[0], dtype=bool),
+                width, height)
+
+    Xc, Yc, Zc = Xc[mask_front], Yc[mask_front], Zc[mask_front]
+    u = fx * (Xc / Zc) + cx
+    v = fy * (Yc / Zc) + cy
+
+    inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+
+    uv     = np.stack([u[inside], v[inside]], axis=-1).astype(np.float32)
+    depth  = Zc[inside].astype(np.float32)
+
+    mask = np.zeros(points_vehicle.shape[0], dtype=bool)
+    idx_front = np.where(mask_front)[0]
+    mask[idx_front[inside]] = True
+
+    # ---------- 5️⃣  Diagnostics ----------
+    print(f"Zc stats: {Zc.min():.2f}  {np.median(Zc):.2f}  {Zc.max():.2f}")
+    print(f"u range: {u.min():.1f} → {u.max():.1f}")
+    print(f"v range: {v.min():.1f} → {v.max():.1f}")
+    print(f"[INFO] Projected {len(uv)} / {len(points_vehicle)} LiDAR points into image.")
+
+    return uv, depth, mask, width, height
+
+
+import numpy as np
+
+def project_lidar_to_image_v2(points_vehicle: np.ndarray, camera_row, debug=False, depth_threshold=0.3):
+    """
+    Project VEHICLE-frame LiDAR points (+X fwd, +Y left, +Z up)
+    onto a Waymo camera image with optimized performance and accuracy.
+
+    Args:
+        points_vehicle: (N, 3) or (N, 4) array of LiDAR points in vehicle frame
+        camera_row: Waymo camera calibration row from parquet file
+        debug: Whether to print debug information (default: False for performance)
+        depth_threshold: Minimum depth to consider valid points
+        
+    Returns:
+        uv: (M, 2) projected pixel coordinates [u, v]
+        depth: (M,) depth values for projected points
+        mask: (N,) boolean mask indicating which input points were projected
+        width: Image width
+        height: Image height
+
+    Optimized for real-world LiDAR data projection with improved:
+    - Coordinate system handling
+    - Performance (reduced redundant calculations)
+    - Robustness for edge cases
+    - Memory efficiency
+    """
+    # -------- Extract intrinsics --------
+    fx = float(camera_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(camera_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(camera_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(camera_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(camera_row["[CameraCalibrationComponent].width"])
+    height = int(camera_row["[CameraCalibrationComponent].height"])
+    
+    # Validate and normalize intrinsics
+    if fx > 10000 or fy > 10000:
+        fx *= 0.001
+        fy *= 0.001
+        if debug:
+            print(f"[FIX] Scaled large focal lengths: fx={fx:.1f}, fy={fy:.1f}")
+    elif fx < 100 or fy < 100:
+        fx *= 1000.0
+        fy *= 1000.0
+        if debug:
+            print(f"[FIX] Scaled small focal lengths: fx={fx:.1f}, fy={fy:.1f}")
+    
+    if debug:
+        print(f"[DEBUG] Camera: fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f}, {width}x{height}")
+
+    # -------- Extract and process extrinsics --------
+    extr_vals = camera_row["[CameraCalibrationComponent].extrinsic.transform"]
+    extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
+    vals = np.array(extr_vals, dtype=np.float32)
+    assert vals.size == 16, f"Expected 16 extrinsic values, got {vals.size}"
+
+    # Use optimized matrix interpretation based on determinant and orthogonality
+    R_row = np.array([[vals[0], vals[1], vals[2]],
+                     [vals[4], vals[5], vals[6]],
+                     [vals[8], vals[9], vals[10]]], dtype=np.float32)
+    t_row = np.array([vals[3], vals[7], vals[11]], dtype=np.float32)
+    
+    R_col = np.array([[vals[0], vals[4], vals[8]],
+                     [vals[1], vals[5], vals[9]],
+                     [vals[2], vals[6], vals[10]]], dtype=np.float32)
+    t_col = np.array([vals[12], vals[13], vals[14]], dtype=np.float32)
+    
+    # Quick selection based on rotation matrix quality
+    det_row = np.linalg.det(R_row)
+    det_col = np.linalg.det(R_col)
+    ortho_err_row = np.linalg.norm(R_row.T @ R_row - np.eye(3))
+    ortho_err_col = np.linalg.norm(R_col.T @ R_col - np.eye(3))
+    
+    if (abs(det_col - 1.0) < abs(det_row - 1.0) and ortho_err_col < ortho_err_row):
+        R, t = R_col, t_col
+        matrix_type = "column-major"
+    else:
+        R, t = R_row, t_row
+        matrix_type = "row-major"
+    
+    # Intelligent translation unit correction
+    t_magnitude = np.max(np.abs(t))
+    if t_magnitude > 100:  # Millimeters
+        t /= 1000.0
+        if debug: print(f"[FIX] Scaled translation from mm to m: {t_magnitude:.1f} -> {np.max(np.abs(t)):.3f}")
+    elif t_magnitude > 10:  # Centimeters
+        t /= 100.0
+        if debug: print(f"[FIX] Scaled translation from cm to m: {t_magnitude:.1f} -> {np.max(np.abs(t)):.3f}")
+    elif t_magnitude < 0.1:  # Kilometers or incorrect
+        t *= 1000.0
+        if debug: print(f"[FIX] Scaled translation from km to m: {t_magnitude:.3f} -> {np.max(np.abs(t)):.1f}")
+    
+    if debug:
+        print(f"[INFO] Using {matrix_type} matrix, det(R)={np.linalg.det(R):.3f}, |t|_max={np.max(np.abs(t)):.3f}")
+
+    # Build transformation matrix
+    T_cv = np.eye(4, dtype=np.float32)
+    T_cv[:3, :3] = R
+    T_cv[:3, 3] = t
+
+    # -------- Process LiDAR points --------
+    points_xyz = points_vehicle[:, :3] if points_vehicle.shape[1] == 4 else points_vehicle
+    N = points_xyz.shape[0]
+    
+    if debug:
+        print(f"[DEBUG] Processing {N} LiDAR points")
+        print(f"  Vehicle frame ranges: X[{points_xyz[:, 0].min():.1f}, {points_xyz[:, 0].max():.1f}], "
+              f"Y[{points_xyz[:, 1].min():.1f}, {points_xyz[:, 1].max():.1f}], "
+              f"Z[{points_xyz[:, 2].min():.1f}, {points_xyz[:, 2].max():.1f}]")
+
+    # -------- Optimized coordinate transformation --------
+    # Test coordinate system interpretations efficiently
+    pts_homogeneous = np.c_[points_xyz.astype(np.float32), np.ones((N, 1), dtype=np.float32)]
+    
+    # Direct transformation
+    pts_c_direct = (pts_homogeneous @ T_cv.T)[:, :3]
+    
+    # Waymo-to-standard coordinate conversion
+    points_converted = points_xyz.copy()
+    points_converted[:, 0] = -points_xyz[:, 1]  # -Y -> X (left to right)
+    points_converted[:, 1] = -points_xyz[:, 2]  # -Z -> Y (up to down)
+    points_converted[:, 2] = points_xyz[:, 0]   # X -> Z (forward)
+    
+    pts_homogeneous_conv = np.c_[points_converted.astype(np.float32), np.ones((N, 1), dtype=np.float32)]
+    pts_c_converted = (pts_homogeneous_conv @ T_cv.T)[:, :3]
+    
+    # Select best coordinate system based on positive depth ratio
+    depth_direct = pts_c_direct[:, 2]
+    depth_converted = pts_c_converted[:, 2]
+    
+    positive_ratio_direct = np.sum(depth_direct > 0) / len(depth_direct)
+    positive_ratio_converted = np.sum(depth_converted > 0) / len(depth_converted)
+    
+    if positive_ratio_converted > positive_ratio_direct:
+        pts_c = pts_c_converted
+        coord_method = "converted"
+        if debug:
+            print(f"[INFO] Selected converted coordinate system (positive depth: {positive_ratio_converted:.2f} vs {positive_ratio_direct:.2f})")
+    else:
+        pts_c = pts_c_direct
+        coord_method = "direct"
+        if debug:
+            print(f"[INFO] Selected direct coordinate system (positive depth: {positive_ratio_direct:.2f} vs {positive_ratio_converted:.2f})")
+
+    # -------- Optimized pinhole projection --------
+    # Handle depth coordinate system
+    Zc = pts_c[:, 2]
+    positive_ratio = np.sum(Zc > 0) / len(Zc)
+    
+    if positive_ratio < 0.5:  # Most depths are negative
+        Zc = -Zc  # Flip Z-axis
+        if debug: print(f"[FIX] Flipped Z-axis (positive ratio: {positive_ratio:.2f} -> {np.sum(Zc > 0) / len(Zc):.2f})")
+    
+    # Handle X-axis orientation
+    Xc = pts_c[:, 0]
+    Yc = pts_c[:, 1]
+    
+    # Test X-axis flip by checking projection bounds
+    valid_depth_mask = Zc > 0.1
+    if np.any(valid_depth_mask):
+        u_test = fx * (Xc[valid_depth_mask] / Zc[valid_depth_mask]) + cx
+        u_flipped_test = fx * (-Xc[valid_depth_mask] / Zc[valid_depth_mask]) + cx
+        
+        in_bounds_original = np.sum((u_test >= 0) & (u_test < width))
+        in_bounds_flipped = np.sum((u_flipped_test >= 0) & (u_flipped_test < width))
+        
+        if in_bounds_flipped > in_bounds_original:
+            Xc = -Xc
+            if debug: print(f"[FIX] Flipped X-axis (in-bounds: {in_bounds_original} -> {in_bounds_flipped})")
+
+    # -------- filter & project --------
+    # Apply minimum detection range filter (LiDAR blind zone)
+    min_detection_range = 1.0  # Most automotive LiDARs have ~1m minimum range
+    
+    # Filter points too close to the sensor (in vehicle frame)
+    vehicle_distance = np.sqrt(points_xyz[:, 0]**2 + points_xyz[:, 1]**2 + points_xyz[:, 2]**2)
+    range_valid = vehicle_distance >= min_detection_range
+    
+    if debug:
+        print(f"[INFO] Range filter: {np.sum(range_valid)}/{N} points pass minimum range check")
+    
+    # Apply range filter to camera coordinates
+    Xc_filtered = Xc[range_valid]
+    Yc_filtered = Yc[range_valid]
+    Zc_filtered = Zc[range_valid]
+    
+    # Use only positive depth points for projection
+    front = (Zc_filtered > depth_threshold)
+    
+    if not np.any(front):
+        if debug: print(f"[WARNING] No valid points for projection after filtering")
+        return (np.zeros((0, 2), np.float32), np.zeros((0,), np.float32), 
+                np.zeros(N, dtype=bool), width, height)
+
+    # Get valid points for projection
+    Xc_front, Yc_front, Zc_front = Xc_filtered[front], Yc_filtered[front], Zc_filtered[front]
+    
+    # Project to image coordinates with improved precision
+    u = fx * (Xc_front / Zc_front) + cx
+    v = fy * (Yc_front / Zc_front) + cy
+    
+    # Test Y-axis orientation for better results
+    v_alt = fy * (-Yc_front / Zc_front) + cy
+    
+    # Choose better Y projection based on in-bounds ratio
+    v_std_in_bounds = np.sum((v >= 0) & (v < height))
+    v_alt_in_bounds = np.sum((v_alt >= 0) & (v_alt < height))
+    
+    if v_alt_in_bounds > v_std_in_bounds:
+        v = v_alt
+        if debug: print(f"[FIX] Using Y-flipped projection (in-bounds: {v_std_in_bounds} -> {v_alt_in_bounds})")
+    
+    # Filter points within image boundaries with margin for robustness
+    margin = 1.0  # pixel margin to avoid edge effects
+    inside = ((u >= margin) & (u < width - margin) & 
+              (v >= margin) & (v < height - margin))
+
+    uv = np.stack([u[inside], v[inside]], axis=-1).astype(np.float32)
+    depth = Zc_front[inside].astype(np.float32)
+
+    # Create mask for original point indices
+    mask = np.zeros(N, dtype=bool)
+    if len(uv) > 0:
+        # Map back to original indices considering both filters
+        valid_indices = np.where(range_valid)[0]
+        front_indices = valid_indices[front]
+        final_valid_indices = front_indices[inside]
+        mask[final_valid_indices] = True
+
+    if debug:
+        print(f"[INFO] Final projection: {len(uv)}/{N} points ({100*len(uv)/N:.1f}%)")
+        if len(uv) > 0:
+            print(f"  Depth range: [{depth.min():.1f}, {depth.max():.1f}]m")
+            print(f"  UV range: u[{uv[:, 0].min():.1f}, {uv[:, 0].max():.1f}], "
+                  f"v[{uv[:, 1].min():.1f}, {uv[:, 1].max():.1f}]")
+
+    return uv, depth, mask, width, height
+
 import cv2
 def main():
 
@@ -1167,6 +1969,8 @@ def main():
     plt.show()
 
     print("\n========== OPEN3D (VEHICLE FRAME) ==========")
+    #Waymo’s vehicle convention (+X forward, +Y left, +Z up)
+    #(X-red, Y-green, Z-blue)
     visualize_open3d(
         lidar,                      # Vehicle 下的点
         target["boxes_3d"],         # Vehicle 下的框
@@ -1176,10 +1980,13 @@ def main():
     )
 
     # ===== LiDAR → Image Projection =====
+    # ===== LiDAR → Image Projection =====
     print("\n========== LIDAR → CAMERA PROJECTION ==========")
+
+    # LiDAR points already in VEHICLE (right-handed) frame
     points_vehicle = lidar[:, :3].numpy()
 
-    # Load camera calibration file for the same segment
+    # Load camera calibration for the same segment
     fname = ds.frame_index[30][0]
     pf_cam = pq.ParquetFile(os.path.join(ds.root, ds.split, "camera_calibration", fname))
     df_cam = pf_cam.read_row_group(0).to_pandas()
@@ -1187,20 +1994,40 @@ def main():
     # Select FRONT camera (key.camera_name = 1)
     cam_row = df_cam[df_cam["key.camera_name"] == 1].iloc[0]
 
+    # ---- Project LiDAR points to camera image ----
     uv, depth, mask, width, height = project_lidar_to_image_v2(points_vehicle, cam_row)
     print(f"[INFO] Projected {len(uv)} LiDAR points into FRONT camera image.")
 
-    # Load camera image
+    # ---- Load camera image ----
     pf_img = pq.ParquetFile(os.path.join(ds.root, ds.split, "camera_image", fname))
     df_img = pf_img.read_row_group(0).to_pandas()
     img_row = df_img[df_img["key.camera_name"] == 1].iloc[0]
-    img_bytes = img_row["[CameraImageComponent].image"]
-    img = cv2.imdecode(np.frombuffer(img_bytes.as_py(), np.uint8), cv2.IMREAD_COLOR)
 
-    # Draw projected points
+    fx = float(cam_row["[CameraCalibrationComponent].intrinsic.f_u"])
+    fy = float(cam_row["[CameraCalibrationComponent].intrinsic.f_v"])
+    cx = float(cam_row["[CameraCalibrationComponent].intrinsic.c_u"])
+    cy = float(cam_row["[CameraCalibrationComponent].intrinsic.c_v"])
+    width  = int(cam_row["[CameraCalibrationComponent].width"])
+    height = int(cam_row["[CameraCalibrationComponent].height"])
+    print(f"[DEBUG] Intrinsics fx={fx:.1f}, fy={fy:.1f}, cx={cx:.1f}, cy={cy:.1f}, size=({width},{height})")
+
+    # img_bytes = img_row["[CameraImageComponent].image"]
+    # img = cv2.imdecode(np.frombuffer(img_bytes.as_py(), np.uint8), cv2.IMREAD_COLOR)
+    img_data = img_row["[CameraImageComponent].image"]
+    # Some parquet readers return a pyarrow.Scalar, some return plain bytes
+    if hasattr(img_data, "as_py"):
+        img_data = img_data.as_py()
+    # Now img_data is guaranteed to be bytes
+    img = cv2.imdecode(np.frombuffer(img_data, np.uint8), cv2.IMREAD_COLOR)
+
+    # ---- Draw projected LiDAR points ----
     for (u, v) in uv.astype(int):
         cv2.circle(img, (u, v), 1, (0, 255, 0), -1)
+
+    #cv2.imshow("LiDAR → Camera (Front)", img)
+    cv2.namedWindow("LiDAR → Camera (Front)", cv2.WINDOW_NORMAL)
     cv2.imshow("LiDAR → Camera (Front)", img)
+    cv2.resizeWindow("LiDAR → Camera (Front)", 1280, 720)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
