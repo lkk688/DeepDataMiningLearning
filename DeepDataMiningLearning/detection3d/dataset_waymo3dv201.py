@@ -1766,6 +1766,7 @@ def main():
         title="TEST 1: BEV (Vehicle Frame)"
     )
 
+
     # --- Test 3D ---
     Waymo3DDataset.visualize_3d(
         lidar, 
@@ -1773,109 +1774,6 @@ def main():
         target["labels"], 
         ds_vehicle.label_map_3d,
         headless=False # Set True if on a server
-    )
-
-    # --- Test Trajectory (needs manual transform to world) ---
-    T_wv_current = target["T_wv_sweeps"][-1]
-    pts_v_h = torch.cat([lidar[:,:3], torch.ones_like(lidar[:,:1])], dim=-1)
-    pts_w = (pts_v_h.float() @ T_wv_current.T)[..., :3]
-    Waymo3DDataset.visualize_trajectory_bev(
-        pts_w, 
-        target["T_wv_sweeps"],
-        title="TEST 1: Trajectory (from Vehicle Frame)"
-    )
-
-    # =================================================================
-    print("\n\n========== TEST 2: World Frame (Single Sweep) ==========")
-    # =================================================================
-    ds_world = Waymo3DDataset(
-        DATA_ROOT, 
-        split="training", 
-        max_frames=3, 
-        return_world=True, # <-- CHANGED
-        num_sweeps=1
-    )
-    lidar_w, target_w = ds_world[0]
-
-    print("\n--- VISUALIZING (World Frame) ---")
-    
-    # --- Test BEV (World) ---
-    # Note: BEV will look offset because points are centered at (0,0) in Vehicle,
-    # but are now at their true global (X,Y) coordinates.
-    Waymo3DDataset.visualize_bev(
-        lidar_w, 
-        target_w["boxes_3d"], 
-        title="TEST 2: BEV (World Frame)",
-        # Use trajectory function for better auto-ranging in world coords
-    )
-
-    # --- Test 3D (World) ---
-    Waymo3DDataset.visualize_3d(
-        lidar_w, 
-        target_w["boxes_3d"], 
-        target_w["labels"], 
-        ds_world.label_map_3d,
-        headless=False
-    )
-
-    # --- Test Trajectory (World) ---
-    # This is the most direct test for world coordinates
-    Waymo3DDataset.visualize_trajectory_bev(
-        lidar_w, # Already in world frame
-        target_w["T_wv_sweeps"],
-        title="TEST 2: Trajectory (World Frame)"
-    )
-
-
-    # =================================================================
-    print("\n\n========== TEST 3: Vehicle Frame (Multi-Sweep) ==========")
-    # =================================================================
-    ds_multi = Waymo3DDataset(
-        DATA_ROOT, 
-        split="training", 
-        max_frames=10, # Need a few frames to sweep
-        return_world=False,
-        num_sweeps=5     # <-- CHANGED
-    )
-    # Get a frame index > num_sweeps to ensure a full sweep buffer
-    lidar_m, target_m = ds_multi[5] 
-
-    print("\n========== BASIC INFO (Multi-Sweep) ==========")
-    print("points:", lidar_m.shape) # Should have many more points
-    print("boxes :", target_m["boxes_3d"].shape)
-    
-    inten_m = lidar_m[:, 3].numpy()
-    time_m = lidar_m[:, 4].numpy()
-    print(f"Intensity range: {inten_m.min():.3f} → {inten_m.max():.3f}")
-    # Time should now be negative for past sweeps
-    print(f"Time delta range: {time_m.min():.3f}s → {time_m.max():.3f}s")
-    
-    print("\n--- VISUALIZING (Multi-Sweep) ---")
-
-    # --- Test BEV (Multi-Sweep) ---
-    Waymo3DDataset.visualize_bev(
-        lidar_m, 
-        target_m["boxes_3d"], 
-        title="TEST 3: BEV (Multi-Sweep, Vehicle Frame)"
-    )
-
-    # --- Test 3D (Multi-Sweep) ---
-    Waymo3DDataset.visualize_3d(
-        lidar_m, 
-        target_m["boxes_3d"], 
-        target_m["labels"], 
-        ds_multi.label_map_3d,
-        headless=False
-    )
-    
-    # --- Test Trajectory (Multi-Sweep) ---
-    T_wv_current_m = target_m["T_wv_sweeps"][-1]
-    pts_v_h_m = torch.cat([lidar_m[:,:3], torch.ones_like(lidar_m[:,:1])], dim=-1)
-    pts_w_m = (pts_v_h_m.float() @ T_wv_current_m.T)[..., :3]
-    Waymo3DDataset.visualize_trajectory_bev(
-        pts_w_m, 
-        target_m["T_wv_sweeps"],
-        title="TEST 3: Trajectory (Multi-Sweep)"
     )
 
 

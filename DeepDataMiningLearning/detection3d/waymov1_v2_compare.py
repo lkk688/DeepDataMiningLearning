@@ -1224,6 +1224,103 @@ def main():
     # Add LiDAR to image projection after comparison
     project_lidar_to_images(data_v1, data_v2)
 
+def basicv1_test():
+    import os
+    import tensorflow as tf
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    from waymo_open_dataset.utils import frame_utils
+    from waymo_open_dataset import dataset_pb2 as open_dataset
+
+    # --- Configuration ---
+    # NOTE: Replace with the actual path to your TFRecord file.
+    TFRECORD_FILE = V1_TFRECORD_FILE_TO_CHECK
+    OUTPUT_DIR = 'outputs'
+    FRAME_INDEX = 0  # Which frame to process from the segment
+    CAMERA_NAME = open_dataset.CameraName.FRONT # Choose which camera to project to
+    
+    # Create a mapping for camera names to strings (FIXED: replaces the invalid enum call)
+    camera_name_mapping = {
+        open_dataset.CameraName.FRONT: 'FRONT',
+        open_dataset.CameraName.FRONT_LEFT: 'FRONT_LEFT',
+        open_dataset.CameraName.FRONT_RIGHT: 'FRONT_RIGHT',
+        open_dataset.CameraName.SIDE_LEFT: 'SIDE_LEFT',
+        open_dataset.CameraName.SIDE_RIGHT: 'SIDE_RIGHT'
+    }
+    CAMERA_NAME_STR = camera_name_mapping.get(CAMERA_NAME, 'UNKNOWN')
+
+    # Create output directory if it doesn't exist
+    if not os.path.exists(OUTPUT_DIR):
+        os.makedirs(OUTPUT_DIR)
+
+    print(f"Processing frame {FRAME_INDEX} from {TFRECORD_FILE}")
+    print(f"Target camera: {CAMERA_NAME_STR}")
+
+    # --- Data Loading and Parsing ---
+    dataset = tf.data.TFRecordDataset(TFRECORD_FILE, compression_type='')
+    frame = open_dataset.Frame()
+
+    # Get the specified frame from the segment
+    for i, data in enumerate(dataset):
+        if i == FRAME_INDEX:
+            frame.ParseFromString(data.numpy())
+            break
+
+    # --- Use Waymo Devkit Utilities ---
+    # Extract point cloud and camera projections from the frame
+    (range_images, camera_projections, _, range_image_top_pose) = frame_utils.parse_range_image_and_camera_projection(frame)
+
+    # Convert range images to point cloud
+    points, cp_points = frame_utils.convert_range_image_to_point_cloud(
+        frame,
+        range_images,
+        camera_projections,
+        range_image_top_pose)
+
+    # Concatenate points and projections from all 5 LiDARs
+    points_all = np.concatenate(points, axis=0)
+    cp_points_all = np.concatenate(cp_points, axis=0)
+
+    # --- Filtering and Visualization ---
+    # Get the camera image for the chosen camera
+    camera_image_data = None
+    for image in frame.images:
+        if image.name == CAMERA_NAME:
+            camera_image_data = tf.image.decode_jpeg(image.image)
+            break
+
+    if camera_image_data is None:
+        raise ValueError(f"Camera {CAMERA_NAME_STR} not found in frame.")
+
+    # Filter points to only include those that project to the selected camera
+    mask = cp_points_all[:, 0] == CAMERA_NAME
+    projected_points = cp_points_all[mask]
+    lidar_points_for_camera = points_all[mask]
+
+    print(f"Found {len(projected_points)} LiDAR points projecting to {CAMERA_NAME_STR} camera")
+
+    # Calculate the range (distance) for each LiDAR point
+    ranges = np.linalg.norm(lidar_points_for_camera[:, :3], axis=1)
+
+    # --- Plotting ---
+    plt.figure(figsize=(20, 12))
+    plt.imshow(camera_image_data.numpy())
+    plt.scatter(projected_points[:, 1], projected_points[:, 2], c=ranges, cmap='jet', s=1.5, alpha=0.7, edgecolors='none')
+    plt.title(f'LiDAR Points Projected on {CAMERA_NAME_STR} Camera (Devkit Method)')
+    plt.xlabel('Image Width (pixels)')
+    plt.ylabel('Image Height (pixels)')
+    plt.colorbar(label='Distance from Vehicle (meters)')
+    plt.grid(False)
+    plt.axis('off')
+
+    # Save the figure
+    output_path = os.path.join(OUTPUT_DIR, f'frame_{FRAME_INDEX:03d}_{CAMERA_NAME_STR}_devkit.png')
+    plt.savefig(output_path, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    print(f"Saved visualization to: {output_path}")
+
 if __name__ == "__main__":
     # Add temporary torch placeholder if not installed/needed just for helpers
     try:
@@ -1235,5 +1332,5 @@ if __name__ == "__main__":
              @staticmethod
              def tensor(*args, **kwargs): return np.array(*args, **kwargs)
              float32 = np.float32
-
-    main()
+    basicv1_test()
+    #main()
