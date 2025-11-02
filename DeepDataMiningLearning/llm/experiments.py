@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import os   
 import datetime, json
-from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS, test_tokenizers
+from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS, test_tokenizers, TokenizerFactory
 from DeepDataMiningLearning.llm.lm_dataset import build_dataset, inspect_dataset
 from DeepDataMiningLearning.llm.train_lm import TrainConfig, build_model, Trainer, Evaluator
 from DeepDataMiningLearning.llm.inference_utils import run_inference
@@ -272,6 +272,379 @@ def run_char_typing_experiment(
     return results
 
 
+def run_tokenizer_comparison_experiment(
+    hf_name="npvinHnivqn/EnglishDictionary",
+    seq_len=64,
+    batch_size=32,
+    epochs=6,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    output_dir="outputs/tokenizer_comparison"
+):
+    """
+    Compare TraditionalTransformerLM performance across different tokenizers:
+    char, word, hftokenizer, custom:sp-unigram, and custom:tiktoken-bpe
+    """
+    print("\n🚀 ===== Tokenizer Comparison Experiment =====")
+    print(f"Testing TraditionalTransformerLM with 5 different tokenizers")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "checkpoints"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "plots"), exist_ok=True)
+    
+    # Define tokenizers to test
+    tokenizer_configs = {
+        "char": {"tokenizer": "char", "color": "blue"},
+        "word": {"tokenizer": "word", "color": "green"}, 
+        "hftokenizer": {"tokenizer": "hftokenizer", "color": "red"},
+        "sp-unigram": {"tokenizer": "custom:sp-unigram", "color": "orange"},
+        "tiktoken-bpe": {"tokenizer": "custom:tiktoken-bpe", "color": "purple"}
+    }
+    
+    results = {}
+    all_configs = {"experiment_type": "tokenizer_comparison", "tokenizers": {}}
+    
+    # Prepare sample texts for custom tokenizers
+    sample_texts = [
+        "The quick brown fox jumps over the lazy dog.",
+        "Machine learning is a subset of artificial intelligence.",
+        "Natural language processing enables computers to understand human language.",
+        "Deep learning models can learn complex patterns from data.",
+        "Transformers have revolutionized the field of NLP."
+    ]
+    
+    # ------------------------------------------------------------
+    # Train model with each tokenizer
+    # ------------------------------------------------------------
+    for tok_name, tok_config in tokenizer_configs.items():
+        print(f"\n🧠 Training TraditionalTransformerLM with {tok_name} tokenizer...")
+        
+        # Build dataset with specific tokenizer
+        class Args:
+            pass
+        
+        args = Args()
+        args.files = None
+        args.batch_size = batch_size
+        args.task = "lm"
+        args.hf_name = hf_name
+        args.hf_split = "train"
+        args.hf_features = ["definition"]
+        args.tokenizer = tok_config["tokenizer"]
+        args.seq_len = seq_len
+        args.stride = 1
+        args.next_token_window = 1
+        args.num_prefixes_per_sentence = 5
+        args.max_prefix_len = 20
+        
+        # For custom tokenizers, we need to prepare them first
+        if tok_config["tokenizer"].startswith("custom:"):
+            print(f"📘 Preparing custom tokenizer: {tok_config['tokenizer']}")
+            try:
+                # Build custom tokenizer with sample texts
+                custom_tok = TokenizerFactory.build(
+                    tokenizer=tok_config["tokenizer"],
+                    texts=sample_texts,
+                    vocab_size=5000
+                )
+                print(f"✅ Custom tokenizer {tok_name} prepared successfully")
+            except Exception as e:
+                print(f"⚠️ Warning: Could not prepare custom tokenizer {tok_name}: {e}")
+                print(f"Skipping {tok_name} tokenizer...")
+                continue
+        
+        print(f"📘 Building dataset with {tok_name} tokenizer...")
+        try:
+            data = build_dataset(args.task, args)
+            train_loader, val_loader = data.loaders()
+            print(f"✅ Dataset ready with {tok_name} tokenizer (vocab_size: {data.tok.vocab_size})")
+        except Exception as e:
+            print(f"❌ Failed to build dataset with {tok_name} tokenizer: {e}")
+            continue
+        
+        # Model configuration
+        class ModelArgs:
+            pass
+        
+        margs = ModelArgs()
+        margs.model_type = "TraditionalTransformerLM"
+        margs.dim = 128
+        margs.layers = 2
+        margs.heads = 2
+        margs.lr = 8e-4
+        margs.seq_len = seq_len
+        margs.rope = False
+        margs.save = os.path.join(output_dir, "checkpoints", f"transformer_{tok_name}.pt")
+        
+        all_configs["tokenizers"][tok_name] = {
+            "tokenizer": tok_config["tokenizer"],
+            "vocab_size": data.tok.vocab_size,
+            "save_path": margs.save,
+            "model_config": {
+                "dim": margs.dim,
+                "layers": margs.layers,
+                "heads": margs.heads,
+                "lr": margs.lr
+            }
+        }
+        
+        # Build and train model
+        try:
+            model, hf_mode = build_model(margs.model_type, data, margs)
+            
+            tcfg = TrainConfig(
+                epochs=epochs,
+                lr=margs.lr,
+                weight_decay=0.01,
+                warmup_steps=100,
+                grad_clip=1.0,
+                grad_accum=1,
+                amp=False,
+                scheduler_type="reduce",
+                save_path=margs.save,
+            )
+            
+            trainer = Trainer(model, data, tcfg, mode="teacher-forced", hf_model=hf_mode)
+            train_losses, val_losses = trainer.fit()
+            
+            evaluator = Evaluator(model, data, mode="teacher-forced", hf_model=hf_mode)
+            val_loss, val_acc, val_ppl = evaluator.evaluate(split="valid")
+            
+            results[tok_name] = {
+                "tokenizer": tok_config["tokenizer"],
+                "vocab_size": data.tok.vocab_size,
+                "train_losses": train_losses,
+                "val_losses": val_losses,
+                "final_loss": val_loss,
+                "final_acc": val_acc,
+                "final_ppl": val_ppl,
+                "color": tok_config["color"]
+            }
+            
+            print(f"✅ {tok_name} — loss={val_loss:.4f} | acc={val_acc*100:.2f}% | ppl={val_ppl:.2f} | vocab={data.tok.vocab_size}")
+            
+            # Save individual training curves
+            plt.figure(figsize=(10, 6))
+            plt.subplot(1, 2, 1)
+            plt.plot(train_losses, label="Train Loss", color=tok_config["color"])
+            plt.plot(val_losses, label="Val Loss", color=tok_config["color"], linestyle="--")
+            plt.title(f"{tok_name} Tokenizer - Training Curves")
+            plt.xlabel("Epoch")
+            plt.ylabel("Loss")
+            plt.legend()
+            plt.grid(True)
+            
+            plt.subplot(1, 2, 2)
+            plt.plot(range(len(train_losses)), [val_acc] * len(train_losses), 
+                    label=f"Final Acc: {val_acc*100:.2f}%", color=tok_config["color"])
+            plt.title(f"{tok_name} Tokenizer - Final Accuracy")
+            plt.xlabel("Epoch")
+            plt.ylabel("Accuracy")
+            plt.legend()
+            plt.grid(True)
+            
+            plt.tight_layout()
+            curve_path = os.path.join(output_dir, "plots", f"{tok_name}_training_curves.png")
+            plt.savefig(curve_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            print(f"💾 Saved training curves → {curve_path}")
+            
+        except Exception as e:
+            print(f"❌ Failed to train model with {tok_name} tokenizer: {e}")
+            continue
+        finally:
+            # Clean up memory
+            if 'model' in locals():
+                del model
+            if 'trainer' in locals():
+                del trainer
+            if 'evaluator' in locals():
+                del evaluator
+            torch.cuda.empty_cache()
+            gc.collect()
+    
+    # ------------------------------------------------------------
+    # Save experiment configuration and results
+    # ------------------------------------------------------------
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Save detailed results
+    results_path = os.path.join(output_dir, f"tokenizer_comparison_results_{timestamp}.json")
+    summary = {
+        "experiment_type": "tokenizer_comparison",
+        "model_type": "TraditionalTransformerLM",
+        "dataset": hf_name,
+        "hyperparameters": {
+            "seq_len": seq_len,
+            "batch_size": batch_size,
+            "epochs": epochs,
+            "dim": 128,
+            "layers": 2,
+            "heads": 2,
+            "lr": 8e-4
+        },
+        "tokenizer_configs": all_configs["tokenizers"],
+        "results": results,
+        "timestamp": timestamp,
+    }
+    
+    with open(results_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=4, default=str)
+    print(f"💾 Saved experiment results → {results_path}")
+    
+    # ------------------------------------------------------------
+    # Create comparison plots
+    # ------------------------------------------------------------
+    if len(results) > 0:
+        # Training loss comparison
+        plt.figure(figsize=(15, 10))
+        
+        # Plot 1: Training losses
+        plt.subplot(2, 3, 1)
+        for tok_name, metrics in results.items():
+            plt.plot(metrics["train_losses"], label=f"{tok_name}", 
+                    color=metrics["color"], linewidth=2)
+        plt.title("Training Loss Comparison")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 2: Validation losses
+        plt.subplot(2, 3, 2)
+        for tok_name, metrics in results.items():
+            plt.plot(metrics["val_losses"], label=f"{tok_name}", 
+                    color=metrics["color"], linewidth=2, linestyle="--")
+        plt.title("Validation Loss Comparison")
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 3: Final metrics comparison
+        plt.subplot(2, 3, 3)
+        tokenizers = list(results.keys())
+        final_losses = [results[tok]["final_loss"] for tok in tokenizers]
+        colors = [results[tok]["color"] for tok in tokenizers]
+        bars = plt.bar(tokenizers, final_losses, color=colors, alpha=0.7)
+        plt.title("Final Validation Loss")
+        plt.ylabel("Loss")
+        plt.xticks(rotation=45)
+        for bar, loss in zip(bars, final_losses):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.01, 
+                    f'{loss:.3f}', ha='center', va='bottom')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 4: Accuracy comparison
+        plt.subplot(2, 3, 4)
+        final_accs = [results[tok]["final_acc"] * 100 for tok in tokenizers]
+        bars = plt.bar(tokenizers, final_accs, color=colors, alpha=0.7)
+        plt.title("Final Accuracy")
+        plt.ylabel("Accuracy (%)")
+        plt.xticks(rotation=45)
+        for bar, acc in zip(bars, final_accs):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5, 
+                    f'{acc:.1f}%', ha='center', va='bottom')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 5: Perplexity comparison
+        plt.subplot(2, 3, 5)
+        final_ppls = [results[tok]["final_ppl"] for tok in tokenizers]
+        bars = plt.bar(tokenizers, final_ppls, color=colors, alpha=0.7)
+        plt.title("Final Perplexity")
+        plt.ylabel("Perplexity")
+        plt.xticks(rotation=45)
+        for bar, ppl in zip(bars, final_ppls):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.1, 
+                    f'{ppl:.2f}', ha='center', va='bottom')
+        plt.grid(True, alpha=0.3)
+        
+        # Plot 6: Vocabulary size comparison
+        plt.subplot(2, 3, 6)
+        vocab_sizes = [results[tok]["vocab_size"] for tok in tokenizers]
+        bars = plt.bar(tokenizers, vocab_sizes, color=colors, alpha=0.7)
+        plt.title("Vocabulary Size")
+        plt.ylabel("Vocab Size")
+        plt.xticks(rotation=45)
+        for bar, size in zip(bars, vocab_sizes):
+            plt.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 50, 
+                    f'{size}', ha='center', va='bottom')
+        plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        comparison_path = os.path.join(output_dir, "plots", f"tokenizer_comparison_{timestamp}.png")
+        plt.savefig(comparison_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"💾 Saved comparison plots → {comparison_path}")
+        
+        # Create a summary table plot
+        plt.figure(figsize=(12, 8))
+        plt.axis('tight')
+        plt.axis('off')
+        
+        # Prepare table data
+        table_data = []
+        headers = ["Tokenizer", "Vocab Size", "Final Loss", "Accuracy (%)", "Perplexity"]
+        
+        for tok_name in tokenizers:
+            metrics = results[tok_name]
+            row = [
+                tok_name,
+                f"{metrics['vocab_size']:,}",
+                f"{metrics['final_loss']:.4f}",
+                f"{metrics['final_acc']*100:.2f}%",
+                f"{metrics['final_ppl']:.2f}"
+            ]
+            table_data.append(row)
+        
+        table = plt.table(cellText=table_data, colLabels=headers, 
+                         cellLoc='center', loc='center')
+        table.auto_set_font_size(False)
+        table.set_fontsize(12)
+        table.scale(1.2, 1.5)
+        
+        # Color code the rows
+        for i, tok_name in enumerate(tokenizers):
+            color = results[tok_name]["color"]
+            for j in range(len(headers)):
+                table[(i+1, j)].set_facecolor(color)
+                table[(i+1, j)].set_alpha(0.3)
+        
+        plt.title("Tokenizer Comparison Summary", fontsize=16, fontweight='bold', pad=20)
+        
+        table_path = os.path.join(output_dir, "plots", f"tokenizer_summary_table_{timestamp}.png")
+        plt.savefig(table_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"💾 Saved summary table → {table_path}")
+    
+    # ------------------------------------------------------------
+    # Print final summary
+    # ------------------------------------------------------------
+    print("\n📊 ===== Tokenizer Comparison Summary =====")
+    if len(results) > 0:
+        print(f"{'Tokenizer':<15} {'Vocab':<8} {'Loss':<8} {'Acc (%)':<8} {'PPL':<8}")
+        print("-" * 55)
+        for tok_name, metrics in results.items():
+            print(f"{tok_name:<15} {metrics['vocab_size']:<8} {metrics['final_loss']:<8.4f} "
+                  f"{metrics['final_acc']*100:<8.2f} {metrics['final_ppl']:<8.2f}")
+        
+        # Find best performing tokenizer
+        best_loss_tok = min(results.keys(), key=lambda x: results[x]["final_loss"])
+        best_acc_tok = max(results.keys(), key=lambda x: results[x]["final_acc"])
+        best_ppl_tok = min(results.keys(), key=lambda x: results[x]["final_ppl"])
+        
+        print(f"\n🏆 Best Results:")
+        print(f"   Lowest Loss: {best_loss_tok} ({results[best_loss_tok]['final_loss']:.4f})")
+        print(f"   Highest Acc: {best_acc_tok} ({results[best_acc_tok]['final_acc']*100:.2f}%)")
+        print(f"   Lowest PPL:  {best_ppl_tok} ({results[best_ppl_tok]['final_ppl']:.2f})")
+    else:
+        print("❌ No successful experiments completed.")
+    
+    print(f"\n📁 All results saved to: {output_dir}")
+    print("✅ ===== Tokenizer Comparison Experiment Complete =====\n")
+    
+    return results
+
+
 
 # ============================================================
 # QWEN 2.5–3B FINE-TUNING EXPERIMENT
@@ -393,4 +766,13 @@ if __name__ == "__main__":
     
     #results = run_predictive_typing_experiment()
     #run_qwen_finetune_experiment()
-    run_char_typing_experiment()
+    # run_char_typing_experiment()
+    
+    # Run the new tokenizer comparison experiment
+    run_tokenizer_comparison_experiment(
+        hf_name="npvinHnivqn/EnglishDictionary",
+        seq_len=64,
+        batch_size=128, #32,
+        epochs=4,  # Reduced for faster testing
+        output_dir="outputs/tokenizer_comparison"
+    )

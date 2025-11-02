@@ -12,6 +12,9 @@ from io import BytesIO
 from os.path import exists, join
 import pickle
 import concurrent.futures
+import argparse
+import time
+from datetime import datetime
 
 import numpy as np
 import tensorflow as tf
@@ -19,6 +22,38 @@ from PIL import Image
 from waymo_open_dataset.utils import range_image_utils, transform_utils
 from waymo_open_dataset.utils.frame_utils import \
     parse_range_image_and_camera_projection
+
+# Try to import tqdm for progress bars
+try:
+    from tqdm import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+    print("Warning: tqdm not available. Install with 'pip install tqdm' for progress bars.")
+    
+    # Fallback progress tracker
+    class tqdm:
+        def __init__(self, iterable=None, total=None, desc=None, **kwargs):
+            self.iterable = iterable
+            self.total = total or (len(iterable) if iterable else 0)
+            self.desc = desc or ""
+            self.n = 0
+            
+        def __iter__(self):
+            for item in self.iterable:
+                yield item
+                self.update(1)
+                
+        def update(self, n=1):
+            self.n += n
+            if self.n % max(1, self.total // 20) == 0:  # Show progress every 5%
+                print(f"{self.desc}: {self.n}/{self.total} ({100*self.n/self.total:.1f}%)")
+                
+        def __enter__(self):
+            return self
+            
+        def __exit__(self, *args):
+            pass
 
 
 class Box3DMode(object):
@@ -29,182 +64,513 @@ class Box3DMode(object):
 
 def points_cam2img(points_3d, proj_mat, with_depth=False):
     """Project 3D points in camera coordinates to 2D image coordinates.
-
+    
+    Performs perspective projection using the camera's intrinsic and extrinsic
+    parameters encoded in the projection matrix. This is fundamental for 
+    computer vision tasks like object detection and depth estimation.
+    
+    Mathematical Foundation:
+    
+    **Perspective Projection Equation:**
+    $$\\mathbf{p}_{img} = \\mathbf{K} \\cdot \\mathbf{P}_{cam}$$
+    
+    Where:
+    $$\\mathbf{K} = \\begin{bmatrix} 
+    f_x & 0 & c_x & 0 \\\\ 
+    0 & f_y & c_y & 0 \\\\ 
+    0 & 0 & 1 & 0 
+    \\end{bmatrix} \\in \\mathbb{R}^{3 \\times 4}$$
+    
+    **Homogeneous Coordinate Transformation:**
+    $$\\begin{bmatrix} x \\\\ y \\\\ z \\end{bmatrix}_{cam} \\rightarrow 
+    \\begin{bmatrix} x \\\\ y \\\\ z \\\\ 1 \\end{bmatrix}_{hom}$$
+    
+    **Projection Process:**
+    1. **Homogeneous Conversion**: Add homogeneous coordinate (w=1)
+    2. **Matrix Multiplication**: Apply projection matrix
+    3. **Perspective Division**: Normalize by depth (z-coordinate)
+    
+    **Normalized Image Coordinates:**
+    $$u = \\frac{f_x \\cdot x + c_x \\cdot z}{z}, \\quad 
+    v = \\frac{f_y \\cdot y + c_y \\cdot z}{z}$$
+    
+    Where:
+    - $(f_x, f_y)$ are focal lengths in pixels
+    - $(c_x, c_y)$ are principal point coordinates
+    - $(x, y, z)$ are 3D camera coordinates
+    - $(u, v)$ are 2D image pixel coordinates
+    
     Args:
-        points_3d (np.ndarray): (N, 3) 3D points in camera coordinates.
-        proj_mat (np.ndarray): (3, 4) projection matrix.
-        with_depth (bool): Whether to return depth.
-
+        points_3d (np.ndarray): 3D points in camera coordinates, shape (N, 3)
+                               Each point is [x_cam, y_cam, z_cam]
+        proj_mat (np.ndarray): Camera projection matrix, shape (3, 4)
+                              Combines intrinsic and extrinsic parameters
+        with_depth (bool): Whether to return depth values along with 2D coordinates
+                          Default: False (returns only [u, v])
+    
     Returns:
-        np.ndarray: (N, 2) or (N, 3) 2D points in image coordinates.
+        np.ndarray: Projected 2D image coordinates
+                   - If with_depth=False: shape (N, 2) with [u, v] pixel coordinates
+                   - If with_depth=True: shape (N, 3) with [u, v, depth] values
     """
-    points_shape = list(points_3d.shape)
-    points_3d = points_3d.reshape(-1, 3)
-    num_points = points_3d.shape[0]
+    # Preserve original shape for proper reshaping at the end
+    points_shape = list(points_3d.shape)  # Store original shape: [..., 3]
+    points_3d = points_3d.reshape(-1, 3)  # Flatten to (N, 3) for processing
+    num_points = points_3d.shape[0]       # Number of points to project
 
-    # Homogeneous coordinates
-    points_4d = np.hstack([points_3d, np.ones((num_points, 1))]).T  # (4, N)
+    # ==================== HOMOGENEOUS COORDINATE CONVERSION ====================
+    # Convert 3D points to homogeneous coordinates by adding w=1 column
+    # [x, y, z] -> [x, y, z, 1]
+    
+    points_4d = np.hstack([points_3d, np.ones((num_points, 1))]).T  # Shape: (4, N)
+    # Transpose for efficient matrix multiplication: (N, 4) -> (4, N)
 
-    # Project
-    points_2d = proj_mat @ points_4d  # (3, 4) @ (4, N) = (3, N)
+    # ==================== PERSPECTIVE PROJECTION ====================
+    # Apply projection matrix to transform 3D camera points to 2D image plane
+    # Mathematical operation: P_img_hom = K @ P_cam_hom
+    
+    points_2d = proj_mat @ points_4d  # Shape: (3, 4) @ (4, N) = (3, N)
+    # Result contains [u*z, v*z, z] for each point (before normalization)
 
-    # Normalize
-    points_2d[:2, :] /= points_2d[2, :]
+    # ==================== PERSPECTIVE DIVISION ====================
+    # Normalize by depth (z-coordinate) to get actual pixel coordinates
+    # This step converts from homogeneous to Cartesian coordinates
+    
+    # Avoid division by zero: ensure z > 0 (points in front of camera)
+    z_coords = points_2d[2, :]  # Extract depth values, shape: (N,)
+    
+    # Perform perspective division: [u*z, v*z, z] -> [u, v, z]
+    points_2d[:2, :] /= z_coords  # Divide x and y by z, shape: (2, N)
+    # Now points_2d[0,:] = u coordinates, points_2d[1,:] = v coordinates
 
+    # ==================== OUTPUT FORMATTING ====================
     if with_depth:
-        points_2d = points_2d.T
+        # Return [u, v, depth] for each point
+        points_2d = points_2d.T  # Shape: (N, 3) - transpose back to row format
     else:
-        points_2d = points_2d[:2, :].T
+        # Return only [u, v] for each point (drop depth information)
+        points_2d = points_2d[:2, :].T  # Shape: (N, 2) - take only x,y and transpose
 
-    points_shape[:1] = [-1]
-    points_shape[-1] = points_2d.shape[-1]
-    return points_2d.reshape(points_shape)
+    # ==================== SHAPE RESTORATION ====================
+    # Restore original batch dimensions while updating the last dimension
+    # Original: (..., 3) -> Output: (..., 2) or (..., 3)
+    
+    points_shape[:1] = [-1]  # Set first dimension to -1 for automatic inference
+    points_shape[-1] = points_2d.shape[-1]  # Update last dim: 3->2 or 3->3
+    
+    return points_2d.reshape(points_shape)  # Restore original batch structure
 
 
 def post_process_coords(corner_coords, imsize):
-    """Get 2D bounding box from projected 3D box corners.
-
-    Clips box to image boundaries.
-
+    """Get 2D bounding box from projected 3D box corners with image boundary clipping.
+    
+    Computes the axis-aligned 2D bounding box that encloses all projected 3D box
+    corners, then clips it to image boundaries. This is essential for object
+    detection in computer vision, ensuring bounding boxes are valid for training
+    and inference.
+    
+    Mathematical Process:
+    
+    **Bounding Box Computation:**
+    $$\\text{bbox}_{2D} = [\\min(u_i), \\min(v_i), \\max(u_i), \\max(v_i)]$$
+    
+    Where $(u_i, v_i)$ are the projected corner coordinates.
+    
+    **Boundary Clipping:**
+    $$\\begin{align}
+    u_{min} &= \\max(0, \\min(u_i)) \\\\
+    v_{min} &= \\max(0, \\min(v_i)) \\\\
+    u_{max} &= \\min(W-1, \\max(u_i)) \\\\
+    v_{max} &= \\min(H-1, \\max(v_i))
+    \\end{align}$$
+    
+    Where $(W, H)$ are image width and height.
+    
+    **Visibility Check:**
+    A bounding box is considered visible if:
+    $$u_{max} \\geq 0 \\land u_{min} < W \\land v_{max} \\geq 0 \\land v_{min} < H$$
+    
     Args:
-        corner_coords (list[list[float]]): List of (x, y) corners.
-        imsize (tuple[int, int]): (width, height)
-
+        corner_coords (list[list[float]]): List of projected corner coordinates
+                                         Each corner is [u, v] in image pixels
+                                         Typically 8 corners from a 3D bounding box
+        imsize (tuple[int, int]): Image dimensions as (width, height)
+                                 Used for boundary clipping validation
+    
     Returns:
-        tuple[float, float, float, float] or None:
-            (min_x, min_y, max_x, max_y) or None if all points
-            are outside image.
+        tuple[float, float, float, float] or None: 2D bounding box coordinates
+            - If visible: (min_x, min_y, max_x, max_y) in image pixel coordinates
+            - If completely outside image: None (indicates invisible object)
+            
+    Note:
+        The returned coordinates are clipped to [0, width-1] and [0, height-1]
+        to ensure valid pixel indices for image processing operations.
     """
-    im_width, im_height = imsize
+    im_width, im_height = imsize  # Extract image dimensions
 
+    # ==================== INPUT VALIDATION ====================
     if not corner_coords:
+        # No corner coordinates provided - cannot compute bounding box
         return None
 
-    # Find min/max of *all* projected coords
-    coords = np.array(corner_coords)
-    min_x = np.min(coords[:, 0])
-    min_y = np.min(coords[:, 1])
-    max_x = np.max(coords[:, 0])
-    max_y = np.max(coords[:, 1])
+    # ==================== BOUNDING BOX COMPUTATION ====================
+    # Find axis-aligned bounding box that encloses all projected corners
+    # Convert list to numpy array for efficient min/max operations
+    
+    coords = np.array(corner_coords)  # Shape: (N_corners, 2) where N_corners ≤ 8
+    
+    # Compute bounding box extrema from all corner projections
+    min_x = np.min(coords[:, 0])  # Leftmost pixel coordinate
+    min_y = np.min(coords[:, 1])  # Topmost pixel coordinate  
+    max_x = np.max(coords[:, 0])  # Rightmost pixel coordinate
+    max_y = np.max(coords[:, 1])  # Bottommost pixel coordinate
 
-    # Check if the box is completely outside the image
+    # ==================== VISIBILITY CHECK ====================
+    # Check if the bounding box is completely outside the image boundaries
+    # If so, the object is not visible and should be filtered out
+    
+    # Check horizontal visibility: box must overlap with [0, width-1]
     if max_x < 0 or min_x > im_width - 1:
-        return None
+        return None  # Box is completely left or right of image
+    
+    # Check vertical visibility: box must overlap with [0, height-1]  
     if max_y < 0 or min_y > im_height - 1:
-        return None
+        return None  # Box is completely above or below image
 
-    # Clip the box to image boundaries
-    min_x = max(0.0, min_x)
-    min_y = max(0.0, min_y)
-    max_x = min(float(im_width - 1), max_x)
-    max_y = min(float(im_height - 1), max_y)
+    # ==================== BOUNDARY CLIPPING ====================
+    # Clip bounding box coordinates to valid image pixel ranges
+    # This ensures all coordinates are within [0, width-1] × [0, height-1]
+    
+    min_x = max(0.0, min_x)                    # Clip left boundary
+    min_y = max(0.0, min_y)                    # Clip top boundary
+    max_x = min(float(im_width - 1), max_x)    # Clip right boundary  
+    max_y = min(float(im_height - 1), max_y)   # Clip bottom boundary
 
+    # Return clipped 2D bounding box in KITTI format: [x_min, y_min, x_max, y_max]
     return min_x, min_y, max_x, max_y
 
 
 class Converted3DBoxes(object):
-    """Proxy class to hold data converted to CAM coordinates."""
+    """Proxy class to hold 3D bounding box data converted from LiDAR to camera coordinates.
+    
+    This class performs coordinate transformation using homogeneous coordinates and 
+    transformation matrices. The conversion includes both spatial transformation and
+    yaw angle correction for proper camera coordinate representation.
+    
+    Mathematical Foundation:
+    - Homogeneous transformation: P_cam = T_lidar2cam @ P_lidar_hom
+    - Where T_lidar2cam is a 4x4 transformation matrix
+    - P_lidar_hom = [x, y, z, 1]^T (homogeneous coordinates)
+    """
 
     def __init__(self, lidar_boxes, lidar2cam, correct_yaw):
-        self.N = lidar_boxes.tensor.shape[0]
-        self.dims = lidar_boxes.dims
+        """Initialize converted 3D boxes with coordinate transformation.
+        
+        Args:
+            lidar_boxes (LiDARInstance3DBoxes): Input boxes in LiDAR coordinates
+            lidar2cam (np.ndarray): Transformation matrix from LiDAR to camera coords (4, 4)
+            correct_yaw (bool): Whether to recalculate yaw angles in camera coordinates
+        """
+        self.N = lidar_boxes.tensor.shape[0]  # Number of bounding boxes
+        self.dims = lidar_boxes.dims  # Box dimensions (N, 3): [length, width, height]
 
-        # Transform corners
-        corners_lidar = lidar_boxes.corners  # (N, 8, 3)
-        corners_lidar_flat = corners_lidar.reshape(self.N * 8, 3)
+        # ==================== CORNER TRANSFORMATION ====================
+        # Transform all 8 corners of each bounding box from LiDAR to camera coordinates
+        # Mathematical operation: P_cam = T_lidar2cam @ P_lidar_hom
+        
+        corners_lidar = lidar_boxes.corners  # Shape: (N, 8, 3) - 8 corners per box
+        corners_lidar_flat = corners_lidar.reshape(self.N * 8, 3)  # Shape: (N*8, 3)
+        
+        # Convert to homogeneous coordinates by adding ones column
+        # [x, y, z] -> [x, y, z, 1]
         corners_lidar_hom = np.hstack(
-            [corners_lidar_flat, np.ones((self.N * 8, 1))])
-        corners_cam_hom = corners_lidar_hom @ lidar2cam.T
-        self._corners = corners_cam_hom[:, :3].reshape(self.N, 8, 3)
+            [corners_lidar_flat, np.ones((self.N * 8, 1))])  # Shape: (N*8, 4)
+        
+        # Apply transformation matrix: P_cam_hom = P_lidar_hom @ T^T
+        # Note: Using transpose because we're doing row-vector multiplication
+        corners_cam_hom = corners_lidar_hom @ lidar2cam.T  # Shape: (N*8, 4)
+        
+        # Extract 3D coordinates (drop homogeneous coordinate) and reshape back
+        self._corners = corners_cam_hom[:, :3].reshape(self.N, 8, 3)  # Shape: (N, 8, 3)
 
-        # Transform gravity center
-        centers_lidar = lidar_boxes.gravity_center  # (N, 3)
+        # ==================== CENTER TRANSFORMATION ====================
+        # Transform gravity centers from LiDAR to camera coordinates
+        
+        centers_lidar = lidar_boxes.gravity_center  # Shape: (N, 3) - box centers
+        
+        # Convert centers to homogeneous coordinates
         centers_lidar_hom = np.hstack(
-            [centers_lidar, np.ones((self.N, 1))])
-        centers_cam_hom = centers_lidar_hom @ lidar2cam.T
-        self._center = centers_cam_hom[:, :3]
+            [centers_lidar, np.ones((self.N, 1))])  # Shape: (N, 4)
+        
+        # Apply transformation: center_cam = T_lidar2cam @ center_lidar_hom
+        centers_cam_hom = centers_lidar_hom @ lidar2cam.T  # Shape: (N, 4)
+        
+        # Extract 3D coordinates
+        self._center = centers_cam_hom[:, :3]  # Shape: (N, 3)
 
-        # Correct yaw
+        # ==================== YAW ANGLE CORRECTION ====================
+        # Recalculate yaw angles in camera coordinate system
+        
         if correct_yaw:
-            # (N, 3)
-            v = self._corners[:, 0, :] - self._corners[:, 1, :]
-            self.yaw = -np.arctan2(v[:, 2], v[:, 0])
+            # Calculate yaw from transformed corner positions
+            # Use vector from corner 0 to corner 1 to determine orientation
+            # Mathematical formula: yaw = -arctan2(Δz, Δx)
+            # where Δz and Δx are differences in camera coordinates
+            
+            v = self._corners[:, 0, :] - self._corners[:, 1, :]  # Shape: (N, 3)
+            # Corner indexing: 0 and 1 are adjacent corners along length dimension
+            
+            # Calculate yaw angle: θ = -arctan2(v_z, v_x)
+            # Negative sign accounts for coordinate system differences
+            self.yaw = -np.arctan2(v[:, 2], v[:, 0])  # Shape: (N,)
         else:
-            # This is likely wrong, but provides a fallback
-            self.yaw = lidar_boxes.tensor[:, 6]
+            # Fallback: use original yaw angles (may be incorrect in camera coords)
+            # This preserves original LiDAR yaw angles without transformation
+            self.yaw = lidar_boxes.tensor[:, 6]  # Shape: (N,)
 
     @property
     def corners(self):
+        """Get transformed corner coordinates in camera coordinate system.
+        
+        Returns:
+            np.ndarray: Corner coordinates in camera coords, shape (N, 8, 3)
+                       Each box has 8 corners: 4 bottom + 4 top vertices
+        """
         return self._corners
 
     @property
     def gravity_center(self):
+        """Get transformed gravity centers in camera coordinate system.
+        
+        Returns:
+            np.ndarray: Gravity centers in camera coords, shape (N, 3)
+                       Each center is [x_cam, y_cam, z_cam]
+        """
         return self._center
 
     def numpy(self):
-        """Return the (N, 7) tensor in CAM coordinates."""
+        """Return the complete 3D box representation in camera coordinates.
+        
+        Combines center coordinates, dimensions, and yaw angles into a single tensor.
+        Box format: [x_center, y_center, z_center, length, width, height, yaw]
+        
+        Mathematical representation:
+        $$\\mathbf{B}_{cam} = [x_c, y_c, z_c, l, w, h, \\theta]^T$$
+        
+        Where:
+        - $(x_c, y_c, z_c)$ are the gravity center coordinates in camera frame
+        - $(l, w, h)$ are the box dimensions (length, width, height)
+        - $\\theta$ is the yaw angle in camera coordinate system
+        
+        Returns:
+            np.ndarray: Complete box tensor in camera coordinates, shape (N, 7)
+        """
         return np.hstack([self._center, self.dims, self.yaw[:, np.newaxis]])
 
 
 class LiDARInstance3DBoxes(object):
-    """Simplified 3D box representation for Waymo->KITTI conversion.
+    """3D bounding box representation optimized for Waymo to KITTI conversion.
 
-    Assumes 'z' is bottom center in LiDAR mode.
-    Box format: [x, y, z, l, w, h, yaw]
+    This class handles 3D bounding boxes in LiDAR coordinate system with specific
+    conventions for autonomous driving datasets. The implementation focuses on
+    efficient coordinate transformations and corner generation.
+
+    Coordinate System Conventions:
+    - LiDAR coordinate system: X-forward, Y-left, Z-up
+    - Box origin: Bottom center (z=0 at bottom face)
+    - Box format: [x, y, z, length, width, height, yaw]
+    
+    Mathematical Foundation:
+    - Box tensor: $\\mathbf{B} = [x, y, z, l, w, h, \\theta] \\in \\mathbb{R}^7$
+    - Origin offset: $(0.5, 0.5, 0.0)$ represents bottom-center anchoring
+    - Rotation matrix: $\\mathbf{R}_z(\\theta) = \\begin{bmatrix} \\cos\\theta & -\\sin\\theta & 0 \\\\ \\sin\\theta & \\cos\\theta & 0 \\\\ 0 & 0 & 1 \\end{bmatrix}$
     """
 
     def __init__(self, tensor, box_dim=7, origin=(0.5, 0.5, 0.0)):
+        """Initialize LiDAR 3D bounding boxes from tensor representation.
+        
+        Args:
+            tensor (np.ndarray or list): Box parameters, shape (N, 7) or (7,)
+                                       Format: [x, y, z, length, width, height, yaw]
+            box_dim (int): Dimension of box representation (default: 7)
+            origin (tuple): Box origin offset (default: (0.5, 0.5, 0.0) for bottom-center)
+                          - (0.5, 0.5, 0.0): bottom center
+                          - (0.5, 0.5, 0.5): geometric center
+        """
+        # Ensure tensor is numpy array with proper shape
         if not isinstance(tensor, np.ndarray):
             tensor = np.array(tensor)
         if tensor.ndim == 1:
-            tensor = tensor[np.newaxis, :]
+            tensor = tensor[np.newaxis, :]  # Convert single box to batch format
 
-        self.tensor = tensor.astype(np.float32)
-        self.origin = origin  # (0.5, 0.5, 0.0) -> bottom center
-        self.dims = self.tensor[:, 3:6]
+        self.tensor = tensor.astype(np.float32)  # Shape: (N, 7)
+        self.origin = origin  # Box anchoring point: (0.5, 0.5, 0.0) -> bottom center
+        self.dims = self.tensor[:, 3:6]  # Extract dimensions: (N, 3) -> [length, width, height]
 
     @property
     def gravity_center(self):
-        """(N, 3): x, y, z (gravity center)"""
-        center = self.tensor[:, :3].copy()
-        # Adjust z from bottom center to gravity center
-        center[:, 2] += self.tensor[:, 5] * (0.5 - self.origin[2])
-        return center
+        """Compute gravity center coordinates from bottom-center box representation.
+        
+        Converts from bottom-center anchored boxes to gravity-center coordinates.
+        This is essential for proper 3D object detection and coordinate transformations.
+        
+        Mathematical transformation:
+        $$\\mathbf{c}_{gravity} = \\mathbf{c}_{bottom} + \\Delta z \\cdot \\hat{\\mathbf{z}}$$
+        
+        Where:
+        - $\\mathbf{c}_{bottom} = [x, y, z]^T$ is the bottom-center position
+        - $\\Delta z = h \\cdot (0.5 - origin_z)$ is the vertical offset
+        - $h$ is the box height
+        - $origin_z = 0.0$ for bottom-center anchoring
+        
+        For bottom-center boxes: $\\Delta z = h \\cdot 0.5 = \\frac{h}{2}$
+        
+        Returns:
+            np.ndarray: Gravity center coordinates, shape (N, 3)
+                       Format: [x_gravity, y_gravity, z_gravity]
+        """
+        center = self.tensor[:, :3].copy()  # Shape: (N, 3) - [x, y, z] bottom-center coords
+        
+        # Adjust z-coordinate from bottom center to gravity center
+        # z_gravity = z_bottom + height * (0.5 - origin_z)
+        # For origin_z = 0.0: z_gravity = z_bottom + height/2
+        center[:, 2] += self.tensor[:, 5] * (0.5 - self.origin[2])  # Add height/2 to z
+        
+        return center  # Shape: (N, 3)
 
     @property
     def corners(self):
-        """(N, 8, 3): 8 corners in order"""
-        N = self.tensor.shape[0]
-        l, w, h = self.dims[:, 0], self.dims[:, 1], self.dims[:, 2]
+        """Generate 8 corner coordinates for each 3D bounding box.
+        
+        Computes the 3D coordinates of all 8 corners of each bounding box using
+        rotation matrices and translation. This is fundamental for 3D object
+        detection, visualization, and coordinate system transformations.
+        
+        Mathematical Process:
+        1. **Template Generation**: Create normalized corner template
+        2. **Rotation**: Apply yaw rotation around Z-axis
+        3. **Translation**: Translate to box center position
+        
+        Corner Template (normalized, before rotation):
+        $$\\mathbf{C}_{template} = \\begin{bmatrix}
+        \\pm\\frac{l}{2} & \\pm\\frac{w}{2} & 0 \\\\ 
+        \\pm\\frac{l}{2} & \\pm\\frac{w}{2} & h
+        \\end{bmatrix}$$
+        
+        Rotation Matrix (Z-axis rotation):
+        $$\\mathbf{R}_z(\\theta) = \\begin{bmatrix} 
+        \\cos\\theta & -\\sin\\theta & 0 \\\\ 
+        \\sin\\theta & \\cos\\theta & 0 \\\\ 
+        0 & 0 & 1 
+        \\end{bmatrix}$$
+        
+        Final Corner Transformation:
+        $$\\mathbf{C}_{world} = \\mathbf{C}_{template} \\cdot \\mathbf{R}_z^T + \\mathbf{t}$$
+        
+        Where:
+        - $\\mathbf{t} = [x, y, z]^T$ is the box center translation
+        - $(l, w, h)$ are length, width, height dimensions
+        - $\\theta$ is the yaw angle around Z-axis
+        
+        Corner Indexing Convention:
+        - Corners 0-3: Bottom face (z = 0)
+        - Corners 4-7: Top face (z = height)
+        - Order: [front-right, front-left, rear-left, rear-right] for each face
+        
+        Returns:
+            np.ndarray: Corner coordinates, shape (N, 8, 3)
+                       Each box has 8 corners with [x, y, z] coordinates
+        """
+        N = self.tensor.shape[0]  # Number of boxes
+        l, w, h = self.dims[:, 0], self.dims[:, 1], self.dims[:, 2]  # Dimensions (N,) each
 
-        # (8, 3) template
+        # ==================== CORNER TEMPLATE GENERATION ====================
+        # Create 8-corner template in local coordinate system (before rotation)
+        # Template assumes box center at origin, z=0 at bottom face
+        
+        # X-coordinates: ±length/2 for front/rear faces
         x_corners = np.array([l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2])
+        
+        # Y-coordinates: ±width/2 for left/right sides  
         y_corners = np.array([w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2])
-        z_corners = np.array([0, 0, 0, 0, h, h, h, h])  # z is bottom center
+        
+        # Z-coordinates: 0 for bottom face, height for top face
+        z_corners = np.array([0, 0, 0, 0, h, h, h, h])  # Bottom: 0-3, Top: 4-7
 
-        # (N, 8, 3)
+        # Stack into corner template: Shape (8, 3) -> (N, 8, 3) via broadcasting
         corners_base = np.stack(
-            [x_corners, y_corners, z_corners], axis=2).transpose(0, 2, 1)
+            [x_corners, y_corners, z_corners], axis=2).transpose(0, 2, 1)  # Shape: (N, 3, 8)
 
-        yaw = self.tensor[:, 6]
-        rot_sin = np.sin(yaw)
-        rot_cos = np.cos(yaw)
+        # ==================== ROTATION MATRIX COMPUTATION ====================
+        # Compute rotation matrices for yaw angles around Z-axis
+        
+        yaw = self.tensor[:, 6]  # Extract yaw angles, shape: (N,)
+        rot_sin = np.sin(yaw)    # Shape: (N,)
+        rot_cos = np.cos(yaw)    # Shape: (N,)
 
-        # (N, 3, 3)
-        zeros = np.zeros_like(rot_cos)
-        ones = np.ones_like(rot_cos)
+        # Create helper arrays for 3D rotation matrix
+        zeros = np.zeros_like(rot_cos)  # Shape: (N,)
+        ones = np.ones_like(rot_cos)    # Shape: (N,)
+        
+        # Construct rotation matrix transpose for efficient multiplication
+        # R_z^T = [[cos, sin, 0], [-sin, cos, 0], [0, 0, 1]]
         rot_mat_T = np.array([[rot_cos, -rot_sin, zeros],
                               [rot_sin, rot_cos, zeros],
-                              [zeros, zeros, ones]]).transpose(2, 0, 1)
+                              [zeros, zeros, ones]]).transpose(2, 0, 1)  # Shape: (N, 3, 3)
 
-        # (N, 8, 3) = (N, 8, 3) @ (N, 3, 3)
-        corners_3d = np.einsum('nij,nkj->nik', corners_base, rot_mat_T)
-        corners_3d += self.tensor[:, np.newaxis, :3]
+        # ==================== CORNER TRANSFORMATION ====================
+        # Apply rotation: corners_rotated = corners_base @ R_z^T
+        # Einstein summation for efficient batch matrix multiplication
+        corners_3d = np.einsum('nij,nkj->nik', corners_base, rot_mat_T)  # Shape: (N, 8, 3)
+        
+        # Apply translation: add box center coordinates
+        corners_3d += self.tensor[:, np.newaxis, :3]  # Broadcast center (N, 1, 3) to (N, 8, 3)
 
-        return corners_3d
+        return corners_3d  # Shape: (N, 8, 3)
 
     def convert_to(self, dst, rt_mat, correct_yaw=True):
-        """Converts to a different coordinate system (e.g., CAM)."""
+        """Convert 3D bounding boxes to target coordinate system.
+        
+        This method creates a proxy object that handles coordinate system transformation
+        from LiDAR coordinates to camera coordinates using homogeneous transformation
+        matrices. The conversion is essential for multi-sensor fusion in autonomous
+        driving applications.
+        
+        Mathematical Foundation:
+        
+        **Homogeneous Transformation:**
+        $$\\mathbf{P}_{cam} = \\mathbf{T}_{lidar2cam} \\cdot \\mathbf{P}_{lidar}$$
+        
+        Where:
+        $$\\mathbf{T}_{lidar2cam} = \\begin{bmatrix} 
+        \\mathbf{R} & \\mathbf{t} \\\\ 
+        \\mathbf{0}^T & 1 
+        \\end{bmatrix} \\in \\mathbb{R}^{4 \\times 4}$$
+        
+        **Coordinate System Transformation Process:**
+        1. **Corner Transformation**: All 8 corners of each box are transformed
+        2. **Center Transformation**: Gravity centers are transformed
+        3. **Yaw Correction**: Orientation angles are recalculated in target frame
+        
+        **Yaw Angle Correction:**
+        $$\\theta_{cam} = -\\arctan2(\\Delta z, \\Delta x)$$
+        
+        Where $\\Delta z$ and $\\Delta x$ are corner differences in camera coordinates.
+        
+        Args:
+            dst (int): Destination coordinate system (Box3DMode.CAM for camera coords)
+            rt_mat (np.ndarray): 4x4 transformation matrix from LiDAR to target coords
+                               Contains rotation (3x3) and translation (3x1) components
+            correct_yaw (bool): Whether to recalculate yaw angles in target coordinate system
+                              Default: True for proper orientation alignment
+        
+        Returns:
+            Converted3DBoxes: Proxy object containing transformed 3D boxes
+                             Provides same interface as original boxes but in target coords
+        
+        Raises:
+            NotImplementedError: If destination coordinate system is not supported
+        """
         if dst == Box3DMode.CAM:
             # Create a proxy object with transformed data
             return Converted3DBoxes(self, rt_mat, correct_yaw)
@@ -324,46 +690,112 @@ class Waymo2KITTI(object):
             os.makedirs(f'{self.image_save_dir}{str(i)}', exist_ok=True)
 
     def convert(self):
-        """Convert action."""
-        print(f'Start converting {self.split} dataset')  # Replaced print_log
+        """Convert action with progress tracking and validation."""
+        start_time = time.time()
+        print(f'Start converting {self.split} dataset at {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
+        print(f'Found {len(self)} tfrecord files to process')
+        print(f'Using {self.workers} workers (0 = sequential processing)')
+        print(f'Subsample interval: {self.subsample_interval}')
+        
+        # Statistics tracking
+        total_frames = 0
+        total_images = 0
+        total_point_clouds = 0
+        failed_files = []
+        
         if self.workers == 0:
-            # Replaced mmengine.track_progress
+            # Sequential processing with progress bar
             data_infos = []
-            for i in range(len(self)):
-                data_infos.append(self.convert_one(i))
-                if (i + 1) % 10 == 0 or i == len(self) - 1:
-                    print(f"Processed {i + 1}/{len(self)} files...")
+            with tqdm(range(len(self)), desc="Converting files", unit="file") as pbar:
+                for i in pbar:
+                    try:
+                        result = self.convert_one(i)
+                        data_infos.append(result)
+                        
+                        # Update statistics
+                        total_frames += len(result)
+                        if self.save_senor_data:
+                            total_images += len(result) * 5  # 5 cameras
+                            total_point_clouds += len(result)
+                            
+                        pbar.set_postfix({
+                            'frames': total_frames,
+                            'images': total_images,
+                            'point_clouds': total_point_clouds
+                        })
+                    except Exception as e:
+                        failed_files.append((i, str(e)))
+                        print(f"Error processing file {i}: {e}")
+                        continue
         else:
-            # Replaced mmengine.track_parallel_progress
+            # Parallel processing with progress tracking
             data_infos_list = []
-            with concurrent.futures.ProcessPoolExecutor(
-                    max_workers=self.workers) as executor:
-                results_iterator = executor.map(self.convert_one,
-                                                range(len(self)))
+            with concurrent.futures.ProcessPoolExecutor(max_workers=self.workers) as executor:
+                # Submit all tasks
+                future_to_idx = {executor.submit(self.convert_one, i): i for i in range(len(self))}
+                
+                # Process results with progress bar
+                with tqdm(total=len(self), desc="Converting files", unit="file") as pbar:
+                    for future in concurrent.futures.as_completed(future_to_idx):
+                        idx = future_to_idx[future]
+                        try:
+                            result = future.result()
+                            data_infos_list.append(result)
+                            
+                            # Update statistics
+                            total_frames += len(result)
+                            if self.save_senor_data:
+                                total_images += len(result) * 5  # 5 cameras
+                                total_point_clouds += len(result)
+                                
+                            pbar.set_postfix({
+                                'frames': total_frames,
+                                'images': total_images,
+                                'point_clouds': total_point_clouds
+                            })
+                        except Exception as e:
+                            failed_files.append((idx, str(e)))
+                            print(f"Error processing file {idx}: {e}")
+                        finally:
+                            pbar.update(1)
+            
+            data_infos = data_infos_list
 
-                for i, result in enumerate(results_iterator):
-                    data_infos_list.append(result)
-                    if (i + 1) % 10 == 0 or i == len(self) - 1:
-                        print(f"Processed {i + 1}/{len(self)} files...")
-            data_infos = data_infos_list  # This is already a list of lists
-
+        # Flatten data_infos
         data_list = []
         for data_info in data_infos:
-            data_list.extend(data_info)
+            if data_info:  # Skip None results from failed files
+                data_list.extend(data_info)
+        
+        # Create metadata
         metainfo = dict()
         metainfo['dataset'] = 'waymo'
         metainfo['version'] = 'waymo_v1.4'
-        metainfo['info_version'] = 'mmdet3d_v1.4_standalone'  # Mark as standalone
+        metainfo['info_version'] = 'mmdet3d_v1.4_standalone'
+        metainfo['conversion_time'] = datetime.now().isoformat()
+        metainfo['subsample_interval'] = self.subsample_interval
+        metainfo['total_files'] = len(self)
+        metainfo['successful_files'] = len(self) - len(failed_files)
+        metainfo['failed_files'] = len(failed_files)
+        metainfo['total_frames'] = total_frames
+        
         waymo_infos = dict(data_list=data_list, metainfo=metainfo)
+        
+        # Save pickle file
         filenames = osp.join(
             osp.dirname(self.save_dir),
             f'{self.info_prefix + self.info_map[self.split]}')
-        print(
-            f'Saving {self.split} dataset infos into {filenames}'
-        )  # Replaced print_log
-        # Replaced mmengine.dump
+        print(f'\nSaving {self.split} dataset infos into {filenames}')
+        
         with open(filenames, 'wb') as f:
             pickle.dump(waymo_infos, f)
+        
+        # Print conversion summary
+        elapsed_time = time.time() - start_time
+        self._print_conversion_summary(elapsed_time, total_frames, total_images, 
+                                     total_point_clouds, failed_files, filenames)
+        
+        return waymo_infos
 
     def convert_one(self, file_idx):
         """Convert one '*.tfrecord' file to kitti format. Each file stores all
@@ -413,6 +845,89 @@ class Waymo2KITTI(object):
                 subsampled_frame_infos.append(all_frame_infos[-1])
 
         return subsampled_frame_infos  # Return the subsampled list
+
+    def _print_conversion_summary(self, elapsed_time, total_frames, total_images, 
+                                total_point_clouds, failed_files, pickle_path):
+        """Print detailed conversion summary."""
+        print("\n" + "="*80)
+        print("WAYMO TO KITTI CONVERSION SUMMARY")
+        print("="*80)
+        
+        # Time information
+        hours, remainder = divmod(elapsed_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        print(f"Conversion completed in: {int(hours):02d}h {int(minutes):02d}m {seconds:.1f}s")
+        
+        # File statistics
+        print(f"\nFile Processing:")
+        print(f"  Total tfrecord files: {len(self.tfrecord_pathnames)}")
+        print(f"  Successfully processed: {len(self.tfrecord_pathnames) - len(failed_files)}")
+        print(f"  Failed files: {len(failed_files)}")
+        
+        if failed_files:
+            print(f"  Failed file indices: {[idx for idx, _ in failed_files]}")
+        
+        # Frame and data statistics
+        print(f"\nData Statistics:")
+        print(f"  Total frames processed: {total_frames}")
+        print(f"  Subsample interval: {self.subsample_interval}")
+        if self.save_senor_data:
+            print(f"  Images saved: {total_images}")
+            print(f"  Point clouds saved: {total_point_clouds}")
+        
+        # Output directory structure
+        print(f"\nOutput Directory Structure:")
+        print(f"  Root directory: {self.save_dir}")
+        print(f"  Images: {self.image_save_dir}[0-4]/")
+        if 'testing_3d_camera_only_detection' not in self.load_dir:
+            print(f"  Point clouds: {self.point_cloud_save_dir}/")
+        print(f"  Pickle file: {pickle_path}")
+        
+        # Validate output
+        self._validate_output()
+        
+        print("="*80)
+
+    def _validate_output(self):
+        """Validate the converted output files."""
+        print(f"\nValidation Results:")
+        
+        # Check image directories
+        for i in range(5):
+            img_dir = f'{self.image_save_dir}{i}'
+            if os.path.exists(img_dir):
+                img_count = len([f for f in os.listdir(img_dir) if f.endswith('.jpg')])
+                print(f"  Camera {i} images: {img_count} files")
+            else:
+                print(f"  Camera {i} images: Directory not found")
+        
+        # Check point cloud directory
+        if 'testing_3d_camera_only_detection' not in self.load_dir:
+            if os.path.exists(self.point_cloud_save_dir):
+                pc_count = len([f for f in os.listdir(self.point_cloud_save_dir) if f.endswith('.bin')])
+                print(f"  Point clouds: {pc_count} files")
+            else:
+                print(f"  Point clouds: Directory not found")
+        
+        # Check pickle file
+        pickle_path = osp.join(
+            osp.dirname(self.save_dir),
+            f'{self.info_prefix + self.info_map[self.split]}')
+        if os.path.exists(pickle_path):
+            file_size = os.path.getsize(pickle_path) / (1024 * 1024)  # MB
+            print(f"  Pickle file: {file_size:.2f} MB")
+            
+            # Try to load and validate pickle structure
+            try:
+                with open(pickle_path, 'rb') as f:
+                    data = pickle.load(f)
+                print(f"  Pickle validation: ✓ Valid structure")
+                print(f"    - Data entries: {len(data['data_list'])}")
+                print(f"    - Metadata keys: {list(data['metainfo'].keys())}")
+            except Exception as e:
+                print(f"  Pickle validation: ✗ Error loading: {e}")
+        else:
+            print(f"  Pickle file: Not found")
 
     def __len__(self):
         """Length of the filename list."""
@@ -980,3 +1495,584 @@ def create_ImageSets_img_ids(root_dir, splits):
     if len(idx_all) >= 4:
         open(save_dir + 'test_cam_only.txt', 'w').writelines(idx_all[3])
     print('created txt files indicating what to collect in ', splits)
+
+
+def main():
+    """Main function to run Waymo to KITTI conversion with progress tracking and validation."""
+    parser = argparse.ArgumentParser(
+        description='Waymo dataset processing pipeline: prepare, convert, test, or all',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Add subcommands
+    subparsers = parser.add_subparsers(
+        dest='command',
+        help='Available commands',
+        required=True
+    )
+    
+    # Common arguments for all commands
+    def add_common_args(subparser):
+        subparser.add_argument(
+            '--load_dir', 
+            type=str, 
+            required=True,
+            help='Path to directory containing Waymo data (tar files for prepare, tfrecord files for convert/test)'
+        )
+        subparser.add_argument(
+            '--save_dir', 
+            type=str, 
+            required=True,
+            help='Output directory for processed dataset'
+        )
+    
+    # Prepare command - untar downloaded files
+    prepare_parser = subparsers.add_parser(
+        'prepare',
+        help='Extract tar files from downloaded Waymo dataset'
+    )
+    add_common_args(prepare_parser)
+    prepare_parser.add_argument(
+        '--extract_dir',
+        type=str,
+        help='Directory to extract tar files (defaults to load_dir if not specified)'
+    )
+    
+    # Convert command - convert tfrecord to KITTI format
+    convert_parser = subparsers.add_parser(
+        'convert',
+        help='Convert Waymo tfrecord files to KITTI format'
+    )
+    add_common_args(convert_parser)
+    
+    # Optional arguments for convert command
+    convert_parser.add_argument(
+        '--prefix', 
+        type=str, 
+        default='',
+        help='Prefix for output files'
+    )
+    convert_parser.add_argument(
+        '--num_proc', 
+        type=int, 
+        default=1,
+        help='Number of parallel processes for conversion'
+    )
+    convert_parser.add_argument(
+        '--only_gt_boxes_for_camera', 
+        action='store_true',
+        help='Only save ground truth boxes visible in camera images'
+    )
+    convert_parser.add_argument(
+        '--sampled_interval', 
+        type=int, 
+        default=5,
+        help='Sampling interval for frames (1 = all frames, 5 = every 5th frame)'
+    )
+    convert_parser.add_argument(
+        '--save_track_id', 
+        action='store_true',
+        help='Save tracking IDs in the annotations'
+    )
+    convert_parser.add_argument(
+        '--save_cam_sync_labels', 
+        action='store_true',
+        help='Save camera-synchronized labels'
+    )
+    convert_parser.add_argument(
+        '--info_prefix', 
+        type=str, 
+        default='waymo',
+        help='Prefix for info pickle files'
+    )
+    convert_parser.add_argument(
+        '--max_sweeps', 
+        type=int, 
+        default=5,
+        help='Maximum number of sweeps to include'
+    )
+    convert_parser.add_argument(
+        '--split', 
+        type=str, 
+        choices=['training', 'validation', 'testing'],
+        default='training',
+        help='Dataset split to convert'
+    )
+    convert_parser.add_argument(
+        '--downsample', 
+        type=int, 
+        default=1,
+        help='Downsample factor: process every K samples in each segment (1 = all samples, 2 = every 2nd sample, etc.)'
+    )
+    convert_parser.add_argument(
+        '--skip_validation', 
+        action='store_true',
+        help='Skip output validation after conversion'
+    )
+    
+    # Test command - validate converted dataset
+    test_parser = subparsers.add_parser(
+        'test',
+        help='Test and validate converted KITTI dataset'
+    )
+    add_common_args(test_parser)
+    test_parser.add_argument(
+        '--test_type',
+        type=str,
+        choices=['basic', 'integration', 'performance', 'all'],
+        default='basic',
+        help='Type of test to run'
+    )
+    
+    # All command - run prepare, convert, and test in sequence
+    all_parser = subparsers.add_parser(
+        'all',
+        help='Run complete pipeline: prepare, convert, and test'
+    )
+    add_common_args(all_parser)
+    all_parser.add_argument(
+        '--extract_dir',
+        type=str,
+        help='Directory to extract tar files (defaults to load_dir if not specified)'
+    )
+    # Add all convert arguments to 'all' command
+    all_parser.add_argument(
+        '--prefix', 
+        type=str, 
+        default='',
+        help='Prefix for output files'
+    )
+    all_parser.add_argument(
+        '--num_proc', 
+        type=int, 
+        default=1,
+        help='Number of parallel processes for conversion'
+    )
+    all_parser.add_argument(
+        '--only_gt_boxes_for_camera', 
+        action='store_true',
+        help='Only save ground truth boxes visible in camera images'
+    )
+    all_parser.add_argument(
+        '--sampled_interval', 
+        type=int, 
+        default=5,
+        help='Sampling interval for frames (1 = all frames, 5 = every 5th frame)'
+    )
+    all_parser.add_argument(
+        '--save_track_id', 
+        action='store_true',
+        help='Save tracking IDs in the annotations'
+    )
+    all_parser.add_argument(
+        '--save_cam_sync_labels', 
+        action='store_true',
+        help='Save camera-synchronized labels'
+    )
+    all_parser.add_argument(
+        '--info_prefix', 
+        type=str, 
+        default='waymo',
+        help='Prefix for info pickle files'
+    )
+    all_parser.add_argument(
+        '--max_sweeps', 
+        type=int, 
+        default=5,
+        help='Maximum number of sweeps to include'
+    )
+    all_parser.add_argument(
+        '--split', 
+        type=str, 
+        choices=['training', 'validation', 'testing'],
+        default='training',
+        help='Dataset split to convert'
+    )
+    all_parser.add_argument(
+        '--downsample', 
+        type=int, 
+        default=1,
+        help='Downsample factor: process every K samples in each segment (1 = all samples, 2 = every 2nd sample, etc.)'
+    )
+    all_parser.add_argument(
+        '--test_type',
+        type=str,
+        choices=['basic', 'integration', 'performance', 'all'],
+        default='basic',
+        help='Type of test to run'
+    )
+    
+    args = parser.parse_args()
+    
+    # Execute based on command
+    if args.command == 'prepare':
+        prepare_dataset(args)
+    elif args.command == 'convert':
+        convert_dataset(args)
+    elif args.command == 'test':
+        test_dataset(args)
+    elif args.command == 'all':
+        print(f"\n{'='*60}")
+        print(f"RUNNING COMPLETE WAYMO PROCESSING PIPELINE")
+        print(f"{'='*60}\n")
+        
+        # Step 1: Prepare
+        print("Step 1/3: Preparing dataset (extracting tar files)...")
+        prepare_dataset(args)
+        
+        # Step 2: Convert
+        print("\nStep 2/3: Converting to KITTI format...")
+        convert_dataset(args)
+        
+        # Step 3: Test
+        print("\nStep 3/3: Testing and validation...")
+        test_dataset(args)
+        
+        print(f"\n{'='*60}")
+        print(f"COMPLETE PIPELINE FINISHED SUCCESSFULLY!")
+        print(f"{'='*60}\n")
+
+
+def prepare_dataset(args):
+    """Extract tar files from downloaded Waymo dataset with robust error handling."""
+    import tarfile
+    import glob
+    
+    def validate_tar_file(tar_path):
+        """Validate tar file integrity and format.
+        
+        Args:
+            tar_path (str): Path to tar file
+            
+        Returns:
+            tuple: (is_valid, error_message, file_size)
+        """
+        try:
+            # Check if file exists and get size
+            if not os.path.exists(tar_path):
+                return False, "File does not exist", 0
+            
+            file_size = os.path.getsize(tar_path)
+            if file_size == 0:
+                return False, "File is empty", file_size
+            
+            # Check if file is too small to be a valid tar
+            if file_size < 1024:  # Less than 1KB
+                return False, f"File too small ({file_size} bytes)", file_size
+            
+            # Try to open and validate tar file structure
+            with tarfile.open(tar_path, 'r') as tar:
+                # Try to get member list to validate structure
+                members = tar.getmembers()
+                if not members:
+                    return False, "Tar file contains no members", file_size
+                
+                # Check for expected file types (tfrecord files)
+                tfrecord_count = sum(1 for m in members if m.name.endswith('.tfrecord'))
+                if tfrecord_count == 0:
+                    return False, f"No .tfrecord files found in archive (found {len(members)} files)", file_size
+                
+                return True, f"Valid tar file with {tfrecord_count} tfrecord files", file_size
+                
+        except tarfile.ReadError as e:
+            return False, f"Invalid tar format: {str(e)}", file_size
+        except Exception as e:
+            return False, f"Validation error: {str(e)}", file_size
+    
+    def extract_tar_with_progress(tar_path, extract_dir, file_index, total_files):
+        """Extract tar file with detailed progress and error handling.
+        
+        Creates individual directory for each tar file and extracts contents there.
+        This follows the pattern: mkdir training_0000 && tar -xvf training_0000.tar -C training_0000
+        
+        Args:
+            tar_path (str): Path to tar file
+            extract_dir (str): Base extraction directory
+            file_index (int): Current file index (1-based)
+            total_files (int): Total number of files
+            
+        Returns:
+            tuple: (success, extracted_count, error_message)
+        """
+        try:
+            # Get tar filename without extension to create subdirectory
+            tar_filename = os.path.basename(tar_path)
+            tar_name = os.path.splitext(tar_filename)[0]  # Remove .tar extension
+            
+            # Create individual directory for this tar file
+            tar_extract_dir = os.path.join(extract_dir, tar_name)
+            os.makedirs(tar_extract_dir, exist_ok=True)
+            
+            print(f"  → Creating directory: {tar_name}")
+            print(f"  → Extracting to: {tar_extract_dir}")
+            
+            with tarfile.open(tar_path, 'r') as tar:
+                members = tar.getmembers()
+                extracted_count = 0
+                
+                print(f"  → Extracting {len(members)} files...")
+                
+                for member in members:
+                    try:
+                        # Extract to the specific subdirectory (equivalent to -C option)
+                        tar.extract(member, path=tar_extract_dir)
+                        extracted_count += 1
+                        
+                        # Show progress every 10 files or for small archives
+                        if extracted_count % max(1, len(members) // 10) == 0 or len(members) < 20:
+                            progress = (extracted_count / len(members)) * 100
+                            print(f"    Progress: {extracted_count}/{len(members)} ({progress:.1f}%)")
+                            
+                    except Exception as member_error:
+                        print(f"    ⚠ Warning: Failed to extract {member.name}: {str(member_error)}")
+                        continue
+                
+                return True, extracted_count, None
+                
+        except Exception as e:
+            return False, 0, str(e)
+    
+    print(f"\n{'='*60}")
+    print(f"WAYMO DATASET PREPARATION")
+    print(f"{'='*60}")
+    print(f"Input directory: {args.load_dir}")
+    
+    # Set extraction directory
+    extract_dir = args.extract_dir if hasattr(args, 'extract_dir') and args.extract_dir else args.load_dir
+    print(f"Extraction directory: {extract_dir}")
+    
+    # Find tar files
+    tar_files = glob.glob(os.path.join(args.load_dir, '*.tar'))
+    if not tar_files:
+        raise ValueError(f"No .tar files found in {args.load_dir}")
+    
+    print(f"Found {len(tar_files)} tar files")
+    print(f"{'='*60}\n")
+    
+    # Create extraction directory
+    os.makedirs(extract_dir, exist_ok=True)
+    
+    # Track extraction statistics
+    successful_extractions = 0
+    failed_extractions = 0
+    total_extracted_files = 0
+    failed_files = []
+    
+    # Validate and extract each tar file
+    for i, tar_file in enumerate(tar_files, 1):
+        filename = os.path.basename(tar_file)
+        print(f"Processing {i}/{len(tar_files)}: {filename}")
+        
+        # Step 1: Validate tar file
+        is_valid, validation_msg, file_size = validate_tar_file(tar_file)
+        print(f"  File size: {file_size:,} bytes")
+        
+        if not is_valid:
+            print(f"  ✗ Validation failed: {validation_msg}")
+            failed_extractions += 1
+            failed_files.append((filename, validation_msg))
+            print(f"  → Skipping corrupted file\n")
+            continue
+        
+        print(f"  ✓ Validation passed: {validation_msg}")
+        
+        # Step 2: Extract tar file
+        success, extracted_count, error_msg = extract_tar_with_progress(
+            tar_file, extract_dir, i, len(tar_files)
+        )
+        
+        if success:
+            print(f"  ✓ Successfully extracted {extracted_count} files")
+            successful_extractions += 1
+            total_extracted_files += extracted_count
+        else:
+            print(f"  ✗ Extraction failed: {error_msg}")
+            failed_extractions += 1
+            failed_files.append((filename, error_msg))
+        
+        print()  # Add spacing between files
+    
+    # Final summary
+    print(f"{'='*60}")
+    print(f"EXTRACTION SUMMARY")
+    print(f"{'='*60}")
+    print(f"Total tar files processed: {len(tar_files)}")
+    print(f"Successful extractions: {successful_extractions}")
+    print(f"Failed extractions: {failed_extractions}")
+    print(f"Total files extracted: {total_extracted_files}")
+    
+    if failed_files:
+        print(f"\nFailed files:")
+        for filename, error in failed_files:
+            print(f"  • {filename}: {error}")
+    
+    # Verify final extraction results
+    tfrecord_files = glob.glob(os.path.join(extract_dir, '*.tfrecord'))
+    print(f"\nFinal verification:")
+    print(f"Found {len(tfrecord_files)} .tfrecord files in extraction directory")
+    
+    if successful_extractions == 0:
+        raise RuntimeError("No tar files were successfully extracted. Please check file integrity.")
+    elif failed_extractions > 0:
+        print(f"\n⚠ Warning: {failed_extractions} files failed to extract. You may want to:")
+        print("  1. Re-download the corrupted files")
+        print("  2. Check file integrity with checksums")
+        print("  3. Verify sufficient disk space")
+    
+    print(f"{'='*60}\n")
+
+
+def convert_dataset(args):
+    """Convert Waymo tfrecord files to KITTI format."""
+    # Validate input arguments
+    if not os.path.exists(args.load_dir):
+        raise ValueError(f"Input directory does not exist: {args.load_dir}")
+    
+    # Find tfrecord files
+    tfrecord_files = glob(os.path.join(args.load_dir, '*.tfrecord'))
+    if not tfrecord_files:
+        raise ValueError(f"No .tfrecord files found in {args.load_dir}")
+    
+    print(f"\n{'='*60}")
+    print(f"WAYMO TO KITTI CONVERSION")
+    print(f"{'='*60}")
+    print(f"Input directory: {args.load_dir}")
+    print(f"Output directory: {args.save_dir}")
+    print(f"Found {len(tfrecord_files)} tfrecord files")
+    print(f"Split: {args.split}")
+    print(f"Sampling interval: {args.sampled_interval}")
+    print(f"Downsample factor: {args.downsample}")
+    print(f"Number of processes: {args.num_proc}")
+    print(f"Only GT boxes for camera: {args.only_gt_boxes_for_camera}")
+    print(f"Save track ID: {args.save_track_id}")
+    print(f"Save cam sync labels: {args.save_cam_sync_labels}")
+    print(f"Max sweeps: {args.max_sweeps}")
+    print(f"{'='*60}\n")
+    
+    # Create output directory
+    os.makedirs(args.save_dir, exist_ok=True)
+    
+    # Initialize converter
+    converter = Waymo2KITTI(
+        load_dir=args.load_dir,
+        save_dir=args.save_dir,
+        prefix=args.prefix,
+        workers=args.num_proc,
+        only_gt_boxes_for_camera=args.only_gt_boxes_for_camera,
+        sampled_interval=args.sampled_interval,
+        subsample_interval=args.downsample,
+        save_track_id=args.save_track_id,
+        save_cam_sync_labels=args.save_cam_sync_labels,
+        info_prefix=args.info_prefix,
+        max_sweeps=args.max_sweeps
+    )
+    
+    try:
+        # Run conversion
+        print("Starting conversion...")
+        start_time = time.time()
+        
+        converter.convert()
+        
+        end_time = time.time()
+        total_time = end_time - start_time
+        
+        print(f"\n{'='*60}")
+        print(f"CONVERSION COMPLETED SUCCESSFULLY!")
+        print(f"Total time: {total_time:.2f} seconds ({total_time/60:.2f} minutes)")
+        print(f"{'='*60}")
+        
+        # Perform validation if not skipped
+        if not hasattr(args, 'skip_validation') or not args.skip_validation:
+            print("\nPerforming output validation...")
+            converter._validate_output()
+        
+        # Print final summary
+        converter._print_conversion_summary()
+        
+        print(f"\n{'='*60}")
+        print(f"DATASET CONVERSION COMPLETE!")
+        print(f"Output saved to: {args.save_dir}")
+        print(f"{'='*60}\n")
+        
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"CONVERSION FAILED!")
+        print(f"Error: {str(e)}")
+        print(f"{'='*60}")
+        raise
+
+
+def test_dataset(args):
+    """Test and validate converted KITTI dataset."""
+    print(f"\n{'='*60}")
+    print(f"WAYMO DATASET TESTING")
+    print(f"{'='*60}")
+    print(f"Dataset directory: {args.save_dir}")
+    print(f"Test type: {args.test_type}")
+    print(f"{'='*60}\n")
+    
+    if not os.path.exists(args.save_dir):
+        raise ValueError(f"Dataset directory does not exist: {args.save_dir}")
+    
+    # Import test modules
+    try:
+        import sys
+        test_script_path = os.path.join(os.path.dirname(__file__), 'test_integration.py')
+        if os.path.exists(test_script_path):
+            # Run integration tests
+            print("Running integration tests...")
+            import subprocess
+            
+            if args.test_type == 'all':
+                cmd = [sys.executable, test_script_path, '--test', 'all']
+            else:
+                cmd = [sys.executable, test_script_path, '--test', args.test_type]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(__file__))
+            
+            print("Test Output:")
+            print(result.stdout)
+            if result.stderr:
+                print("Test Errors:")
+                print(result.stderr)
+            
+            if result.returncode == 0:
+                print(f"\n{'='*60}")
+                print(f"ALL TESTS PASSED!")
+                print(f"{'='*60}\n")
+            else:
+                print(f"\n{'='*60}")
+                print(f"TESTS FAILED!")
+                print(f"Return code: {result.returncode}")
+                print(f"{'='*60}\n")
+                raise RuntimeError("Tests failed")
+        else:
+            print("Integration test script not found. Performing basic validation...")
+            # Basic validation
+            validate_kitti_structure(args.save_dir)
+            
+    except Exception as e:
+        print(f"Test execution failed: {str(e)}")
+        raise
+
+
+def validate_kitti_structure(dataset_dir):
+    """Perform basic validation of KITTI dataset structure."""
+    required_dirs = ['training/image_2', 'training/velodyne', 'training/label_2', 'training/calib']
+    
+    print("Validating KITTI dataset structure...")
+    for req_dir in required_dirs:
+        full_path = os.path.join(dataset_dir, req_dir)
+        if os.path.exists(full_path):
+            file_count = len([f for f in os.listdir(full_path) if os.path.isfile(os.path.join(full_path, f))])
+            print(f"  ✓ {req_dir}: {file_count} files")
+        else:
+            print(f"  ✗ {req_dir}: Missing")
+            raise ValueError(f"Required directory missing: {req_dir}")
+    
+    print("Basic validation completed successfully!")
+
+
+if __name__ == '__main__':
+    main()
