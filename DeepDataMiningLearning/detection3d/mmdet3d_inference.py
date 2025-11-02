@@ -4,10 +4,15 @@ from pathlib import Path
 import numpy as np
 
 try:
-    # Use mmdet3d's high-level inferencer
-    from mmdet3d.apis import Det3DInferencer
+    # Use mmdet3d's high-level inferencers
+    from mmdet3d.apis import (
+        LidarDet3DInferencer,
+        MonoDet3DInferencer,
+        MultiModalityDet3DInferencer
+    )
 except ImportError:
     print("Error: This script requires 'mmdetection3d' and its dependencies.")
+    print("Could not import LidarDet3DInferencer, MonoDet3DInferencer, or MultiModalityDet3DInferencer.")
     print("Please follow the mmdet3d installation guide:")
     print("https://mmdetection3d.readthedocs.io/en/latest/get_started.html")
     exit()
@@ -23,6 +28,7 @@ except ImportError:
 def load_lidar_file(file_path):
     """
     Loads a LiDAR file (.bin, .ply, .pcd) and returns (N, 3) points.
+    Only used for lidar/multi-modal visualization.
     """
     ext = os.path.splitext(file_path)[-1]
     
@@ -49,18 +55,21 @@ def create_open3d_bbox(bbox_tensor):
     R = o3d.geometry.get_rotation_matrix_from_xyz((0, 0, yaw))
     
     # Create an OrientedBoundingBox
-    # Note: mmdet3d extent is (l, w, h), o3d extent is (w, l, h) or (l, w, h)
-    # Let's assume (l, w, h) matches o3d's (x, y, z) extent
     o3d_bbox = o3d.geometry.OrientedBoundingBox(center, R, extent)
     
     # Create a LineSet from the bounding box
     line_set = o3d.geometry.LineSet.create_from_oriented_bounding_box(o3d_bbox)
     return line_set
 
-def visualize_with_open3d(lidar_file, predictions, out_dir, basename, headless=False):
+def visualize_with_open3d(lidar_file, predictions_dict, out_dir, basename, headless=False):
     """
     Visualizes the point cloud and predicted boxes using Open3D.
     Saves to .ply in headless mode, otherwise shows an interactive window.
+    
+    Args:
+        lidar_file (str): Path to the LiDAR point cloud file.
+        predictions_dict (dict): The dictionary containing prediction results,
+                                 e.g., from results_dict['predictions'][0]['pred_instances_3d']
     """
     # Load the point cloud
     points = load_lidar_file(lidar_file)
@@ -69,7 +78,10 @@ def visualize_with_open3d(lidar_file, predictions, out_dir, basename, headless=F
     pcd.paint_uniform_color([0.5, 0.5, 0.5]) # Grey for points
     
     # Get predictions
-    bboxes_tensor = predictions.bboxes_3d.tensor.cpu().numpy()
+    # FIX: 'predictions' is now a dict. Get 'bboxes_3d' from it.
+    # The data is already a list or numpy array.
+    bboxes_list = predictions_dict['bboxes_3d']
+    bboxes_tensor = np.array(bboxes_list)
     
     # Create geometries list
     geometries = [pcd]
@@ -112,17 +124,17 @@ def find_matching_file(basename, directory, extensions):
             return str(file_path)
     return None
 
-def build_input_dict(lidar_file, img_dir, calib_dir):
+def build_input_dict_lidar(lidar_file, img_dir, calib_dir):
     """
-    Builds the input dictionary for the inferencer based on provided files.
+    Builds the input dictionary for lidar or multi-modal models.
     """
     basename = Path(lidar_file).stem
     
     # Start with the required LiDAR file
-    input_dict = {'pts': str(lidar_file)}
+    # FIX: The key must be 'points', not 'pts'
+    input_dict = {'points': str(lidar_file)}
     
     # --- 1. Find matching image file ---
-    # Models often expect '.png', but let's check for '.jpg' too
     img_exts = ['.png', '.jpg', '.jpeg']
     img_file = find_matching_file(basename, img_dir, img_exts)
     if img_dir and img_file:
@@ -131,50 +143,83 @@ def build_input_dict(lidar_file, img_dir, calib_dir):
         print(f"Warning: --img-dir provided, but no matching image for {basename} found.")
 
     # --- 2. Find matching calibration file ---
-    # KITTI uses .txt, nuScenes/Waymo use .json or .pkl (but those are complex)
-    # We'll assume KITTI-style .txt for this general script
     calib_exts = ['.txt']
     calib_file = find_matching_file(basename, calib_dir, calib_exts)
     if calib_dir and calib_file:
-        # The key 'calib' is what mmdet3d's KITTI pipeline expects
         input_dict['calib'] = calib_file
     elif calib_dir:
         print(f"Warning: --calib-dir provided, but no matching calib file for {basename} found.")
 
     return input_dict
 
+def build_input_dict_mono(img_file, calib_dir):
+    """
+    Builds the input dictionary for monocular models.
+    """
+    basename = Path(img_file).stem
+    input_dict = {'img': str(img_file)}
+    
+    # Find matching calibration file
+    calib_exts = ['.txt'] # KITTI-style
+    calib_file = find_matching_file(basename, calib_dir, calib_exts)
+    if calib_dir and calib_file:
+        input_dict['calib'] = calib_file
+    elif calib_dir:
+        print(f"Warning: --calib-dir provided, but no matching calib file for {basename} found.")
+    
+    return input_dict
+
+# --- Defaults ---
+DEFAULT_MODEL = '/home/lkk688/Developer/mmdetection3d/configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py'
+#DEFAULT_CHECKPOINT = 'https://download.openmmlab.com/mmdetection3d/v1.0.0_models/pointpillars/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car/hv_pointpillars_secfpn_6x8_160e_ktti-3d-car_20220331_134606-d42d15ed.pth'
+DEFAULT_CHECKPOINT = '/home/lkk688/Developer/mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth'
+DEFAULT_INPUT = '/home/lkk688/Developer/mmdetection3d/demo/data/kitti/000008.bin'
+# --- End Defaults ---
+
 def main(args):
     # --- 1. Initialize Model ---
-    print("Initializing Det3DInferencer...")
+    print(f"Initializing {args.modality} inferencer...")
     
-    # Check if 'model' is a file path
-    if os.path.isfile(args.model):
-        if not args.checkpoint:
-            print(f"Error: --checkpoint is required when 'model' ({args.model}) is a config file.")
+    model_path = args.model
+    checkpoint_path = args.checkpoint
+    
+    # --- New Logic for default checkpoint ---
+    if args.model == DEFAULT_MODEL and args.checkpoint is None:
+        print(f"Using default model, setting default checkpoint: {DEFAULT_CHECKPOINT}")
+        checkpoint_path = DEFAULT_CHECKPOINT
+    # --- End New Logic ---
+    
+    # Handle auto-download for model names
+    if not os.path.isfile(args.model):
+        # It's a model name, set weights to None for auto-download
+        # if checkpoint is not provided
+        if not checkpoint_path: # Changed from args.checkpoint
+            checkpoint_path = None
+        print(f"Loading model '{args.model}' with checkpoint: {checkpoint_path or 'auto-download'}")
+    else:
+        # It's a config file, checkpoint is required
+        if not checkpoint_path: # Changed from args.checkpoint
+            print(f"Error: --checkpoint is required when 'model' ({args.model}) is a config file and not the default.")
             exit()
         print(f"Loading local model from config: {args.model}")
-        inferencer = Det3DInferencer(
-            args.model,
-            args.checkpoint,
-            device=args.device
-        )
+
+    # Select the correct inferencer class
+    if args.modality == 'lidar':
+        InferencerClass = LidarDet3DInferencer
+    elif args.modality == 'mono':
+        InferencerClass = MonoDet3DInferencer
+    elif args.modality == 'multi-modal':
+        InferencerClass = MultiModalityDet3DInferencer
     else:
-        # Assume 'model' is a model name
-        if args.checkpoint:
-            print(f"Loading model '{args.model}' with local checkpoint: {args.checkpoint}")
-            inferencer = Det3DInferencer(
-                args.model,
-                args.checkpoint,
-                device=args.device
-            )
-        else:
-            print(f"Loading model '{args.model}' with auto-downloaded checkpoint.")
-            # Pass None to weights to trigger auto-download
-            inferencer = Det3DInferencer(
-                args.model,
-                None, 
-                device=args.device
-            )
+        # This should be caught by argparse 'choices', but as a safeguard:
+        print(f"Error: Unknown modality '{args.modality}'")
+        exit()
+        
+    inferencer = InferencerClass(
+        model_path,
+        checkpoint_path,
+        device=args.device
+    )
 
     # Create the output directory if it doesn't exist
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)
@@ -187,103 +232,162 @@ def main(args):
     # --- 2. Gather all inputs ---
     inputs_list = []
     
-    if os.path.isfile(args.input_path):
-        # Single file inference
-        if args.input_path.endswith(('.bin', '.ply', '.pcd')):
-            inputs_list.append(
-                build_input_dict(args.input_path, args.img_dir, args.calib_dir)
-            )
-        else:
-            print(f"Error: Input file {args.input_path} is not a supported LiDAR format.")
-            return
-            
-    elif os.path.isdir(args.input_path):
-        # Folder inference
-        print(f"Scanning folder: {args.input_path}")
-        for fname in sorted(os.listdir(args.input_path)):
-            if fname.endswith(('.bin', '.ply', '.pcd')):
-                lidar_file = os.path.join(args.input_path, fname)
+    if args.modality == 'mono':
+        # --- Monocular Inference Path (Images) ---
+        if os.path.isfile(args.input_path):
+            if args.input_path.lower().endswith(('.png', '.jpg', '.jpeg')):
                 inputs_list.append(
-                    build_input_dict(lidar_file, args.img_dir, args.calib_dir)
+                    build_input_dict_mono(args.input_path, args.calib_dir)
                 )
+            else:
+                print(f"Error: Monocular mode selected, but input {args.input_path} is not an image.")
+                return
+        elif os.path.isdir(args.input_path):
+            print(f"Scanning image folder: {args.input_path}")
+            for fname in sorted(os.listdir(args.input_path)):
+                if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    img_file = os.path.join(args.input_path, fname)
+                    inputs_list.append(
+                        build_input_dict_mono(img_file, args.calib_dir)
+                    )
+        else:
+             print(f"Error: Input path {args.input_path} is not a valid file or directory.")
+             return
+             
     else:
-        print(f"Error: Input path {args.input_path} is not a valid file or directory.")
-        return
+        # --- LiDAR or Multi-Modal Inference Path (Points) ---
+        if os.path.isfile(args.input_path):
+            if args.input_path.endswith(('.bin', '.ply', '.pcd')):
+                inputs_list.append(
+                    build_input_dict_lidar(args.input_path, args.img_dir, args.calib_dir)
+                )
+            else:
+                print(f"Error: {args.modality} mode selected, but input {args.input_path} is not a LiDAR file.")
+                return
+        elif os.path.isdir(args.input_path):
+            print(f"Scanning LiDAR folder: {args.input_path}")
+            for fname in sorted(os.listdir(args.input_path)):
+                if fname.endswith(('.bin', '.ply', '.pcd')):
+                    lidar_file = os.path.join(args.input_path, fname)
+                    inputs_list.append(
+                        build_input_dict_lidar(lidar_file, args.img_dir, args.calib_dir)
+                    )
+        else:
+             print(f"Error: Input path {args.input_path} is not a valid file or directory.")
+             return
 
     if not inputs_list:
-        print("Error: No valid input LiDAR files found.")
+        print("Error: No valid input files found.")
         return
         
-    print(f"Found {len(inputs_list)} samples to infer.")
+        print(f"Found {len(inputs_list)} samples to infer.")
 
     # --- 3. Run Inference & Visualize ---
     for single_input in inputs_list:
-        lidar_file = single_input['pts']
-        basename = Path(lidar_file).stem
-        print(f"\nRunning inference on: {lidar_file}")
         
-        # Run inference, get prediction dictionary back
-        # We set show=False and out_dir=None to stop the inferencer
-        # from doing its own visualization. We will do it manually.
-        results_dict = inferencer(
-            single_input,
-            show=False,
-            out_dir=None, # We are handling visualization
-            pred_score_thr=args.score_thr
-        )
-        
-        # Save the raw predictions (JSON)
-        pred_path = Path(args.out_dir) / f"{basename}_predictions.json"
-        print(f"  > Saving raw predictions to {pred_path}")
-        # The inferencer returns results in 'predictions', let's save them
-        # This part is complex as Det3DDataSample is not directly JSON-serializable
-        # For simplicity, we'll just save the boxes/scores/labels
-        preds = results_dict['predictions'][0].pred_instances_3d
-        pred_data = {
-            'bboxes_3d': preds.bboxes_3d.tensor.cpu().numpy().tolist(),
-            'scores_3d': preds.scores_3d.cpu().numpy().tolist(),
-            'labels_3d': preds.labels_3d.cpu().numpy().tolist(),
-        }
-        # A simple way to save (though not the official format)
-        try:
-            import json
-            with open(pred_path, 'w') as f:
-                json.dump(pred_data, f, indent=2)
-        except Exception as e:
-            print(f"  > Warning: Could not save prediction JSON. {e}")
+        # Get basename from the primary input
+        # FIX: The key must be 'points', not 'pts'
+        primary_input_key = 'img' if args.modality == 'mono' else 'points'
+        basename = Path(single_input[primary_input_key]).stem
+        print(f"\nRunning inference on input: {basename}")
 
-        # Manually visualize using Open3D
-        visualize_with_open3d(
-            lidar_file,
-            results_dict['predictions'][0].pred_instances_3d,
-            args.out_dir,
-            basename,
-            headless=is_headless
-        )
-        
+        if args.modality == 'mono':
+            # --- Monocular Visualization Path ---
+            # Use the inferencer's built-in visualizer
+            # It will save files to out_dir
+            print(f"  > Using built-in visualizer. Saving to {args.out_dir}")
+            inferencer(
+                single_input,
+                show=False,
+                out_dir=args.out_dir, # Tell the inferencer where to save
+                pred_score_thr=args.score_thr
+            )
+            
+        else:
+            # --- LiDAR / Multi-Modal Visualization Path (Custom Open3D) ---
+            # FIX: The key must be 'points', not 'pts'
+            lidar_file = single_input['points']
+            
+            results_dict = inferencer(
+                single_input,
+                show=False,
+                out_dir=args.out_dir, # FIX: Pass the real out_dir to avoid NoneType error
+                pred_score_thr=args.score_thr
+            )
+            
+            # FIX: The inferencer returns a dict. Access predictions via keys.
+            # Get the dictionary for the first (and only) prediction
+            # This dict *directly* contains 'bboxes_3d', 'scores_3d', 'labels_3d'
+            pred_dict = results_dict['predictions'][0]
+
+            # Save the raw predictions (JSON)
+            pred_path = Path(args.out_dir) / f"{basename}_predictions.json"
+            print(f"  > Saving raw predictions to {pred_path}")
+            
+            # The data is already in a serializable format
+            pred_data = pred_dict 
+            
+            try:
+                import json
+                # Create a serializable copy to handle numpy arrays
+                serializable_pred_data = {}
+                for k, v in pred_data.items():
+                    if isinstance(v, np.ndarray):
+                        serializable_pred_data[k] = v.tolist()
+                    else:
+                        serializable_pred_data[k] = v
+                
+                with open(pred_path, 'w') as f:
+                    json.dump(serializable_pred_data, f, indent=2)
+            except Exception as e:
+                print(f"  > Warning: Could not save prediction JSON. {e}")
+
+            # Manually visualize using Open3D
+            # FIX: Pass the 'pred_dict' to the visualizer
+            visualize_with_open3d(
+                lidar_file,
+                pred_dict,
+                args.out_dir,
+                basename,
+                headless=is_headless
+            )
+            
     print(f"\nInference complete. Results saved in {args.out_dir}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MMDetection3D Inference Script")
-    parser.add_argument('model', help="Model name (e.g., 'pointpillars_kitti') or path to config file.")
-    parser.add_argument('input_path', help="Path to a single LiDAR file (.bin, .ply) or a directory of LiDAR files.")
-    parser.add_argument('out_dir', help="Directory to save prediction results and visualizations.")
     
+    # Changed from positional to optional with defaults
+    parser.add_argument('--model', type=str, 
+                        default=DEFAULT_MODEL,
+                        help="Model name (e.g., 'pointpillars_kitti') or path to config file.")
+    parser.add_argument('--input-path', type=str, 
+                        default=DEFAULT_INPUT,
+                        help="Path to input. For 'lidar'/'multi-modal', a LiDAR file or folder. For 'mono', an image file or folder.")
+    parser.add_argument('--out-dir', type=str, 
+                        default='./inference_results',
+                        help="Directory to save prediction results and visualizations.")
+    
+    # Changed required=True to default='lidar'
+    parser.add_argument('--modality', type=str, default='lidar',
+                        choices=['lidar', 'mono', 'multi-modal'],
+                        help="Modality of the model (e.g., 'lidar', 'mono', 'multi-modal').")
+    
+    # Set default checkpoint to None, logic in main() will handle it
     parser.add_argument('--checkpoint', type=str, default=None,
-                        help="(Optional) Path to checkpoint. Required if 'model' is a config file. "
-                             "If 'model' is a name, will auto-download if not provided.")
+                        help="(Optional) Path or URL to checkpoint. If 'model' is a name, will auto-download if not provided."
+                             f" Defaults to {DEFAULT_CHECKPOINT} if default model is used.")
+    
     parser.add_argument('--img-dir', type=str, default=None,
-                        help="(Optional) Directory of camera images for multi-modal models. "
-                             "File names must match LiDAR files (e.g., 00001.bin and 00001.png).")
+                        help="(Optional) For 'multi-modal', directory of camera images. For 'mono', this is ignored.")
     parser.add_argument('--calib-dir', type=str, default=None,
-                        help="(Optional) Directory of calibration files (e.g., KITTI-style .txt). "
-                             "File names must match LiDAR files (e.g., 00001.bin and 00001.txt).")
+                        help="(Optional) Directory of calibration files (e.g., KITTI-style .txt).")
     
     parser.add_argument('--score-thr', type=float, default=0.3,
                         help="Score threshold for filtering predictions.")
     parser.add_argument('--device', type=str, default='cuda:0',
                         help="Device to use for inference (e.g., 'cuda:0' or 'cpu').")
-    parser.add_argument('--headless', action='store_true',
+    parser.add_argument('--headless', default=True,
                         help="Run in headless mode. Will save visualizations to .ply files "
                              "instead of opening an interactive window.")
     
