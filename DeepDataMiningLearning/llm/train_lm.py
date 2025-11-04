@@ -217,7 +217,7 @@ class Evaluator:
                 # --------------------------------------------------
                 # Case 4 — Decoder-only Transformers
                 # --------------------------------------------------
-                if self.mode == "teacher-forced":
+                if self.hf_model==False and self.mode == "teacher-forced":
                     # Each batch is (x, y) or (x, y, lengths)
                     if len(batch) == 3:
                         x, y, _ = batch
@@ -240,7 +240,7 @@ class Evaluator:
                     total_count += y.numel()
                     continue
 
-                elif self.mode == "final-token":
+                elif self.hf_model==False and self.mode == "final-token":
                     x, y, lengths = [t.to(self.device) for t in batch]
                     T = x.size(1)
                     mask = TransformerLM.causal_mask(T, x.device)
