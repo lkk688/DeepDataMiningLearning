@@ -715,6 +715,42 @@ def run_qwen_finetune_experiment(
         device_map="auto",
         trust_remote_code=True
     )
+    # 1. Freeze all parameters initially
+    for param in model.parameters():
+        param.requires_grad = False
+    print("✅ All parameters frozen.")
+
+    # 2. Unfreeze the last two transformer blocks and the language modeling head
+    # The Qwen2.5 model structure typically has a 'model.model.layers' attribute for transformer blocks
+    # and 'model.lm_head' for the final output layer.
+    num_layers_to_unfreeze = 2
+    total_layers = len(model.model.layers)
+
+    # Unfreeze the last 'num_layers_to_unfreeze' layers
+    for i in range(total_layers - num_layers_to_unfreeze, total_layers):
+        for param in model.model.layers[i].parameters():
+            param.requires_grad = True
+        print(f"✅ Unfroze layer {i}.")
+
+    # Unfreeze the language modeling head (the final prediction layer)
+    for param in model.lm_head.parameters():
+        param.requires_grad = True
+    print("✅ Unfroze language modeling head.")
+
+    # Verify which layers are trainable (optional)
+    print("\nTrainable parameters check:")
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"🔹 {name} is trainable.")
+        # else:
+        #     print(f"🔸 {name} is frozen.")
+
+    # After this, you can proceed with your fine-tuning setup (e.g., configure optimizer, data, and trainer).
+    # Make sure your optimizer is initialized *after* setting the requires_grad flags.
+    # The optimizer should only include parameters where requires_grad is True.
+    #trainable_params = filter(lambda p: p.requires_grad, model.parameters())
+
+
     #model.resize_token_embeddings(len(tokenizer))
     print("✅ Model and tokenizer ready.\n")
     tokenizer = data.tok.tokenizer
@@ -765,7 +801,7 @@ def run_qwen_finetune_experiment(
 
     # ------------------------------------------------------------
     # 6️⃣  Evaluate model
-    # ------------------------------------------------------------
+    # ------------------------------------------------------------ 
     evaluator = Evaluator(model, data, mode="teacher-forced", hf_model=True)
     val_loss, val_acc, val_ppl = evaluator.evaluate(split="valid")
 
@@ -788,7 +824,7 @@ def run_qwen_finetune_experiment(
 
 if __name__ == "__main__":
     #test_charmodel()
-    #main()
+    #main() 
     
     #results = run_predictive_typing_experiment()
     run_qwen_finetune_experiment()

@@ -305,20 +305,57 @@ class Trainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
+        # # Optimizer and scheduler setup
+        # no_decay = ["bias", "LayerNorm.weight", "norm", "emb"]
+        # grouped_params = [
+        #     {
+        #         "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+        #         "weight_decay": tcfg.weight_decay,
+        #         "initial_lr": tcfg.lr,
+        #     },
+        #     {
+        #         "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+        #         "weight_decay": 0.0,
+        #         "initial_lr": tcfg.lr,
+        #     },
+        # ]
+        # self.opt = torch.optim.AdamW(grouped_params, lr=tcfg.lr, betas=(0.9, 0.95), eps=1e-8)
         # Optimizer and scheduler setup
         no_decay = ["bias", "LayerNorm.weight", "norm", "emb"]
+
+        # Prepare two lists for the two parameter groups
+        params_decay = []
+        params_no_decay = []
+
+        # --- Single pass over all named parameters ---
+        for n, p in self.model.named_parameters():
+            # 1. Skip parameters that are frozen
+            if not p.requires_grad:
+                continue
+
+            # 2. Check if the parameter name matches any in the no_decay list
+            if any(nd in n for nd in no_decay):
+                # Add to the no_decay list
+                params_no_decay.append(p)
+            else:
+                # Add to the decay list
+                params_decay.append(p)
+
+        # Create the final grouped_params list
         grouped_params = [
             {
-                "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
+                "params": params_decay,
                 "weight_decay": tcfg.weight_decay,
-                "initial_lr": tcfg.lr,
+                "initial_lr": tcfg.lr,  # Your original code used 'initial_lr'
             },
             {
-                "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
+                "params": params_no_decay,
                 "weight_decay": 0.0,
-                "initial_lr": tcfg.lr,
+                "initial_lr": tcfg.lr,  # Your original code used 'initial_lr'
             },
         ]
+
+        # Initialize the optimizer
         self.opt = torch.optim.AdamW(grouped_params, lr=tcfg.lr, betas=(0.9, 0.95), eps=1e-8)
 
         # Cosine LR schedule with warmup
@@ -606,7 +643,8 @@ class Trainer:
             self.train_losses.append(avg_train_loss)
             
             # Validation at end of each epoch
-            evaluator = Evaluator(self.model, self.data, self.mode)
+            #evaluator = Evaluator(self.model, self.data, self.mode, hf_model=self.hf_model)
+            evaluator = Evaluator(model=self.model, data=self.data, mode=self.mode, hf_model=self.hf_model)
             val_loss, val_acc, val_ppl = evaluator.evaluate(split="valid")
             self.val_losses.append(val_loss)
             # Scheduler step
