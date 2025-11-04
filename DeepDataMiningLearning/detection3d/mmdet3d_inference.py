@@ -170,10 +170,10 @@ def build_input_dict_mono(img_file, calib_dir):
     return input_dict
 
 # --- Defaults ---
-DEFAULT_MODEL = '/home/lkk688/Developer/mmdetection3d/configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py'
+DEFAULT_MODEL = '/Developer/mmdetection3d/configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py'
 #DEFAULT_CHECKPOINT = 'https://download.openmmlab.com/mmdetection3d/v1.0.0_models/pointpillars/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car/hv_pointpillars_secfpn_6x8_160e_ktti-3d-car_20220331_134606-d42d15ed.pth'
-DEFAULT_CHECKPOINT = '/home/lkk688/Developer/mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth'
-DEFAULT_INPUT = '/home/lkk688/Developer/mmdetection3d/demo/data/kitti/000008.bin'
+DEFAULT_CHECKPOINT = '/Developer/mmdetection3d/modelzoos/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth'
+DEFAULT_INPUT = '/Developer/mmdetection3d/demo/data/kitti/000008.bin'
 # --- End Defaults ---
 
 def main(args):
@@ -387,7 +387,7 @@ if __name__ == "__main__":
                         help="Score threshold for filtering predictions.")
     parser.add_argument('--device', type=str, default='cuda:0',
                         help="Device to use for inference (e.g., 'cuda:0' or 'cpu').")
-    parser.add_argument('--headless', default=True,
+    parser.add_argument('--headless', default=False,
                         help="Run in headless mode. Will save visualizations to .ply files "
                              "instead of opening an interactive window.")
     

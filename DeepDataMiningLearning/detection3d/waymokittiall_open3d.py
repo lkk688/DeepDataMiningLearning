@@ -56,9 +56,6 @@ Mathematical Foundations:
    
    Waymo2KITTI maintains KITTI coordinate conventions after conversion.
 
-Author: AI Assistant
-Date: 2024
-License: MIT
 """
 
 import numpy as np
@@ -73,6 +70,8 @@ import math
 import torch
 from typing import List, Tuple, Optional, Union
 import warnings
+
+# Calibration utilities will be implemented directly in this file
 
 # Suppress Open3D warnings in headless mode
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -262,17 +261,27 @@ class Open3DVisualizer:
             raise ImportError("Open3D is required but not installed. Run: pip install open3d")
     
     def create_point_cloud(self, points: np.ndarray, 
-                          color_by_intensity: bool = True,
+                          color_by: str = 'intensity',
                           point_size: float = 2.0) -> o3d.geometry.PointCloud:
         """
         Create Open3D point cloud from numpy array.
+        
+        Supports both KITTI format (N, 4) and Waymo2KITTI format (N, 6).
+        Waymo2KITTI format: [x, y, z, intensity, elongation, mask_indices]
+        
+        Coloring options:
+        - 'intensity': Color by intensity values (column 3)
+        - 'elongation': Color by elongation values (column 4, Waymo2KITTI only)
+        - 'mask_indices': Color by mask indices (column 5, Waymo2KITTI only)
+        - 'height': Color by Z coordinate (height)
+        - 'none': Use default white color
         
         Intensity-based coloring uses viridis colormap approximation:
         $$\text{RGB} = f_{\text{viridis}}(\frac{I - I_{\min}}{I_{\max} - I_{\min}})$$
         
         Args:
-            points: (N, 3) or (N, 4) array with XYZ and optional intensity
-            color_by_intensity: Whether to color by intensity values
+            points: (N, 3), (N, 4), or (N, 6) array with XYZ and optional features
+            color_by: Coloring method ('intensity', 'elongation', 'mask_indices', 'height', 'none')
             point_size: Point rendering size
             
         Returns:
@@ -281,23 +290,86 @@ class Open3DVisualizer:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points[:, :3])
         
-        if color_by_intensity and points.shape[1] >= 4:
-            # Normalize intensity values to [0, 1]
-            intensities = points[:, 3]
-            if intensities.max() > intensities.min():
-                normalized_intensities = (intensities - intensities.min()) / (intensities.max() - intensities.min())
-            else:
-                normalized_intensities = np.ones_like(intensities) * 0.5
-            
-            # Apply viridis-like colormap
-            colors = self._apply_viridis_colormap(normalized_intensities)
-            pcd.colors = o3d.utility.Vector3dVector(colors)
+        # Determine coloring
+        if color_by == 'intensity' and points.shape[1] >= 4:
+            values = points[:, 3]
+            colors = self._apply_colormap(values, 'viridis')
+        elif color_by == 'elongation' and points.shape[1] >= 5:
+            values = points[:, 4]
+            colors = self._apply_colormap(values, 'plasma')
+        elif color_by == 'mask_indices' and points.shape[1] >= 6:
+            values = points[:, 5]
+            colors = self._apply_discrete_colormap(values)
+        elif color_by == 'height':
+            values = points[:, 2]  # Z coordinate
+            colors = self._apply_colormap(values, 'coolwarm')
         else:
             # Default white color
-            pcd.colors = o3d.utility.Vector3dVector(np.ones((len(points), 3)) * 0.8)
+            colors = np.ones((len(points), 3)) * 0.8
         
+        pcd.colors = o3d.utility.Vector3dVector(colors)
         return pcd
     
+    def _apply_colormap(self, values: np.ndarray, colormap: str = 'viridis') -> np.ndarray:
+        """
+        Apply colormap to values with automatic normalization.
+        
+        Args:
+            values: Raw values to be colored
+            colormap: Colormap type ('viridis', 'plasma', 'coolwarm')
+            
+        Returns:
+            RGB colors array (N, 3)
+        """
+        # Normalize values to [0, 1]
+        if values.max() > values.min():
+            normalized_values = (values - values.min()) / (values.max() - values.min())
+        else:
+            normalized_values = np.ones_like(values) * 0.5
+        
+        if colormap == 'viridis':
+            return self._apply_viridis_colormap(normalized_values)
+        elif colormap == 'plasma':
+            return self._apply_plasma_colormap(normalized_values)
+        elif colormap == 'coolwarm':
+            return self._apply_coolwarm_colormap(normalized_values)
+        else:
+            return self._apply_viridis_colormap(normalized_values)
+    
+    def _apply_discrete_colormap(self, values: np.ndarray) -> np.ndarray:
+        """
+        Apply discrete colormap for categorical values (e.g., mask indices).
+        
+        Args:
+            values: Discrete values (mask indices)
+            
+        Returns:
+            RGB colors array (N, 3)
+        """
+        unique_values = np.unique(values)
+        colors = np.zeros((len(values), 3))
+        
+        # Define distinct colors for different mask indices
+        color_palette = [
+            [1.0, 0.0, 0.0],  # Red
+            [0.0, 1.0, 0.0],  # Green
+            [0.0, 0.0, 1.0],  # Blue
+            [1.0, 1.0, 0.0],  # Yellow
+            [1.0, 0.0, 1.0],  # Magenta
+            [0.0, 1.0, 1.0],  # Cyan
+            [0.5, 0.5, 0.5],  # Gray
+            [1.0, 0.5, 0.0],  # Orange
+            [0.5, 0.0, 1.0],  # Purple
+            [0.0, 0.5, 0.0],  # Dark Green
+        ]
+        
+        for i, val in enumerate(unique_values):
+            mask = values == val
+            color_idx = int(val) % len(color_palette)
+            colors[mask] = color_palette[color_idx]
+        
+        return colors
+
     def _apply_viridis_colormap(self, values: np.ndarray) -> np.ndarray:
         """
         Apply viridis-like colormap to normalized values [0, 1].
@@ -321,6 +393,44 @@ class Open3DVisualizer:
         r = 0.267004 + v * (-0.127568 + v * (0.472873 + v * (-0.498882)))
         g = 0.004874 + v * (1.424006 + v * (-2.174996 + v * (1.074935)))
         b = 0.329415 + v * (0.226420 + v * (-0.020582 + v * (-0.266134)))
+        
+        return np.column_stack([r, g, b])
+    
+    def _apply_plasma_colormap(self, values: np.ndarray) -> np.ndarray:
+        """
+        Apply plasma-like colormap to normalized values [0, 1].
+        
+        Args:
+            values: Normalized values in [0, 1]
+            
+        Returns:
+            RGB colors array (N, 3)
+        """
+        v = np.clip(values, 0, 1)
+        
+        # Plasma colormap approximation
+        r = 0.050383 + v * (2.176514 + v * (-2.689460 + v * (6.130348 + v * (-11.10743 + v * (10.02306 + v * (-3.658713))))))
+        g = 0.029803 + v * (0.280267 + v * (0.753867 + v * (-2.41777 + v * (5.168399 + v * (-5.435545 + v * (2.062490))))))
+        b = 0.527975 + v * (0.581122 + v * (0.253935 + v * (-6.393885 + v * (13.35155 + v * (-12.24460 + v * (4.27415))))))
+        
+        return np.column_stack([np.clip(r, 0, 1), np.clip(g, 0, 1), np.clip(b, 0, 1)])
+    
+    def _apply_coolwarm_colormap(self, values: np.ndarray) -> np.ndarray:
+        """
+        Apply coolwarm colormap to normalized values [0, 1].
+        
+        Args:
+            values: Normalized values in [0, 1]
+            
+        Returns:
+            RGB colors array (N, 3)
+        """
+        v = np.clip(values, 0, 1)
+        
+        # Cool-warm colormap: blue (0) to white (0.5) to red (1)
+        r = np.where(v < 0.5, 2 * v, 1.0)
+        g = np.where(v < 0.5, 2 * v, 2 * (1 - v))
+        b = np.where(v < 0.5, 1.0, 2 * (1 - v))
         
         return np.column_stack([r, g, b])
     
@@ -425,19 +535,23 @@ class Open3DVisualizer:
     def visualize_scene(self, points: np.ndarray, 
                        boxes: Optional[List] = None,
                        point_cloud_range: Optional[List[float]] = None,
+                       color_by: str = 'intensity',
                        save_path: Optional[str] = None,
                        show_coordinate_frame: bool = True,
-                       show_ground_grid: bool = True) -> None:
+                       show_ground_grid: bool = True,
+                       calib=None) -> None:
         """
         Visualize complete 3D scene with point cloud and bounding boxes.
         
         Args:
-            points: (N, 3) or (N, 4) point cloud array
+            points: (N, 3), (N, 4), or (N, 6) point cloud array
             boxes: List of Object3d instances or box arrays
             point_cloud_range: [xmin, ymin, zmin, xmax, ymax, zmax] for filtering
+            color_by: Point cloud coloring method
             save_path: Path to save visualization (PLY format)
             show_coordinate_frame: Whether to show coordinate axes
             show_ground_grid: Whether to show ground grid
+            calib: Calibration object for coordinate transformation
         """
         if not OPEN3D_AVAILABLE:
             print("Open3D not available, skipping visualization")
@@ -449,9 +563,14 @@ class Open3DVisualizer:
         if point_cloud_range is not None:
             points = self._filter_points(points, point_cloud_range)
         
-        # Create point cloud
-        pcd = self.create_point_cloud(points, color_by_intensity=True)
+        # Create point cloud with specified coloring
+        pcd = self.create_point_cloud(points, color_by=color_by)
         self.geometries.append(pcd)
+        
+        # Print LiDAR point cloud range
+        print(f"LiDAR point cloud range:")
+        print(f"  X=[{points[:, 0].min():.2f}, {points[:, 0].max():.2f}], Y=[{points[:, 1].min():.2f}, {points[:, 1].max():.2f}], Z=[{points[:, 2].min():.2f}, {points[:, 2].max():.2f}]")
+        print(f"  Total points: {len(points)}")
         
         # Add bounding boxes
         if boxes is not None:
@@ -468,6 +587,23 @@ class Open3DVisualizer:
                 # Generate box corners
                 if hasattr(obj, 'h'):  # Object3d format
                     corners = self._object3d_to_corners(obj)
+                    
+                    # Print original corners in camera coordinates
+                    print(f"{obj.type} corners in camera coordinates:")
+                    print(f"  Center: ({obj.t[0]:.2f}, {obj.t[1]:.2f}, {obj.t[2]:.2f})")
+                    print(f"  Dimensions: L={obj.l:.2f}, W={obj.w:.2f}, H={obj.h:.2f}")
+                    print(f"  Rotation: {obj.ry:.2f} rad")
+                    print(f"  Corner range: X=[{corners[0].min():.2f}, {corners[0].max():.2f}], Y=[{corners[1].min():.2f}, {corners[1].max():.2f}], Z=[{corners[2].min():.2f}, {corners[2].max():.2f}]")
+                    
+                    # Transform corners from camera coordinates to LiDAR coordinates
+                    if calib is not None:
+                        try:
+                            corners_velo = calib.project_rect_to_velo(corners)  # (8, 3)
+                            corners = corners_velo
+                        except Exception as e:
+                            print(f"Warning: Failed to transform coordinates for {obj.type}: {e}")
+                            # Use original corners if transformation fails
+                            pass
                 else:  # Assume numpy array format [x, y, z, dx, dy, dz, heading]
                     corners = boxes_to_corners_3d(np.array([obj]))[0]
                 
@@ -645,16 +781,19 @@ class Object3d(object):
         print(f"Difficulty of estimation: {self.estimate_difficulty()}")
 
 
-def load_velo_scan(velo_filename: str, dtype=np.float32, n_vec: int = 4, 
+def load_velo_scan(velo_filename: str, dtype=np.float32, n_vec: int = 6, 
                   filterpoints: bool = False, 
                   point_cloud_range: List[float] = [0, -15, -5, 90, 15, 4]) -> np.ndarray:
     """
     Load velodyne point cloud from binary file.
     
+    Supports both legacy KITTI format (N, 4) and Waymo2KITTI format (N, 6).
+    Waymo2KITTI format: [x, y, z, intensity, elongation, mask_indices]
+    
     Args:
         velo_filename: Path to .bin file
         dtype: Data type for loading
-        n_vec: Number of values per point (typically 4: x, y, z, intensity)
+        n_vec: Number of values per point (4 for KITTI: x,y,z,intensity; 6 for Waymo2KITTI: x,y,z,intensity,elongation,mask_indices)
         filterpoints: Whether to filter points by range
         point_cloud_range: [xmin, ymin, zmin, xmax, ymax, zmax]
         
@@ -668,9 +807,20 @@ def load_velo_scan(velo_filename: str, dtype=np.float32, n_vec: int = 4,
     ypoints = scan[:, 1]
     zpoints = scan[:, 2]
     
+    print(f"Loaded point cloud shape: {scan.shape}")
     print(f"X range: {min(xpoints):.2f} to {max(xpoints):.2f}")
     print(f"Y range: {min(ypoints):.2f} to {max(ypoints):.2f}")
     print(f"Z range: {min(zpoints):.2f} to {max(zpoints):.2f}")
+    
+    if n_vec >= 4:
+        intensities = scan[:, 3]
+        print(f"Intensity range: {min(intensities):.2f} to {max(intensities):.2f}")
+    
+    if n_vec >= 6:
+        elongations = scan[:, 4]
+        mask_indices = scan[:, 5]
+        print(f"Elongation range: {min(elongations):.2f} to {max(elongations):.2f}")
+        print(f"Mask indices range: {min(mask_indices):.0f} to {max(mask_indices):.0f}")
     
     if filterpoints:
         print(f"Filtering points in range: x[{point_cloud_range[0]}, {point_cloud_range[3]}], "
@@ -686,22 +836,50 @@ def filter_lidarpoints(pc_velo: np.ndarray,
     """
     Filter LiDAR points within specified range.
     
+    Supports both KITTI format (N, 4) and Waymo2KITTI format (N, 6).
+    
     Args:
-        pc_velo: Point cloud array (N, 4)
+        pc_velo: Point cloud array (N, 4) or (N, 6)
         point_cloud_range: [xmin, ymin, zmin, xmax, ymax, zmax]
         
     Returns:
         Filtered point cloud
     """
-    mask = (
+    print(f"Original points: {pc_velo.shape}")
+    print(f"Filtering range: x[{point_cloud_range[0]}, {point_cloud_range[3]}], "
+          f"y[{point_cloud_range[1]}, {point_cloud_range[4]}], "
+          f"z[{point_cloud_range[2]}, {point_cloud_range[5]}]")
+    
+    # Basic spatial filtering
+    spatial_mask = (
         (pc_velo[:, 0] >= point_cloud_range[0]) & (pc_velo[:, 0] <= point_cloud_range[3]) &
         (pc_velo[:, 1] >= point_cloud_range[1]) & (pc_velo[:, 1] <= point_cloud_range[4]) &
-        (pc_velo[:, 2] >= point_cloud_range[2]) & (pc_velo[:, 2] <= point_cloud_range[5]) &
-        (pc_velo[:, 3] <= 1)  # Valid intensity
+        (pc_velo[:, 2] >= point_cloud_range[2]) & (pc_velo[:, 2] <= point_cloud_range[5])
     )
+    print(f"Points after spatial filtering: {np.sum(spatial_mask)}")
+    
+    # Start with spatial mask
+    mask = spatial_mask
+    
+    # Add intensity filtering if available (more lenient for Waymo data)
+    if pc_velo.shape[1] >= 4:
+        # For Waymo data, intensity can be much higher than 1.0
+        intensity_mask = (pc_velo[:, 3] >= 0) & (pc_velo[:, 3] <= 100)  # More reasonable range
+        mask = mask & intensity_mask
+        print(f"Points after intensity filtering: {np.sum(mask)}")
+    
+    # For Waymo2KITTI format, be more lenient with mask indices
+    #The mask_indices list (which is one of the function's return values) contains five arrays. 
+    # The array corresponding to the TOP lidar has the unique 1D index for each of its points, while the other four arrays (front, rear, left, right) just contain -1s.
+    # if pc_velo.shape[1] >= 6:
+    #     # Allow -1 (invalid) and reasonable positive values
+    #     # The large values like 323972 might be encoding errors, so filter them out
+    #     mask_indices_mask = (pc_velo[:, 5] >= -1) & (pc_velo[:, 5] < 1000)  # More lenient range
+    #     mask = mask & mask_indices_mask
+    #     print(f"Points after mask indices filtering: {np.sum(mask)}")
     
     filtered_points = pc_velo[mask]
-    print(f"Points after filtering: {filtered_points.shape}")
+    print(f"Final filtered points: {filtered_points.shape}")
     return filtered_points
 
 
@@ -740,22 +918,41 @@ def read_multi_label(label_files: List[str]) -> List[List[Object3d]]:
     return objectlabels
 
 
-def load_image(img_filenames: List[str], jpgfile: bool = False) -> List[np.ndarray]:
+def load_image(img_filenames: List[str]) -> List[np.ndarray]:
     """
-    Load multiple images.
+    Load multiple images, automatically detecting PNG or JPG format.
     
     Args:
-        img_filenames: List of image file paths
-        jpgfile: Whether to use .jpg extension instead of .png
+        img_filenames: List of image file paths (can be .png or .jpg)
         
     Returns:
         List of RGB image arrays
     """
     imgs = []
     for img_filename in img_filenames:
-        if jpgfile:
-            img_filename = img_filename.replace('.png', '.jpg')
-        img = cv2.imread(img_filename)
+        # Try the original filename first
+        if os.path.exists(img_filename):
+            img = cv2.imread(img_filename)
+        else:
+            # If original doesn't exist, try switching extension
+            if img_filename.endswith('.png'):
+                jpg_filename = img_filename.replace('.png', '.jpg')
+                if os.path.exists(jpg_filename):
+                    img = cv2.imread(jpg_filename)
+                else:
+                    raise FileNotFoundError(f"Neither {img_filename} nor {jpg_filename} exists")
+            elif img_filename.endswith('.jpg'):
+                png_filename = img_filename.replace('.jpg', '.png')
+                if os.path.exists(png_filename):
+                    img = cv2.imread(png_filename)
+                else:
+                    raise FileNotFoundError(f"Neither {img_filename} nor {png_filename} exists")
+            else:
+                raise FileNotFoundError(f"Image file {img_filename} not found")
+        
+        if img is None:
+            raise ValueError(f"Failed to load image: {img_filename}")
+            
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         imgs.append(rgb)
     return imgs
@@ -809,54 +1006,370 @@ def compute_box_3d(obj: Object3d, dataset: str = 'kitti') -> np.ndarray:
     return corners_3d
 
 
+# Helper functions for calibration and coordinate transformations
+
+def inverse_rigid_trans(Tr):
+    """ Inverse a rigid body transform matrix (3x4 as [R|t])
+        [R'|-R't; 0|1]
+    """
+    inv_Tr = np.zeros_like(Tr)  # 3x4
+    inv_Tr[0:3, 0:3] = np.transpose(Tr[0:3, 0:3])
+    inv_Tr[0:3, 3] = np.dot(-np.transpose(Tr[0:3, 0:3]), Tr[0:3, 3])
+    return inv_Tr
+
+def read_calib_file(filepath):
+    """ Read in a calibration file and parse into a dictionary.
+    Ref: https://github.com/utiasSTARS/pykitti/blob/master/pykitti/utils.py
+    """
+    data = {}
+    with open(filepath, 'r') as f:
+        for line in f.readlines():
+            line = line.rstrip()
+            if len(line) == 0: continue
+            key, value = line.split(':', 1)
+            # The only non-float values in these files are dates, which
+            # we don't care about anyway
+            try:
+                data[key] = np.array([float(x) for x in value.split()])
+            except ValueError:
+                pass
+    return data
+
+def cart2hom(pts_3d):
+    """ Input: nx3 points in Cartesian
+        Oupput: nx4 points in Homogeneous by pending 1
+    """
+    n = pts_3d.shape[0]
+    pts_3d_hom = np.hstack((pts_3d, np.ones((n, 1))))
+    return pts_3d_hom
+
 # Calibration classes (simplified versions for compatibility)
 
 class WaymoCalibration(object):
-    """Waymo calibration class (placeholder for compatibility)."""
+    """ Calibration matrices and utils
+        3d XYZ in <label>.txt are in rect camera coord. 
+        2d box xy are in image2 coord
+        Points in <lidar>.bin are in Velodyne coord.
+
+        y_image2 = P^2_rect * x_rect
+        y_image2 = P^2_rect * R0_rect * Tr_velo_to_cam * x_velo
+        x_ref = Tr_velo_to_cam * x_velo
+        x_rect = R0_rect * x_ref
+
+        P^2_rect = [f^2_u,  0,      c^2_u,  -f^2_u b^2_x;
+                    0,      f^2_v,  c^2_v,  -f^2_v b^2_y;
+                    0,      0,      1,      0]
+                 = K * [1|t]
+
+        image2 coord:
+         ----> x-axis (u)
+        |
+        |
+        v y-axis (v)
+
+        velodyne coord:
+        front x, left y, up z
+
+        rect/ref camera coord:
+        right x, down y, front z
+
+        Ref (KITTI paper): http://www.cvlibs.net/publications/Geiger2013IJRR.pdf
+
+        TODO(rqi): do matrix multiplication only once for each projection.
+    """
+
+    def __init__(self, calib_filepath):
+        self.camera_count = 5
+        calibs = self.read_calib_file(calib_filepath)
+        print(calibs)
+        # Projection matrix from rect camera coord to image2 coord
+        P_name = ["P"+str(i) for i in range(self.camera_count)] 
+        self.P = [np.reshape(calibs[name], [3,4]) for name in P_name] #5 cameras
+        
+        # Rigid transform from Velodyne coord to reference camera coord
+        Tr_velo_to_cam_name = ["Tr_velo_to_cam_"+str(i) for i in range(self.camera_count)] 
+        self.V2C = [np.reshape(calibs[name],[3,4]) for name in Tr_velo_to_cam_name] #array for 5 cameras
+        
+        self.C2V = [self.inverse_rigid_trans(self.V2C[i]) for i in range(self.camera_count)]
+        # Rotation from reference camera coord to rect camera coord
+        self.R0 = calibs["R0_rect"]  #'R0_rect': array([1., 0., 0., 0., 1., 0., 0., 0., 1.]), not used in Waymo
+        self.R0 = np.reshape(self.R0, [3, 3])
+
+    def inverse_rigid_trans(self,Tr):
+        """ Inverse a rigid body transform matrix (3x4 as [R|t])
+            [R'|-R't; 0|1]
+        """
+        inv_Tr = np.zeros_like(Tr)  # 3x4
+        inv_Tr[0:3, 0:3] = np.transpose(Tr[0:3, 0:3])
+        inv_Tr[0:3, 3] = np.dot(-np.transpose(Tr[0:3, 0:3]), Tr[0:3, 3])
+        return inv_Tr
+
+    def read_calib_file(self, filepath):
+        """ Read in a calibration file and parse into a dictionary.
+        Ref: https://github.com/utiasSTARS/pykitti/blob/master/pykitti/utils.py
+        """
+        data = {}
+        with open(filepath, "r") as f:
+            for line in f.readlines():
+                line = line.rstrip()
+                if len(line) == 0:
+                    continue
+                key, value = line.split(":", 1)
+                # The only non-float values in these files are dates, which
+                # we don't care about anyway
+                try:
+                    data[key] = np.array([float(x) for x in value.split()])
+                except ValueError:
+                    pass
+
+        return data
     
-    def __init__(self, calibration_file: str):
-        """Initialize from calibration file."""
-        # Implementation would load Waymo calibration parameters
-        pass
+    # convert 3Dbox in rect camera coordinate to velodyne coordinate
+    def project_rect_to_velo(self, pts_3d_rect, camera_id=0):
+        """ Input: nx3 points in rect camera coord.
+            Output: nx3 points in velodyne coord.
+        """
+        pts_3d_ref = self.project_rect_to_ref(pts_3d_rect)# using R0 to convert to camera rectified coordinate (same to camera coordinate)
+        return self.project_ref_to_velo(pts_3d_ref, camera_id)#using C2V
     
-    def project_rect_to_velo(self, pts_3d_rect: np.ndarray, cameraid: int = 0) -> np.ndarray:
-        """Project from camera rect to velodyne coordinates."""
-        # Placeholder implementation
-        return pts_3d_rect
+    def project_rect_to_ref(self, pts_3d_rect):
+        """ Input and Output are nx3 points """
+        return np.transpose(np.dot(np.linalg.inv(self.R0), np.transpose(pts_3d_rect)))
     
-    def project_velo_to_cameraid(self, pts_3d_velo: np.ndarray, cameraid: int = 0) -> np.ndarray:
-        """Project from velodyne to camera coordinates."""
-        # Placeholder implementation
-        return pts_3d_velo
+    def project_ref_to_velo(self, pts_3d_ref, camera_id):
+        pts_3d_ref = self.cart2hom(pts_3d_ref)  # nx4
+        return np.dot(pts_3d_ref, np.transpose(self.C2V[camera_id]))
     
-    def project_cam3d_to_image(self, pts_3d_cam: np.ndarray, cameraid: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-        """Project 3D camera points to image."""
-        # Placeholder implementation
-        return pts_3d_cam[:2, :].T, pts_3d_cam[2, :]
+    def cart2hom(self, pts_3d):
+        """ Input: nx3 points in Cartesian
+            Oupput: nx4 points in Homogeneous by pending 1
+        """
+        n = pts_3d.shape[0]
+        pts_3d_hom = np.hstack((pts_3d, np.ones((n, 1))))
+        return pts_3d_hom
+    
+    def project_ref_to_rect(self, pts_3d_ref):
+        """ Input and Output are nx3 points """
+        return np.transpose(np.dot(self.R0, np.transpose(pts_3d_ref)))
+    
+    # ===========================
+    # ------- 3d to 2d ----------
+    # ===========================
+    def project_cam3d_to_image(self, pts_3d_rect, cameraid):
+        """ Input: nx3 points in rect camera coord.
+            Output: nx2 points in image coord.
+        """
+        pts_3d_rect = self.cart2hom(pts_3d_rect)#nx3 to nx4 by pending 1
+        pts_2d = np.dot(pts_3d_rect, np.transpose(self.P[cameraid]))  # nx3
+        pts_2d[:, 0] /= pts_2d[:, 2] #normalize the depth pts_2d[:, 2]
+        pts_2d[:, 1] /= pts_2d[:, 2]
+        return pts_2d[:, 0:2], pts_2d[:, 2] #return points2D and depth
+    
+    #Liar project to image
+    def project_velo_to_cameraid_rect(self, pts_3d_velo, cameraid):
+        pts_3d_camid = self.project_velo_to_cameraid(pts_3d_velo, cameraid)
+        return self.project_ref_to_rect(pts_3d_camid)#apply R0
+    
+    def project_velo_to_cameraid(self, pts_3d_velo, cameraid):#project velodyne to camid frame
+        pts_3d_velo = self.cart2hom(pts_3d_velo)  # nx4
+        return np.dot(pts_3d_velo, np.transpose(self.V2C[cameraid]))
+    
+    def project_velo_to_image(self, pts_3d_velo, cameraid):
+        """ Input: nx3 points in velodyne coord.
+            Output: nx2 points in image2 coord.
+        """
+        if pts_3d_velo.shape[1]!=3:
+            print("points dimension is not 3")
+            pts_3d_velo=pts_3d_velo[:,0:3]
+        pts_3d_rect = self.project_velo_to_cameraid_rect(pts_3d_velo, cameraid)
+        return self.project_cam3d_to_image(pts_3d_rect, cameraid)
 
 
 class KittiCalibration(object):
-    """KITTI calibration class (placeholder for compatibility)."""
-    
-    def __init__(self, calibration_file: str):
-        """Initialize from calibration file."""
-        # Implementation would load KITTI calibration parameters
-        pass
-    
-    def project_rect_to_velo(self, pts_3d_rect: np.ndarray, cameraid: int = 0) -> np.ndarray:
-        """Project from camera rect to velodyne coordinates."""
-        # Placeholder implementation
-        return pts_3d_rect
-    
-    def project_velo_to_cameraid(self, pts_3d_velo: np.ndarray, cameraid: int = 0) -> np.ndarray:
-        """Project from velodyne to camera coordinates."""
-        # Placeholder implementation
-        return pts_3d_velo
-    
-    def project_cam3d_to_image(self, pts_3d_cam: np.ndarray, cameraid: int = 0) -> Tuple[np.ndarray, np.ndarray]:
-        """Project 3D camera points to image."""
-        # Placeholder implementation
-        return pts_3d_cam[:2, :].T, pts_3d_cam[2, :]
+    """ Calibration matrices and utils
+        3d XYZ in <label>.txt are in rect camera coord.
+        2d box xy are in image2 coord
+        Points in <lidar>.bin are in Velodyne coord.
+
+        y_image2 = P^2_rect * x_rect
+        y_image2 = P^2_rect * R0_rect * Tr_velo_to_cam * x_velo
+        x_ref = Tr_velo_to_cam * x_velo
+        x_rect = R0_rect * x_ref
+
+        P^2_rect = [f^2_u,  0,      c^2_u,  -f^2_u b^2_x;
+                    0,      f^2_v,  c^2_v,  -f^2_v b^2_y;
+                    0,      0,      1,      0]
+                 = K * [1|t]
+
+        image2 coord:
+         ----> x-axis (u)
+        |
+        |
+        v y-axis (v)
+
+        velodyne coord:
+        front x, left y, up z
+
+        rect/ref camera coord:
+        right x, down y, front z
+
+        Ref (KITTI paper): http://www.cvlibs.net/publications/Geiger2013IJRR.pdf
+
+        TODO(rqi): do matrix multiplication only once for each projection.
+    """
+
+    def __init__(self, calib_filepath, from_video=False):
+        if from_video:
+            calibs = self.read_calib_from_video(calib_filepath)
+        else:
+            calibs = self.read_calib_file(calib_filepath)
+        # Projection matrix from rect camera coord to image2 coord
+        self.P = calibs["P2"]
+        self.P = np.reshape(self.P, [3, 4])
+        # Rigid transform from Velodyne coord to reference camera coord
+        # Handle both standard KITTI format and camera-specific format
+        if "Tr_velo_to_cam" in calibs:
+            self.V2C = calibs["Tr_velo_to_cam"]
+        elif "Tr_velo_to_cam_2" in calibs:
+            # Use camera 2 transformation (standard KITTI camera)
+            self.V2C = calibs["Tr_velo_to_cam_2"]
+        elif "Tr_velo_to_cam_0" in calibs:
+            # Fallback to camera 0
+            self.V2C = calibs["Tr_velo_to_cam_0"]
+        else:
+            raise ValueError("No valid Tr_velo_to_cam transformation found in calibration file")
+        
+        self.V2C = np.reshape(self.V2C, [3, 4])
+        self.C2V = self.inverse_rigid_trans(self.V2C)
+        # Rotation from reference camera coord to rect camera coord
+        self.R0 = calibs["R0_rect"]
+        self.R0 = np.reshape(self.R0, [3, 3])
+
+        # Camera intrinsics and extrinsics
+        self.c_u = self.P[0, 2]
+        self.c_v = self.P[1, 2]
+        self.f_u = self.P[0, 0]
+        self.f_v = self.P[1, 1]
+        self.b_x = self.P[0, 3] / (-self.f_u)  # relative
+        self.b_y = self.P[1, 3] / (-self.f_v)
+
+    def read_calib_file(self, filepath):
+        """ Read in a calibration file and parse into a dictionary.
+        Ref: https://github.com/utiasSTARS/pykitti/blob/master/pykitti/utils.py
+        """
+        data = {}
+        with open(filepath, "r") as f:
+            for line in f.readlines():
+                line = line.rstrip()
+                if len(line) == 0:
+                    continue
+                key, value = line.split(":", 1)
+                # The only non-float values in these files are dates, which
+                # we don't care about anyway
+                try:
+                    data[key] = np.array([float(x) for x in value.split()])
+                except ValueError:
+                    pass
+
+        return data
+
+    def read_calib_from_video(self, calib_root_dir):
+        """ Read calibration for camera 2 from video calib files.
+            there are calib_cam_to_cam and calib_velo_to_cam under the calib_root_dir
+        """
+        data = {}
+        cam2cam = self.read_calib_file(
+            os.path.join(calib_root_dir, "calib_cam_to_cam.txt")
+        )
+        velo2cam = self.read_calib_file(
+            os.path.join(calib_root_dir, "calib_velo_to_cam.txt")
+        )
+        Tr_velo_to_cam = np.zeros((3, 4))
+        Tr_velo_to_cam[0:3, 0:3] = np.reshape(velo2cam["R"], [3, 3])
+        Tr_velo_to_cam[:, 3] = velo2cam["T"]
+        data["Tr_velo_to_cam"] = np.reshape(Tr_velo_to_cam, [12])
+        data["R0_rect"] = cam2cam["R_rect_00"]
+        data["P2"] = cam2cam["P_rect_02"]
+        return data
+
+    def cart2hom(self, pts_3d):
+        """ Input: nx3 points in Cartesian
+            Oupput: nx4 points in Homogeneous by pending 1
+        """
+        n = pts_3d.shape[0]
+        pts_3d_hom = np.hstack((pts_3d, np.ones((n, 1))))
+        return pts_3d_hom
+
+    def inverse_rigid_trans(self, Tr):
+        """ Inverse a rigid body transform matrix (3x4 as [R|t])
+            [R'|-R't; 0|1]
+        """
+        inv_Tr = np.zeros_like(Tr)  # 3x4
+        inv_Tr[0:3, 0:3] = np.transpose(Tr[0:3, 0:3])
+        inv_Tr[0:3, 3] = np.dot(-np.transpose(Tr[0:3, 0:3]), Tr[0:3, 3])
+        return inv_Tr
+
+    # ===========================
+    # ------- 3d to 3d ----------
+    # ===========================
+    def project_velo_to_ref(self, pts_3d_velo):
+        pts_3d_velo = self.cart2hom(pts_3d_velo)  # nx4
+        return np.dot(pts_3d_velo, np.transpose(self.V2C))
+
+    def project_ref_to_velo(self, pts_3d_ref):
+        pts_3d_ref = self.cart2hom(pts_3d_ref)  # nx4
+        return np.dot(pts_3d_ref, np.transpose(self.C2V))
+
+    def project_rect_to_ref(self, pts_3d_rect):
+        """ Input and Output are nx3 points """
+        return np.transpose(np.dot(np.linalg.inv(self.R0), np.transpose(pts_3d_rect)))
+
+    def project_ref_to_rect(self, pts_3d_ref):
+        """ Input and Output are nx3 points """
+        return np.transpose(np.dot(self.R0, np.transpose(pts_3d_ref)))
+
+    def project_rect_to_velo(self, pts_3d_rect):
+        """ Input: nx3 points in rect camera coord.
+            Output: nx3 points in velodyne coord.
+        """
+        pts_3d_ref = self.project_rect_to_ref(pts_3d_rect)
+        return self.project_ref_to_velo(pts_3d_ref)
+
+    def project_velo_to_rect(self, pts_3d_velo):
+        pts_3d_ref = self.project_velo_to_ref(pts_3d_velo)
+        return self.project_ref_to_rect(pts_3d_ref)
+
+    # ===========================
+    # ------- 3d to 2d ----------
+    # ===========================
+    def project_rect_to_image(self, pts_3d_rect):
+        """ Input: nx3 points in rect camera coord.
+            Output: nx2 points in image2 coord.
+        """
+        pts_3d_rect = self.cart2hom(pts_3d_rect)
+        pts_2d = np.dot(pts_3d_rect, np.transpose(self.P))  # nx3
+        pts_2d[:, 0] /= pts_2d[:, 2]
+        pts_2d[:, 1] /= pts_2d[:, 2]
+        return pts_2d[:, 0:2]
+
+    def project_velo_to_image(self, pts_3d_velo):
+        """ Input: nx3 points in velodyne coord.
+            Output: nx2 points in image2 coord.
+        """
+        pts_3d_rect = self.project_velo_to_rect(pts_3d_velo)
+        return self.project_rect_to_image(pts_3d_rect)
+
+    def project_cam3d_to_image(self, pts_3d_cam, cameraid=0):
+        """ Input: nx3 points in camera coord.
+            Output: nx2 points in image coord.
+        """
+        return self.project_rect_to_image(pts_3d_cam)
+
+    def project_velo_to_cameraid(self, pts_3d_velo, cameraid=0):
+        """ Input: nx3 points in velodyne coord.
+            Output: nx3 points in camera coord.
+        """
+        return self.project_velo_to_rect(pts_3d_velo)
 
 
 def datasetinfo(datasetname: str) -> Tuple[int, int]:
@@ -900,6 +1413,7 @@ def visualize_lidar_with_boxes_open3d(pc_velo: np.ndarray,
                                      object3dlabels: List[Object3d],
                                      calib,
                                      point_cloud_range: List[float],
+                                     color_by: str = 'intensity',
                                      save_path: Optional[str] = None,
                                      headless: bool = False) -> None:
     """
@@ -908,10 +1422,11 @@ def visualize_lidar_with_boxes_open3d(pc_velo: np.ndarray,
     This function replaces the original Mayavi-based visualization.
     
     Args:
-        pc_velo: Point cloud array (N, 4)
+        pc_velo: Point cloud array (N, 4) or (N, 6)
         object3dlabels: List of Object3d instances
         calib: Calibration object
         point_cloud_range: Point filtering range
+        color_by: Point cloud coloring method
         save_path: Optional path to save PLY file
         headless: Whether to run in headless mode
     """
@@ -926,14 +1441,16 @@ def visualize_lidar_with_boxes_open3d(pc_velo: np.ndarray,
         if obj.type != "DontCare":
             boxes_for_viz.append(obj)
     
-    # Visualize scene
+    # Visualize scene with calibration for coordinate transformation
     visualizer.visualize_scene(
         points=pc_velo,
         boxes=boxes_for_viz,
         point_cloud_range=point_cloud_range,
+        color_by=color_by,
         save_path=save_path,
         show_coordinate_frame=True,
-        show_ground_grid=True
+        show_ground_grid=True,
+        calib=calib  # Pass calibration for coordinate transformation
     )
 
 
@@ -942,10 +1459,18 @@ def visualize_lidar_with_boxes_open3d(pc_velo: np.ndarray,
 def plt_multiimages(images: List[np.ndarray], 
                    objectlabels: List[List[Object3d]], 
                    datasetname: str, 
-                   order: int = 1) -> None:
+                   order: int = 1,
+                   save_path: Optional[str] = None) -> None:
     """Display multiple images with 2D bounding boxes."""
     plt.figure(order, figsize=(16, 9))
     camera_count = len(images)
+    
+    # Debug: Print information about labels
+    print(f"Debug: Processing {camera_count} cameras")
+    for i, labels in enumerate(objectlabels):
+        print(f"Camera {i}: {len(labels)} labels")
+        for j, obj in enumerate(labels[:3]):  # Print first 3 objects
+            print(f"  Object {j}: type={obj.type}, box2d={obj.box2d}")
     
     for count in range(camera_count):
         if datasetname.lower() == 'waymokitti':
@@ -954,6 +1479,14 @@ def plt_multiimages(images: List[np.ndarray],
         elif datasetname.lower() == 'kitti':
             index = count
             pltshow_image_with_boxes(index, images[index], objectlabels[index], [1, 2, count+1])
+    
+    # Save the figure if save_path is provided
+    if save_path:
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"2D visualization saved to: {save_path}")
+    
+    plt.show()
 
 
 def pltshow_image_with_boxes(cameraid: int, img: np.ndarray, 
@@ -968,6 +1501,7 @@ def pltshow_image_with_boxes(cameraid: int, img: np.ndarray,
     if not objects or len(objects) == 0:
         return
     
+    valid_boxes_count = 0
     for obj in objects:
         if obj.type == "DontCare":
             continue
@@ -981,7 +1515,12 @@ def pltshow_image_with_boxes(cameraid: int, img: np.ndarray,
             width = xmax - xmin
             height = ymax - ymin
             
+            # Check if bounding box is valid (not all zeros)
+            if (xmin == 0 and ymin == 0 and xmax == 0 and ymax == 0):
+                continue  # Skip invalid bounding boxes
+            
             if height > 0 and width > 0:
+                valid_boxes_count += 1
                 ax.add_patch(patches.Rectangle(
                     xy=(xmin, ymin),
                     width=width,
@@ -993,6 +1532,12 @@ def pltshow_image_with_boxes(cameraid: int, img: np.ndarray,
                 ax.text(xmin, ymin, objectclass, color=colorlabel, fontsize=8)
         else:
             print(f"Object not in KITTI: {objectclass}")
+    
+    # Add warning text if no valid boxes found
+    if valid_boxes_count == 0 and len(objects) > 0:
+        ax.text(10, 30, "No valid 2D bounding boxes\n(all coordinates are zero)", 
+                color='yellow', fontsize=10, weight='bold',
+                bbox=dict(boxstyle="round,pad=0.3", facecolor='red', alpha=0.7))
     
     plt.grid(False)
     plt.axis('on')
@@ -1008,37 +1553,73 @@ def main():
     parser = argparse.ArgumentParser(description="KITTI/Waymo2KITTI visualization with Open3D")
     parser.add_argument(
         "--root_path", 
-        default='/mnt/f/Dataset/DAIR-C/infrastructure-side-point-cloud-kitti/training',
+        default='/data/Datasets/waymo143/waymokitti/',
         help="Root folder path"
     )
-    parser.add_argument("--index", default="4534", help="File index")
-    parser.add_argument("--dataset", default="kitti", help="Dataset name (kitti/waymokitti)")
-    parser.add_argument("--camera_count", default=1, type=int, help="Number of cameras used")
-    parser.add_argument("--jpgfile", default=True, type=bool, help="Use JPG files")
+    parser.add_argument("--index", default="000000", help="File index")
+    parser.add_argument("--dataset", default="waymokitti", help="Dataset name (kitti/waymokitti)")
+    parser.add_argument("--camera_count", default=None, type=int, help="Number of cameras used (default: all cameras for dataset)")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument("--output_path", default="outputs/", help="Output directory for saving visualizations")
     parser.add_argument("--save_ply", help="Path to save PLY file")
     parser.add_argument("--point_cloud_range", nargs=6, type=float,
                        default=[-100, -60, -8, 100, 60, 8],
                        help="Point cloud range [xmin ymin zmin xmax ymax zmax]")
+    parser.add_argument("--n_vec", default=6, type=int, 
+                       help="Number of values per point (4 for KITTI, 6 for Waymo2KITTI)")
+    parser.add_argument("--color_by", default="intensity", 
+                       choices=["intensity", "elongation", "mask_indices", "height", "none"],
+                       help="Point cloud coloring method")
     
     args = parser.parse_args()
     
     basedir = args.root_path
     idx = int(args.index)
-    camera_count = args.camera_count
     
     camera_index, max_cameracount = datasetinfo(args.dataset)
     
+    # Set default camera_count based on dataset
+    if args.camera_count is None:
+        if args.dataset.lower() == 'waymokitti':
+            camera_count = max_cameracount  # Use all 5 cameras for Waymo
+        else:
+            camera_count = 1  # Use single camera for KITTI
+    else:
+        camera_count = min(args.camera_count, max_cameracount)  # Limit to max available
+    
     # File paths
     filename = f"{idx:06d}.png"
-    image_folder = f'image_{camera_index}'
-    image_files = [os.path.join(basedir, f"image_{i+camera_index}", filename) 
-                   for i in range(camera_count)]
+    
+    # Construct image file paths based on dataset type
+    if args.dataset.lower() == 'waymokitti':
+        # Waymo has cameras 0-4 (image_0, image_1, image_2, image_3, image_4)
+        image_files = [os.path.join(basedir, f"image_{i}", filename) for i in range(camera_count)]
+        
+        # Check if we have individual label directories (label_0, label_1, etc.) or KITTI-style (label_2)
+        label_0_dir = os.path.join(basedir, "label_0")
+        label_2_dir = os.path.join(basedir, "label_2")
+        
+        if os.path.exists(label_0_dir):
+            # Waymo-style: separate label directory for each camera
+            labels_files = [os.path.join(basedir, f"label_{i}", filename.replace('png', 'txt')) for i in range(camera_count)]
+        elif os.path.exists(label_2_dir):
+            # KITTI-style: use label_2 for all cameras (dummy data format)
+            labels_files = [os.path.join(basedir, "label_2", filename.replace('png', 'txt')) for i in range(camera_count)]
+        else:
+            # Fallback to original logic
+            labels_files = [os.path.join(basedir, f"label_{i}", filename.replace('png', 'txt')) for i in range(camera_count)]
+    else:
+        # KITTI has cameras starting from camera_index (usually 2 for image_2)
+        image_files = [os.path.join(basedir, f"image_{i+camera_index}", filename) for i in range(camera_count)]
+        labels_files = [os.path.join(basedir, f"label_{camera_index}", filename.replace('png', 'txt'))]
+    
     calibration_file = os.path.join(basedir, 'calib', filename.replace('png', 'txt'))
     label_all_file = os.path.join(basedir, 'label_all', filename.replace('png', 'txt'))
-    labels_files = [os.path.join(basedir, f"label_{i+camera_index}", filename.replace('png', 'txt')) 
-                    for i in range(camera_count)]
     lidar_filename = os.path.join(basedir, 'velodyne', filename.replace('png', 'bin'))
+    
+    print(f"Loading {camera_count} camera images:")
+    for i, img_file in enumerate(image_files):
+        print(f"  Camera {i}: {img_file}")
     
     # Load data
     print(f"Loading data for index {idx}...")
@@ -1047,7 +1628,7 @@ def main():
     pc_velo = load_velo_scan(
         lidar_filename, 
         dtype=np.float32, 
-        n_vec=4, 
+        n_vec=args.n_vec,  # Use command line argument
         filterpoints=True, 
         point_cloud_range=args.point_cloud_range
     )
@@ -1056,12 +1637,17 @@ def main():
     calib = getcalibration(args.dataset, calibration_file)
     
     # Load images and labels
-    images = load_image(image_files, jpgfile=args.jpgfile)
+    images = load_image(image_files)
     objectlabels = read_multi_label(labels_files)
     
     # Display 2D visualizations
     if not args.headless:
-        plt_multiimages(images, objectlabels, args.dataset)
+        # Create save path for 2D visualization
+        save_2d_path = None
+        if args.output_path:
+            save_2d_path = os.path.join(args.output_path, f"{filename.replace('.png', '')}_2d_visualization.png")
+        
+        plt_multiimages(images, objectlabels, args.dataset, save_path=save_2d_path)
         plt.show()
     
     # Load 3D labels
@@ -1072,7 +1658,10 @@ def main():
     
     # 3D visualization with Open3D
     save_path = args.save_ply if args.save_ply else None
-    if args.headless and not save_path:
+    if args.output_path and not save_path:
+        os.makedirs(args.output_path, exist_ok=True)
+        save_path = os.path.join(args.output_path, f"{filename.replace('.png', '')}_3d_visualization.ply")
+    elif args.headless and not save_path:
         save_path = f"scene_{idx:06d}.ply"
     
     visualize_lidar_with_boxes_open3d(
@@ -1080,6 +1669,7 @@ def main():
         object3dlabels=object3dlabels,
         calib=calib,
         point_cloud_range=args.point_cloud_range,
+        color_by=args.color_by,
         save_path=save_path,
         headless=args.headless
     )

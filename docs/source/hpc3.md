@@ -31,9 +31,12 @@ Install mmdetection3d
 #new setup
 pip install -U openmim
 mim install mmengine
+pip uninstall numpy
+pip install 'numpy<2'
 mim install 'mmcv<2.2.0,>=2.0.0rc4'
 Successfully installed mmcv-2.1.0
 mim install 'mmdet>=3.0.0'
+$ git clone https://github.com/open-mmlab/mmdetection3d.git
 (py310) lkk688@newalienware:~/Developer/mmdetection3d$ pip install -v -e .
 >>> import mmdet3d
 >>> print(mmdet3d.__version__)
@@ -41,6 +44,5 @@ mim install 'mmdet>=3.0.0'
 >>> import mmdet
 >>> print(mmdet.__version__)
 3.3.0
-pip uninstall numpy
-pip install 'numpy<2'
+
 ```

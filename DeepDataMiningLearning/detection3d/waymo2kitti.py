@@ -21,7 +21,98 @@ import tensorflow as tf
 from PIL import Image
 from waymo_open_dataset.utils import range_image_utils, transform_utils
 from waymo_open_dataset.utils.frame_utils import \
-    parse_range_image_and_camera_projection
+    parse_range_image_and_camera_projection as _parse_range_image_and_camera_projection
+
+def parse_range_image_and_camera_projection(frame):
+    """Wrapper function to handle bytes/bytearray compatibility issues.
+    
+    The original Waymo function expects bytes but newer TensorFlow versions
+    sometimes return bytearray, causing TypeError. This wrapper ensures
+    compatibility by converting bytearray to bytes when needed.
+    """
+    try:
+        return _parse_range_image_and_camera_projection(frame)
+    except TypeError as e:
+        if "expected bytes, bytearray found" in str(e):
+            print("[DEBUG] Using bytes/bytearray compatibility wrapper for range image parsing")
+            
+            def safe_parse_from_string(proto_obj, tensor_data):
+                """Safely parse protobuf from tensor data, handling bytearray conversion."""
+                if isinstance(tensor_data, bytearray):
+                    tensor_data = bytes(tensor_data)
+                proto_obj.ParseFromString(tensor_data)
+                return proto_obj
+            
+            range_images = {}
+            camera_projections = {}
+            seg_labels = {}
+            range_image_top_pose = None
+            
+            for laser in frame.lasers:
+                # Handle first return
+                if len(laser.ri_return1.range_image_compressed) > 0:
+                    range_image_str_tensor = tf.io.decode_compressed(
+                        laser.ri_return1.range_image_compressed, 'ZLIB')
+                    ri1 = dataset_pb2.MatrixFloat()
+                    safe_parse_from_string(ri1, range_image_str_tensor.numpy())
+                    
+                    # Handle second return
+                    ri2 = None
+                    if len(laser.ri_return2.range_image_compressed) > 0:
+                        range_image_str_tensor2 = tf.io.decode_compressed(
+                            laser.ri_return2.range_image_compressed, 'ZLIB')
+                        ri2 = dataset_pb2.MatrixFloat()
+                        safe_parse_from_string(ri2, range_image_str_tensor2.numpy())
+                    
+                    range_images[laser.name] = [ri1, ri2] if ri2 is not None else [ri1]
+                    
+                    # Handle camera projections for first return
+                    if len(laser.ri_return1.camera_projection_compressed) > 0:
+                        cp_str_tensor = tf.io.decode_compressed(
+                            laser.ri_return1.camera_projection_compressed, 'ZLIB')
+                        cp1 = dataset_pb2.MatrixInt32()
+                        safe_parse_from_string(cp1, cp_str_tensor.numpy())
+                        
+                        # Handle camera projections for second return
+                        cp2 = None
+                        if len(laser.ri_return2.camera_projection_compressed) > 0:
+                            cp_str_tensor2 = tf.io.decode_compressed(
+                                laser.ri_return2.camera_projection_compressed, 'ZLIB')
+                            cp2 = dataset_pb2.MatrixInt32()
+                            safe_parse_from_string(cp2, cp_str_tensor2.numpy())
+                        
+                        camera_projections[laser.name] = [cp1, cp2] if cp2 is not None else [cp1]
+                    
+                    # Handle segmentation labels for first return
+                    if len(laser.ri_return1.segmentation_label_compressed) > 0:
+                        sl_str_tensor = tf.io.decode_compressed(
+                            laser.ri_return1.segmentation_label_compressed, 'ZLIB')
+                        sl1 = dataset_pb2.MatrixInt32()
+                        safe_parse_from_string(sl1, sl_str_tensor.numpy())
+                        
+                        # Handle segmentation labels for second return
+                        sl2 = None
+                        if len(laser.ri_return2.segmentation_label_compressed) > 0:
+                            sl_str_tensor2 = tf.io.decode_compressed(
+                                laser.ri_return2.segmentation_label_compressed, 'ZLIB')
+                            sl2 = dataset_pb2.MatrixInt32()
+                            safe_parse_from_string(sl2, sl_str_tensor2.numpy())
+                        
+                        seg_labels[laser.name] = [sl1, sl2] if sl2 is not None else [sl1]
+                    
+                    # Get the top pose for the TOP laser
+                    if laser.name == dataset_pb2.LaserName.TOP:
+                        if len(laser.ri_return1.range_image_pose_compressed) > 0:
+                            pose_str_tensor = tf.io.decode_compressed(
+                                laser.ri_return1.range_image_pose_compressed, 'ZLIB')
+                            range_image_top_pose = dataset_pb2.MatrixFloat()
+                            safe_parse_from_string(range_image_top_pose, pose_str_tensor.numpy())
+                        else:
+                            range_image_top_pose = None
+            
+            return range_images, camera_projections, seg_labels, range_image_top_pose
+        else:
+            raise
 
 # Try to import tqdm for progress bars
 try:
@@ -54,6 +145,95 @@ except ImportError:
             
         def __exit__(self, *args):
             pass
+
+
+def project_3d_bbox_to_2d(bbox_3d, camera_calib):
+    """
+    Project a 3D bounding box to 2D image coordinates using Waymo coordinate system.
+    
+    Args:
+        bbox_3d: dict with 'center' (x,y,z), 'dimensions' (l,w,h), 'rotation_y'
+        camera_calib: dict with 'intrinsic' and 'extrinsic' matrices (from Waymo format)
+        
+    Returns:
+        tuple: (x1, y1, x2, y2) 2D bounding box coordinates, or (0, 0, 0, 0) if projection fails
+    """
+    try:
+        # Extract 3D box parameters
+        x, y, z = bbox_3d['center']
+        l, w, h = bbox_3d['dimensions']
+        rotation_y = bbox_3d['rotation_y']
+        
+        # Generate 8 corners of the 3D bounding box in vehicle coordinate system
+        # Waymo vehicle coordinates: X-forward, Y-left, Z-up
+        # Box is centered at origin, then rotated and translated
+        corners_3d = np.array([
+            [-l/2, -w/2, -h/2],  # 0: back-right-bottom
+            [+l/2, -w/2, -h/2],  # 1: front-right-bottom
+            [+l/2, +w/2, -h/2],  # 2: front-left-bottom
+            [-l/2, +w/2, -h/2],  # 3: back-left-bottom
+            [-l/2, -w/2, +h/2],  # 4: back-right-top
+            [+l/2, -w/2, +h/2],  # 5: front-right-top
+            [+l/2, +w/2, +h/2],  # 6: front-left-top
+            [-l/2, +w/2, +h/2],  # 7: back-left-top
+        ])  # Shape: (8, 3)
+        
+        # Apply rotation around Z-axis (yaw) in vehicle coordinate system
+        cos_ry = np.cos(rotation_y)
+        sin_ry = np.sin(rotation_y)
+        rotation_matrix = np.array([
+            [cos_ry, -sin_ry, 0],
+            [sin_ry,  cos_ry, 0],
+            [0,       0,      1]
+        ])
+        
+        # Rotate corners: (8, 3) @ (3, 3).T = (8, 3)
+        corners_3d_rotated = corners_3d @ rotation_matrix.T
+        
+        # Translate to world position
+        corners_3d_world = corners_3d_rotated + np.array([x, y, z])  # Shape: (8, 3)
+        
+        # Convert to homogeneous coordinates (8, 4)
+        corners_3d_homo = np.hstack([corners_3d_world, np.ones((8, 1))])
+        
+        # Transform to camera coordinates using extrinsic matrix
+        # Waymo extrinsic matrix transforms from vehicle to camera coordinates
+        corners_cam_homo = corners_3d_homo @ camera_calib['extrinsic'].T
+        corners_cam = corners_cam_homo[:, :3]  # Remove homogeneous coordinate
+        
+        # Filter points in front of camera (positive Z in camera coordinates)
+        valid_mask = corners_cam[:, 2] > 0.1  # Z > 0.1m
+        if not np.any(valid_mask):
+            return (0, 0, 0, 0)
+            
+        valid_corners = corners_cam[valid_mask]
+        
+        # Project to image coordinates using intrinsic matrix
+        # Convert to homogeneous coordinates for projection
+        corners_2d_homo = valid_corners @ camera_calib['intrinsic'].T
+        
+        # Normalize by depth (Z coordinate)
+        corners_2d = corners_2d_homo[:, :2] / corners_2d_homo[:, 2:3]
+        
+        # Get 2D bounding box
+        x1, y1 = np.min(corners_2d, axis=0)
+        x2, y2 = np.max(corners_2d, axis=0)
+        
+        # Clamp to reasonable image boundaries
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(1920, x2)  # Waymo images are typically 1920x1280
+        y2 = min(1280, y2)
+        
+        # Validate bounding box
+        if x2 <= x1 or y2 <= y1:
+            return (0, 0, 0, 0)
+            
+        return (float(x1), float(y1), float(x2), float(y2))
+        
+    except Exception as e:
+        print(f"Warning: 3D to 2D projection failed: {e}")
+        return (0, 0, 0, 0)
 
 
 class Box3DMode(object):
@@ -488,18 +668,19 @@ class LiDARInstance3DBoxes(object):
         # Create 8-corner template in local coordinate system (before rotation)
         # Template assumes box center at origin, z=0 at bottom face
         
-        # X-coordinates: ±length/2 for front/rear faces
-        x_corners = np.array([l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2])
+        # Create corner template for each box
+        # X-coordinates: ±length/2 for front/rear faces (N, 8)
+        x_corners = np.stack([l / 2, l / 2, -l / 2, -l / 2, l / 2, l / 2, -l / 2, -l / 2], axis=1)
         
-        # Y-coordinates: ±width/2 for left/right sides  
-        y_corners = np.array([w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2])
+        # Y-coordinates: ±width/2 for left/right sides (N, 8)
+        y_corners = np.stack([w / 2, -w / 2, -w / 2, w / 2, w / 2, -w / 2, -w / 2, w / 2], axis=1)
         
-        # Z-coordinates: 0 for bottom face, height for top face
-        z_corners = np.array([0, 0, 0, 0, h, h, h, h])  # Bottom: 0-3, Top: 4-7
+        # Z-coordinates: 0 for bottom face, height for top face (N, 8)
+        zeros = np.zeros_like(h)
+        z_corners = np.stack([zeros, zeros, zeros, zeros, h, h, h, h], axis=1)
 
-        # Stack into corner template: Shape (8, 3) -> (N, 8, 3) via broadcasting
-        corners_base = np.stack(
-            [x_corners, y_corners, z_corners], axis=2).transpose(0, 2, 1)  # Shape: (N, 3, 8)
+        # Stack into corner template: Shape (N, 8, 3)
+        corners_base = np.stack([x_corners, y_corners, z_corners], axis=2)  # Shape: (N, 8, 3)
 
         # ==================== ROTATION MATRIX COMPUTATION ====================
         # Compute rotation matrices for yaw angles around Z-axis
@@ -519,9 +700,9 @@ class LiDARInstance3DBoxes(object):
                               [zeros, zeros, ones]]).transpose(2, 0, 1)  # Shape: (N, 3, 3)
 
         # ==================== CORNER TRANSFORMATION ====================
-        # Apply rotation: corners_rotated = corners_base @ R_z^T
+        # Apply rotation: corners_rotated = corners_base @ R_z
         # Einstein summation for efficient batch matrix multiplication
-        corners_3d = np.einsum('nij,nkj->nik', corners_base, rot_mat_T)  # Shape: (N, 8, 3)
+        corners_3d = np.einsum('nik,nkj->nij', corners_base, rot_mat_T)  # Shape: (N, 8, 3)
         
         # Apply translation: add box center coordinates
         corners_3d += self.tensor[:, np.newaxis, :3]  # Broadcast center (N, 1, 3) to (N, 8, 3)
@@ -620,7 +801,10 @@ class Waymo2KITTI(object):
                  info_prefix='waymo',
                  max_sweeps=10,
                  split='training',
-                 subsample_interval=1):  # <-- MODIFIED: Added subsample
+                 subsample_interval=1,  # Subsample interval within segments
+                 only_gt_boxes_for_camera=True,  # Reduce annotation noise
+                 save_track_id=True,  # Enable multi-object tracking
+                 save_cam_sync_labels=True):  # Camera-synchronized labels
         # turn on eager execution for older tensorflow versions
         if int(tf.__version__.split('.')[0]) < 2:
             tf.enable_eager_execution()
@@ -647,6 +831,15 @@ class Waymo2KITTI(object):
             'CAM_SIDE_RIGHT',
         ]
         self.selected_waymo_classes = ['VEHICLE', 'PEDESTRIAN', 'CYCLIST']
+        
+        # Waymo to KITTI class mapping
+        self.waymo_to_kitti_class_map = {
+            'VEHICLE': 'Car',
+            'PEDESTRIAN': 'Pedestrian',
+            'CYCLIST': 'Cyclist',
+            'SIGN': 'Sign'
+        }
+        
         self.info_map = {
             'training': '_infos_train.pkl',
             'validation': '_infos_val.pkl',
@@ -665,29 +858,62 @@ class Waymo2KITTI(object):
         self.info_prefix = info_prefix
         self.max_sweeps = max_sweeps
         self.split = split
-        self.subsample_interval = int(subsample_interval)  # <-- MODIFIED: Store
-        assert self.subsample_interval >= 1, \
-            'subsample_interval must be >= 1'
+        self.subsample_interval = int(subsample_interval)  # Subsample interval within segments
+        assert self.subsample_interval >= 1, 'subsample_interval must be >= 1'
+        
+        # Store additional parameters
+        self.only_gt_boxes_for_camera = only_gt_boxes_for_camera
+        self.save_track_id = save_track_id
+        self.save_cam_sync_labels = save_cam_sync_labels
+
+        # Track ID mapping system to convert hash strings to numeric IDs
+        self.track_id_mapping = {}  # Maps hash strings to numeric IDs
+        self.next_track_id = 0  # Counter for generating numeric track IDs
 
         # TODO: Discuss filter_empty_3dboxes and filter_no_label_zone_points
         self.filter_empty_3dboxes = True
         self.filter_no_label_zone_points = True
-        self.save_track_id = False
 
         self.tfrecord_pathnames = sorted(
             glob(join(self.load_dir, '*.tfrecord')))
 
         self.image_save_dir = f'{self.save_dir}/image_'
         self.point_cloud_save_dir = f'{self.save_dir}/velodyne'
+        self.calib_save_dir = f'{self.save_dir}/calib'
+        self.label_save_dir = f'{self.save_dir}/label_'
+        self.label_all_save_dir = f'{self.save_dir}/label_all'
+        self.pose_save_dir = f'{self.save_dir}/pose'
 
-        # Create folder for saving KITTI format camera images and
-        # lidar point clouds.
+        # Create folder for saving KITTI format camera images,
+        # lidar point clouds, calibration files, labels, and poses.
         if 'testing_3d_camera_only_detection' not in self.load_dir:
-            # Replaced mmengine.mkdir_or_exist
+            # Create Lidar folder
             os.makedirs(self.point_cloud_save_dir, exist_ok=True)
+        # Create calibration folder
+        os.makedirs(self.calib_save_dir, exist_ok=True)
+        # Create label folders
+        os.makedirs(self.label_all_save_dir, exist_ok=True)
+        # Create pose folder
+        os.makedirs(self.pose_save_dir, exist_ok=True)
         for i in range(5):
-            # Replaced mmengine.mkdir_or_exist
+            # Create all image folders
             os.makedirs(f'{self.image_save_dir}{str(i)}', exist_ok=True)
+            # Create label folders for each camera
+            os.makedirs(f'{self.label_save_dir}{str(i)}', exist_ok=True)
+
+    def get_numeric_track_id(self, hash_track_id):
+        """Convert hash-based track ID to numeric ID for KITTI compatibility.
+        
+        Args:
+            hash_track_id (str): Hash-based track ID from Waymo dataset
+            
+        Returns:
+            int: Numeric track ID for KITTI format
+        """
+        if hash_track_id not in self.track_id_mapping:
+            self.track_id_mapping[hash_track_id] = self.next_track_id
+            self.next_track_id += 1
+        return self.track_id_mapping[hash_track_id]
 
     def convert(self):
         """Convert action with progress tracking and validation."""
@@ -726,6 +952,8 @@ class Waymo2KITTI(object):
                     except Exception as e:
                         failed_files.append((i, str(e)))
                         print(f"Error processing file {i}: {e}")
+                        import traceback
+                        traceback.print_exc()
                         continue
         else:
             # Parallel processing with progress tracking
@@ -756,6 +984,8 @@ class Waymo2KITTI(object):
                         except Exception as e:
                             failed_files.append((idx, str(e)))
                             print(f"Error processing file {idx}: {e}")
+                            import traceback
+                            traceback.print_exc()
                         finally:
                             pbar.update(1)
             
@@ -770,8 +1000,8 @@ class Waymo2KITTI(object):
         # Create metadata
         metainfo = dict()
         metainfo['dataset'] = 'waymo'
-        metainfo['version'] = 'waymo_v1.4'
-        metainfo['info_version'] = 'mmdet3d_v1.4_standalone'
+        metainfo['version'] = 'waymo_v1.4.3'
+        metainfo['info_version'] = 'waymo v1 tf record for 3d detection'
         metainfo['conversion_time'] = datetime.now().isoformat()
         metainfo['subsample_interval'] = self.subsample_interval
         metainfo['total_files'] = len(self)
@@ -810,6 +1040,7 @@ class Waymo2KITTI(object):
             List[dict]: Waymo infos for the subsampled frames in current file.
         """
         pathname = self.tfrecord_pathnames[file_idx]
+        print(f"[DEBUG] Processing file {file_idx}: {pathname}")
         dataset = tf.data.TFRecordDataset(pathname, compression_type='')
 
         # NOTE: all_frame_infos stores metadata for *all* frames
@@ -822,28 +1053,86 @@ class Waymo2KITTI(object):
         # This is the list that will be returned.
         subsampled_frame_infos = []
 
+        frame_count = 0
         for frame_idx, data in enumerate(dataset):
-
-            frame = dataset_pb2.Frame()
-            frame.ParseFromString(bytearray(data.numpy()))
+            frame_count += 1
+            try:
+                frame = dataset_pb2.Frame()
+                frame.ParseFromString(data.numpy())
+                print(f"[DEBUG] Successfully parsed frame {frame_idx}")
+            except Exception as e:
+                print(f"[WARN] Failed to parse record {frame_idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
 
             # We must generate the info file for *every* frame
             # so that sweep lookups are correct.
             # create_waymo_info_file appends the info to all_frame_infos.
-            self.create_waymo_info_file(frame, file_idx, frame_idx,
-                                        all_frame_infos)
+            try:
+                self.create_waymo_info_file(frame, file_idx, frame_idx,
+                                            all_frame_infos)
+                print(f"[DEBUG] Created info file for frame {frame_idx}")
+            except Exception as e:
+                print(f"[ERROR] Failed to create info file for frame {frame_idx}: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
 
             # Now, check if this frame is one we should keep
             if frame_idx % self.subsample_interval == 0:
                 # If so, save the sensor data (images/lidar)
                 if self.save_senor_data:
-                    self.save_image(frame, file_idx, frame_idx)
-                    self.save_lidar(frame, file_idx, frame_idx)
+                    try:
+                        # Save camera images (5 cameras: FRONT, FRONT_LEFT, FRONT_RIGHT, SIDE_LEFT, SIDE_RIGHT)
+                        # Data format: JPEG images with typical resolutions ~1920x1280 or ~1920x886
+                        # Output: {image_dir}{camera_id}/{prefix}{file_idx:03d}{frame_idx:03d}.jpg
+                        self.save_image(frame, file_idx, frame_idx)
+                        
+                        # Save LiDAR point cloud data (5 LiDAR sensors combined)
+                        # Data format: Binary file with shape (N, 6) where N is number of points
+                        # Columns: [x, y, z, intensity, elongation, mask_indices] as float32
+                        # Typical N: 150k-250k points per frame after combining all returns
+                        # Output: {velodyne_dir}/{prefix}{file_idx:03d}{frame_idx:03d}.bin
+                        self.save_lidar(frame, file_idx, frame_idx)
+                        
+                        # Save camera calibration matrices in KITTI format
+                        # Data format: Text file with camera projection matrices
+                        # Contains: P0-P4 (3x4), R0_rect (3x3), Tr_velo_to_cam (3x4)
+                        # P matrices: Camera intrinsic + extrinsic combined for each camera
+                        # Output: {calib_dir}/{prefix}{file_idx:03d}{frame_idx:03d}.txt
+                        self.save_calib(frame, file_idx, frame_idx)
+                        
+                        # Save 3D object annotations in KITTI format
+                        # Data format: Text file with one object per line
+                        # Format: type truncated occluded alpha bbox_2d(4) dimensions_3d(3) location_3d(3) rotation_y [score] [track_id]
+                        # bbox_2d: [left, top, right, bottom] in pixels
+                        # dimensions_3d: [height, width, length] in meters
+                        # location_3d: [x, y, z] in camera coordinates (meters)
+                        # Output: {label_dir}{camera_id}/{prefix}{file_idx:03d}{frame_idx:03d}.txt
+                        #         {label_all_dir}/{prefix}{file_idx:03d}{frame_idx:03d}.txt
+                        self.save_label(frame, file_idx, frame_idx)
+                        
+                        # Save vehicle ego pose (trajectory/odometry)
+                        # Data format: Text file with 4x4 transformation matrix
+                        # Matrix: SE(3) transformation from world to vehicle coordinate frame
+                        # Shape: (4, 4) with rotation (3x3) and translation (3x1) components
+                        # Units: Translation in meters, rotation as rotation matrix
+                        # Output: {pose_dir}/{prefix}{file_idx:03d}{frame_idx:03d}.txt
+                        self.save_pose(frame, file_idx, frame_idx)
+                        
+                        print(f"[DEBUG] Saved sensor data for frame {frame_idx}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to save sensor data for frame {frame_idx}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        continue
 
                 # And add the corresponding info (the last one added)
                 # to the list we will return.
                 subsampled_frame_infos.append(all_frame_infos[-1])
 
+        print(f"[DEBUG] File {file_idx} processed: {frame_count} total frames, {len(subsampled_frame_infos)} subsampled frames")
         return subsampled_frame_infos  # Return the subsampled list
 
     def _print_conversion_summary(self, elapsed_time, total_frames, total_images, 
@@ -874,6 +1163,7 @@ class Waymo2KITTI(object):
         if self.save_senor_data:
             print(f"  Images saved: {total_images}")
             print(f"  Point clouds saved: {total_point_clouds}")
+            print(f"  Calibration files saved: {total_frames}")  # One calib file per frame
         
         # Output directory structure
         print(f"\nOutput Directory Structure:")
@@ -881,6 +1171,7 @@ class Waymo2KITTI(object):
         print(f"  Images: {self.image_save_dir}[0-4]/")
         if 'testing_3d_camera_only_detection' not in self.load_dir:
             print(f"  Point clouds: {self.point_cloud_save_dir}/")
+        print(f"  Calibration files: {self.calib_save_dir}/")
         print(f"  Pickle file: {pickle_path}")
         
         # Validate output
@@ -908,6 +1199,36 @@ class Waymo2KITTI(object):
                 print(f"  Point clouds: {pc_count} files")
             else:
                 print(f"  Point clouds: Directory not found")
+        
+        # Check calibration directory
+        if os.path.exists(self.calib_save_dir):
+            calib_count = len([f for f in os.listdir(self.calib_save_dir) if f.endswith('.txt')])
+            print(f"  Calibration files: {calib_count} files")
+        else:
+            print(f"  Calibration files: Directory not found")
+        
+        # Check label directories
+        for i in range(5):
+            label_dir = f'{self.label_save_dir}{i}'
+            if os.path.exists(label_dir):
+                label_count = len([f for f in os.listdir(label_dir) if f.endswith('.txt')])
+                print(f"  Camera {i} labels: {label_count} files")
+            else:
+                print(f"  Camera {i} labels: Directory not found")
+        
+        # Check label_all directory
+        if os.path.exists(self.label_all_save_dir):
+            label_all_count = len([f for f in os.listdir(self.label_all_save_dir) if f.endswith('.txt')])
+            print(f"  All labels: {label_all_count} files")
+        else:
+            print(f"  All labels: Directory not found")
+        
+        # Check pose directory
+        if os.path.exists(self.pose_save_dir):
+            pose_count = len([f for f in os.listdir(self.pose_save_dir) if f.endswith('.txt')])
+            print(f"  Pose files: {pose_count} files")
+        else:
+            print(f"  Pose files: Directory not found")
         
         # Check pickle file
         pickle_path = osp.join(
@@ -971,7 +1292,7 @@ class Waymo2KITTI(object):
                 range_image_top_pose,
                 ri_index=0
             )
-        points_0 = np.concatenate(points_0, axis=0)
+        points_0 = np.concatenate(points_0, axis=0) #combine 5 lidars
         intensity_0 = np.concatenate(intensity_0, axis=0)
         elongation_0 = np.concatenate(elongation_0, axis=0)
         mask_indices_0 = np.concatenate(mask_indices_0, axis=0)
@@ -1004,6 +1325,220 @@ class Waymo2KITTI(object):
         pc_path = f'{self.point_cloud_save_dir}/{self.prefix}' + \
             f'{str(file_idx).zfill(3)}{str(frame_idx).zfill(3)}.bin'
         point_cloud.astype(np.float32).tofile(pc_path)
+
+    def save_calib(self, frame, file_idx, frame_idx):
+        """Parse and save the calibration data in KITTI format.
+
+        Args:
+            frame (:obj:`Frame`): Open dataset frame proto.
+            file_idx (int): Current file index.
+            frame_idx (int): Current frame index.
+        """
+        # KITTI calibration format requires:
+        # P0, P1, P2, P3, P4: Camera projection matrices (3x4)
+        # R0_rect: Rectification matrix (3x3)
+        # Tr_velo_to_cam: Transformation from Velodyne to camera (3x4)
+        
+        # Initialize calibration matrices
+        calib_context = []
+        
+        # Get camera calibrations from frame context
+        for camera in frame.context.camera_calibrations:
+            # Waymo provides extrinsic as Camera→Vehicle. We need Vehicle→Camera.
+            T_cam_to_vehicle = np.array(camera.extrinsic.transform).reshape(4, 4)
+            T_vehicle_to_cam = np.linalg.inv(T_cam_to_vehicle)
+
+            # Extract intrinsic parameters
+            intrinsic = camera.intrinsic
+            f_u, f_v, c_u, c_v = intrinsic[0], intrinsic[1], intrinsic[2], intrinsic[3]
+            # Build camera intrinsic matrix (3x3)
+            camera_intrinsic = np.array([
+                [f_u, 0, c_u],
+                [0, f_v, c_v],
+                [0, 0, 1]
+            ])
+
+            # Build projection matrix P = K * [R|t] (3x4) in Vehicle→Camera
+            projection_matrix = camera_intrinsic @ T_vehicle_to_cam[:3, :]
+
+            calib_context.append({
+                'camera_name': camera.name,
+                'intrinsic': camera_intrinsic,
+                'extrinsic': T_vehicle_to_cam,  # store Vehicle→Camera for downstream use
+                'projection': projection_matrix
+            })
+        
+        # Sort cameras by name to ensure consistent ordering
+        calib_context = sorted(calib_context, key=lambda x: x['camera_name'])
+        
+        # Create KITTI calibration file content
+        calib_file_content = []
+        
+        # Add projection matrices P0-P4 (5 cameras in Waymo)
+        for i, calib in enumerate(calib_context):
+            P = calib['projection'].flatten()
+            calib_file_content.append(f'P{i}: {" ".join([f"{x:.6e}" for x in P])}')
+        
+        # Add rectification matrix R0_rect (identity for Waymo data)
+        # In Waymo, cameras are already rectified, so we use identity matrix
+        R0_rect = np.eye(3).flatten()
+        calib_file_content.append(f'R0_rect: {" ".join([f"{x:.6e}" for x in R0_rect])}')
+        
+        # Add Velodyne→Camera transformation matrices for each camera
+        # Generate Tr_velo_to_cam_i for each camera (i = 0, 1, 2, 3, 4)
+        if calib_context:
+            # Find FRONT camera explicitly; fallback to first if not found
+            front_item = next((c for c in calib_context if c['camera_name'] == 1), calib_context[0])
+            self.T_velo_to_front_cam = front_item['extrinsic'].copy()
+
+            T_dbg = self.T_velo_to_front_cam
+            r0 = ' '.join([f"{v:.3f}" for v in T_dbg[0, :]])
+            r1 = ' '.join([f"{v:.3f}" for v in T_dbg[1, :]])
+            r2 = ' '.join([f"{v:.3f}" for v in T_dbg[2, :]])
+            print(f"[DEBUG] Frame {frame_idx}: FRONT T_vehicle→cam rows:\n  [{r0}]\n  [{r1}]\n  [{r2}]")
+
+            # Generate transformation matrix for each camera
+            for i, calib in enumerate(calib_context):
+                # Tr_velo_to_cam_i transforms from Vehicle/LiDAR coord to camera_i coord
+                Tr_velo_to_cam_i = calib['extrinsic'][:3, :].flatten()
+                calib_file_content.append(f'Tr_velo_to_cam_{i}: {" ".join([f"{x:.6e}" for x in Tr_velo_to_cam_i])}')
+        
+        # Add IMU to Velodyne transformation (identity for Waymo)
+        Tr_imu_to_velo = np.eye(4)[:3, :].flatten()
+        calib_file_content.append(f'Tr_imu_to_velo: {" ".join([f"{x:.6e}" for x in Tr_imu_to_velo])}')
+        
+        # Save calibration file
+        calib_filename = f'{self.prefix}{str(file_idx).zfill(3)}{str(frame_idx).zfill(3)}.txt'
+        calib_path = f'{self.calib_save_dir}/{calib_filename}'
+        
+        with open(calib_path, 'w') as f:
+            f.write('\n'.join(calib_file_content))
+
+    def save_label(self, frame, file_idx, frame_idx):
+        """Parse and save the label data in txt format.
+        The relation between waymo and kitti coordinates is noteworthy:
+        1. x, y, z correspond to l, w, h (waymo) -> l, h, w (kitti)
+        2. x-y-z: front-left-up (waymo) -> right-down-front(kitti)
+        3. bbox origin at volumetric center (waymo) -> bottom center (kitti)
+        4. rotation: +x around y-axis (kitti) -> +x around z-axis (waymo)
+
+        Args:
+            frame (:obj:`Frame`): Open dataset frame proto.
+            file_idx (int): Current file index.
+            frame_idx (int): Current frame index.
+        """
+        fp_label_all = open(
+            f'{self.label_all_save_dir}/' +
+            f'{str(file_idx).zfill(3)}{str(frame_idx).zfill(3)}.txt', 'w+')#Opens a file for writing and reading, w+ will "overwrite the existing file if the file exists"
+        id_to_bbox = dict()
+        id_to_name = dict()
+        for labels in frame.projected_lidar_labels: #frame.camera_labels: #frame.projected_lidar_labels:
+            name = labels.name
+            for label in labels.labels:
+                # TODO: need a workaround as bbox may not belong to front cam
+                bbox = [
+                    label.box.center_x - label.box.length / 2,
+                    label.box.center_y - label.box.width / 2,
+                    label.box.center_x + label.box.length / 2,
+                    label.box.center_y + label.box.width / 2
+                ]
+                id_to_bbox[label.id] = bbox
+                id_to_name[label.id] = name - 1
+        #print("id_to_bbox:",id_to_bbox)
+        for obj in frame.laser_labels:
+            bounding_box = None
+            name = None
+            id = obj.id
+            for lidar in self.lidar_list:
+                # print("Lidar:", lidar)
+                # print("boundingbox:", id_to_bbox.get(id))
+                # print("boundingbox id lidar:", id_to_bbox.get(id + lidar))
+                new_name = id + '_' + lidar #id + lidar
+                if new_name in id_to_bbox:
+                    #print("id + lidar:",id + lidar)
+                    bounding_box = id_to_bbox.get(new_name)
+                    #print("bounding_box:", bounding_box)
+                    name = str(id_to_name.get(new_name))
+                    #print("name:",name)
+                    break
+
+            if bounding_box is None or name is None:
+                name = '0'
+                bounding_box = (0, 0, 0, 0)
+
+            my_type = self.type_list[obj.type]
+
+            if my_type not in self.selected_waymo_classes:
+                continue
+
+            if self.filter_empty_3dboxes and obj.num_lidar_points_in_box < 1:
+                continue
+
+            my_type = self.waymo_to_kitti_class_map[my_type]
+
+            height = obj.box.height
+            width = obj.box.width
+            length = obj.box.length
+
+            x = obj.box.center_x
+            y = obj.box.center_y
+            z = obj.box.center_z - height / 2
+
+            # project bounding box to the virtual reference frame
+            pt_ref = self.T_velo_to_front_cam @ \
+                np.array([x, y, z, 1]).reshape((4, 1))
+            x, y, z, _ = pt_ref.flatten().tolist()
+
+            rotation_y = -obj.box.heading - np.pi / 2
+            track_id = obj.id
+
+            # not available
+            truncated = 0
+            occluded = 0
+            alpha = -10
+
+            line = my_type + \
+                ' {} {} {} {} {} {} {} {} {} {} {} {} {} {}\n'.format(
+                    round(truncated, 2), occluded, round(alpha, 2),
+                    round(bounding_box[0], 2), round(bounding_box[1], 2),
+                    round(bounding_box[2], 2), round(bounding_box[3], 2),
+                    round(height, 2), round(width, 2), round(length, 2),
+                    round(x, 2), round(y, 2), round(z, 2),
+                    round(rotation_y, 2))
+
+            if self.save_track_id:
+                line_all = line[:-1] + ' ' + name + ' ' + track_id + '\n'
+            else:
+                line_all = line[:-1] + ' ' + name + '\n'
+
+            fp_label = open(
+                f'{self.label_save_dir}{name}/' +
+                f'{str(file_idx).zfill(3)}{str(frame_idx).zfill(3)}.txt', 'a')#Opens a file for appending new information to it.
+            fp_label.write(line)
+            fp_label.close()
+
+            fp_label_all.write(line_all)
+
+        fp_label_all.close()
+
+    def save_pose(self, frame, file_idx, frame_idx):
+        """Parse and save the pose data.
+
+        Note that SDC's own pose is not included in the regular training
+        of KITTI dataset. KITTI raw dataset contains ego motion files
+        but are not often used. Pose is important for algorithms that
+        take advantage of the temporal information.
+
+        Args:
+            frame (:obj:`Frame`): Open dataset frame proto.
+            file_idx (int): Current file index.
+            frame_idx (int): Current frame index.
+        """
+        pose = np.array(frame.pose.transform).reshape(4, 4)
+        np.savetxt(
+            join(f'{self.pose_save_dir}/' +
+                 f'{str(file_idx).zfill(3)}{str(frame_idx).zfill(3)}.txt'),
+            pose)
 
     def convert_range_image_to_point_cloud(self,
                                              frame,
@@ -1228,7 +1763,8 @@ class Waymo2KITTI(object):
         for prev_offset in range(-1, -self.max_sweeps - 1, -1):
             prev_lidar_infos = dict()
             prev_image_infos = dict()
-            if frame_idx + prev_offset >= 0:
+            # Check both that we don't go before frame 0 AND that we have enough elements in file_infos
+            if frame_idx + prev_offset >= 0 and len(file_infos) >= abs(prev_offset):
                 prev_frame_infos = file_infos[prev_offset]
                 prev_lidar_infos['timestamp'] = prev_frame_infos['timestamp']
                 prev_lidar_infos['ego2global'] = prev_frame_infos['ego2global']
@@ -1297,11 +1833,10 @@ class Waymo2KITTI(object):
             bounding_box = None
             name = None
             id = obj.id
-            for proj_cam in self.cam_list:
-                if id + proj_cam in id_to_bbox:
-                    bounding_box = id_to_bbox.get(id + proj_cam)
-                    name = id_to_name.get(id + proj_cam)
-                    break
+            # 直接使用对象 id 进行匹配（此前使用 id+cam 导致永不命中）
+            if id in id_to_bbox:
+                bounding_box = id_to_bbox[id]
+                name = id_to_name[id]
 
             # NOTE: the 2D labels do not have strict correspondence with
             # the projected 2D lidar labels
@@ -1355,7 +1890,7 @@ class Waymo2KITTI(object):
             instance_info['num_lidar_pts'] = obj.num_lidar_points_in_box
 
             if self.save_track_id:
-                instance_info['track_id'] = obj.id
+                instance_info['track_id'] = self.get_numeric_track_id(obj.id)  # Convert hash to numeric ID
             instance_infos.append(instance_info)
         return instance_infos
 
@@ -1384,7 +1919,7 @@ class Waymo2KITTI(object):
                     gt_bboxes_3d[None, :]).convert_to(
                         Box3DMode.CAM, lidar2cam, correct_yaw=True)
                 
-                corners_3d = gt_bboxes_3d_cam.corners.numpy()
+                corners_3d = gt_bboxes_3d_cam.corners
                 corners_3d = corners_3d[0].T  # (1, 8, 3) -> (3, 8)
                 in_camera = np.argwhere(corners_3d[2, :] > 0).flatten()
                 
@@ -1423,7 +1958,7 @@ class Waymo2KITTI(object):
                 ).astype(np.float32).tolist()
                 cam_instance['bbox_label_3d'] = instance['bbox_label_3d']
 
-                center_3d = gt_bboxes_3d_cam.gravity_center.numpy()
+                center_3d = gt_bboxes_3d_cam.gravity_center
                 center_2d_with_depth = points_cam2img(
                     center_3d, cam2img, with_depth=True)
                 center_2d_with_depth = center_2d_with_depth.squeeze().tolist()
@@ -1498,203 +2033,117 @@ def create_ImageSets_img_ids(root_dir, splits):
 
 
 def main():
-    """Main function to run Waymo to KITTI conversion with progress tracking and validation."""
+    """
+    Main function to run Waymo to KITTI conversion with progress tracking and validation.
+    
+    Simplified version that runs the complete pipeline by default with sensible defaults.
+    Just run: python waymo2kitti.py
+    """
     parser = argparse.ArgumentParser(
-        description='Waymo dataset processing pipeline: prepare, convert, test, or all',
+        description='Waymo to KITTI conversion pipeline with sensible defaults',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
-    # Add subcommands
-    subparsers = parser.add_subparsers(
-        dest='command',
-        help='Available commands',
-        required=True
+    # Command selection
+    parser.add_argument(
+        '--command', 
+        type=str, 
+        choices=['prepare', 'convert', 'test', 'all'],
+        default='convert',
+        help='Pipeline command to run'
     )
     
-    # Common arguments for all commands
-    def add_common_args(subparser):
-        subparser.add_argument(
-            '--load_dir', 
-            type=str, 
-            required=True,
-            help='Path to directory containing Waymo data (tar files for prepare, tfrecord files for convert/test)'
-        )
-        subparser.add_argument(
-            '--save_dir', 
-            type=str, 
-            required=True,
-            help='Output directory for processed dataset'
-        )
-    
-    # Prepare command - untar downloaded files
-    prepare_parser = subparsers.add_parser(
-        'prepare',
-        help='Extract tar files from downloaded Waymo dataset'
+    # Common arguments
+    parser.add_argument(
+        '--load_dir', 
+        type=str, 
+        default='/data/Datasets/waymo143/training',
+        help='Path to directory containing Waymo data'
     )
-    add_common_args(prepare_parser)
-    prepare_parser.add_argument(
+    parser.add_argument(
+        '--save_dir', 
+        type=str, 
+        default='/data/Datasets/waymo143/waymokitti',
+        help='Output directory for processed dataset'
+    )
+    
+    # Prepare arguments
+    parser.add_argument(
         '--extract_dir',
         type=str,
+        default=None,
         help='Directory to extract tar files (defaults to load_dir if not specified)'
     )
     
-    # Convert command - convert tfrecord to KITTI format
-    convert_parser = subparsers.add_parser(
-        'convert',
-        help='Convert Waymo tfrecord files to KITTI format'
-    )
-    add_common_args(convert_parser)
-    
-    # Optional arguments for convert command
-    convert_parser.add_argument(
+    # Conversion arguments
+    parser.add_argument(
         '--prefix', 
         type=str, 
         default='',
         help='Prefix for output files'
     )
-    convert_parser.add_argument(
-        '--num_proc', 
-        type=int, 
-        default=1,
-        help='Number of parallel processes for conversion'
-    )
-    convert_parser.add_argument(
-        '--only_gt_boxes_for_camera', 
-        action='store_true',
-        help='Only save ground truth boxes visible in camera images'
-    )
-    convert_parser.add_argument(
-        '--sampled_interval', 
-        type=int, 
-        default=5,
-        help='Sampling interval for frames (1 = all frames, 5 = every 5th frame)'
-    )
-    convert_parser.add_argument(
-        '--save_track_id', 
-        action='store_true',
-        help='Save tracking IDs in the annotations'
-    )
-    convert_parser.add_argument(
-        '--save_cam_sync_labels', 
-        action='store_true',
-        help='Save camera-synchronized labels'
-    )
-    convert_parser.add_argument(
+    parser.add_argument(
         '--info_prefix', 
         type=str, 
         default='waymo',
         help='Prefix for info pickle files'
     )
-    convert_parser.add_argument(
-        '--max_sweeps', 
+    parser.add_argument(
+        '--num_proc', 
         type=int, 
-        default=5,
-        help='Maximum number of sweeps to include'
+        default=0,
+        help='Number of parallel processes for conversion'
     )
-    convert_parser.add_argument(
+    parser.add_argument(
         '--split', 
         type=str, 
         choices=['training', 'validation', 'testing'],
         default='training',
         help='Dataset split to convert'
     )
-    convert_parser.add_argument(
+    parser.add_argument(
         '--downsample', 
         type=int, 
-        default=1,
-        help='Downsample factor: process every K samples in each segment (1 = all samples, 2 = every 2nd sample, etc.)'
+        default=10,
+        help='Subsample factor: process every Kth sample'
     )
-    convert_parser.add_argument(
+    parser.add_argument(
+        '--max_sweeps', 
+        type=int, 
+        default=5,
+        help='Maximum number of LiDAR sweeps per frame'
+    )
+    #The dest parameter in the argument parser maps the new flag names to the original variable names
+    parser.add_argument(
+        '--no_gt_boxes_for_camera', 
+        action='store_false',
+        dest='only_gt_boxes_for_camera',
+        default=True,
+        help='Disable saving only ground truth boxes visible in camera images'
+    )
+    parser.add_argument(
+        '--no_track_id', 
+        action='store_false',
+        dest='save_track_id',
+        default=True,
+        help='Disable saving tracking IDs in annotations'
+    )
+    parser.add_argument(
+        '--no_cam_sync_labels', 
+        action='store_false',
+        dest='save_cam_sync_labels',
+        default=True,
+        help='Disable saving camera-synchronized labels'
+    )
+    parser.add_argument(
         '--skip_validation', 
         action='store_true',
+        default=False,
         help='Skip output validation after conversion'
     )
     
-    # Test command - validate converted dataset
-    test_parser = subparsers.add_parser(
-        'test',
-        help='Test and validate converted KITTI dataset'
-    )
-    add_common_args(test_parser)
-    test_parser.add_argument(
-        '--test_type',
-        type=str,
-        choices=['basic', 'integration', 'performance', 'all'],
-        default='basic',
-        help='Type of test to run'
-    )
-    
-    # All command - run prepare, convert, and test in sequence
-    all_parser = subparsers.add_parser(
-        'all',
-        help='Run complete pipeline: prepare, convert, and test'
-    )
-    add_common_args(all_parser)
-    all_parser.add_argument(
-        '--extract_dir',
-        type=str,
-        help='Directory to extract tar files (defaults to load_dir if not specified)'
-    )
-    # Add all convert arguments to 'all' command
-    all_parser.add_argument(
-        '--prefix', 
-        type=str, 
-        default='',
-        help='Prefix for output files'
-    )
-    all_parser.add_argument(
-        '--num_proc', 
-        type=int, 
-        default=1,
-        help='Number of parallel processes for conversion'
-    )
-    all_parser.add_argument(
-        '--only_gt_boxes_for_camera', 
-        action='store_true',
-        help='Only save ground truth boxes visible in camera images'
-    )
-    all_parser.add_argument(
-        '--sampled_interval', 
-        type=int, 
-        default=5,
-        help='Sampling interval for frames (1 = all frames, 5 = every 5th frame)'
-    )
-    all_parser.add_argument(
-        '--save_track_id', 
-        action='store_true',
-        help='Save tracking IDs in the annotations'
-    )
-    all_parser.add_argument(
-        '--save_cam_sync_labels', 
-        action='store_true',
-        help='Save camera-synchronized labels'
-    )
-    all_parser.add_argument(
-        '--info_prefix', 
-        type=str, 
-        default='waymo',
-        help='Prefix for info pickle files'
-    )
-    all_parser.add_argument(
-        '--max_sweeps', 
-        type=int, 
-        default=5,
-        help='Maximum number of sweeps to include'
-    )
-    all_parser.add_argument(
-        '--split', 
-        type=str, 
-        choices=['training', 'validation', 'testing'],
-        default='training',
-        help='Dataset split to convert'
-    )
-    all_parser.add_argument(
-        '--downsample', 
-        type=int, 
-        default=1,
-        help='Downsample factor: process every K samples in each segment (1 = all samples, 2 = every 2nd sample, etc.)'
-    )
-    all_parser.add_argument(
+    # Test arguments
+    parser.add_argument(
         '--test_type',
         type=str,
         choices=['basic', 'integration', 'performance', 'all'],
@@ -1940,7 +2389,6 @@ def convert_dataset(args):
     print(f"Output directory: {args.save_dir}")
     print(f"Found {len(tfrecord_files)} tfrecord files")
     print(f"Split: {args.split}")
-    print(f"Sampling interval: {args.sampled_interval}")
     print(f"Downsample factor: {args.downsample}")
     print(f"Number of processes: {args.num_proc}")
     print(f"Only GT boxes for camera: {args.only_gt_boxes_for_camera}")
@@ -1959,7 +2407,6 @@ def convert_dataset(args):
         prefix=args.prefix,
         workers=args.num_proc,
         only_gt_boxes_for_camera=args.only_gt_boxes_for_camera,
-        sampled_interval=args.sampled_interval,
         subsample_interval=args.downsample,
         save_track_id=args.save_track_id,
         save_cam_sync_labels=args.save_cam_sync_labels,
@@ -1986,9 +2433,6 @@ def convert_dataset(args):
         if not hasattr(args, 'skip_validation') or not args.skip_validation:
             print("\nPerforming output validation...")
             converter._validate_output()
-        
-        # Print final summary
-        converter._print_conversion_summary()
         
         print(f"\n{'='*60}")
         print(f"DATASET CONVERSION COMPLETE!")

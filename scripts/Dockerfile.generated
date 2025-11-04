@@ -1,0 +1,60 @@
+# syntax=docker/dockerfile:1.6
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG USE_VENV=true
+ARG INSTALL_TORCH=false
+ARG TORCH_CUDA_TAG=cu124
+ARG INSTALL_MMDET3D=false
+ARG EXTRA_APT=""
+ARG EXTRA_PIP=""
+ARG ROS2_DISTRO=humble
+
+SHELL ["/bin/bash", "-lc"]
+
+# Isaac ROS base already has ROS 2 + CUDA/TensorRT. Add common tools:
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash-completion ca-certificates curl wget git vim nano \
+    python3-venv python3-pip python3-dev build-essential \
+    libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Optional extra apt packages
+RUN if [[ -n "${EXTRA_APT}" ]]; then \
+      apt-get update && apt-get install -y --no-install-recommends ${EXTRA_APT} && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Keep Python deps separate
+# Keep Python deps separate (overwrite any preexisting pip/python shims)
+RUN if [[ "${USE_VENV}" == "true" ]]; then \
+      python3 -m venv /opt/venv && \
+      /opt/venv/bin/pip install -U pip wheel setuptools && \
+      ln -sf /opt/venv/bin/pip /usr/local/bin/pip && \
+      ln -sf /opt/venv/bin/python /usr/local/bin/python; \
+    else \
+      python3 -m pip install -U pip wheel setuptools; \
+    fi
+
+# Optional: PyTorch (CUDA wheels)
+RUN if [[ "${INSTALL_TORCH}" == "true" ]]; then \
+      pip install --extra-index-url https://download.pytorch.org/whl/${TORCH_CUDA_TAG} \
+        torch torchvision torchaudio; \
+    fi
+
+# Optional: OpenMMLab stack
+RUN pip install -U openmim "numpy<2.0" || true \
+ && if [[ "${INSTALL_MMDET3D}" == "true" ]]; then \
+      mim install "mmengine>=0.10.4" && \
+      mim install "mmcv>=2.1.0" && \
+      mim install "mmdet>=3.2.0" && \
+      if ! mim install "mmdet3d>=1.4.0"; then \
+        cd /opt && git clone --depth=1 https://github.com/open-mmlab/mmdetection3d.git && cd mmdetection3d && \
+        pip install -r requirements/runtime.txt && pip install -v -e .; \
+      fi; \
+    fi
+
+# Optional: extra pip
+RUN if [[ -n "${EXTRA_PIP}" ]]; then pip install ${EXTRA_PIP}; fi
+
+WORKDIR /workspace
