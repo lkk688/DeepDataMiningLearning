@@ -35,6 +35,20 @@ class Evaluator:
         self.mode = mode
         self.hf_model = hf_model
         self.device = next(model.parameters()).device
+    
+    def _get_pad_id(self):
+        """Retrieve pad token ID dynamically from dataset/tokenizer."""
+        # Try in several places
+        if hasattr(self.data, "pad_id") and self.data.pad_id is not None:
+            return self.data.pad_id
+        if hasattr(self.data, "tok"):
+            tok = self.data.tok
+            if hasattr(tok, "pad_id") and tok.pad_id is not None:
+                return tok.pad_id
+            if hasattr(tok, "tokenizer") and hasattr(tok.tokenizer, "pad_token_id"):
+                return tok.tokenizer.pad_token_id
+        # Fallback
+        return -100 #0
 
     # ------------------------------------------------------------
     # Main Evaluation
@@ -83,7 +97,24 @@ class Evaluator:
                 # Case 1 — Hugging Face models
                 # --------------------------------------------------
                 if self.hf_model:
-                    inputs = {k: v.to(self.device) for k, v in batch.items()}
+                    if isinstance(batch, dict):
+                        inputs = {k: v.to(self.device) for k, v in batch.items()}
+                    elif isinstance(batch, (tuple, list)):
+                        # Support (x, y) or (x, y, lengths)
+                        x, y = batch[:2]
+                        if x.size(0) != y.size(0):
+                            raise ValueError(
+                                f"❌ Input batch_size ({x.size(0)}) "
+                                f"!= target batch_size ({y.size(0)}). "
+                                "Check dataset: HF models require equal batch and seq length."
+                            )
+                        inputs = {
+                            "input_ids": x.to(self.device),
+                            "labels": y.to(self.device),
+                            "attention_mask": (x != self._get_pad_id()).to(self.device),
+                        }
+                    else:
+                        raise TypeError(f"Unsupported batch type: {type(batch)}")
                     outputs = self.model(**inputs)
                     loss = outputs.loss
                     logits = outputs.logits
@@ -91,10 +122,34 @@ class Evaluator:
                     total_loss += loss.item()
                     preds = logits.argmax(-1)
                     labels = inputs.get("labels", None)
+                    # logits: (B, T, V) from the model
+                    # labels: should be (B, T); may come as list/tensor
+                    # IMPORTANT: for HF causal LM, ignored labels are usually -100
+                    ignore_index = -100  # getattr(self.model.config, "ignore_index", -100) if you prefer
+
                     if labels is not None:
-                        mask = labels != self.model.config.pad_token_id
+                        # Ensure tensor on the right device/dtype
+                        if not torch.is_tensor(labels):
+                            labels = torch.as_tensor(labels, device=logits.device)
+                        else:
+                            labels = labels.to(logits.device)
+                        labels = labels.long()
+
+                        # Predictions
+                        preds = logits.argmax(dim=-1)  # (B, T)
+
+                        # If shapes somehow differ, align conservatively
+                        if preds.shape != labels.shape:
+                            T = min(preds.size(-1), labels.size(-1))
+                            preds = preds[..., :T]
+                            labels = labels[..., :T]
+
+                        # Build a boolean tensor mask (labels we care about)
+                        mask = labels.ne(ignore_index)   # (B, T) boolean tensor
+
+                        # Accumulate counts
                         total_correct += (preds[mask] == labels[mask]).sum().item()
-                        total_count += mask.sum().item()
+                        total_count   += mask.sum().item()
                     continue
 
                 # --------------------------------------------------

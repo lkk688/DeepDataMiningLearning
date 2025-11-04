@@ -276,7 +276,7 @@ def run_tokenizer_comparison_experiment(
     hf_name="npvinHnivqn/EnglishDictionary",
     seq_len=64,
     batch_size=32,
-    epochs=6,
+    epochs=3,
     device="cuda" if torch.cuda.is_available() else "cpu",
     output_dir="outputs/tokenizer_comparison"
 ):
@@ -293,11 +293,11 @@ def run_tokenizer_comparison_experiment(
     
     # Define tokenizers to test
     tokenizer_configs = {
+        "hftokenizer": {"tokenizer": "hf:Qwen/Qwen2-1.5B", "color": "red"},
+        "sp-unigram": {"tokenizer": "custom:sp-unigram", "color": "orange"},
+        "tiktoken-bpe": {"tokenizer": "custom:tiktoken-bpe", "color": "purple"},
         "char": {"tokenizer": "char", "color": "blue"},
         "word": {"tokenizer": "word", "color": "green"}, 
-        "hftokenizer": {"tokenizer": "hftokenizer", "color": "red"},
-        "sp-unigram": {"tokenizer": "custom:sp-unigram", "color": "orange"},
-        "tiktoken-bpe": {"tokenizer": "custom:tiktoken-bpe", "color": "purple"}
     }
     
     results = {}
@@ -644,6 +644,20 @@ def run_tokenizer_comparison_experiment(
     
     return results
 
+# 📊 ===== Tokenizer Comparison Summary =====
+# Tokenizer       Vocab    Loss     Acc (%)  PPL     
+# -------------------------------------------------------
+# hftokenizer     151643   4.0864   31.15    59.53   
+# sp-unigram      50000    3.6963   34.25    40.30   
+# tiktoken-bpe    100277   4.0721   31.35    58.68   
+# char            70       1.3486   57.98    3.85    
+# word            75389    4.1900   36.28    66.02   
+
+# 🏆 Best Results:
+#    Lowest Loss: char (1.3486)
+#    Highest Acc: char (57.98%)
+#    Lowest PPL:  char (3.85)
+
 
 
 # ============================================================
@@ -652,7 +666,7 @@ def run_tokenizer_comparison_experiment(
 def run_qwen_finetune_experiment(
     hf_name="OpenAssistant/oasst1",
     txt_files=None,
-    vocab_size=400, #8000,
+    vocab_size=None, #400, #8000,
     seq_len=128, #512,
     batch_size=2,
     epochs=3,
@@ -686,7 +700,7 @@ def run_qwen_finetune_experiment(
     data = build_dataset(args.task, args)
     train_loader, val_loader = data.loaders()
     inspect_dataset(data)
-    test_tokenizers(data)
+    #test_tokenizers(data)
     print("✅ Dataset ready for fine-tuning.\n")
     
 
@@ -703,7 +717,19 @@ def run_qwen_finetune_experiment(
     )
     #model.resize_token_embeddings(len(tokenizer))
     print("✅ Model and tokenizer ready.\n")
+    tokenizer = data.tok.tokenizer
+    # Sanity: make sure nobody shrank the vocab to 400
+    print("tokenizer:", len(tokenizer))
+    print("embed:", model.get_input_embeddings().num_embeddings)
+    print("lm_head:", model.lm_head.weight.shape)
+    #Qwen2.5-3B’s model vocab is typically 151,936.
+	#Your tokenizer length is 151,665, which is a bit smaller because Qwen ships with extra reserved tokens (e.g., <|extra_0|>… placeholders, tool tokens, multimodal markers) that live in the model’s embedding table but aren’t all exposed by the tokenizer by default.
+    
+    evaluator = Evaluator(model, data, mode="teacher-forced", hf_model=True)
+    val_loss, val_acc, val_ppl = evaluator.evaluate(split="valid")
+    print(f"\n✅ Qwen2.5-3B Original — loss={val_loss:.4f} | acc={val_acc*100:.2f}% | ppl={val_ppl:.2f}\n")
 
+    
     # ------------------------------------------------------------
     # 3️⃣  Configure fine-tuning hyperparameters
     # ------------------------------------------------------------
@@ -765,14 +791,14 @@ if __name__ == "__main__":
     #main()
     
     #results = run_predictive_typing_experiment()
-    #run_qwen_finetune_experiment()
+    run_qwen_finetune_experiment()
     # run_char_typing_experiment()
     
     # Run the new tokenizer comparison experiment
-    run_tokenizer_comparison_experiment(
-        hf_name="npvinHnivqn/EnglishDictionary",
-        seq_len=64,
-        batch_size=128, #32,
-        epochs=4,  # Reduced for faster testing
-        output_dir="outputs/tokenizer_comparison"
-    )
+    # run_tokenizer_comparison_experiment(
+    #     hf_name="npvinHnivqn/EnglishDictionary",
+    #     seq_len=64,
+    #     batch_size=128, #32,
+    #     epochs=4,  # Reduced for faster testing
+    #     output_dir="outputs/tokenizer_comparison"
+    # )
