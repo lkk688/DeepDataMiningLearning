@@ -37,6 +37,11 @@ ssh SJSUID@coe-hpc1.sjsu.edu  # e.g., ssh 0107960xx@coe-hpc1.sjsu.edu
 # password is your standard SJSU account password
 ```
 
+Follow the pop up instructions to ssh into the HPC3:
+```bash
+ssh -X coe-hpc3
+```
+
 ### File Transfer
 You have several options for transferring files to and from HPC:
 
@@ -152,7 +157,6 @@ Check available modules and load required ones on the head node:
 
 ```bash
 module avail
-module load python3/3.11.5 cuda/11.8 anaconda/3.9 slurm-22-05-7-1-gcc-12.2.0-kzyx6rx
 ```
 
 Conda environments:
@@ -174,10 +178,32 @@ exit  # exit the computing node when done
 Request a GPU node (interactive bash):
 
 ```bash
-srun -p gpu --gres=gpu --pty /bin/bash
+PARTITION   Max TIMELIMIT   Comments
+========    ==============  =======================================
+defq             4:00:00    4 hours - Default CPU queue
+cpuqs        05-01:00:00    5 days  -   Short CPU queue
+cpuqm        14-01:00:00   14 days  -  Medium CPU queue
+cpuql        21-01:00:00   21 days  -    Long CPU queue
+gpuqs        02-01:00:00    2 days  -   Short GPU queue
+gpuqm        07-01:00:00    7 days  -  Medium GPU queue
+gpuql        14-01:00:00   14 days  -    Long GPU queue
+condo        30-01:00:00   30 days  -   condo GPU - Faculty queue
+chemq        30-01:00:00   30 days  -   cchem GPU - Faculty queue
+
+========================>>>>>>> NOTICE <<<<<<<<====================
+
+        NSF Campus CyberInfrastructure Grant
+
+PARTITION   Max TIMELIMIT   Comments: GPU nodes
+========    ==============  =======================================
+nsfqs        up 2-01:00:00      2 days     Short GPU queue
+nsfqm        up 14-01:00:0     14 days    Medium GPU queue
+nsfql        up 21-01:00:0     21 days      Long GPU queue
+
+srun -p gpuqs --pty /bin/bash
 nvidia-smi
-conda activate mycondapy311
-exit
+
+exit #exit the GPU node if you are not using
 ```
 
 Note: if you see `srun: job <id> queued and waiting for resources`, wait until `allocated resources` message appears. You will be automatically logged into the allocated GPU.
