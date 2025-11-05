@@ -49,8 +49,8 @@ if __name__ == "__main__":
     import open3d as o3d
         #from visualize_open3d import load_ply_and_visualize
     dir_path="/Users/kaikailiu/Downloads"
-    points_path=os.path.join(dir_path, "frame_0000_points.ply")
-    boxes_path=os.path.join(dir_path, "frame_0000_boxes.ply")
+    points_path=os.path.join(dir_path, "scene_vis_points.ply")
+    boxes_path=os.path.join(dir_path, "scene_vis_boxes.ply")
 
     pcd = o3d.io.read_point_cloud(points_path)
     boxes = o3d.io.read_line_set(boxes_path)   # ← use read_line_set

@@ -43,9 +43,9 @@ def load_if_exists(path: str, loader, name: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Open3D viewer for saved PLY outputs")
-    parser.add_argument("--dir", default="inference_preview",
+    parser.add_argument("--dir", default="/Volumes/Samsung_T3/inference_results",
                         help="Folder containing PLY files (default: inference_preview)")
-    parser.add_argument("--basename", required=True,
+    parser.add_argument("--basename", default="000008",
                         help="Base name, e.g. 000008")
     parser.add_argument("--width", type=int, default=1440,
                         help="Viewer window width (default: 1440)")
