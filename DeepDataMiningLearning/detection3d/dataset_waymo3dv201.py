@@ -1547,14 +1547,44 @@ class Waymo3DDataset(Dataset):
         # --- 6. Execute Visualization or Save ---
         if headless:
             print(f"[INFO] Headless mode: Saving geometries to {save_path}...")
-            # If in headless, combine all meshes and save (Open3D doesn't easily save scenes with labels)
-            # This is a simplified saving, for full scene you'd need custom logic
-            full_mesh = o3d.geometry.TriangleMesh()
-            full_mesh.points = pcd.points
-            full_mesh.colors = pcd.colors
-            # You might need to add other geometries to the mesh for a single .ply
-            o3d.io.write_point_cloud(save_path, pcd) # Saving just points for simplicity
-            print(f"[INFO] Point cloud saved to {save_path}")
+            # Derive output paths for points and boxes
+            base, ext = os.path.splitext(save_path)
+            if ext == "":
+                ext = ".ply"
+            points_path = f"{base}_points{ext}"
+            boxes_path = f"{base}_boxes{ext}"
+
+            # Save point cloud
+            if len(pcd.points) == 0:
+                print("[WARN] Point cloud has no points; skipping save.")
+            else:
+                o3d.io.write_point_cloud(points_path, pcd)
+                print(f"[INFO] Point cloud saved to {points_path}")
+
+            # Merge all box LineSets into a single LineSet and save
+            if len(box_geometries) > 0:
+                merged = o3d.geometry.LineSet()
+                all_points = []
+                all_lines = []
+                all_colors = []
+                offset = 0
+                for ls in box_geometries:
+                    pts = np.asarray(ls.points)
+                    lines = np.asarray(ls.lines)
+                    # If colors are not set, default to gray per line
+                    colors = np.asarray(ls.colors) if ls.colors is not None else np.tile(np.array([0.5, 0.5, 0.5]), (lines.shape[0], 1))
+                    all_points.append(pts)
+                    all_lines.append(lines + offset)
+                    all_colors.append(colors)
+                    offset += pts.shape[0]
+                if len(all_points) > 0:
+                    merged.points = o3d.utility.Vector3dVector(np.vstack(all_points))
+                    merged.lines = o3d.utility.Vector2iVector(np.vstack(all_lines))
+                    merged.colors = o3d.utility.Vector3dVector(np.vstack(all_colors))
+                    o3d.io.write_line_set(boxes_path, merged)
+                    print(f"[INFO] 3D bounding boxes saved to {boxes_path}")
+            else:
+                print("[INFO] No 3D boxes to save.")
         else:
             # --- Open Interactive Window ---
             print("[INFO] Opening 3D visualizer... (Press 'Q' to close)")
@@ -1744,19 +1774,19 @@ def main():
     )
 
     # Lidar to Image
-    if target["surround_views"]:
-        print("[INFO] Calling Camera with LiDAR Visualizer...")
-        for i, camera_data in enumerate(target["surround_views"]):
-            # Create a separate subplot for each camera
-            fig, ax = plt.subplots(1, 1, figsize=(12, 8))
-            Waymo3DDataset.visualize_camera_with_lidar(
-                camera_data_item=camera_data,
-                lidar_points_vehicle=lidar, # Pass the vehicle-frame LiDAR points
-                boxes_7d_vehicle=target["boxes_3d"] if not return_world else None, # Only pass vehicle-frame boxes
-                boxes_labels_3d=target["labels"],
-                title=f"Lidar on Camera {camera_data['camera_name']}",
-                ax=ax
-            )
+    # if target["surround_views"]:
+    #     print("[INFO] Calling Camera with LiDAR Visualizer...")
+    #     for i, camera_data in enumerate(target["surround_views"]):
+    #         # Create a separate subplot for each camera
+    #         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
+    #         Waymo3DDataset.visualize_camera_with_lidar(
+    #             camera_data_item=camera_data,
+    #             lidar_points_vehicle=lidar, # Pass the vehicle-frame LiDAR points
+    #             boxes_7d_vehicle=target["boxes_3d"] if not return_world else None, # Only pass vehicle-frame boxes
+    #             boxes_labels_3d=target["labels"],
+    #             title=f"Lidar on Camera {camera_data['camera_name']}",
+    #             ax=ax
+    #         )
 
 
     # --- Test BEV ---
@@ -1773,7 +1803,7 @@ def main():
         target["boxes_3d"], 
         target["labels"], 
         ds_vehicle.label_map_3d,
-        headless=False # Set True if on a server
+        headless=True # Set True if on a server
     )
 
 
