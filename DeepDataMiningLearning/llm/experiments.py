@@ -5,7 +5,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 import os   
-import datetime, json
+import json
+from datetime import datetime
 from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS, test_tokenizers, TokenizerFactory
 from DeepDataMiningLearning.llm.lm_dataset import build_dataset, inspect_dataset
 from DeepDataMiningLearning.llm.train_lm import TrainConfig, build_model, Trainer, Evaluator
@@ -691,7 +692,7 @@ def run_qwen_finetune_experiment(
     args.tokenizer = "hf:Qwen/Qwen2.5-3B" #"bpe"
     args.vocab_size = vocab_size
     args.seq_len = seq_len
-    args.stride = 128 #256 #reduce stride means more data pairs
+    args.stride = 64 #256 #reduce stride means more data pairs
     args.max_train_samples = None #not actually used
     args.batch_size = batch_size
     args.mode = "teacher-forced"

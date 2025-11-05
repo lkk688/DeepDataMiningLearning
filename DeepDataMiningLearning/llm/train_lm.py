@@ -100,55 +100,71 @@ class Evaluator:
                     if isinstance(batch, dict):
                         inputs = {k: v.to(self.device) for k, v in batch.items()}
                     elif isinstance(batch, (tuple, list)):
+                        #With Hugging Face AutoModelForCausalLM, the model already shifts internally (it uses logits[:, :-1] vs labels[:, 1:]). 
+                        # So if your dataset returns (x, y=x→next), don’t feed y as labels to the HF model. Feed labels = x and let the model do the shift.
                         # Support (x, y) or (x, y, lengths)
                         x, y = batch[:2]
-                        if x.size(0) != y.size(0):
-                            raise ValueError(
-                                f"❌ Input batch_size ({x.size(0)}) "
-                                f"!= target batch_size ({y.size(0)}). "
-                                "Check dataset: HF models require equal batch and seq length."
-                            )
+                        # if x.size(0) != y.size(0):
+                        #     raise ValueError(
+                        #         f"❌ Input batch_size ({x.size(0)}) "
+                        #         f"!= target batch_size ({y.size(0)}). "
+                        #         "Check dataset: HF models require equal batch and seq length."
+                        #     )
+                        pad_id = self._get_pad_id()
+                        x = x.to(self.device)
+                        labels = x.clone()
+                        # HF causal LM expects ignore_index == -100 at padded positions
+                        labels[labels == pad_id] = -100
                         inputs = {
-                            "input_ids": x.to(self.device),
-                            "labels": y.to(self.device),
-                            "attention_mask": (x != self._get_pad_id()).to(self.device),
+                            "input_ids": x,
+                            "labels": labels, # same as the input y.to(self.device),
+                            "attention_mask": (x != pad_id).to(self.device),
                         }
                     else:
                         raise TypeError(f"Unsupported batch type: {type(batch)}")
                     outputs = self.model(**inputs)
                     loss = outputs.loss
-                    logits = outputs.logits
+                    logits = outputs.logits # (B, T, V)
 
-                    total_loss += loss.item()
-                    preds = logits.argmax(-1)
+                    total_loss += float(loss.item())
+                    #preds = logits.argmax(-1)
                     labels = inputs.get("labels", None)
                     # logits: (B, T, V) from the model
                     # labels: should be (B, T); may come as list/tensor
                     # IMPORTANT: for HF causal LM, ignored labels are usually -100
-                    ignore_index = -100  # getattr(self.model.config, "ignore_index", -100) if you prefer
+                    #ignore_index = -100  # getattr(self.model.config, "ignore_index", -100) if you prefer
 
                     if labels is not None:
                         # Ensure tensor on the right device/dtype
                         if not torch.is_tensor(labels):
-                            labels = torch.as_tensor(labels, device=logits.device)
+                            labels = torch.as_tensor(labels, device=logits.device, dtype=torch.long)
                         else:
-                            labels = labels.to(logits.device)
-                        labels = labels.long()
+                            labels = labels.to(logits.device).long()
+                        ignore_index = getattr(self.model.config, "ignore_index", -100)
 
                         # Predictions
-                        preds = logits.argmax(dim=-1)  # (B, T)
+                        #preds = logits.argmax(dim=-1)  # (B, T)
 
                         # If shapes somehow differ, align conservatively
-                        if preds.shape != labels.shape:
-                            T = min(preds.size(-1), labels.size(-1))
-                            preds = preds[..., :T]
-                            labels = labels[..., :T]
+                        # if preds.shape != labels.shape:
+                        #     T = min(preds.size(-1), labels.size(-1))
+                        #     preds = preds[..., :T]
+                        #     labels = labels[..., :T]
+                            
+                        # ---- shift to match the loss target ----
+                        shift_logits = logits[:, :-1, :]      # predicts token at t+1
+                        shift_labels = labels[:, 1:]          # gold next tokens
 
                         # Build a boolean tensor mask (labels we care about)
-                        mask = labels.ne(ignore_index)   # (B, T) boolean tensor
+                        #mask = labels.ne(ignore_index)   # (B, T) boolean tensor
+                        # build mask from shifted labels (valid supervision positions)
+                        mask = shift_labels.ne(ignore_index)  # (B, T-1) boolean
+                        # top-1 predictions
+                        preds = shift_logits.argmax(dim=-1)   # (B, T-1)
 
                         # Accumulate counts
-                        total_correct += (preds[mask] == labels[mask]).sum().item()
+                        #total_correct += (preds[mask] == labels[mask]).sum().item()
+                        total_correct += (preds.eq(shift_labels) & mask).sum().item()
                         total_count   += mask.sum().item()
                     continue
 
@@ -262,7 +278,8 @@ class Evaluator:
         # --------------------------------------------------
         avg_loss = total_loss / max(1, len(loader))
         acc = total_correct / max(1, total_count)
-        ppl = math.exp(avg_loss)
+        #ppl = math.exp(avg_loss)
+        ppl = math.exp(min(20.0, avg_loss))  # clamp to avoid overflow
 
         if hf_eval:
             try:
@@ -437,26 +454,48 @@ class Trainer:
         # Case 1: Hugging Face models (AutoModelForCausalLM)
         # -----------------------------------------------------------
         if self.hf_model:
+            # if isinstance(batch, dict):
+            #     inputs = {k: v.to(self.device) for k, v in batch.items()}
+            # elif isinstance(batch, (tuple, list)):
+            #     # Support (x, y) or (x, y, lengths)
+            #     x, y = batch[:2]
+            #     if x.size(0) != y.size(0):
+            #         raise ValueError(
+            #             f"❌ Input batch_size ({x.size(0)}) "
+            #             f"!= target batch_size ({y.size(0)}). "
+            #             "Check dataset: HF models require equal batch and seq length."
+            #         )
+            #     inputs = {
+            #         "input_ids": x.to(self.device),
+            #         "labels": y.to(self.device),
+            #         "attention_mask": (x != self._get_pad_id()).to(self.device),
+            #     }
+            # else:
+            #     raise TypeError(f"Unsupported batch type: {type(batch)}")
+
+            #outputs = self.model(**inputs)
+            # Normalize batch -> x (input_ids)
             if isinstance(batch, dict):
-                inputs = {k: v.to(self.device) for k, v in batch.items()}
+                x = batch["input_ids"].to(self.device)
+                # Always recompute labels from x to avoid "double shift"
+                # even if the dict contains 'labels'.
             elif isinstance(batch, (tuple, list)):
-                # Support (x, y) or (x, y, lengths)
-                x, y = batch[:2]
-                if x.size(0) != y.size(0):
-                    raise ValueError(
-                        f"❌ Input batch_size ({x.size(0)}) "
-                        f"!= target batch_size ({y.size(0)}). "
-                        "Check dataset: HF models require equal batch and seq length."
-                    )
-                inputs = {
-                    "input_ids": x.to(self.device),
-                    "labels": y.to(self.device),
-                    "attention_mask": (x != self._get_pad_id()).to(self.device),
-                }
+                x = batch[0].to(self.device)  # ignore y here; model will shift internally
             else:
                 raise TypeError(f"Unsupported batch type: {type(batch)}")
 
-            outputs = self.model(**inputs)
+            # Attention mask
+            attention_mask = (x != pad_idx).to(self.device)
+
+            # Labels = input_ids, with pads -> -100 (ignore_index)
+            labels = x.clone()
+            labels[labels == pad_idx] = -100
+
+            outputs = self.model(
+                input_ids=x,
+                attention_mask=attention_mask,
+                labels=labels,  # HF loss will compare logits[:, :-1] to labels[:, 1:]
+            )
             return outputs.loss, outputs.logits
 
         # -----------------------------------------------------------
