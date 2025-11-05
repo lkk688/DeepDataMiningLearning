@@ -667,7 +667,7 @@ def run_qwen_finetune_experiment(
     hf_name="OpenAssistant/oasst1",
     txt_files=None,
     vocab_size=None, #400, #8000,
-    seq_len=128, #512,
+    seq_len=256, #512,
     batch_size=2,
     epochs=3,
     device="cuda" if torch.cuda.is_available() else "cpu"
@@ -691,8 +691,8 @@ def run_qwen_finetune_experiment(
     args.tokenizer = "hf:Qwen/Qwen2.5-3B" #"bpe"
     args.vocab_size = vocab_size
     args.seq_len = seq_len
-    args.stride = 256
-    args.max_train_samples = 100 #use for debug
+    args.stride = 128 #256 #reduce stride means more data pairs
+    args.max_train_samples = None #not actually used
     args.batch_size = batch_size
     args.mode = "teacher-forced"
 
