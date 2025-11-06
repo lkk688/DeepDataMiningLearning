@@ -275,7 +275,7 @@ def run_char_typing_experiment(
 
 def run_tokenizer_comparison_experiment(
     hf_name="npvinHnivqn/EnglishDictionary",
-    seq_len=64,
+    seq_len=128,
     batch_size=32,
     epochs=3,
     device="cuda" if torch.cuda.is_available() else "cpu",
@@ -333,9 +333,9 @@ def run_tokenizer_comparison_experiment(
         args.tokenizer = tok_config["tokenizer"]
         args.seq_len = seq_len
         args.stride = 1
-        args.next_token_window = 1
-        args.num_prefixes_per_sentence = 5
-        args.max_prefix_len = 20
+        # args.next_token_window = 1
+        # args.num_prefixes_per_sentence = 5
+        # args.max_prefix_len = 20
         
         # For custom tokenizers, we need to prepare them first
         if tok_config["tokenizer"].startswith("custom:"):
@@ -369,8 +369,8 @@ def run_tokenizer_comparison_experiment(
         margs = ModelArgs()
         margs.model_type = "TraditionalTransformerLM"
         margs.dim = 128
-        margs.layers = 2
-        margs.heads = 2
+        margs.layers = 4
+        margs.heads = 4
         margs.lr = 8e-4
         margs.seq_len = seq_len
         margs.rope = False
@@ -398,8 +398,8 @@ def run_tokenizer_comparison_experiment(
                 weight_decay=0.01,
                 warmup_steps=100,
                 grad_clip=1.0,
-                grad_accum=1,
-                amp=False,
+                grad_accum=4,
+                amp=True,
                 scheduler_type="reduce",
                 save_path=margs.save,
             )
@@ -466,7 +466,7 @@ def run_tokenizer_comparison_experiment(
     # ------------------------------------------------------------
     # Save experiment configuration and results
     # ------------------------------------------------------------
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # Save detailed results
     results_path = os.path.join(output_dir, f"tokenizer_comparison_results_{timestamp}.json")
