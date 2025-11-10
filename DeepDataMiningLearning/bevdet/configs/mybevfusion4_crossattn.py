@@ -7,15 +7,15 @@ _base_ = [
 default_scope = 'mmdet3d'
 custom_imports = dict(
     imports=[
-        'projects.bevdet.bevfusion',              # 注册 BEVFusion
-        'projects.bevdet.cross_attn_lss',  # 你的 CrossAttnLSSTransform 源文件
+        'projects.bevdet.bevfusion',              # 
+        'projects.bevdet.cross_attn_lss',  # 
         'projects.bevdet.freeze_utils'            # FreezeExceptHook
     ],
     allow_failed_imports=False
 )
 
 # ==== Env ====
-env_cfg = dict(cudnn_benchmark=True)  # 更快；若要更低 reserved 显存可改 False
+env_cfg = dict(cudnn_benchmark=True)  # 
 backend_args = None
 
 # ==== Common ====
@@ -29,9 +29,9 @@ model = dict(
         type='Det3DDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
         std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True    # 与 ImageNet 统计一致
+        bgr_to_rgb=True    # 
     ),
-    # --- Image backbone / neck (保持一致，仅做省显存) ---
+    # --- Image backbone / neck 
     img_backbone=dict(
         type='mmdet.SwinTransformer',
         embed_dims=96,
@@ -42,10 +42,10 @@ model = dict(
         qkv_bias=True,
         drop_rate=0.0,
         attn_drop_rate=0.0,
-        drop_path_rate=0.3,   # 小幅正则
+        drop_path_rate=0.3,   # 
         patch_norm=True,
         out_indices=[1, 2, 3],
-        with_cp=True,         # 梯度检查点省显存
+        with_cp=True,         # 
         convert_weights=True,
         init_cfg=dict(
             type='Pretrained',
@@ -63,25 +63,23 @@ model = dict(
         upsample_cfg=dict(mode='bilinear', align_corners=False)
     ),
 
-    # --- 替换 LSS -> CrossAttnLSSTransform（输出与接口保持一致） ---
     view_transform=dict(
         type='CrossAttnLSSTransform',
         in_channels=256,
-        out_channels=64,           # 从80降到64：更省显存/带宽
+        out_channels=64,           # 
         image_size=[256, 704],
         feature_size=[32, 88],
         xbound=[-54.0, 54.0, 0.3],
         ybound=[-54.0, 54.0, 0.3],
-        zbound=[-5.0, 5.0, 10.0],  # 用于高度锚点范围
-        dbound=[1.0, 60.0, 0.5],   # 仅作为K推导参考
-        downsample=2,              # 与 LiDAR BEV 对齐，输出 180x180
-        num_z=2,                   # K：越小越省显存（2~3常用）
+        zbound=[-5.0, 5.0, 10.0],  # 
+        dbound=[1.0, 60.0, 0.5],   # 
+        downsample=2,              # 180x180
+        num_z=2,                   # 
         use_cam_embed=True,
-        attn_chunk=2048,           # 显存/速度权衡；显存足可 4096/8192
-        debug=False                # 关闭内部调试打印
+        attn_chunk=2048,           # 
+        debug=False                # 
     ),
 
-    # --- 融合层：同步更新输入通道（从80改为64） ---
     fusion_layer=dict(
         type='ConvFuser', in_channels=[64, 256], out_channels=256
     )
@@ -90,11 +88,11 @@ model = dict(
 # ==== Pipelines ====
 train_pipeline = [
     dict(type='BEVLoadMultiViewImageFromFiles', to_float32=True, color_type='color', backend_args=backend_args),
-    # 不加入 PhotoMetricDistortionMultiViewImage（避免注册缺失）；如后续有 MultiViewWrapper 再开启
+    
     dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=5, use_dim=5, backend_args=backend_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=7,   # 9 -> 7：I/O 与内存更友好
+        sweeps_num=7,   # 9 -> 7：I/O 
         load_dim=5, use_dim=5, pad_empty_sweeps=True, remove_close=True, backend_args=backend_args
     ),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
@@ -194,8 +192,8 @@ test_cfg = dict()
 # ==== Optimizer / AMP(BF16) ====
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    dtype='bfloat16',           # H100 推荐
-    accumulative_counts=2,      # 梯度累积：削峰显存
+    dtype='bfloat16',           # 
+    accumulative_counts=2,      # 
     optimizer=dict(
         type='AdamW',
         lr=0.0002,
@@ -203,7 +201,7 @@ optim_wrapper = dict(
         weight_decay=0.01,
         fused=True              # fused AdamW（PyTorch 2.x）
     ),
-    # 对 Swin 常见项不做 wd
+
     paramwise_cfg=dict(custom_keys={
         'absolute_pos_embed': dict(decay_mult=0.0),
         'relative_position_bias_table': dict(decay_mult=0.0),
@@ -220,10 +218,8 @@ default_hooks = dict(
 )
 
 # ==== Hooks ====
-# 移除 base 中可能的自定义 hooks，再挂载冻结+EMA+空缓存
 del _base_.custom_hooks
 custom_hooks = [
-    # 只训练 CrossAttnLSSTransform，其它模块（含归一化层）全部冻结
     dict(
         type='FreezeExceptHook',
         allowlist=('view_transform',),
@@ -232,6 +228,5 @@ custom_hooks = [
         use_regex=False
     ),
     dict(type='EMAHook', momentum=0.0002, update_buffers=True),
-    # 训练更干净的显存曲线（释放 PyTorch cache 给驱动）
     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True)
 ]

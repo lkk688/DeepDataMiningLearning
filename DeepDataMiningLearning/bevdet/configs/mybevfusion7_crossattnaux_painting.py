@@ -65,7 +65,7 @@ model = dict(
         drop_path_rate=0.3,
         patch_norm=True,
         out_indices=[1, 2, 3],
-        with_cp=True,  # 省显存
+        with_cp=True,  # save memory by checkpointing
         convert_weights=True,
         init_cfg=dict(
             type='Pretrained',
@@ -128,7 +128,7 @@ if voxel_painting_on:
         type='PaintedWrapperVFE',
         base_vfe=dict(             # your original VFE config goes here unchanged
             type='HardSimpleVFE',  # or 'DynamicVFE' depending on your baseline
-            num_features=5,      # ← 用 num_features 取代 in_channels in_channels=5,
+            num_features=5,      # ← 
             #out_channels=64, #feat_channels=[64],
             #with_distance=False
         ),
@@ -147,8 +147,8 @@ if voxel_painting_on:
 else:
     pts_voxel_encoder = dict(
         type='HardSimpleVFE',      # original VFE untouched
-        num_features=5,   # 输入点维度
-        #out_channels=64,  # 输出与 SECOND 对齐
+        num_features=5,   # 
+        #out_channels=64,  # 
         #with_distance=False
     )
 
@@ -247,7 +247,7 @@ optim_wrapper = dict(
         'norm': dict(decay_mult=0.0),
         # fully freeze image backbone by default (set to 0.1 if you want tiny finetune)
         #'img_backbone': dict(lr_mult=0.0),
-        # Swin 完全不训练
+        # Swin no training
         'img_backbone': dict(lr_mult=0.0, decay_mult=0.0),
     }),
     clip_grad=dict(max_norm=20, norm_type=2)
@@ -269,7 +269,7 @@ custom_hooks = [
             'view_transform', 'img_aux_head', 'fusion_layer', 'bbox_head',
             # LiDAR-side small adaptation
             'pts_voxel_encoder',
-            # 如果你想微调一点 LiDAR 中间层，可只放开第一层：
+            # only train one layer：
             'pts_middle_encoder.encoder_layers.0'
         ),
         freeze_norm=True, verbose=True, use_regex=False

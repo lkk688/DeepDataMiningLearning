@@ -1,4 +1,9 @@
 # projects/bevdet/bevfusion_with_aux.py
+#
+# Auxiliary-supervised variant of BEVFusion. Adds an image-BEV head that
+# predicts a class-agnostic center heatmap and combines it with the main
+# detection loss. This file also includes robust helpers for extracting
+# multi-view image tensors and stacking calibration/augmentation matrices.
 from copy import deepcopy
 from typing import Dict, List, Tuple, Optional
 import math
@@ -7,12 +12,51 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import inspect
-from mmdet3d.registry import MODELS
-from projects.bevdet.bevfusion.bevfusion import BEVFusion  # 复用你现有的 BEVFusion
-#from projects.bevdet.painting_context import set_painting_context, clear_painting_context
+"""This module provides an auxiliary-supervised variant of BEVFusion.
+
+Key additions:
+- An image-BEV auxiliary head that predicts a class-agnostic center heatmap.
+- Robust utilities to extract multi-view image tensors and stack calibration
+  and augmentation matrices from metainfo.
+"""
+
+# Import the mmdet3d registry with a safe fallback so editors and static
+# analysis can resolve references even outside the mmdet3d runtime.
+try:
+    from mmdet3d.registry import MODELS
+except Exception:
+    class _DummyRegistry:
+        def register_module(self, *args, **kwargs):
+            def decorator(cls):
+                return cls
+            return decorator
+
+        def build(self, *args, **kwargs):
+            return None
+
+    MODELS = _DummyRegistry()
+
+# Import the base BEVFusion implementation. Prefer the projects path used by
+# mmdet3d custom imports; fall back to local package import. As a last resort,
+# define a minimal stub to keep linters quiet in non-runtime contexts.
+try:
+    from projects.bevdet.bevfusion.bevfusion import BEVFusion
+except Exception:
+    try:
+        from bevdet.bevfusion.bevfusion import BEVFusion
+    except Exception:
+        class BEVFusion(nn.Module):
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+# from projects.bevdet.painting_context import set_painting_context, clear_painting_context
+# (Optional painting-context utilities; kept disabled to avoid side effects.)
 
 def _draw_gaussian(heatmap: torch.Tensor, center: Tuple[int, int], radius: int) -> None:
-    """In-place draw a 2D Gaussian on heatmap (HxW)."""
+    """In-place draw a 2D Gaussian on a heatmap of shape (H, W).
+
+    The Gaussian is centered at `center` with a radius controlling its spread.
+    Values are blended with `torch.maximum` to avoid overwriting stronger peaks.
+    """
     y, x = int(center[0]), int(center[1])
     H, W = heatmap.shape[-2], heatmap.shape[-1]
     diameter = 2 * radius + 1
@@ -37,17 +81,23 @@ def _draw_gaussian(heatmap: torch.Tensor, center: Tuple[int, int], radius: int) 
         )
 
 def _boxes_center_xy(data_sample) -> Optional[torch.Tensor]:
-    """Try to extract LiDAR-frame centers (x,y) from a Det3DDataSample."""
-    # mmdet3d 不同版本字段命名略有差异，这里做兼容
+    """Extract LiDAR-frame centers (x, y) from a Det3DDataSample if present.
+
+    Different mmdet3d versions use slightly different field names. This helper
+    handles common variants so the auxiliary target generation remains robust.
+    Returns a tensor of shape [N, 2] or None if centers are unavailable.
+    """
+    # Different mmdet3d versions use slightly different field names; handle
+    # multiple variants to stay compatible across releases.
     b = None
     if hasattr(data_sample, 'gt_instances_3d') and data_sample.gt_instances_3d is not None:
         gi = data_sample.gt_instances_3d
         if hasattr(gi, 'bboxes_3d') and gi.bboxes_3d is not None:
             b = gi.bboxes_3d
             if hasattr(b, 'tensor'):
-                t = b.tensor  # [N, 7] 或 [N, …], 前两位 x,y
+                t = b.tensor  # [N, 7] or similar; first two entries are x, y
             else:
-                t = torch.as_tensor(b, device='cpu')  # 兜底
+                t = torch.as_tensor(b, device='cpu')  # fallback
             return t[..., :2]
     if hasattr(data_sample, 'gt_bboxes_3d') and data_sample.gt_bboxes_3d is not None:
         b = data_sample.gt_bboxes_3d
@@ -61,8 +111,11 @@ def _boxes_center_xy(data_sample) -> Optional[torch.Tensor]:
 # ---------- helpers: stack meta matrices safely & fast ----------
 
 def _stack_lidar2image(meta_list, device):
-    """Prefer 'lidar2img' ([Nc,4,4]); if missing, build from 'lidar2cam' + ('cam2img' or 'ori_cam2img').
-    Returns: [B, Nc, 4, 4] float32 on device.
+    """Stack per-sample lidar-to-image matrices into a batched tensor.
+
+    Prefer the direct `lidar2img` matrices ([Nc, 4, 4]). If missing, construct
+    them via `lidar2cam` and either `cam2img` or `ori_cam2img` by embedding K
+    into a 4x4 projection matrix. Returns [B, Nc, 4, 4] float32 on `device`.
     """
     mats_B = []
     for m in meta_list:
@@ -88,8 +141,12 @@ def _stack_lidar2image(meta_list, device):
     return torch.stack(mats_B, dim=0)  # [B, Nc, 4, 4]
 
 def _as_tensor_mat_list(mats, device, expect_shape_last=None):
-    """Convert a list/ndarray of Nc matrices to a tensor [Nc, a, b] on device (float32).
-    Use np.asarray first to avoid the slow path warning in torch.as_tensor(list-of-ndarray)."""
+    """Convert a list/ndarray of Nc matrices to a tensor [Nc, a, b].
+
+    Uses `np.asarray` first to avoid PyTorch's slow path when converting a
+    list of ndarrays. Optionally pads/crops between 3x3 and 4x4 to match
+    `expect_shape_last`.
+    """
     if isinstance(mats, (list, tuple)):
         arr = np.asarray(mats, dtype=np.float32)       # fast path, no PyTorch warning
         t = torch.from_numpy(arr).to(device=device)    # [Nc, a, b], float32
@@ -110,10 +167,11 @@ def _as_tensor_mat_list(mats, device, expect_shape_last=None):
     return t
 
 def _stack_meta_mats(meta_list, keys, device, expect_shape_last=None, default_eye=None):
-    """
-    Stack per-sample, per-view matrices into [B, Nc, a, b].
-    `keys` is a tuple of alternatives (e.g., ('cam2img','ori_cam2img')).
-    If none present and default_eye is given, build identity per view.
+    """Stack per-sample, per-view matrices into [B, Nc, a, b].
+
+    - `keys`: tuple of acceptable dictionary keys (e.g. ('cam2img','ori_cam2img')).
+    - If none of the keys are found and `default_eye` is provided, builds an
+      identity matrix per view using the inferred number of cameras.
     """
     mats_B = []
     for m in meta_list:
@@ -139,23 +197,30 @@ def _stack_meta_mats(meta_list, keys, device, expect_shape_last=None, default_ey
     return torch.stack(mats_B, dim=0)  # [B, Nc, a, b]
 
 def _stack_cam2lidar(meta_list, device):
-    """Prefer 'cam2lidar'; else invert 'lidar2cam'. Return [B, Nc, 4, 4] on device."""
+    """Stack camera-to-lidar matrices, inverting lidar-to-camera when needed.
+
+    Prefers `cam2lidar` if available; otherwise computes its inverse from
+    `lidar2cam`. Returns [B, Nc, 4, 4] float32 on `device`.
+    """
     mats_B = []
     for m in meta_list:
         if 'cam2lidar' in m:
             mats_B.append(_as_tensor_mat_list(m['cam2lidar'], device, expect_shape_last=(4, 4)))
         elif 'lidar2cam' in m:
             L2C = _as_tensor_mat_list(m['lidar2cam'], device, expect_shape_last=(4, 4))
-            C2L = torch.linalg.inv(L2C)  # [Nc,4,4]
+            # Use torch.inverse for broader compatibility across environments.
+            C2L = torch.inverse(L2C)  # [Nc,4,4]
             mats_B.append(C2L)
         else:
             raise KeyError("Need 'cam2lidar' or 'lidar2cam' in metainfo.")
     return torch.stack(mats_B, dim=0)  # [B, Nc, 4, 4]
 
 def _get_imgs_tensor(inputs):
-    """Return a 5D image tensor [B, Nc, 3, H, W] from various possible layouts.
-    Tries keys: 'img', 'imgs', and nested 'inputs' dict. Stacks list/tuple if needed.
-    Raises a clear error if not found or wrong rank.
+    """Return a 5D image tensor [B, Nc, 3, H, W] from common input layouts.
+
+    Tries keys 'img' and 'imgs' at the top level, then within a nested 'inputs'
+    dict. If a list/tuple of tensors is found, stacks along the batch dim.
+    Raises informative errors if not found or the rank is incorrect.
     """
     cand = None
     # direct keys
@@ -201,12 +266,12 @@ def _get_imgs_tensor(inputs):
     return cand
 
 def _call_extract_img_feat(fn, imgs, points, cam_intr, cam2lid, img_aug, lidar_aug, img_metas):
-    """
-    Robustly call `extract_img_feat` across different upstream signatures:
-    Try two common orders:
+    """Call `extract_img_feat` robustly across known upstream signatures.
+
+    Tries two common orders:
       A) (img, points, cam_intr, cam2lid, img_aug, lidar_aug, img_metas)
       B) (img, points, cam_intr, cam2lid, img_metas, img_aug, lidar_aug)
-    Fallback: (img, points, img_metas) for older minimal signatures.
+    Falls back to (img, points, img_metas) for older minimal signatures.
     """
     # A) aug mats before metas
     try:
@@ -221,7 +286,7 @@ def _call_extract_img_feat(fn, imgs, points, cam_intr, cam2lid, img_aug, lidar_a
                 return fn(imgs, deepcopy(points), img_metas)
             except TypeError:
                 print(f"[extract_img_feat] signature: {inspect.signature(fn)}")
-                # 把最先抛出的错误冒泡，便于定位
+                # Bubble up the first error to aid diagnosis.
                 raise eA
             
 @MODELS.register_module()
@@ -243,6 +308,9 @@ class BEVFusionWithAux(BEVFusion):
         super().__init__(**kwargs)
         self.aux_on = aux_cfg is not None
         if self.aux_on:
+            # The auxiliary head operates on the image BEV produced by the
+            # view transformer. We keep it lightweight: a small conv tower
+            # ending in a single-channel heatmap.
             oc = getattr(self.view_transform, 'out_channels', 64)  # default
             self.img_aux_head = nn.Sequential(
                 nn.Conv2d(oc, 64, kernel_size=3, padding=1),
@@ -250,18 +318,23 @@ class BEVFusionWithAux(BEVFusion):
                 nn.Conv2d(64, 1, kernel_size=1)
             )
             self.aux_weight: float = float(aux_cfg.get('loss_weight', 0.2))
-            # gaussian半径（以 BEV cell 为单位）；也可根据 box 尺寸自适应，这里提供固定半径的稳健默认
+            # Gaussian radius measured in BEV cells. This could be made
+            # adaptive to box size; we provide a robust fixed default here.
             self.aux_radius_cells: int = int(aux_cfg.get('radius_cells', 2))
             self.aux_loss_fn = nn.BCEWithLogitsLoss(reduction='mean')
 
-            # 记录 BEV 网格边界用于 (x,y)->(iy,ix) 映射
+            # Cache BEV grid bounds used to map LiDAR (x,y) -> grid (iy, ix)
             self._xbound = tuple(getattr(self.view_transform, 'xbound'))
             self._ybound = tuple(getattr(self.view_transform, 'ybound'))
             self._downsample = int(getattr(self.view_transform, 'downsample', 1))
 
     @torch.no_grad()
     def _build_aux_target(self, data_samples: List, H: int, W: int, device) -> torch.Tensor:
-        """Build a class-agnostic BEV center heatmap target. Shape [B,1,H,W]."""
+        """Build a class-agnostic BEV center heatmap target. Shape [B, 1, H, W].
+
+        Converts ground-truth box centers from LiDAR coordinates to BEV grid
+        indices using the `xbound`/`ybound` and the effective resolution.
+        """
         xmin, xmax, dx = self._xbound
         ymin, ymax, dy = self._ybound
         dx_eff = dx * self._downsample
@@ -276,10 +349,10 @@ class BEVFusionWithAux(BEVFusion):
             if centers_xy.device != device:
                 centers_xy = centers_xy.to(device)
 
-            # 映射到BEV网格索引（iy, ix）
+            # Map to BEV grid indices (iy, ix)
             ix = torch.floor((centers_xy[:, 0] - xmin) / dx_eff).long()
             iy = torch.floor((centers_xy[:, 1] - ymin) / dy_eff).long()
-            # 过滤越界
+            # Filter out-of-bounds indices
             valid = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
             ix = ix[valid].tolist()
             iy = iy[valid].tolist()
@@ -290,12 +363,11 @@ class BEVFusionWithAux(BEVFusion):
         return target
 
     def loss(self, inputs: Dict, data_samples: List, **kwargs) -> Dict:
-        """Reuse upstream BEVFusion.loss and add an auxiliary loss on image BEV.
+        """Compute the standard BEVFusion loss plus an auxiliary image-BEV loss.
 
-        We register a forward hook on `self.view_transform` to capture the image
-        BEV feature when BEVFusion runs its normal pipeline internally. This
-        avoids calling `extract_img_feat` / `extract_pts_feat` ourselves and thus
-        side-steps signature mismatches across branches.
+        A forward hook is registered on `self.view_transform` to capture its
+        output (the image BEV feature). This avoids re-calling the upstream
+        feature extractors and keeps compatibility across versions.
         """
         # 1) Hook to capture image BEV (output of view_transform)
         captured = {}
@@ -312,9 +384,9 @@ class BEVFusionWithAux(BEVFusion):
         finally:
             handle.remove()
 
-        # 3) Add AUX loss on the captured image BEV
+        # 3) Add auxiliary heatmap loss on the captured image BEV
         if self.aux_on:
-            img_bev = captured.get('img_bev', None) #[4, 64, 180, 180]
+            img_bev = captured.get('img_bev', None)  # e.g., [B, 64, 180, 180]
             if img_bev is None:
                 raise RuntimeError(
                     'AUX: view_transform output was not captured. '
@@ -331,31 +403,27 @@ class BEVFusionWithAux(BEVFusion):
 
         return losses
     
-    # ---- replace your BEVFusionWithAux.loss(...) with this version ----
+    # ---- Legacy variant kept for reference/testing with explicit calls ----
     def loss_old(self, inputs: Dict, data_samples: List, **kwargs) -> Dict:
-        """Same as BEVFusion.loss, plus an auxiliary image-BEV heatmap loss."""
+        """Legacy variant mirroring BEVFusion.loss with explicit calls.
+
+        Kept for reference and testing; computes the auxiliary heatmap loss
+        using explicitly extracted image and point features.
+        """
         # 0) Prepare common pieces
         batch_input_metas = [item.metainfo for item in data_samples]
-        #imgs   = inputs.get('img', None)
-        # 0) Robustly get image tensor [B, Nc, 3, H, W]
-        imgs = _get_imgs_tensor(inputs) #imgs key
+        # Robustly get image tensor [B, Nc, 3, H, W]
+        imgs = _get_imgs_tensor(inputs)  # image tensor extracted from inputs
         points = inputs.get('points', None)
 
-        # # device for meta tensors
-        # device = None
-        # if imgs is not None and isinstance(imgs, torch.Tensor):
-        #     device = imgs.device
-        # elif isinstance(points, (list, tuple)) and len(points) > 0 and isinstance(points[0], torch.Tensor):
-        #     device = points[0].device
-        # else:
-        #     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        # device 推断：优先用图像张量的 device
+        # Device inference: prefer the device of the image tensor; otherwise
+        # fall back to points' device or CUDA if available.
         device = imgs.device if isinstance(imgs, torch.Tensor) else (
             points[0].device if isinstance(points, (list, tuple)) and len(points) > 0 and isinstance(points[0], torch.Tensor)
             else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         )
 
-        # device 的推断沿用你已有代码
+        # Stack per-view matrices with shape checks and safe padding/cropping.
         cam_intr   = _stack_meta_mats(batch_input_metas, ('cam2img','ori_cam2img'), device, expect_shape_last=(3, 3))
         cam2lid    = _stack_cam2lidar(batch_input_metas, device)                 # [B,Nc,4,4]
         img_aug    = _stack_meta_mats(batch_input_metas, ('img_aug_matrix',), device, expect_shape_last=(3, 3), default_eye=3)
@@ -369,8 +437,10 @@ class BEVFusionWithAux(BEVFusion):
         assert lidar_aug.shape[-2:] == (4,4)
         assert lidar2imag.shape[-2:] == (4,4)
 
-        # ⚠️ 按你打印出来的真实签名严丝合缝地传 8 个“位置参数”：
-        # (x, points, lidar2image, camera_intrinsics, camera2lidar, img_aug_matrix, lidar_aug_matrix, img_metas)
+        # Pass exactly eight positional arguments to match the printed
+        # `extract_img_feat` signature from your environment:
+        # (img, points, lidar2image, camera_intrinsics, camera2lidar,
+        #  img_aug_matrix, lidar_aug_matrix, img_metas)
         img_bev = self.extract_img_feat(
             imgs,
             deepcopy(points),
@@ -379,13 +449,15 @@ class BEVFusionWithAux(BEVFusion):
             cam2lid,      # [B,Nc,4,4]
             img_aug,      # [B,Nc,3,3]
             lidar_aug,    # [B,Nc,4,4]
-            batch_input_metas   # ← 第8个：img_metas
-        )#bev feature: [4, 64, 180, 180]
+            batch_input_metas   # 8th: image metas per batch
+        )  # example BEV feature: [B, 64, Hy, Hx]
 
-        # 3) LiDAR branch BEV (original API usually takes just points + metas)
-        #pts_bev = self.extract_pts_feat(points, batch_input_metas)  # -> [B, C_pts, Hy, Hx]
+        # 3) LiDAR branch BEV (original API may take just points, or points+metas)
+        # pts_bev = self.extract_pts_feat(points, batch_input_metas)  # -> [B, C_pts, Hy, Hx]
         try:
-            pts_bev = self.extract_pts_feat(points) #points is batch len list, each one is [Ni,5]points, 5 means: xyz,intensity,time_lag
+            # `points` is a list of length B; each element has shape [Ni, 5]
+            # with columns: x, y, z, intensity, time_lag.
+            pts_bev = self.extract_pts_feat(points)
         except TypeError:
             pts_bev = self.extract_pts_feat(points, batch_input_metas)
         

@@ -7,9 +7,9 @@ _base_ = [
 default_scope = 'mmdet3d'
 custom_imports = dict(
     imports=[
-        'projects.bevdet.bevfusion',                 # 原 BEVFusion 注册
-        'projects.bevdet.cross_attn_lss',     # 你的 CrossAttnLSSTransform
-        'projects.bevdet.bevfusion_with_aux', # 带 AUX 的子类（内部用 hook 抓 img BEV）
+        'projects.bevdet.bevfusion',                 # 
+        'projects.bevdet.cross_attn_lss',     # 
+        'projects.bevdet.bevfusion_with_aux', # 
         'projects.bevdet.freeze_utils'               # FreezeExceptHook
     ],
     allow_failed_imports=False
@@ -25,7 +25,7 @@ input_modality = dict(use_lidar=True, use_camera=True)
 
 # ==== Model ====
 model = dict(
-    type='BEVFusionWithAux',   # 使用带 AUX 的子类
+    type='BEVFusionWithAux',   # 
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
@@ -45,7 +45,7 @@ model = dict(
         drop_path_rate=0.3,
         patch_norm=True,
         out_indices=[1, 2, 3],
-        with_cp=True,  # 省显存
+        with_cp=True,  
         convert_weights=True,
         init_cfg=dict(
             type='Pretrained',
@@ -67,28 +67,26 @@ model = dict(
     view_transform=dict(
         type='CrossAttnLSSTransform',
         in_channels=256,
-        out_channels=64,            # 从80降到64：更省显存/带宽
+        out_channels=64,            
         image_size=[256, 704],
         feature_size=[32, 88],
         xbound=[-54.0, 54.0, 0.3],
         ybound=[-54.0, 54.0, 0.3],
         zbound=[-5.0, 5.0, 10.0],
         dbound=[1.0, 60.0, 0.5],
-        downsample=2,               # 输出 180x180
+        downsample=2,               # 180x180
         num_z=2,
         use_cam_embed=True,
-        attn_chunk=4096,            # 提速（显存允许可再升到 8192）
+        attn_chunk=4096,            # 
         debug=False
     ),
 
-    # --- 融合层：同步更新输入通道 ---
     fusion_layer=dict(
         type='ConvFuser',
         in_channels=[64, 256],
         out_channels=256
     ),
 
-    # --- AUX: 图像 BEV 辅助监督（权重略小，避免主损失过大） ---
     aux_cfg=dict(
         loss_weight=0.1,
         radius_cells=2
@@ -101,7 +99,7 @@ train_pipeline = [
     dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=5, use_dim=5, backend_args=backend_args),
     dict(
         type='LoadPointsFromMultiSweeps',
-        sweeps_num=5,  # 7 -> 5：I/O 与 voxel 更快
+        sweeps_num=5,  # 7 -> 5
         load_dim=5, use_dim=5, pad_empty_sweeps=True, remove_close=True, backend_args=backend_args
     ),
     dict(type='LoadAnnotations3D', with_bbox_3d=True, with_label_3d=True, with_attr_label=False),
@@ -171,7 +169,7 @@ test_pipeline = [
 
 # ==== Dataloaders ====
 train_dataloader = dict(
-    batch_size=8,                 # ↑ batch，减少每 epoch 的 iter 数
+    batch_size=8,                 # 
     num_workers=16,
     persistent_workers=True,
     pin_memory=True,
@@ -204,8 +202,8 @@ test_cfg = dict()
 # ==== Optimizer / AMP(BF16) ====
 optim_wrapper = dict(
     type='AmpOptimWrapper',
-    dtype='bfloat16',          # H100 友好
-    accumulative_counts=1,     # 增大 batch 后不再累积
+    dtype='bfloat16',          # 
+    accumulative_counts=1,     # 
     optimizer=dict(
         type='AdamW',
         lr=0.0002,
@@ -213,18 +211,17 @@ optim_wrapper = dict(
         weight_decay=0.01,
         fused=True
     ),
-    # 解冻 fusion_layer + bbox_head，但设较小 LR；view_transform 适中；AUX 头正常 LR
+    
     paramwise_cfg=dict(custom_keys={
         'view_transform': dict(lr_mult=0.5),
         'img_aux_head':   dict(lr_mult=1.0),
         'fusion_layer':   dict(lr_mult=0.5),
         'bbox_head':      dict(lr_mult=0.5),
-        # 常见不权重衰减参数
         'absolute_pos_embed': dict(decay_mult=0.0),
         'relative_position_bias_table': dict(decay_mult=0.0),
         'norm': dict(decay_mult=0.0),
     }),
-    clip_grad=dict(max_norm=20, norm_type=2)  # 收紧，抑制 grad_norm 过大
+    clip_grad=dict(max_norm=20, norm_type=2)  
 )
 
 auto_scale_lr = dict(enable=False, base_batch_size=32)
@@ -235,10 +232,9 @@ default_hooks = dict(
 )
 
 # ==== Hooks ====
-# 移除 base 的自定义 hook，挂冻结 + EMA + 清缓存
 del _base_.custom_hooks
 custom_hooks = [
-    # 只训练 CrossAttn + AUX 头 + 融合/检测头（其余全部冻结，含 BN/LN）
+    # only train CrossAttn + AUX 
     dict(
         type='FreezeExceptHook',
         allowlist=('view_transform', 'img_aux_head', 'fusion_layer', 'bbox_head'),
