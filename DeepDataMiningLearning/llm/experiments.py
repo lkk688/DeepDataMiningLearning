@@ -294,9 +294,9 @@ def run_tokenizer_comparison_experiment(
     
     # Define tokenizers to test
     tokenizer_configs = {
-        "hftokenizer": {"tokenizer": "hf:Qwen/Qwen2-1.5B", "color": "red"},
         "sp-unigram": {"tokenizer": "custom:sp-unigram", "color": "orange"},
         "tiktoken-bpe": {"tokenizer": "custom:tiktoken-bpe", "color": "purple"},
+        "hftokenizer": {"tokenizer": "hf:Qwen/Qwen2-1.5B", "color": "red"},
         "char": {"tokenizer": "char", "color": "blue"},
         "word": {"tokenizer": "word", "color": "green"}, 
     }
