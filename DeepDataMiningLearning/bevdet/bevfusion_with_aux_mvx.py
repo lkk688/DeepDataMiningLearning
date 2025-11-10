@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import numpy as np
 import inspect
 from mmdet3d.registry import MODELS
-from projects.bevdet.bevfusion.bevfusion import BEVFusion  # 复用你现有的 BEVFusion
+from projects.bevdet.bevfusion.bevfusion import BEVFusion  
 from projects.bevdet.painting_context import set_painting_context, clear_painting_context
 
 def _draw_gaussian(heatmap: torch.Tensor, center: Tuple[int, int], radius: int) -> None:
@@ -38,16 +38,15 @@ def _draw_gaussian(heatmap: torch.Tensor, center: Tuple[int, int], radius: int) 
 
 def _boxes_center_xy(data_sample) -> Optional[torch.Tensor]:
     """Try to extract LiDAR-frame centers (x,y) from a Det3DDataSample."""
-    # mmdet3d 不同版本字段命名略有差异，这里做兼容
     b = None
     if hasattr(data_sample, 'gt_instances_3d') and data_sample.gt_instances_3d is not None:
         gi = data_sample.gt_instances_3d
         if hasattr(gi, 'bboxes_3d') and gi.bboxes_3d is not None:
             b = gi.bboxes_3d
             if hasattr(b, 'tensor'):
-                t = b.tensor  # [N, 7] 或 [N, …], 前两位 x,y
+                t = b.tensor  # [N, 7] [N, …], x,y
             else:
-                t = torch.as_tensor(b, device='cpu')  # 兜底
+                t = torch.as_tensor(b, device='cpu')  
             return t[..., :2]
     if hasattr(data_sample, 'gt_bboxes_3d') and data_sample.gt_bboxes_3d is not None:
         b = data_sample.gt_bboxes_3d
@@ -221,7 +220,7 @@ def _call_extract_img_feat(fn, imgs, points, cam_intr, cam2lid, img_aug, lidar_a
                 return fn(imgs, deepcopy(points), img_metas)
             except TypeError:
                 print(f"[extract_img_feat] signature: {inspect.signature(fn)}")
-                # 把最先抛出的错误冒泡，便于定位
+                
                 raise eA
             
 @MODELS.register_module()
@@ -254,11 +253,11 @@ class BEVFusionWithAux(BEVFusion):
                 nn.Conv2d(64, 1, kernel_size=1)
             )
             self.aux_weight: float = float(aux_cfg.get('loss_weight', 0.2))
-            # gaussian半径（以 BEV cell 为单位）；也可根据 box 尺寸自适应，这里提供固定半径的稳健默认
+            # gaussian radius (in BEV cell units); also adaptive per box size, here use fixed default
             self.aux_radius_cells: int = int(aux_cfg.get('radius_cells', 2))
             self.aux_loss_fn = nn.BCEWithLogitsLoss(reduction='mean')
 
-            # 记录 BEV 网格边界用于 (x,y)->(iy,ix) 映射
+            # (x,y)->(iy,ix) 
             self._xbound = tuple(getattr(self.view_transform, 'xbound'))
             self._ybound = tuple(getattr(self.view_transform, 'ybound'))
             self._downsample = int(getattr(self.view_transform, 'downsample', 1))
@@ -280,10 +279,10 @@ class BEVFusionWithAux(BEVFusion):
             if centers_xy.device != device:
                 centers_xy = centers_xy.to(device)
 
-            # 映射到BEV网格索引（iy, ix）
+            # map to BEV grid indices (iy, ix)
             ix = torch.floor((centers_xy[:, 0] - xmin) / dx_eff).long()
             iy = torch.floor((centers_xy[:, 1] - ymin) / dy_eff).long()
-            # 过滤越界
+            # filter out-of-bounds
             valid = (ix >= 0) & (ix < W) & (iy >= 0) & (iy < H)
             ix = ix[valid].tolist()
             iy = iy[valid].tolist()
@@ -371,13 +370,12 @@ class BEVFusionWithAux(BEVFusion):
         #     device = points[0].device
         # else:
         #     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        # device 推断：优先用图像张量的 device
+        
         device = imgs.device if isinstance(imgs, torch.Tensor) else (
             points[0].device if isinstance(points, (list, tuple)) and len(points) > 0 and isinstance(points[0], torch.Tensor)
             else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         )
 
-        # device 的推断沿用你已有代码
         cam_intr   = _stack_meta_mats(batch_input_metas, ('cam2img','ori_cam2img'), device, expect_shape_last=(3, 3))
         cam2lid    = _stack_cam2lidar(batch_input_metas, device)                 # [B,Nc,4,4]
         img_aug    = _stack_meta_mats(batch_input_metas, ('img_aug_matrix',), device, expect_shape_last=(3, 3), default_eye=3)
@@ -391,7 +389,6 @@ class BEVFusionWithAux(BEVFusion):
         assert lidar_aug.shape[-2:] == (4,4)
         assert lidar2imag.shape[-2:] == (4,4)
 
-        # ⚠️ 按你打印出来的真实签名严丝合缝地传 8 个“位置参数”：
         # (x, points, lidar2image, camera_intrinsics, camera2lidar, img_aug_matrix, lidar_aug_matrix, img_metas)
         img_bev = self.extract_img_feat(
             imgs,
@@ -401,7 +398,7 @@ class BEVFusionWithAux(BEVFusion):
             cam2lid,      # [B,Nc,4,4]
             img_aug,      # [B,Nc,3,3]
             lidar_aug,    # [B,Nc,4,4]
-            batch_input_metas   # ← 第8个：img_metas
+            batch_input_metas   # ←：img_metas
         )#bev feature: [4, 64, 180, 180]
 
         # 3) LiDAR branch BEV (original API usually takes just points + metas)
