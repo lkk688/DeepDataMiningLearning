@@ -246,6 +246,6 @@ custom_hooks = [
         verbose=True,
         use_regex=False
     ),
-    dict(type='EMAHook', momentum=0.0002, update_buffers=True),
+    #dict(type='EMAHook', momentum=0.0002, update_buffers=True),
     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True)
 ]
