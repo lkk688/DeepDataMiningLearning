@@ -169,7 +169,7 @@ test_pipeline = [
 
 # ==== Dataloaders ====
 train_dataloader = dict(
-    batch_size=8,                 # 
+    batch_size=32,                 # 
     num_workers=16,
     persistent_workers=True,
     pin_memory=True,
@@ -213,13 +213,16 @@ optim_wrapper = dict(
     ),
     
     paramwise_cfg=dict(custom_keys={
-        'view_transform': dict(lr_mult=0.5),
+        'view_transform': dict(lr_mult=2.0),
         'img_aux_head':   dict(lr_mult=1.0),
-        'fusion_layer':   dict(lr_mult=0.5),
-        'bbox_head':      dict(lr_mult=0.5),
+        'fusion_layer':   dict(lr_mult=1.5),
+        'bbox_head':      dict(lr_mult=1.5),
+        'pts_voxel_encoder': dict(lr_mult=1.0),
+        'pts_middle_encoder': dict(lr_mult=1.0),
+        'img_backbone': dict(lr_mult=0.0, decay_mult=0.0),
         'absolute_pos_embed': dict(decay_mult=0.0),
         'relative_position_bias_table': dict(decay_mult=0.0),
-        'norm': dict(decay_mult=0.0),
+        'norm': dict(decay_mult=1.0),
     }),
     clip_grad=dict(max_norm=20, norm_type=2)  
 )
@@ -237,11 +240,22 @@ custom_hooks = [
     # only train CrossAttn + AUX 
     dict(
         type='FreezeExceptHook',
-        allowlist=('view_transform', 'img_aux_head', 'fusion_layer', 'bbox_head'),
-        freeze_norm=True,
+        allowlist=('view_transform', 'img_aux_head', 'fusion_layer', 'bbox_head',
+                   'pts_voxel_encoder','pts_middle_encoder','pts_backbone','pts_neck'
+                   ),
+        freeze_norm=False,
         verbose=True,
         use_regex=False
     ),
     #dict(type='EMAHook', momentum=0.0002, update_buffers=True),
     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True)
 ]
+
+load_from = '/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth'  # ← EDIT ME
+
+# Make sure we don’t pick up an old run’s last_checkpoint
+auto_resume = False
+resume = False
+
+# (Optional) send outputs to a fresh work_dir to avoid accidental resume
+work_dir = 'work_dirs/mybevfusion6_new'

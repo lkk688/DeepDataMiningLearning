@@ -205,7 +205,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=8, num_workers=16, persistent_workers=True, pin_memory=True, prefetch_factor=4,
+    batch_size=16, num_workers=16, persistent_workers=True, pin_memory=True, prefetch_factor=4,
     dataset=dict(dataset=dict(pipeline=train_pipeline, modality=input_modality))
 )
 val_dataloader = dict(
@@ -237,14 +237,13 @@ optim_wrapper = dict(
         'img_aux_head':   dict(lr_mult=1.0),
         'fusion_layer':   dict(lr_mult=0.7),
         'bbox_head':      dict(lr_mult=0.7),
+        'pts_voxel_encoder': dict(lr_mult=1.0),
+        'pts_middle_encoder': dict(lr_mult=1.0),
         # LiDAR-side small lr to adapt painting (when enabled)
-        'pts_voxel_encoder': dict(lr_mult=0.7),
-        'pts_middle_encoder.encoder_layers.0': dict(lr_mult=0.5),
-
         # typical decay exceptions
         'absolute_pos_embed': dict(decay_mult=0.0),
         'relative_position_bias_table': dict(decay_mult=0.0),
-        'norm': dict(decay_mult=0.0),
+        'norm': dict(decay_mult=1.0),
         # fully freeze image backbone by default (set to 0.1 if you want tiny finetune)
         #'img_backbone': dict(lr_mult=0.0),
         # Swin no training
@@ -268,12 +267,19 @@ custom_hooks = [
         allowlist=(
             'view_transform', 'img_aux_head', 'fusion_layer', 'bbox_head',
             # LiDAR-side small adaptation
-            'pts_voxel_encoder',
-            # only train one layer：
-            'pts_middle_encoder.encoder_layers.0'
+            'pts_voxel_encoder','pts_middle_encoder','pts_backbone','pts_neck'
         ),
-        freeze_norm=True, verbose=True, use_regex=False
+        freeze_norm=False, verbose=True, use_regex=False
     ),
     #dict(type='EMAHook', momentum=0.0002, update_buffers=True),
     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True),
 ]
+
+load_from = '/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth'  # ← EDIT ME
+
+# Make sure we don’t pick up an old run’s last_checkpoint
+auto_resume = False
+resume = False
+
+# (Optional) send outputs to a fresh work_dir to avoid accidental resume
+work_dir = 'work_dirs/mybevfusion7_new'

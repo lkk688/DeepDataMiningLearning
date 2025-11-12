@@ -1,48 +1,105 @@
-# -*- coding: utf-8 -*-
+from __future__ import annotations
 """
-- mmdet3d：从 config 里读取 train/val dataloader.dataset 等并构建，再返回标准 torch DataLoader
-- custom：用户自定义 Dataset（通过模块与类名动态导入）
+Dataset + DataLoader builders for MMDetection3D with robust path handling.
+- Works outside the mmdetection3d repo root.
+- Normalizes data_root, ann_file, data_prefix for common 3D datasets.
+- Avoids version-fragile mmengine build_dataloader; uses torch DataLoader + DATA_SAMPLERS.
+- Provides a smart collate that preserves Det3DDataSample lists.
+- Exposes build_dataloaders(...) and build_evaluator(...) for convenience.
 """
-from typing import Dict, Any, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
+import os
+
 import torch
 from torch.utils.data import DataLoader
-import os
-from copy import deepcopy
+from torch.utils.data._utils.collate import default_collate as torch_default_collate
 
-def _choose_collate_fn(name: Optional[str]):
-    from mmengine.dataset import default_collate, pseudo_collate
-    if not name:
-        return default_collate
-    name = name.lower()
-    if name == "pseudo":
-        return pseudo_collate
-    return default_collate
+from mmengine.config import Config
+from mmengine.registry import init_default_scope
+from mmengine.registry import DATA_SAMPLERS
+from mmengine.evaluator import Evaluator
+
+from mmdet3d.registry import DATASETS, METRICS, MODELS
 
 
-def _to_int(v, default):
+# ------------------------------
+# Registry priming (transforms/pipelines) — comments expanded
+# ------------------------------
+
+def _import_openmmlab_modules() -> None:
+    """Eager-import common OpenMMLab modules so their classes register with
+    the global registries. This prevents errors like:
+    KeyError: 'LoadPointsFromFile' is not in the ...::transform registry.
+    """
     try:
-        return int(v)
+        import mmdet3d  # noqa: F401
+        try:
+            import mmdet3d.datasets.transforms  # noqa: F401
+        except Exception:
+            try:
+                import mmdet3d.datasets.pipelines  # noqa: F401
+            except Exception:
+                pass
+        # Some configs also reference 2D mmdet transforms
+        try:
+            import mmdet.datasets.transforms  # noqa: F401
+        except Exception:
+            try:
+                import mmdet.datasets.pipelines  # noqa: F401
+            except Exception:
+                pass
     except Exception:
-        return default
+        # If mmdet3d itself isn't importable, the subsequent build will fail
+        # with more context. We don't raise here to keep the root cause visible.
+        pass
 
 
-def _try_get_mmdet3d_data_root_from_install() -> str | None:
-    """推断 mmdet3d 安装根下的 data 目录，例如 /path/to/mmdetection3d/data"""
-    try:
-        import mmdet3d
-        pkg_dir = os.path.dirname(mmdet3d.__file__)
-        # 常见结构：<repo>/mmdet3d/__init__.py → ROOT = dirname(pkg_dir)
-        repo_root = os.path.abspath(os.path.join(pkg_dir, os.pardir))
-        data_dir = os.path.join(repo_root, "data")
-        return data_dir if os.path.isdir(data_dir) else None
-    except Exception:
-        return None
+# ------------------------------
+# Path helpers
+# ------------------------------
+
+def _patch_db_sampler_paths(db_sampler: Dict[str, Any], eff_root: str, ds_type: str | None) -> None:
+    """Normalize DBSampler's paths (used by ObjectSample-like transforms).
+
+    - db_sampler.data_root: join under dataset root if relative.
+    - db_sampler.info_path: str | list[str], join safely under dataset root.
+    """
+    if not isinstance(db_sampler, dict) or not eff_root:
+        return
+    # data_root inside sampler
+    dr = db_sampler.get('data_root')
+    if isinstance(dr, str) and dr:
+        db_sampler['data_root'] = _safe_join_under(eff_root, dr, ds_type)
+    # info_path string or list
+    ip = db_sampler.get('info_path')
+    if isinstance(ip, str):
+        db_sampler['info_path'] = _safe_join_under(eff_root, ip, ds_type)
+    elif isinstance(ip, (list, tuple)):
+        db_sampler['info_path'] = [
+            _safe_join_under(eff_root, x, ds_type) if isinstance(x, str) else x
+            for x in ip
+        ]
 
 
-def _guess_dataset_subdir(ds_type: str) -> str | None:
-    """根据数据集类型猜测默认子目录名。可按需扩展。"""
+def _patch_pipeline_paths(pipeline: Any, eff_root: str, ds_type: str | None) -> None:
+    """Traverse a pipeline list and normalize any transform-level paths.
+
+    Currently handles ObjectSample-like transforms that embed a ``db_sampler``
+    with its own data_root/info_path. Safe no-op for unrelated transforms.
+    """
+    if not isinstance(pipeline, (list, tuple)):
+        return
+    for t in pipeline:
+        if not isinstance(t, dict):
+            continue
+        # Common object sampling transforms in mmdet3d
+        ttype = (t.get('type') or '').lower()
+        if 'objectsample' in ttype or 'objectpaste' in ttype:
+            _patch_db_sampler_paths(t.get('db_sampler', {}), eff_root, ds_type)
+
+
+def _guess_dataset_subdir(ds_type: str | None) -> str | None:
     t = (ds_type or "").lower()
-    # 常见关键字匹配
     if "nuscene" in t:
         return "nuscenes"
     if "kitti" in t:
@@ -56,84 +113,54 @@ def _guess_dataset_subdir(ds_type: str) -> str | None:
     if "sunrgbd" in t:
         return "sunrgbd"
     if "argo" in t:
-        # 你的目录结构可能是 data/argo2/ 或 data/argo2/argo2
         return "argo2"
     if "s3dis" in t:
         return "s3dis"
     return None
 
 
-def _patch_dataset_cfg_data_root(ds_cfg: dict, global_root: str | None, mmdet3d_data_root: str | None):
+def _default_mmdet3d_root_for(ds_type: str | None) -> str | None:
+    """Return <mmdet3d_repo>/data/<subdir> if it exists, else <repo>/data, else None."""
+    try:
+        import mmdet3d
+        repo_dir = os.path.dirname(os.path.abspath(mmdet3d.__file__))
+        repo_root = os.path.dirname(repo_dir)
+        data_root = os.path.join(repo_root, "data")
+        if not os.path.isdir(data_root):
+            return None
+        sub = _guess_dataset_subdir(ds_type)
+        if sub and os.path.isdir(os.path.join(data_root, sub)):
+            return os.path.join(data_root, sub)
+        return data_root
+    except Exception:
+        return None
+
+
+def _safe_join_under(base_dir: str, maybe_rel: str, ds_type: str | None) -> str:
+    """Join a possibly-relative path under base_dir without duplicating prefixes.
+    - Strips leading 'data/' if present.
+    - Avoids base_dir/<ds>/<ds>/... when maybe_rel already starts with the ds name.
     """
-    递归修改 dataset cfg 的 data_root 字段：
-    优先使用用户传入的 global_root；否则尝试 mmdet3d 安装下的 data 目录。
-    当子 cfg 没 data_root 或是相对/缺省时才覆盖；已有绝对路径则尊重不改。
-    """
-    if ds_cfg is None or not isinstance(ds_cfg, dict):
-        return
+    if os.path.isabs(maybe_rel):
+        return maybe_rel
 
-    ds_type = ds_cfg.get("type", "")
-    # 处理 RepeatDataset / ConcatDataset
-    if ds_type in ("RepeatDataset", "ConcatDataset"):
-        sub = ds_cfg.get("dataset") if ds_type == "RepeatDataset" else ds_cfg.get("datasets")
-        if isinstance(sub, dict):
-            _patch_dataset_cfg_data_root(sub, global_root, mmdet3d_data_root)
-        elif isinstance(sub, (list, tuple)):
-            for s in sub:
-                _patch_dataset_cfg_data_root(s, global_root, mmdet3d_data_root)
-        return
+    rel = maybe_rel.replace("\\", "/")
+    if rel.startswith("data/"):
+        rel = rel[5:]
 
-    # 普通单一数据集
-    cur_root = ds_cfg.get("data_root", None)
-    # 若已经是绝对路径，直接跳过
-    if isinstance(cur_root, str) and os.path.isabs(cur_root) and os.path.isdir(cur_root):
-        return
+    ds_key = _guess_dataset_subdir(ds_type or "") or ""
+    if ds_key and rel.startswith(ds_key + "/") and os.path.basename(base_dir.rstrip("/")) == ds_key:
+        rel = rel[len(ds_key) + 1:]
 
-    # 选择基底根目录：用户 > 自动探测
-    base_root = None
-    if global_root and os.path.isdir(global_root):
-        base_root = global_root
-    elif mmdet3d_data_root and os.path.isdir(mmdet3d_data_root):
-        base_root = mmdet3d_data_root
+    return os.path.normpath(os.path.join(base_dir, rel))
 
-    if base_root is None:
-        return  # 没找到可用根目录，保持原样
 
-    # 推断子目录名
-    subdir = _guess_dataset_subdir(ds_type)
-    candidate = os.path.join(base_root, subdir) if subdir else base_root
-
-    # 如果 config 里原本就写了相对路径（例如 'data/nuscenes'），也能兜底到绝对路径
-    if isinstance(cur_root, str) and cur_root:
-        # 相对路径 → 拼接到 base_root
-        if not os.path.isabs(cur_root):
-            cand2 = os.path.join(base_root, cur_root)
-            if os.path.isdir(cand2):
-                ds_cfg["data_root"] = cand2
-                return
-
-    # 否则试试 base_root/subdir
-    if os.path.isdir(candidate):
-        ds_cfg["data_root"] = candidate
-
-# =========================
-# MMDetection3D 数据加载
-# =========================
-def _default_mmdet3d_nus_root():
-    """默认返回 <mmdetection3d repo>/data/nuscenes，如果不存在则返回 <repo>/data。"""
-    import mmdet3d
-    repo_dir = os.path.dirname(os.path.abspath(mmdet3d.__file__))  # .../mmdet3d
-    repo_root = os.path.dirname(repo_dir)                          # one level up
-    cand = os.path.join(repo_root, "data", "nuscenes")
-    return cand if os.path.isdir(cand) else os.path.join(repo_root, "data")
-
-from typing import Any, Dict, List
-import torch
-from torch.utils.data._utils.collate import default_collate as torch_default_collate
+# ------------------------------
+# Collate helpers
+# ------------------------------
 
 def smart_det3d_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """
-    Smart collate for mmdet3d batches:
+    """Smart collate for mmdet3d batches.
     - Keep 'data_samples' as a flat list of Det3DDataSample.
     - For other keys, try torch default_collate; if it fails, keep as list.
     Works for batch item like: {"inputs": {...}, "data_samples": Det3DDataSample or list[Det3DDataSample]}
@@ -142,7 +169,6 @@ def smart_det3d_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         return batch  # unusual
 
     if not isinstance(batch[0], dict):
-        # fallback to torch's behavior
         try:
             return torch_default_collate(batch)
         except Exception:
@@ -154,7 +180,7 @@ def smart_det3d_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         vals = [item[k] for item in batch]
 
         if k == "data_samples":
-            flat = []
+            flat: List[Any] = []
             for v in vals:
                 if isinstance(v, list):
                     flat.extend(v)
@@ -163,167 +189,257 @@ def smart_det3d_collate(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             out[k] = flat
             continue
 
-        # Try to collate tensors/arrays/numbers/dicts/lists as usual
         try:
             out[k] = torch_default_collate(vals)
         except Exception:
-            # Some nested dicts or custom objects may still fail → keep as list
             out[k] = vals
 
     return out
 
-def _build_mmdet3d_loaders(
+
+# ------------------------------
+# Internal config helpers
+# ------------------------------
+
+def _pick_loader_cfg(cfg: Config, split: str) -> Dict[str, Any]:
+    # OpenMMLab 3.x style dataloader cfgs
+    key = f"{split}_dataloader"
+    if key in cfg:
+        dl = cfg[key]
+        if isinstance(dl, dict):
+            return dl
+    # Older style
+    if hasattr(cfg, "data") and isinstance(cfg.data, dict) and split in cfg.data:
+        return {"dataset": cfg.data[split], "batch_size": 1, "num_workers": 0}
+    raise KeyError(f"No dataloader config for split={split}")
+
+
+def _get_ds_cfg(cfg: Config, split: str) -> Dict[str, Any]:
+    dl = _pick_loader_cfg(cfg, split)
+    if "dataset" in dl:
+        return dl["dataset"]
+    return dl
+
+
+# ------------------------------
+# Public builders
+# ------------------------------
+
+def build_dataloaders(
+    # Build train/val loaders from a config using the selected backend.
+
+    backend: str,
+    data_config: str,
+    batch_size: int = 1,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Tuple[DataLoader, Optional[DataLoader]]:
+    """Build train/val (or train/test) dataloaders.
+
+    Args:
+        backend: currently only 'mmdet3d' and 'custom' supported.
+        data_config: path to a mmdet3d config file, or a custom module spec.
+        batch_size, num_workers, pin_memory: DataLoader params.
+        extra: backend-specific extras.
+            For 'mmdet3d': { 'data_root': "/abs/path/to/dataset",
+                             'cfg_options': {...} }
+            For 'custom' : { 'dataset_module': 'my.package',
+                             'train_class': 'MyTrainDS', 'val_class': 'MyValDS',
+                             'dataset_kwargs_train': {...}, 'dataset_kwargs_val': {...},
+                             'collate': 'default'|'pseudo'|callable }
+    Returns:
+        (train_loader, val_loader_or_None)
+    """
+    backend = (backend or "mmdet3d").lower()
+    extra = extra or {}
+
+    if backend == "custom":
+        return _build_custom_loaders(data_config, batch_size, num_workers, pin_memory, extra)
+    if backend != "mmdet3d":
+        raise ValueError(f"Unknown dataset backend: {backend}")
+
+    # ---- mmdet3d path ----
+    cfg = Config.fromfile(data_config)
+    if isinstance(extra.get("cfg_options"), dict):
+        cfg.merge_from_dict(extra["cfg_options"])  # runtime overrides
+
+    init_default_scope(cfg.get("default_scope", "mmdet3d"))
+    _import_openmmlab_modules()
+
+    # Normalize dataset roots and relative fields across splits
+    def _patch_dataset_cfg(ds_cfg: Dict[str, Any]):
+        """Normalize dataset config paths in-place.
+
+        - Recurse into wrapper datasets (Repeat/Concat/ClassBalanced) and patch only their children.
+        - For regular datasets, compute an effective data_root and normalize
+          ann_file/data_prefix and **pipeline-embedded** db_sampler paths.
+        """
+        if not isinstance(ds_cfg, dict):
+            return
+
+        ds_type = ds_cfg.get('type', '')
+
+        # Wrapper datasets: patch inner dataset(s) only
+        if ds_type in ('RepeatDataset', 'ConcatDataset', 'ClassBalancedDataset'):
+            sub = ds_cfg.get('dataset') if ds_type != 'ConcatDataset' else ds_cfg.get('datasets')
+            if isinstance(sub, dict):
+                _patch_dataset_cfg(sub)
+            elif isinstance(sub, (list, tuple)):
+                for s in sub:
+                    _patch_dataset_cfg(s)
+            return
+
+        # Regular dataset
+        user_root = extra.get('data_root')
+        cur_root = ds_cfg.get('data_root')
+        if isinstance(cur_root, str) and os.path.isabs(cur_root) and os.path.isdir(cur_root):
+            eff_root = cur_root
+        else:
+            auto_root = _default_mmdet3d_root_for(ds_type)
+            eff_root = user_root or auto_root or cur_root or ''
+        if eff_root:
+            ds_cfg['data_root'] = eff_root
+
+        # ann_file
+        if 'ann_file' in ds_cfg and eff_root:
+            ann = ds_cfg['ann_file']
+            if isinstance(ann, str):
+                ds_cfg['ann_file'] = _safe_join_under(eff_root, ann, ds_type)
+            elif isinstance(ann, (list, tuple)):
+                ds_cfg['ann_file'] = [
+                    _safe_join_under(eff_root, a, ds_type) if isinstance(a, str) else a
+                    for a in ann
+                ]
+
+        # data_prefix
+        dp = ds_cfg.get('data_prefix')
+        if isinstance(dp, dict) and eff_root:
+            new_dp = {}
+            for k, v in dp.items():
+                if isinstance(v, str) and not os.path.isabs(v):
+                    new_dp[k] = _safe_join_under(eff_root, v, ds_type)
+                else:
+                    new_dp[k] = v
+            ds_cfg['data_prefix'] = new_dp
+
+        # legacy prefixes
+        for key in ('img_prefix', 'pts_prefix', 'seg_prefix'):
+            v = ds_cfg.get(key)
+            if isinstance(v, str) and eff_root and not os.path.isabs(v):
+                ds_cfg[key] = _safe_join_under(eff_root, v, ds_type)
+
+        # pipeline-level (train/eval) transforms that embed their own paths
+        if 'pipeline' in ds_cfg and eff_root:
+            _patch_pipeline_paths(ds_cfg['pipeline'], eff_root, ds_type)
+
+    for split in ('train', 'val', 'test'):
+        try:
+            ds_cfg = _get_ds_cfg(cfg, split)
+        except KeyError:
+            continue
+        _patch_dataset_cfg(ds_cfg)
+
+    # Build datasets and loaders
+    def _resolve_collate_fn(dl_cfg: Dict[str, Any]):
+        from mmengine.dataset.utils import default_collate as mm_default_collate
+        from mmengine.dataset.utils import pseudo_collate as mm_pseudo_collate
+        collate_opt = dl_cfg.get("collate_fn")
+        if callable(collate_opt):
+            return collate_opt
+        if isinstance(collate_opt, str):
+            t = collate_opt.lower()
+            if t in ("default", "default_collate"):
+                return mm_default_collate
+            if t in ("pseudo", "pseudo_collate"):
+                return mm_pseudo_collate
+        return smart_det3d_collate
+
+    def build_one(split: str) -> Tuple[Any, Optional[DataLoader]]:
+        try:
+            dl_cfg = _pick_loader_cfg(cfg, split)
+        except KeyError:
+            return None, None
+
+        dataset = DATASETS.build(_get_ds_cfg(cfg, split))
+
+        # Sampler
+        sampler_cfg = dict(dl_cfg.get("sampler", {}))
+        if "type" not in sampler_cfg:
+            sampler_cfg["type"] = "DefaultSampler"
+        if "shuffle" not in sampler_cfg:
+            sampler_cfg["shuffle"] = (split == "train")
+        sampler = DATA_SAMPLERS.build({**sampler_cfg, "dataset": dataset})
+
+        # DataLoader kwargs
+        bs = int(dl_cfg.get("batch_size", 1))
+        nw = int(dl_cfg.get("num_workers", 0))
+        pin = bool(dl_cfg.get("pin_memory", False))
+        drop = bool(dl_cfg.get("drop_last", split == "train"))
+        persistent_workers = (nw > 0) and bool(dl_cfg.get("persistent_workers", False))
+        prefetch_factor = dl_cfg.get("prefetch_factor", None)
+        collate_fn = _resolve_collate_fn(dl_cfg)
+
+        dl_kwargs = dict(
+            dataset=dataset,
+            batch_size=bs,
+            num_workers=nw,
+            sampler=sampler,
+            pin_memory=pin,
+            drop_last=drop,
+            persistent_workers=persistent_workers,
+            collate_fn=collate_fn,
+        )
+        if prefetch_factor is not None:
+            dl_kwargs["prefetch_factor"] = prefetch_factor
+
+        return dataset, DataLoader(**dl_kwargs)
+
+    train_ds, train_loader = build_one("train")
+    _, val_loader = build_one("val")
+    if val_loader is None:
+        _, val_loader = build_one("test")
+
+    assert train_loader is not None, "Failed to build train dataloader"
+    return train_loader, val_loader
+
+
+# ------------------------------
+# Custom backend (optional)
+# ------------------------------
+
+def _build_custom_loaders(
     data_config: str,
     batch_size: int,
     num_workers: int,
     pin_memory: bool,
     extra: Dict[str, Any],
-):
-    # 延迟导入，避免硬依赖
-    from mmengine.config import Config
-    from mmengine.registry import init_default_scope
-    from mmdet3d.registry import DATASETS
-
-    cfg = Config.fromfile(data_config)
-    if isinstance(extra.get("cfg_options"), dict):
-        cfg.merge_from_dict(extra["cfg_options"])
-    init_default_scope(cfg.get("default_scope", "mmdet3d"))
-
-    # === 1) 解析“优先级最高”的 data_root：CLI/extra > cfg.dataset > 自动探测 ===
-    user_root = extra.get("data_root", None)
-    auto_pkg_root = _default_mmdet3d_nus_root()     # <mmdet3d repo>/data/nuscenes (或 /data)
-    # 如果用户给到了上级 data/，自动补全到 data/nuscenes
-    if user_root and os.path.basename(user_root.rstrip("/")) == "data":
-        candidate = os.path.join(user_root, "nuscenes")
-        if os.path.isdir(candidate):
-            user_root = candidate
-
-    # === 2) 覆盖 train/val/test 的 dataset.data_root & 相对路径字段 ===
-    def _patch_dataset_cfg(ds_cfg: Dict[str, Any]):
-        if not isinstance(ds_cfg, dict):
-            return
-        # 优先使用 user_root，否则 cfg 中已有的 data_root，再否则自动推断
-        eff_root = user_root or ds_cfg.get("data_root") or auto_pkg_root
-        ds_cfg["data_root"] = eff_root
-
-        # 兼容 mmdet3d 新旧风格：有些相对路径放在 data_prefix 或 ann_file
-        # - ann_file 是相对路径时，拼到 data_root 下
-        if "ann_file" in ds_cfg and isinstance(ds_cfg["ann_file"], str):
-            if not os.path.isabs(ds_cfg["ann_file"]):
-                ds_cfg["ann_file"] = os.path.join(eff_root, ds_cfg["ann_file"])
-
-        dp = ds_cfg.get("data_prefix")
-        if isinstance(dp, dict):
-            for k, v in list(dp.items()):
-                if isinstance(v, str) and not os.path.isabs(v):
-                    dp[k] = os.path.join(eff_root, v)
-            ds_cfg["data_prefix"] = dp
-
-        # 老配置里常见的 img_prefix / pts_prefix 等相对路径，也拼接一下
-        for key in ("img_prefix", "pts_prefix", "seg_prefix"):
-            if isinstance(ds_cfg.get(key), str) and not os.path.isabs(ds_cfg[key]):
-                ds_cfg[key] = os.path.join(eff_root, ds_cfg[key])
-
-        # 嵌套 dataset（如 ConcatDataset、RepeatDataset）
-        if "datasets" in ds_cfg and isinstance(ds_cfg["datasets"], (list, tuple)):
-            for sub in ds_cfg["datasets"]:
-                _patch_dataset_cfg(sub)
-        if "dataset" in ds_cfg and isinstance(ds_cfg["dataset"], dict):
-            _patch_dataset_cfg(ds_cfg["dataset"])
-
-    def _get_ds_cfg(split: str) -> Dict[str, Any]:
-        if f"{split}_dataloader" in cfg and "dataset" in cfg[f"{split}_dataloader"]:
-            return cfg[f"{split}_dataloader"]["dataset"]
-        elif hasattr(cfg, "data") and split in cfg.data:
-            return cfg.data[split]
-        else:
-            return {}
-
-    for split in ("train", "val", "test"):
-        ds_cfg = _get_ds_cfg(split)
-        _patch_dataset_cfg(ds_cfg)
-
-    # === 3) 实例化 dataset & dataloader ===
-    def _choose_collate_fn(name_or_callable):
-        # 自己的 collate 选择器；默认用 torch 的
-        if callable(name_or_callable):
-            return name_or_callable
-        # 可根据字符串名切换不同 collate 策略
-        return None  # 让 DataLoader 用默认 collate
-
-    def build_ds(split: str):
-        ds_cfg = _get_ds_cfg(split)
-        assert ds_cfg, f"No dataset cfg for split={split}"
-        return DATASETS.build(ds_cfg)
-
-    def build_dl(dataset, split: str):
-        dl_cfg = cfg.get(f"{split}_dataloader", {})
-        # 用户若在 config 里显式指定了 collate_fn，我们尊重；否则用 smart
-        collate_name = dl_cfg.get("collate_fn", None)
-
-        if callable(collate_name):
-            collate_fn = collate_name
-        elif isinstance(collate_name, str) and collate_name.lower() == "default":
-            from mmengine.dataset.utils import default_collate as mm_default_collate
-            collate_fn = mm_default_collate  # 也能处理部分结构，但可能仍拼不动 DataSample
-        elif isinstance(collate_name, str) and collate_name.lower() == "pseudo":
-            from mmengine.dataset.utils import pseudo_collate as mm_pseudo_collate
-            collate_fn = mm_pseudo_collate    # 直接把 batch 包成 list（最保守）
-        else:
-            # 默认：用我们定制的 smart collate，兼顾易用与鲁棒
-            collate_fn = smart_det3d_collate
-
-        shuffle = (split == "train")
-        drop_last = dl_cfg.get("drop_last", shuffle)
-        return DataLoader(
-            dataset,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            shuffle=shuffle,
-            drop_last=drop_last,
-            pin_memory=pin_memory,
-            persistent_workers=(num_workers > 0),
-            collate_fn=collate_fn,
-        )
-
-    train_ds = build_ds("train")
-    val_loader = None
-    try:
-        val_ds = build_ds("val")
-        val_loader = build_dl(val_ds, "val")
-    except Exception:
-        val_loader = None
-
-    train_loader = build_dl(train_ds, "train")
-    return train_loader, val_loader
-
-
-# =========================
-# 自定义数据集加载
-# =========================
-def _build_custom_loaders(data_config: str, batch_size: int, num_workers: int, pin_memory: bool, extra: Dict[str, Any]):
-    """
-    要求 extra 里提供：
-    - dataset_module: 例如 myproj.data.my_dataset
-    - train_class / val_class: 类名（可同一个）
-    - dataset_kwargs_train / dataset_kwargs_val（可选 dict）
-    - collate (可选): "default" / "pseudo"；若不使用 mmengine 的 pseudo，请提供自定义 collate callable
+) -> Tuple[DataLoader, Optional[DataLoader]]:
+    """Build loaders for user-defined datasets via import strings.
+    extra must contain:
+      - dataset_module: e.g., 'myproj.data.my_dataset'
+      - train_class / val_class: class names
+      - dataset_kwargs_train / dataset_kwargs_val (optional dicts)
+      - collate: 'default'|'pseudo'|callable (optional)
     """
     import importlib
-    from mmengine.dataset import default_collate, pseudo_collate  # 若不想依赖，可自己写个简单 pseudo
+    from mmengine.dataset.utils import default_collate as mm_default_collate
+    from mmengine.dataset.utils import pseudo_collate as mm_pseudo_collate
+
     mod = importlib.import_module(extra.get("dataset_module"))
     train_cls = getattr(mod, extra.get("train_class"))
     val_cls_name = extra.get("val_class", extra.get("train_class"))
     val_cls = getattr(mod, val_cls_name)
 
     ds_train = train_cls(**(extra.get("dataset_kwargs_train", {}) or {}))
+
     dl_collate = extra.get("collate", "default")
     if dl_collate == "pseudo":
-        collate_fn = pseudo_collate
+        collate_fn = mm_pseudo_collate
     elif callable(dl_collate):
         collate_fn = dl_collate
     else:
-        collate_fn = default_collate
+        collate_fn = mm_default_collate
 
     train_loader = DataLoader(
         ds_train,
@@ -353,42 +469,27 @@ def _build_custom_loaders(data_config: str, batch_size: int, num_workers: int, p
     return train_loader, val_loader
 
 
-# ---- 工厂函数 ----
-def build_dataloaders(
-    backend: str,
-    data_config: str,
-    batch_size: int,
-    num_workers: int,
-    pin_memory: bool,
-    extra: Dict[str, Any],
-):
-    backend = backend.lower()
-    if backend == "mmdet3d":
-        return _build_mmdet3d_loaders(data_config, batch_size, num_workers, pin_memory, extra)
-    elif backend == "custom":
-        return _build_custom_loaders(data_config, batch_size, num_workers, pin_memory, extra)
-    else:
-        raise ValueError(f"Unknown dataset backend: {backend}")
+# ------------------------------
+# Evaluator (from config)
+# ------------------------------
 
+def build_evaluator(
+    # Build an mmengine Evaluator from the config for the requested split.
+backend: str, data_config: str, split: str, extra: Optional[Dict[str, Any]] = None) -> Tuple[Evaluator, Dict[str, Any]]:
+    """Build an mmengine.Evaluator from the config for the given split.
 
-def build_evaluator(backend: str, data_config: str, split: str, extra: Dict[str, Any]):
+    Returns (evaluator, meta) where meta includes the metric class names used.
     """
-    返回 (evaluator, meta)，其中 evaluator 具有 .process(data_batch, data_samples) 与 .evaluate(size)。
-    对 mmdet3d：从 config 里取 {split}_evaluator 或 test_evaluator。
-    """
-    backend = backend.lower()
+    backend = (backend or "mmdet3d").lower()
     if backend != "mmdet3d":
         return None, {}
 
-    from mmengine.config import Config
-    from mmengine.registry import init_default_scope
-    from mmengine.evaluator import Evaluator
-    from mmdet3d.registry import METRICS
-
     cfg = Config.fromfile(data_config)
-    if "cfg_options" in extra and isinstance(extra["cfg_options"], dict):
-        cfg.merge_from_dict(extra["cfg_options"])
+    if extra and "cfg_options" in extra and isinstance(extra["cfg_options"], dict):
+        cfg.merge_from_dict(extra["cfg_options"])  # runtime overrides
+
     init_default_scope(cfg.get("default_scope", "mmdet3d"))
+    _import_openmmlab_modules()
 
     ev_cfg = None
     key = f"{split}_evaluator"
@@ -400,8 +501,450 @@ def build_evaluator(backend: str, data_config: str, split: str, extra: Dict[str,
         ev_cfg = cfg["val_evaluator"]
     assert ev_cfg is not None, f"No evaluator cfg found for split={split}"
 
-    # 允许传列表或单个 metric
     metric_cfgs = ev_cfg if isinstance(ev_cfg, (list, tuple)) else [ev_cfg]
     metrics = [METRICS.build(mc) for mc in metric_cfgs]
     evaluator = Evaluator(metrics=metrics)
     return evaluator, {"metric_names": [m.__class__.__name__ for m in metrics]}
+
+
+# ------------------------------
+# Simple one-shot evaluation runner (NuScenes/KITTI)
+# ------------------------------
+# ---- Prediction normalization helpers for mmdet3d metrics ----
+from mmengine.structures import InstanceData
+from typing import List, Any, Dict, Optional
+import torch
+
+def _extract_gt_samples_strict(batch: Any) -> List[Any]:
+    """Extract ground-truth Det3DDataSample list from a val/test batch."""
+    if isinstance(batch, dict):
+        if "data_samples" not in batch:
+            raise RuntimeError("val/test batch missing key 'data_samples'")
+        ds = batch["data_samples"]
+        return ds if isinstance(ds, list) else [ds]
+    if isinstance(batch, (list, tuple)) and batch and isinstance(batch[0], dict):
+        out: List[Any] = []
+        for i, item in enumerate(batch):
+            if "data_samples" not in item:
+                raise RuntimeError(f"val/test batch item[{i}] missing key 'data_samples'")
+            ds = item["data_samples"]
+            out.extend(ds if isinstance(ds, list) else [ds])
+        return out
+    raise RuntimeError(f"Unsupported val/test batch type for GT extraction: {type(batch)}")
+
+def _empty_instancedata(device: torch.device) -> InstanceData:
+    """Create an empty InstanceData with minimal 3D fields."""
+    idata = InstanceData()
+    idata.scores_3d = torch.empty(0, device=device)
+    idata.labels_3d = torch.empty(0, dtype=torch.long, device=device)
+    return idata
+
+def _resolve_sample_idx(src: Any, fallback: Any = None) -> Optional[int]:
+    """Try several common fields to resolve integer sample index."""
+    def _from_meta(meta: Dict[str, Any]) -> Optional[int]:
+        for k in ("sample_idx", "image_id", "img_id", "frame_id", "sample_id"):
+            if k in meta and meta[k] is not None:
+                try:
+                    return int(meta[k])
+                except Exception:
+                    pass
+        return None
+    meta = getattr(src, "metainfo", None)
+    if isinstance(meta, dict):
+        si = _from_meta(meta)
+        if si is not None:
+            return si
+    for k in ("sample_idx", "image_id", "img_id", "frame_id", "sample_id"):
+        if hasattr(src, k):
+            try:
+                return int(getattr(src, k))
+            except Exception:
+                pass
+    if fallback is not None:
+        return _resolve_sample_idx(fallback, None)
+    return None
+
+# --- Instantiate metric with only the kwargs its __init__ accepts ---
+import inspect
+
+def _safe_instantiate_metric(metric_cls, **kwargs):
+    """
+    Create metric_cls(...) but only pass keyword args that appear in
+    the class' __init__ signature. This makes the code robust across
+    MMDet3D versions where init params differ (e.g., KITTI).
+    """
+    sig = inspect.signature(metric_cls.__init__)
+    allowed = {k for k in sig.parameters.keys() if k != "self"}
+    filtered = {k: v for k, v in kwargs.items() if (k in allowed and v is not None)}
+    return metric_cls(**filtered)
+
+def _build_pred_records(
+    preds: Any,
+    gt_samples: List[Any],
+    device: torch.device,
+) -> List[Dict[str, Any]]:
+    """
+    Normalize model outputs into list[dict] items required by mmdet3d metrics.
+    Each dict contains:
+      - 'pred_instances_3d': InstanceData with bboxes_3d/scores_3d/labels_3d (or empty)
+      - 'pred_instances':    InstanceData for 2D (optional; empty if absent)
+      - 'sample_idx':        int (taken from pred metainfo or GT fallback)
+    """
+    # Unwrap tuple outputs like (preds, aux)
+    if isinstance(preds, tuple):
+        preds = preds[0]
+    # Ensure a flat list
+    preds = list(preds) if isinstance(preds, (list, tuple)) else [preds]
+    if len(preds) == 1 and isinstance(preds[0], (list, tuple)):
+        preds = list(preds[0])
+
+    records: List[Dict[str, Any]] = []
+    for i, p in enumerate(preds):
+        # 3D preds: attribute on DataSample or dict key
+        pred3d = getattr(p, "pred_instances_3d", None)
+        if pred3d is None and isinstance(p, dict):
+            pred3d = p.get("pred_instances_3d", None)
+        if pred3d is None:
+            pred3d = _empty_instancedata(device)
+
+        # Optional 2D preds
+        pred2d = getattr(p, "pred_instances", None)
+        if pred2d is None and isinstance(p, dict):
+            pred2d = p.get("pred_instances", None)
+        if pred2d is None:
+            pred2d = InstanceData()
+
+        # sample_idx from pred or fallback to aligned GT
+        sample_idx = None
+        meta = getattr(p, "metainfo", None)
+        if isinstance(meta, dict):
+            sample_idx = meta.get("sample_idx", None)
+        if sample_idx is None:
+            gi = gt_samples[min(i, len(gt_samples) - 1)]
+            sample_idx = _resolve_sample_idx(p, fallback=gi)
+        if sample_idx is None:
+            raise RuntimeError(f"Cannot resolve sample_idx for pred #{i}")
+
+        records.append(
+            {
+                "pred_instances_3d": pred3d,
+                "pred_instances": pred2d,
+                "sample_idx": int(sample_idx),
+                "img_id": int(sample_idx),   # <-- some KITTI configs look for img_id
+            }
+        )
+        # records.append(
+        #     {
+        #         "pred_instances_3d": pred3d,
+        #         "pred_instances": pred2d,
+        #         "sample_idx": int(sample_idx),
+        #     }
+        # )
+
+    if not records or not isinstance(records[0], dict):
+        raise TypeError("BUG: pred_records must be non-empty list[dict].")
+    return records
+
+def run_evaluation(
+    *,
+    cfg_path: str,
+    checkpoint: Optional[str] = None,
+    split: str = "val",
+    device: str | torch.device = "cuda",
+    backend: str = "mmdet3d",
+    batch_size: int = 1,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    extra: Optional[Dict[str, Any]] = None,
+    max_batches: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run evaluation using the config-defined metric (NuScenes/KITTI/etc.).
+
+    This function wires together **existing logic** in this module without
+    altering it: we build dataloaders via :func:`build_dataloaders`, build an
+    mmengine :class:`Evaluator` via :func:`build_evaluator`, run the model on
+    the selected split, call ``evaluator.process(...)`` per batch, and finally
+    return ``evaluator.evaluate(n_samples)``.
+
+    Args:
+        cfg_path: Path to the mmdet3d config.
+        checkpoint: Optional checkpoint to load into the model.
+        split: Which split to evaluate: "val" (default) or "test".
+        device: Torch device for model execution.
+        backend: Dataset backend, defaults to "mmdet3d".
+        batch_size: Optional override for dataloader batch size (used only when
+            the config doesn't specify). To strictly keep config behavior,
+            leave at 1 (default) and configure in the cfg file instead.
+        num_workers: Same note as ``batch_size``.
+        pin_memory: Same note as ``batch_size``.
+        extra: Extra dict forwarded to builders. For mmdet3d you can pass
+            ``{"data_root": "/abs/path/to/dataset", "cfg_options": {...}}``.
+        max_batches: Stop after this many batches (quick smoke test).
+
+    Returns:
+        A dictionary of computed metrics (e.g., NDS/mAP for nuScenes, AP for KITTI).
+    """
+    from mmengine.config import Config
+    from mmengine.registry import init_default_scope
+    from mmengine.runner import load_checkpoint
+
+    extra = extra or {}
+
+    # Prime registries and default scope **without changing your build logic**.
+    init_default_scope("mmdet3d")
+    _import_openmmlab_modules()
+
+    # Load full config, then build train/val loaders per your existing builders.
+    cfg = Config.fromfile(cfg_path)
+    if isinstance(extra.get("cfg_options"), dict):
+        cfg.merge_from_dict(extra["cfg_options"])  # runtime overrides
+
+    # Respect user's config for loader hyperparams by default.
+    # These params are only used by our builder if the cfg lacks them.
+    train_loader, val_loader = build_dataloaders(
+        backend=backend,
+        data_config=cfg_path,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        extra=extra,
+    )
+
+    if split not in ("val", "test"):
+        raise ValueError("split must be 'val' or 'test'")
+    target_loader = val_loader if val_loader is not None else train_loader
+
+    evaluator, meta = build_evaluator(
+        backend=backend,
+        data_config=cfg_path,
+        split=split,
+        extra=extra,
+    )
+
+    # Build model from cfg and (optionally) load checkpoint.
+    model = MODELS.build(cfg.model)
+    model.to(device)  # type: ignore
+    model.eval()
+    if checkpoint:
+        load_checkpoint(model, checkpoint, map_location="cpu")
+
+    # Iterate over the loader and feed evaluator
+    seen = 0
+    with torch.inference_mode():
+        # choose device for empty InstanceData creation
+        dev = torch.device(device if isinstance(device, str) else device)
+        for batch in target_loader:
+            # In MMDet3D, test_step returns list[Det3DDataSample] predictions.
+            out = model.test_step(batch)
+            
+            # 1) Normalize the raw model output to a flat list
+            if isinstance(out, tuple):
+                out = out[0]
+            preds = list(out) if isinstance(out, (list, tuple)) else [out]
+            if len(preds) == 1 and isinstance(preds[0], (list, tuple)):
+                preds = list(preds[0])
+            
+            # Extract GT list from data_batch for the metric
+            gt_samples = _extract_gt_samples_strict(batch)
+
+            # 3) Decide the format based on metric type(s)
+            metric_names = [m.__class__.__name__.lower() for m in evaluator.metrics]
+            #expects_nuscenes_style = any("nuscene" in n for n in metric_names)
+            # Both NuScenes and KITTI want dict-style in mmdet3d’s current metrics
+            expects_dict_style = any(x in n for n in metric_names for x in ("nuscene", "kitti"))
+            
+            
+            if expects_dict_style:
+                pred_records = _build_pred_records(preds, gt_samples, dev)  # dev = torch.device(...)
+                evaluator.process({"data_samples": gt_samples}, pred_records)
+            else:
+                evaluator.process(batch, preds)
+
+            seen += 1
+            if max_batches is not None and seen >= max_batches:
+                break
+
+    # Return computed metrics.
+    return evaluator.evaluate(seen)
+
+# ==============================
+# Direct KITTI / nuScenes eval (bypass mmengine.Evaluator)
+# ==============================
+from typing import Optional, Dict, Any, List, Union
+import torch
+
+def run_evaluation_direct(
+    *,
+    cfg_path: str,
+    checkpoint: Optional[str] = None,
+    split: str = "val",                      # "val" or "test"
+    device: Union[str, torch.device] = "cuda",
+    backend: str = "mmdet3d",
+    batch_size: int = 1,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+    dataset_hint: str = "auto",              # "auto" | "kitti" | "nuscenes"
+    extra: Optional[Dict[str, Any]] = None,  # e.g., {"data_root": "/abs/path/to/data/kitti", "cfg_options": {...}}
+    jsonfile_prefix: Optional[str] = None,   # used by NuScenesMetric/KittiMetric if you want result dumps
+    eval_version: str = "detection_cvpr_2019"  # nuScenes eval version
+) -> Dict[str, Any]:
+    """
+    Evaluate KITTI/nuScenes by calling the metric's .process(...) and .evaluate(...)
+    **directly** (no mmengine.Evaluator in the loop).
+
+    Reuses your existing builders; does not change their logic.
+    """
+
+    # --- local lazy imports to avoid hard deps at module import time ---
+    from mmengine.config import Config
+    from mmengine.registry import init_default_scope
+    from mmengine.runner import load_checkpoint
+    from mmdet3d.registry import MODELS, DATASETS
+
+    # Try to import metrics (whichever you have installed)
+    try:
+        from mmdet3d.evaluation.metrics.kitti_metric import KittiMetric  # type: ignore
+    except Exception:
+        KittiMetric = None  # type: ignore
+    try:
+        from mmdet3d.evaluation.metrics.nuscenes_metric import NuScenesMetric  # type: ignore
+    except Exception:
+        NuScenesMetric = None  # type: ignore
+
+    # ---- prime scope/registries and build config ----
+    extra = extra or {}
+    init_default_scope("mmdet3d")
+    cfg = Config.fromfile(cfg_path)
+    if isinstance(extra.get("cfg_options"), dict):
+        cfg.merge_from_dict(extra["cfg_options"])
+
+    # ---- build loaders via your existing logic (unchanged) ----
+    train_loader, val_loader = build_dataloaders(
+        backend=backend,
+        data_config=cfg_path,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        extra=extra,
+    )
+    if split not in ("val", "test"):
+        raise ValueError("split must be 'val' or 'test'")
+    data_loader = val_loader if val_loader is not None else train_loader
+    if data_loader is None:
+        raise RuntimeError(f"No '{split}' loader available from config.")
+
+    # Grab the underlying dataset to infer meta/paths
+    dataset_obj = getattr(data_loader, "dataset", None)
+    dataset_meta = {}
+    if hasattr(dataset_obj, "metainfo") and isinstance(dataset_obj.metainfo, dict):
+        dataset_meta.update(dataset_obj.metainfo)
+    if not dataset_meta.get("classes") and hasattr(dataset_obj, "CLASSES"):
+        dataset_meta["classes"] = list(getattr(dataset_obj, "CLASSES"))
+
+    data_root = getattr(dataset_obj, "data_root", dataset_meta.get("data_root", ""))
+    ann_file = getattr(dataset_obj, "ann_file", dataset_meta.get("ann_file", ""))
+    if isinstance(ann_file, (list, tuple)) and ann_file:
+        ann_file = ann_file[0]
+
+    # ---- determine dataset type ----
+    ds_name = type(dataset_obj).__name__.lower()
+    if dataset_hint == "auto":
+        if "kitti" in ds_name:
+            dataset_hint = "kitti"
+        elif "nuscene" in ds_name:
+            dataset_hint = "nuscenes"
+        else:
+            raise RuntimeError(f"Cannot auto-detect dataset from type '{type(dataset_obj).__name__}'.")
+
+    # ---- instantiate the metric directly ----
+    if dataset_hint == "kitti":
+        if KittiMetric is None:
+            raise ImportError("KittiMetric not available in this environment.")
+        # Some versions accept 'jsonfile_prefix', some accept 'outfile_prefix';
+        # _safe_instantiate_metric will only pass the supported ones.
+        metric = _safe_instantiate_metric(
+            KittiMetric,
+            ann_file=ann_file,
+            metric="bbox",
+            jsonfile_prefix=jsonfile_prefix,
+            outfile_prefix=jsonfile_prefix,  # alt name in some versions
+            collect_device="cpu",
+        )
+    elif dataset_hint == "nuscenes":
+        if NuScenesMetric is None:
+            raise ImportError("NuScenesMetric not available in this environment.")
+        metric = _safe_instantiate_metric(
+            NuScenesMetric,
+            data_root=data_root,                    # accepted in most versions
+            ann_file=ann_file,
+            metric="bbox",
+            modality=dict(use_camera=False, use_lidar=True),
+            jsonfile_prefix=jsonfile_prefix,
+            eval_version=eval_version,
+            collect_device="cpu",
+        )
+    else:
+        raise RuntimeError(f"Unsupported dataset_hint='{dataset_hint}'")
+
+    # attach dataset meta (classes, version, etc.)
+    metric.dataset_meta = dataset_meta
+
+    # ---- build model and (optionally) load checkpoint ----
+    model = MODELS.build(cfg.model)
+    model.to(device)  # type: ignore
+    model.eval()
+    if checkpoint:
+        load_checkpoint(model, checkpoint, map_location="cpu")
+
+    # ---- helpers copied from your previous snippets (used as-is) ----
+    # If you already have these in file, just reuse them; otherwise paste them above.
+    # _extract_gt_samples_strict, _build_pred_records
+
+    # ---- evaluation loop (DIRECT metric calls) ----
+    n_seen = 0
+    dev = torch.device(device if isinstance(device, str) else device)
+    with torch.inference_mode():
+        for batch in data_loader:
+            preds = model.test_step(batch)  # raw model output
+
+            # Ground-truth samples for this batch
+            gt_samples = _extract_gt_samples_strict(batch)
+
+            # Build exactly what the mmdet3d metrics expect
+            pred_records = _build_pred_records(preds, gt_samples, dev)
+
+            # Call metric.process(...) directly (bypass mmengine.Evaluator)
+            metric.process({"data_samples": gt_samples}, pred_records)
+
+            n_seen += 1
+
+    # Final scores (NDS/mAP for nuScenes; AP/APH for KITTI, etc.)
+    return metric.evaluate(n_seen)
+
+if __name__ == "__main__":
+    metrics = run_evaluation_direct(
+        cfg_path="/data/rnd-liu/MyRepo/mmdetection3d/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py",
+        checkpoint="/data/rnd-liu/MyRepo/mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth",
+        split="val",
+        device="cuda",
+        backend="mmdet3d",
+        dataset_hint="kitti",
+        extra={"data_root": "/data/rnd-liu/MyRepo/mmdetection3d/data/kitti"},  # IMPORTANT: dataset root
+    )
+    print(metrics)
+    # metrics = run_evaluation(
+    #     cfg_path="/data/rnd-liu/MyRepo/mmdetection3d/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py",
+    #     checkpoint="/data/rnd-liu/MyRepo/mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth",   # or None to eval current weights
+    #     split="val",                              # or "test"
+    #     device="cuda",                            # or "cpu"
+    #     backend="mmdet3d",
+    #     extra={
+    #         # Optional: absolute dataset root to avoid relative-path issues
+    #         "data_root": "/data/rnd-liu/MyRepo/mmdetection3d/data/kitti", # ""/data/rnd-liu/MyRepo/mmdetection3d/",
+    #         # Optional: runtime cfg overrides
+    #         # "cfg_options": {...}
+    #     },
+    #     # Optional quick smoke test limit
+    #     # max_batches=50,
+    # )
+    # print(metrics)

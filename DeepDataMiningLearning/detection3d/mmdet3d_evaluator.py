@@ -1,254 +1,388 @@
-# simple_nuscenes_evaluator.py
-# -*- coding: utf-8 -*-
-"""
-A clean, minimal wrapper around mmdetection3d's NuScenesMetric.
+import argparse
+import os
+import sys
+import warnings
+from pathlib import Path
 
-Why this exists:
-- NuScenesMetric.process(data_batch, data_samples) expects the *second* arg to be
-  a sequence of dicts, each with:
-    {
-      "pred_instances_3d": InstanceData (with bboxes_3d/scores_3d/labels_3d),
-      "pred_instances":    InstanceData (optional; can be empty),
-      "sample_idx":        int
-    }
-- Many custom training scripts return predictions as Det3DDataSample objects that
-  are NOT subscriptable (i.e., p["pred_instances_3d"] fails). This adapter wraps
-  them into dicts the metric can consume directly.
+# --- Dependencies ---
+# You must have a full mmdetection3d environment
+try:
+    import torch
+    from torch.utils.data import DataLoader
 
-Usage (pseudo-code):
-    evaluator = SimpleNuScenesEvaluator(
-        data_root=..., ann_file=..., dataset_meta={"classes": CLASSES, "version": "v1.0-trainval"},
-        jsonfile_prefix="work_dirs/nusc_eval/preds"
+    import mmengine
+    from mmengine.config import Config
+    from mmengine.registry import MODELS, DATASETS, EVALUATOR
+    from mmengine.runner import Runner
+    from mmengine.dataset import DefaultSampler
+    
+    # We must import the modules to register them in mmengine
+    import mmdet3d.datasets
+    import mmdet3d.models
+
+    from mmdet3d.structures import LiDARInstance3DBoxes
+    from mmdet3d.evaluation import KittiMetric, NuScenesMetric
+
+    # We need to import the visualization tools from run_inference.py
+    # This assumes it's in the same directory or accessible in PYTHONPATH
+    from mmdet3d_inference2 import (
+        load_lidar_file, 
+        visualize_with_open3d,
+        load_kitti_gt_labels
     )
-    evaluator.reset()
 
+except ImportError:
+    print("Error: This script requires a full 'mmdetection3d' environment.")
+    print("Please follow the mmdet3d installation guide.")
+    print("https://mmdetection3d.readthedocs.io/en/latest/get_started.html")
+    print("It also assumes 'run_inference.py' is in the same directory.")
+    exit()
+
+try:
+    import open3d as o3d
+    import numpy as np
+except ImportError:
+    print("Error: This script requires 'open3d' and 'numpy'.")
+    exit()
+    
+# Suppress warnings
+warnings.filterwarnings("ignore")
+
+def fix_config_paths(cfg, mmdet3d_root):
+    """
+    Recursively finds and fixes 'data_root', 'info_path', etc.
+    This version is more robust and fixes top-level vars first.
+    """
+    if mmdet3d_root is None:
+        print("Warning: mmdet3d_root is None. Cannot fix data paths.")
+        return cfg
+
+    mmdet3d_root = Path(mmdet3d_root)
+    print(f"Fixing data paths in config relative to: {mmdet3d_root}")
+
+    # --- 1. Fix Top-Level Path Variables ---
+    # Configs often define 'data_root = "data/kitti/"' at the top.
+    # We must fix these first, so nested paths built from them
+    # are correct.
+    for key in cfg:
+        if isinstance(cfg[key], str):
+            # Unconditional fix if it's a relative data path
+            if cfg[key].startswith('data/'):
+                new_path = mmdet3d_root / cfg[key]
+                print(f"  Fixing top-level var: {key} -> {new_path}")
+                cfg[key] = str(new_path)
+
+    # --- 2. Fix Nested Paths ---
+    # Paths that are relative to mmdet3d_root
+    # (e.g., 'data/kitti/' or 'data/kitti/kitti_dbinfos_train.pkl')
+    # FIX: Added 'ann_file' to the list of keys
+    path_keys_to_fix = ['data_root', 'info_path', 'ann_file']
+
+    def _fix_recursive(obj):
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key in path_keys_to_fix and isinstance(value, str):
+                    # Unconditional fix if it's a relative data path
+                    if value.startswith('data/'):
+                        new_path = mmdet3d_root / value
+                        print(f"  Fixing nested path: {key} -> {new_path}")
+                        obj[key] = str(new_path)
+                
+                # Special check for 'data_prefix' (velodyne vs velodyne_reduced)
+                if key == 'data_prefix' and 'pts' in value and mmdet3d_root:
+                    # This logic is complex, as it needs the (already fixed) data_root
+                    # We'll rely on the user having the correct velodyne folder.
+                    # A simple robustness check:
+                    if 'velodyne_reduced' in value['pts']:
+                        alt_path_str = value['pts'].replace('velodyne_reduced', 'velodyne')
+                        # We can't easily check os.path.exists here, as data_root is
+                        # not passed down.
+                        # print(f"  Note: 'data_prefix' robustness for velodyne/velodyne_reduced is best handled in dataset init.")
+                        pass
+
+                _fix_recursive(value)
+        elif isinstance(obj, list):
+            for item in obj:
+                _fix_recursive(item)
+
+    _fix_recursive(cfg)
+    return cfg
+
+
+def main(args):
+    # --- 1. Load Config ---
+    cfg = Config.fromfile(args.config)
+    
+    # --- 2. Fix Data Paths ---
+    mmdet3d_root_path = args.mmdet3d_root
+    # If not provided via arg, try env var
+    if mmdet3d_root_path is None:
+        mmdet3d_root_path = os.environ.get("MMDET3D_ROOT")
+    
+    mmdet3d_root = None
+    if mmdet3d_root_path:
+        mmdet3d_root = Path(mmdet3d_root_path)
+        if not (mmdet3d_root / 'tools' / 'test.py').exists():
+            print(f"Warning: --mmdet3d-root provided '{mmdet3d_root}', but 'tools/test.py' not found inside.")
+            print("Data paths may not be fixed correctly.")
+    
+    if mmdet3d_root:
+        print(f"Using mmdetection3d root at: {mmdet3d_root}")
+        cfg = fix_config_paths(cfg, mmdet3d_root)
+    else:
+        print("No mmdetection3d root provided. Assuming data paths in config are correct.")
+
+    # --- 3. Set up Output Directory ---
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        # Default to eval_results/<config_name_without_py>
+        config_name = Path(args.config).stem
+        out_dir = Path(f"eval_results/{config_name}")
+        
+    out_dir.mkdir(parents=True, exist_ok=True)
+    vis_dir = out_dir / "visualizations"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Evaluation results will be saved to: {out_dir}")
+    if args.vis_samples > 0:
+        print(f"Visualizations will be saved to: {vis_dir}")
+
+    # --- 4. Initialize Dataloader ---
+    # We use the 'test_dataloader' config, as it's for evaluation
+    # (It's often identical to 'val_dataloader')
+    if 'test_dataloader' not in cfg:
+        print("Error: 'test_dataloader' not found in config. Using 'val_dataloader'.")
+        dataloader_cfg = cfg.val_dataloader
+    else:
+        dataloader_cfg = cfg.test_dataloader
+
+    # Override batch size and workers for this script
+    dataloader_cfg.batch_size = args.batch_size
+    dataloader_cfg.num_workers = args.num_workers
+    dataloader_cfg.sampler = DefaultSampler(dataloader_cfg.dataset, shuffle=False)
+    
+    print("Building test dataset...")
+    # This is where the FileNotFoundError occurs if paths are wrong
+    test_dataset = DATASETS.build(dataloader_cfg.dataset)
+    
+    # Manually set collate_fn from the dataset
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        sampler=DefaultSampler(test_dataset, shuffle=False),
+        collate_fn=test_dataset.collate_fn
+    )
+    
+    # --- 5. Initialize Model ---
+    print("Building model...")
+    cfg.model.train_cfg = None # We are in test mode
+    
+    # Register all mmdet3d models
+    try:
+        Runner.get_model_from_cfg(cfg) 
+    except Exception:
+        pass # May already be registered
+        
+    model = MODELS.build(cfg.model)
+    
+    # Load checkpoint
+    print(f"Loading checkpoint from: {args.checkpoint}")
+    checkpoint = torch.load(args.checkpoint, map_location='cpu')
+    # Check if checkpoint is nested (e.g., 'state_dict')
+    if 'state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+    
+    # Set up device
+    device = 'cuda:0' if torch.cuda.is_available() and not args.cpu_only else 'cpu'
+    model = model.to(device)
     model.eval()
+    
+    print(f"Model loaded and set to 'eval' mode on {device}.")
+
+    # --- 6. Initialize Metric ---
+    print("Building evaluator...")
+    if 'test_evaluator' not in cfg:
+        print("Error: 'test_evaluator' not found in config. Using 'val_evaluator'.")
+        evaluator_cfg = cfg.val_evaluator
+    else:
+        evaluator_cfg = cfg.test_evaluator
+        
+    evaluator = EVALUATOR.build(evaluator_cfg)
+    
+    # Give the evaluator the dataset's metainfo
+    evaluator.dataset_meta = test_dataset.metainfo
+
+    # --- 7. Run Custom Evaluation Loop ---
+    print("Starting evaluation loop...")
+    
+    # 'data_samples' is the format the evaluator expects
+    all_predictions = [] 
+    
+    num_samples = 0
+    max_samples = args.max_samples if args.max_samples else float('inf')
+    
     with torch.no_grad():
-        for vb in val_loader:
-            vb = move_batch_to_device(vb, device)       # your move helper
-            preds = model_wrapper.predict_step(vb)       # your predict_step
-            evaluator.process_batch(vb, preds, device)   # <-- one line
+        for i, batch in enumerate(test_loader):
+            if num_samples >= max_samples:
+                print(f"Reached max_samples ({args.max_samples}). Stopping evaluation.")
+                break
 
-    results = evaluator.compute()  # dict of NDS/mAP/etc.
-"""
+            # --- a. Move data to device ---
+            # 'inputs' is a dict, 'data_samples' is a list
+            inputs = {}
+            if 'inputs' in batch:
+                 inputs = {k: v.to(device) for k, v in batch['inputs'].items() if torch.is_tensor(v)}
+            
+            data_samples = [sample.to(device) for sample in batch['data_samples']]
+            
+            # --- b. Forward pass (predict mode) ---
+            # Returns a list of Det3DDataSample objects
+            pred_list = model(inputs, data_samples, mode='predict')
+            
+            # --- c. Store predictions for metric ---
+            # We must detach and move to CPU for the evaluator
+            for pred in pred_list:
+                pred.cpu()
+            all_predictions.extend(pred_list)
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-import torch
+            # --- d. Save Visualizations ---
+            for j in range(len(pred_list)):
+                if num_samples < args.vis_samples:
+                    print(f"  Saving visualization for sample {num_samples}...")
+                    try:
+                        # Get the prediction and the corresponding ground truth
+                        pred_sample = pred_list[j]
+                        gt_sample = data_samples[j].cpu() # Move GT to CPU for file access
+                        
+                        # Get basename from the input file path
+                        # 'pts_path' is a common key, 'img_path' for mono
+                        if 'pts_path' in gt_sample:
+                            basename = Path(gt_sample.pts_path).stem
+                        elif 'img_path' in gt_sample:
+                            basename = Path(gt_sample.img_path).stem
+                        else:
+                            basename = f"sample_{num_samples:06d}"
 
-# Import the official NuScenesMetric. If you copied the class locally, import from your path instead.
-from mmdet3d.evaluation.metrics.nuscenes_metric import NuScenesMetric
-from mmengine.evaluator import BaseMetric
+                        # Get predicted boxes (from tensor)
+                        pred_bboxes_3d = pred_sample.pred_instances_3d.bboxes_3d.tensor.numpy()
+                        pred_scores = pred_sample.pred_instances_3d.scores_3d.numpy()
+                        
+                        # Apply score threshold for visualization
+                        keep_mask = pred_scores >= args.vis_score_thr
+                        pred_bboxes_3d = pred_bboxes_3d[keep_mask]
+                        
+                        # Get ground truth boxes
+                        gt_bboxes_3d = gt_sample.gt_instances_3d.bboxes_3d.tensor.numpy()
+                        
+                        # --- Re-use visualization logic from run_inference.py ---
+                        
+                        # 1. Get LiDAR file path
+                        lidar_file = gt_sample.pts_path
+                        
+                        # 2. Create a dictionary of prediction results
+                        # This mimics the format our visualizer expects
+                        vis_pred_dict = {
+                            'bboxes_3d': pred_bboxes_3d,
+                            'scores_3d': pred_scores[keep_mask],
+                            'labels_3d': pred_sample.pred_instances_3d.labels_3d.numpy()[keep_mask]
+                        }
+                        
+                        # 3. Call the visualizer in headless mode
+                        visualize_with_open3d(
+                            lidar_file,
+                            vis_pred_dict,
+                            gt_bboxes_3d, # Pass GT boxes
+                            vis_dir,
+                            basename,
+                            headless=True # Always save to file
+                        )
+                        
+                        # Note: 2D visualization is complex as it requires
+                        # finding matching image/calib files, which are not
+                        # always loaded by default in the test-time pipeline.
+                        
+                    except Exception as e:
+                        print(f"  > Warning: Failed to save visualization for sample {num_samples}. {e}")
+                
+                num_samples += 1
+                if num_samples >= max_samples:
+                    break
+            
+            if (i + 1) % 10 == 0:
+                print(f"  Processed {num_samples} samples...")
 
 
-class SimpleNuScenesEvaluator:
-    """
-    A tiny façade over NuScenesMetric that:
-      1) Extracts ground-truth samples from your validation batch.
-      2) Normalizes predictions into list[dict] with required keys.
-      3) Feeds them into NuScenesMetric.process(...) correctly.
-      4) Calls NuScenesMetric.evaluate(...) to get final metrics.
-    """
+    print(f"Evaluation finished. Processed {num_samples} samples.")
 
-    def __init__(
-        self,
-        data_root: str,
-        ann_file: str,
-        dataset_meta: Dict[str, Any],
-        metric: Union[str, List[str]] = "bbox",
-        modality: Optional[Dict[str, bool]] = None,
-        jsonfile_prefix: Optional[str] = None,
-        eval_version: str = "detection_cvpr_2019",
-        collect_device: str = "cpu",
-        format_only: bool = False,
-        backend_args: Optional[dict] = None,
-    ) -> None:
-        """
-        Args:
-            data_root: NuScenes data root (e.g., ".../data/nuscenes").
-            ann_file:  Annotation file path used by the dataset (the same as in cfg).
-            dataset_meta: Must contain at least:
-                {
-                    "classes": [...],  # list of class names matching your dataset
-                    "version": "v1.0-trainval" or "v1.0-mini"
-                }
-            metric: Which metric to compute ("bbox" by default).
-            modality: Dict specifying modalities, e.g., {"use_camera": False, "use_lidar": True}
-            jsonfile_prefix: Where to dump result jsons for official nuScenes eval.
-            eval_version: NuScenes detection config version.
-            collect_device: "cpu" or "gpu" for result collection (single-node fine with "cpu").
-            format_only: If True, only formats json without computing metrics.
-            backend_args: Optional storage backend args.
-        """
-        if modality is None:
-            modality = dict(use_camera=False, use_lidar=True)
+    # --- 8. Compute Metrics ---
+    print("Computing metrics...")
+    
+    # The evaluator takes the list of predictions and ground truths
+    # We pass 'all_predictions' as it contains the GT in `data_samples`
+    metrics = evaluator.evaluate(all_predictions)
+    
+    print("\n--- Evaluation Results ---")
+    print(metrics)
+    
+    # Save results to a file
+    results_file = out_dir / "evaluation_metrics.json"
+    try:
+        # Convert numpy types to native Python types for JSON
+        import json
+        serializable_metrics = {}
+        for k, v in metrics.items():
+            if isinstance(v, np.ndarray):
+                serializable_metrics[k] = v.tolist()
+            elif isinstance(v, (np.float32, np.float64)):
+                serializable_metrics[k] = float(v)
+            elif isinstance(v, (np.int32, np.int64)):
+                serializable_metrics[k] = int(v)
+            else:
+                serializable_metrics[k] = v
+                
+        with open(results_file, 'w') as f:
+            json.dump(serializable_metrics, f, indent=4)
+        print(f"\nMetrics saved to: {results_file}")
+    except Exception as e:
+        print(f"\nError saving metrics to JSON: {e}")
+        print("Raw metrics dict:")
+        print(metrics)
 
-        # Create the official metric
-        self._metric: BaseMetric = NuScenesMetric(
-            data_root=data_root,
-            ann_file=ann_file,
-            metric=metric,
-            modality=modality,
-            prefix=None,
-            format_only=format_only,
-            jsonfile_prefix=jsonfile_prefix,
-            eval_version=eval_version,
-            collect_device=collect_device,
-            backend_args=backend_args,
-        )
-
-        # Attach dataset meta (NuScenesMetric requires this to compute)
-        # Expected keys: "classes" and "version"
-        self._metric.dataset_meta = dataset_meta
-
-        # Reset internal buffers
-        self.reset()
-
-    # ---------- Public API ----------
-
-    def reset(self) -> None:
-        """Clear metric internal buffers (results per-batch)."""
-        self._metric.results.clear()
-
-    def process_batch(self, val_batch: Dict[str, Any], preds: Any, device: torch.device) -> None:
-        """
-        Normalize and feed one validation batch to the metric.
-
-        Args:
-            val_batch: The raw batch dict from your val_loader (must contain "data_samples").
-            preds:     Model predictions for this batch. Accepts:
-                        - list[Det3DDataSample] (attr-only, not subscriptable)
-                        - list[dict] with "pred_instances_3d"
-                        - Det3DDataSample or dict (single item)
-                        - tuple where first element is the above (e.g., (preds, aux))
-            device:    Torch device used for empty InstanceData creation if needed.
-        """
-        gt_samples = self._extract_gt_samples_strict(val_batch)
-        pred_records = self._build_nuscenes_pred_records(preds, gt_samples, device)
-
-        # Call the official metric's process:
-        #   data_batch: {"data_samples": <GT list>}
-        #   data_samples: <PRED list[dict]> with required keys
-        self._metric.process({"data_samples": gt_samples}, pred_records)
-
-    def compute(self) -> Dict[str, float]:
-        """
-        Compute final nuScenes metrics over all accumulated batches.
-
-        Returns:
-            Dict[str, float]: NDS, mAP, class APs, and error metrics (mATE/mASE/...).
-        """
-        # n_samples is used by mmengine aggregator; give total number of seen samples
-        # (each GT data_sample corresponds to one sample)
-        n_samples = len(self._metric.results)
-        return self._metric.evaluate(n_samples)
-
-    # ---------- Helpers (private) ----------
-
-    @staticmethod
-    def _extract_gt_samples_strict(batch: Any) -> List[Any]:
-        """
-        Extract the ground-truth Det3DDataSample list from a validation batch.
-
-        The val batch produced by mmdet3d datasets/dataloaders typically looks like:
-            {"inputs": {...}, "data_samples": [Det3DDataSample, ...]}
-
-        This method never returns a string and will raise with clear errors if
-        the structure is unexpected.
-        """
-        if isinstance(batch, dict):
-            if "data_samples" not in batch:
-                raise RuntimeError("val batch dict missing key 'data_samples'")
-            ds = batch["data_samples"]
-            return ds if isinstance(ds, list) else [ds]
-
-        if isinstance(batch, (list, tuple)) and batch and isinstance(batch[0], dict):
-            out = []
-            for i, item in enumerate(batch):
-                if "data_samples" not in item:
-                    raise RuntimeError(f"val batch item[{i}] missing key 'data_samples'")
-                ds = item["data_samples"]
-                out.extend(ds if isinstance(ds, list) else [ds])
-            return out
-
-        raise RuntimeError(f"Unsupported val batch type for GT extraction: {type(batch)}")
-
-    @staticmethod
-    def _empty_instancedata(device: torch.device):
-        """
-        Create an empty mmengine.structures.InstanceData with the minimal fields
-        nuScenes expects on the 3D side. bboxes_3d can be absent when empty.
-        """
-        from mmengine.structures import InstanceData
-        idata = InstanceData()
-        idata.scores_3d = torch.empty(0, device=device)
-        idata.labels_3d = torch.empty(0, dtype=torch.long, device=device)
-        return idata
-
-    def _build_nuscenes_pred_records(
-        self, preds: Any, gt_samples: List[Any], device: torch.device
-    ) -> List[Dict[str, Any]]:
-        """
-        Normalize model outputs into list[dict] items required by NuScenesMetric.process.
-
-        Each element contains:
-          - 'pred_instances_3d': InstanceData with bboxes_3d/scores_3d/labels_3d (or empty)
-          - 'pred_instances':    InstanceData for 2D (optional; we provide empty if absent)
-          - 'sample_idx':        int (we fetch from prediction metainfo or fallback to GT)
-        """
-        # 1) Normalize container shape: single -> list; (preds, aux) -> preds
-        if isinstance(preds, tuple):
-            preds = preds[0]
-        preds = preds if isinstance(preds, (list, tuple)) else [preds]
-        preds = list(preds)
-        if len(preds) == 1 and isinstance(preds[0], (list, tuple)):
-            preds = list(preds[0])
-
-        from mmengine.structures import InstanceData
-
-        records: List[Dict[str, Any]] = []
-        for i, p in enumerate(preds):
-            # 2) Fetch 3D predictions:
-            #    Works for Det3DDataSample (attr-only) and dict-based preds.
-            pred3d = getattr(p, "pred_instances_3d", None)
-            if pred3d is None and isinstance(p, dict):
-                pred3d = p.get("pred_instances_3d", None)
-            if pred3d is None:
-                pred3d = self._empty_instancedata(device)
-
-            # 3) Fetch optional 2D predictions, or create an empty container.
-            pred2d = getattr(p, "pred_instances", None)
-            if pred2d is None and isinstance(p, dict):
-                pred2d = p.get("pred_instances", None)
-            if pred2d is None:
-                pred2d = InstanceData()  # empty is fine
-
-            # 4) Resolve sample_idx:
-            sample_idx = None
-            meta = getattr(p, "metainfo", None)
-            if isinstance(meta, dict):
-                sample_idx = meta.get("sample_idx", None)
-            if sample_idx is None:
-                # Fall back to ground-truth sample at aligned index
-                gi = gt_samples[min(i, len(gt_samples) - 1)]
-                if hasattr(gi, "metainfo") and isinstance(gi.metainfo, dict):
-                    sample_idx = gi.metainfo.get("sample_idx", None)
-                if sample_idx is None:
-                    sample_idx = getattr(gi, "sample_idx", None)
-            if sample_idx is None:
-                raise RuntimeError(f"Cannot resolve sample_idx for pred #{i}")
-
-            records.append(
-                {
-                    "pred_instances_3d": pred3d,
-                    "pred_instances": pred2d,
-                    "sample_idx": int(sample_idx),
-                }
-            )
-
-        # Final sanity: ensure we return list[dict] (never string)
-        if isinstance(records, (str, bytes)):
-            raise TypeError("BUG: pred_records is a string; expected list[dict].")
-        if not isinstance(records, list) or not records or not isinstance(records[0], dict):
-            raise TypeError(f"BUG: pred_records must be list[dict], got {type(records)}")
-
-        return records
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="MMDetection3D Custom Evaluation Script")
+    
+    parser.add_argument('--config', type=str, default="/data/rnd-liu/MyRepo/mmdetection3d/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py", help="Path to the model config file")
+    parser.add_argument('--checkpoint', type=str, default="/data/rnd-liu/MyRepo/mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth", help="Path to the checkpoint .pth file")
+    
+    parser.add_argument('--out-dir', type=str, default="outputs/mm3d_eval",
+                        help="Directory to save metrics and visualizations. "
+                             "(Default: eval_results/<config_name>)")
+    
+    parser.add_argument('--max-samples', type=int, default=None,
+                        help="Maximum number of samples to evaluate (Default: all)")
+    
+    parser.add_argument('--vis-samples', type=int, default=10,
+                        help="Number of samples to save 3D visualization for (Default: 10)")
+    parser.add_argument('--vis-score-thr', type=float, default=0.3,
+                        help="Score threshold for visualizing predicted boxes (Default: 0.3)")
+                        
+    parser.add_argument('--batch-size', type=int, default=1,
+                        help="Batch size for data loading (Default: 1)")
+    parser.add_argument('--num-workers', type=int, default=2,
+                        help="Number of data loader workers (Default: 2)")
+    
+    parser.add_argument('--cpu-only', action='store_true',
+                        help="Run evaluation on CPU only")
+    
+    parser.add_argument('--mmdet3d-root', type=str, default="/data/rnd-liu/MyRepo/mmdetection3d/",
+                        help="Path to your cloned mmdetection3d repository. "
+                             "If not set, will check MMDET3D_ROOT env var. "
+                             "Used to fix relative data paths.")
+                        
+    args = parser.parse_args()
+    main(args)
+    
