@@ -8,6 +8,7 @@ Overview
 - You’ll verify CUDA and C++/CUDA extension availability, prepare datasets, and run benchmarks.
 - The HPC GPU nodes are isolated from the internet; a proxy is required when downloading models/data.
 
+### SSH into the HPC
 ```bash
 ssh SJSUID@coe-hpc1.sjsu.edu  # e.g., ssh 0107960xx@coe-hpc1.sjsu.edu
 # password is your standard SJSU account password
@@ -22,10 +23,6 @@ Follow the pop up instructions to ssh into the HPC3:
 ssh -X coe-hpc3
 ```
 
-Explanation
-- `-X` enables X11 forwarding for apps that use GUIs (rarely needed here).
-- On HPC3, use Slurm (`srun`) to request a GPU node for training/evaluation.
-
 ### Setup Python Environment
 Install Miniconda (latest) via bash
 ```bash
@@ -36,21 +33,14 @@ source ~/.bashrc
 conda -V
 ```
 
-Explanation
-- Install Miniconda in your home directory; ensure `conda -V` prints a version (init in `.bashrc` must be loaded).
-- Running `source ~/.bashrc` reloads your shell environment to pick up Conda.
-
+Create a dedicated Conda env (`py310`) to avoid dependency clashes.
 ```bash
 $ conda create -y -n py310 python=3.10
 conda info --envs #check env created
 conda activate py310 # activate env
 ```
 
-Explanation
-- Use a dedicated Conda env (`py310`) to avoid dependency clashes.
-- This tutorial targets Python 3.10, matching the wheel selections later.
-
-Load CUDA module: use Preinstalled CUDA via Modules (recommended)
+Load CUDA module: use Preinstalled CUDA via Modules (recommended). HPC manages CUDA toolchains via environment modules. Loading `nvhpc-hpcx-cuda12/24.11` sets paths for CUDA 12.6.
 ```bash
 $ module avail #check available modules
 $ module load nvhpc-hpcx-cuda12/24.11 #load cuda module
@@ -61,10 +51,7 @@ Built on Thu_Sep_12_02:18:05_PDT_2024
 Cuda compilation tools, release 12.6, V12.6.77
 Build cuda_12.6.r12.6/compiler.34841621_0
 ```
-
-Explanation
-- HPC manages CUDA toolchains via environment modules. Loading `nvhpc-hpcx-cuda12/24.11` sets paths for CUDA 12.6.
-- Verify `nvcc --version` shows CUDA 12.6; this must match PyTorch CUDA (`cu126`) and any compiled MMCV extensions.
+Verify `nvcc --version` shows CUDA 12.6; this must match PyTorch CUDA (`cu126`) and any compiled MMCV extensions.
 
 Install Pytorch that matches the CUDA version and other dependencies
 ```bash
@@ -73,20 +60,13 @@ python -m pip install -U pip setuptools wheel
 python -m pip install -U openmim
 mim install mmengine
 ```
+The `--index-url` pin ensures PyTorch uses CUDA 12.6 (`cu126`) builds, compatible with the module you loaded. MMEngine is the runtime framework required by MMDet/MMDet3D.
 
-Explanation
-- The `--index-url` pin ensures PyTorch uses CUDA 12.6 (`cu126`) builds, compatible with the module you loaded.
-- MMEngine is the runtime framework required by MMDet/MMDet3D.
-
-Install our own built version of mmcv-full:
+MMCV-full contains CUDA/C++ ops required by MMDet3D; `mmcv-lite` does not. Installing a local prebuilt wheel avoids compiling MMCV on the cluster. Install our own built version of mmcv-full under our shared folder:
 ```bash
 pip install /data/cmpe249-fa25/mmcv-2.1.0*-linux_x86_64.whl
 ```
-
-Explanation
-- MMCV-full contains CUDA/C++ ops required by MMDet3D; `mmcv-lite` does not.
-- Installing a local prebuilt wheel avoids compiling MMCV on the cluster, which can be heavy.
-- If you must compile MMCV later, see the “Installation Debug” section.
+If you must compile MMCV later, see the “Installation Debug” section.
 
 Run the following script in the command line to check the installations:
 ```bash
@@ -113,6 +93,7 @@ Explanation
 - `mmcv._ext` being True confirms C++/CUDA ops are available; this is required by many 3D models.
 - If False, you likely installed `mmcv-lite` or built MMCV incorrectly; see “Installation Debug”.
 
+Install mmdet and mmdet3d, make sure the versions are compatible with each other.
 ```bash
 mim install "mmdet>=3.0.0,<3.3.0" #mim install 'mmdet>=3.0.0' #
 mim install "mmdet3d>=1.1.0"
@@ -129,37 +110,27 @@ print("MMDet     :", mmdet.__version__)
 print("MMDet3D   :", mmdet3d.__version__)
 PY
 ```
+Pin `numpy<2` because many scientific stacks and some compiled extensions still expect NumPy < 2.0 ABI.
 
-Explanation
-- Pinning `mmdet` and `mmdet3d` to known working ranges helps avoid breaking changes.
-- Pin `numpy<2` because many scientific stacks and some compiled extensions still expect NumPy < 2.0 ABI.
-- After installing, confirm versions import cleanly without errors.
 
 Download the mmdetection3d source code to your specified directory:
 ```bash
 $ git clone https://github.com/open-mmlab/mmdetection3d.git
 ```
 
-Explanation
-- Cloning the source makes it easier to run tools and demos, and to track configs and models.
-
 Enter into the mmdetection3d directory and download the models:
 ```bash
 cd mmdetection3d
-(py310) [mmdetection3d]$ mim download mmdet3d --config pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d --dest ./modelzoo_mmdetection3d/
-processing pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d...
-downloading ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.9/18.9 MiB 14.3 MB/s eta 0:00:00
-Successfully downloaded hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth to /fs/atipa/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d
-Successfully dumped pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d.py to /fs/atipa/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d
+(py310) [mmdetection3d]$ mim download mmdet3d --config pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car --dest ./modelzoo_mmdetection3d/
+```
+These model configures are available for download:
+```bash
+'3dssd_4x4_kitti-3d-car', 'centerpoint_voxel01_second_secfpn_head-circlenms_8xb4-cyclic-20e_nus-3d', 'centerpoint_voxel01_second_secfpn_head-dcn-circlenms_8xb4-cyclic-20e_nus-3d', 'centerpoint_voxel0075_second_secfpn_head-circlenms_8xb4-cyclic-20e_nus-3d', 'centerpoint_voxel0075_second_secfpn_head-dcn-circlenms_8xb4-cyclic-20e_nus-3d', 'centerpoint_pillar02_second_secfpn_head-circlenms_8xb4-cyclic-20e_nus-3d', 'centerpoint_pillar02_second_secfpn_head-dcn_8xb4-cyclic-20e_nus-3d', 'dgcnn_4xb32-cosine-100e_s3dis-seg_test-area1.py', 'dgcnn_4xb32-cosine-100e_s3dis-seg_test-area2.py', 'dgcnn_4xb32-cosine-100e_s3dis-seg_test-area3.py', 'dgcnn_4xb32-cosine-100e_s3dis-seg_test-area4.py', 'dgcnn_4xb32-cosine-100e_s3dis-seg_test-area5.py', 'dgcnn_4xb32-cosine-100e_s3dis-seg_test-area6.py', 'dv_second_secfpn_6x8_80e_kitti-3d-car', 'dv_second_secfpn_2x8_cosine_80e_kitti-3d-3class', 'dv_pointpillars_secfpn_6x8_160e_kitti-3d-car', 'fcos3d_r101-caffe-dcn_fpn_head-gn_8xb2-1x_nus-mono3d_finetune', 'pointpillars_hv_fpn_sbn-all_8xb4-2x_nus-3d', 'pointpillars_hv_fpn_head-free-anchor_sbn-all_8xb4-2x_nus-3d', 'pointpillars_hv_regnet-400mf_fpn_sbn-all_8xb4-2x_nus-3d', 'pointpillars_hv_regnet-400mf_fpn_head-free-anchor_sbn-all_8xb4-2x_nus-3d', 'hv_pointpillars_regnet-1.6gf_fpn_sbn-all_free-anchor_4x8_2x_nus-3d', 'pointpillars_hv_regnet-1.6gf_fpn_head-free-anchor_sbn-all_8xb4-strong-aug-3x_nus-3d', 'pointpillars_hv_regnet-3.2gf_fpn_head-free-anchor_sbn-all_8xb4-2x_nus-3d', 'pointpillars_hv_regnet-3.2gf_fpn_head-free-anchor_sbn-all_8xb4-strong-aug-3x_nus-3d', 'groupfree3d_head-L6-O256_4xb8_scannet-seg.py', 'groupfree3d_head-L12-O256_4xb8_scannet-seg.py', 'groupfree3d_w2x-head-L12-O256_4xb8_scannet-seg.py', 'groupfree3d_w2x-head-L12-O512_4xb8_scannet-seg.py', 'h3dnet_3x8_scannet-3d-18class', 'imvotenet_faster_rcnn_r50_fpn_2x4_sunrgbd-3d-10class', 'imvotenet_stage2_16x8_sunrgbd-3d-10class', 'imvoxelnet_kitti-3d-car', 'monoflex_dla34_pytorch_dlaneck_gn-all_2x4_6x_kitti-mono3d', 'dv_mvx-fpn_second_secfpn_adamw_2x8_80e_kitti-3d-3class', 'mask-rcnn_r50_fpn_1x_nuim', 'mask-rcnn_r50_fpn_coco-2x_1x_nuim', 'mask-rcnn_r50_caffe_fpn_1x_nuim', 'mask-rcnn_r50_caffe_fpn_coco-3x_1x_nuim', 'mask-rcnn_r50_caffe_fpn_coco-3x_20e_nuim', 'mask-rcnn_r101_fpn_1x_nuim', 'mask-rcnn_x101_32x4d_fpn_1x_nuim', 'cascade-mask-rcnn_r50_fpn_1x_nuim', 'cascade-mask-rcnn_r50_fpn_coco-20e_1x_nuim', 'cascade-mask-rcnn_r50_fpn_coco-20e_20e_nuim', 'cascade-mask-rcnn_r101_fpn_1x_nuim', 'cascade-mask-rcnn_x101_32x4d_fpn_1x_nuim', 'htc_r50_fpn_coco-20e_1x_nuim', 'htc_r50_fpn_coco-20e_20e_nuim', 'htc_x101_64x4d_fpn_dconv_c3-c5_coco-20e_16x1_20e_nuim', 'paconv_ssg_8xb8-cosine-150e_s3dis-seg.py', 'paconv_ssg-cuda_8xb8-cosine-200e_s3dis-seg', 'parta2_hv_secfpn_8xb2-cyclic-80e_kitti-3d-3class', 'parta2_hv_secfpn_8xb2-cyclic-80e_kitti-3d-car', 'pgd_r101-caffe_fpn_head-gn_4xb3-4x_kitti-mono3d', 'pgd_r101-caffe_fpn_head-gn_16xb2-1x_nus-mono3d', 'pgd_r101-caffe_fpn_head-gn_16xb2-1x_nus-mono3d_finetune', 'pgd_r101-caffe_fpn_head-gn_16xb2-2x_nus-mono3d', 'pgd_r101-caffe_fpn_head-gn_16xb2-2x_nus-mono3d_finetune', 'point-rcnn_8xb2_kitti-3d-3class', 'pointnet2_ssg_2xb16-cosine-200e_scannet-seg-xyz-only', 'pointnet2_ssg_2xb16-cosine-200e_scannet-seg', 'pointnet2_msg_2xb16-cosine-250e_scannet-seg-xyz-only', 'pointnet2_msg_2xb16-cosine-250e_scannet-seg', 'pointnet2_ssg_2xb16-cosine-50e_s3dis-seg', 'pointnet2_msg_2xb16-cosine-80e_s3dis-seg', 'pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car', 'pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class', 'pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d', 'pointpillars_hv_secfpn_sbn-all_8xb4-amp-2x_nus-3d', 'pointpillars_hv_fpn_sbn-all_8xb4-amp-2x_nus-3d', 'pointpillars_hv_secfpn_sbn-all_8xb2-2x_lyft-3d', 'pointpillars_hv_fpn_sbn-all_8xb2-2x_lyft-3d', 'pointpillars_hv_secfpn_sbn_2x16_2x_waymoD5-3d-car', 'pointpillars_hv_secfpn_sbn_2x16_2x_waymoD5-3d-3class', 'pointpillars_hv_secfpn_sbn_2x16_2x_waymo-3d-car', 'pointpillars_hv_secfpn_sbn_2x16_2x_waymo-3d-3class', 'pointpillars_hv_regnet-400mf_secfpn_sbn-all_4x8_2x_nus-3d', 'pointpillars_hv_regnet-1.6gf_fpn_sbn-all_8xb4-2x_nus-3d', 'pointpillars_hv_regnet-400mf_secfpn_sbn-all_2x8_2x_lyft-3d', 'pointpillars_hv_regnet-400mf_fpn_sbn-all_2x8_2x_lyft-3d', 'second_hv_secfpn_8xb6-80e_kitti-3d-car', 'second_hv_secfpn_8xb6-80e_kitti-3d-3class', 'second_hv_secfpn_sbn-all_16xb2-2x_waymoD5-3d-3class', 'second_hv_secfpn_8xb6-amp-80e_kitti-3d-car', 'second_hv_secfpn_8xb6-amp-80e_kitti-3d-3class', 'smoke_dla34_dlaneck_gn-all_4xb8-6x_kitti-mono3d', 'hv_ssn_secfpn_sbn-all_16xb2-2x_nus-3d', 'hv_ssn_regnet-400mf_secfpn_sbn-all_16xb2-2x_nus-3d', 'hv_ssn_secfpn_sbn-all_16xb2-2x_lyft-3d', 'hv_ssn_regnet-400mf_secfpn_sbn-all_16xb1-2x_lyft-3d', 'votenet_8xb16_sunrgbd-3d.py', 'votenet_8xb8_scannet-3d.py', 'votenet_iouloss_8x8_scannet-3d-18class', 'minkunet18_w16_torchsparse_8xb2-amp-15e_semantickitti', 'minkunet18_w20_torchsparse_8xb2-amp-15e_semantickitti', 'minkunet18_w32_torchsparse_8xb2-amp-15e_semantickitti', 'minkunet34_w32_minkowski_8xb2-laser-polar-mix-3x_semantickitti', 'minkunet34_w32_spconv_8xb2-amp-laser-polar-mix-3x_semantickitti', 'minkunet34_w32_spconv_8xb2-laser-polar-mix-3x_semantickitti', 'minkunet34_w32_torchsparse_8xb2-amp-laser-polar-mix-3x_semantickitti', 'minkunet34_w32_torchsparse_8xb2-laser-polar-mix-3x_semantickitti', 'minkunet34v2_w32_torchsparse_8xb2-amp-laser-polar-mix-3x_semantickitti', 'cylinder3d_4xb4-3x_semantickitti', 'cylinder3d_8xb2-laser-polar-mix-3x_semantickitti', 'pv_rcnn_8xb2-80e_kitti-3d-3class', 'fcaf3d_2xb8_scannet-3d-18class', 'fcaf3d_2xb8_sunrgbd-3d-10class', 'fcaf3d_2xb8_s3dis-3d-5class', 'spvcnn_w16_8xb2-amp-15e_semantickitti', 'spvcnn_w20_8xb2-amp-15e_semantickitti', 'spvcnn_w32_8xb2-amp-15e_semantickitti', 'spvcnn_w32_8xb2-amp-laser-polar-mix-3x_semantickitti'
 ```
 
-Explanation
-- `mim download` fetches the exact config and checkpoint needed for testing.
-- Store them under `modelzoo_mmdetection3d/` for consistency.
-
-Run the demo script to verify the installation:
+`mim download` fetches the exact config and checkpoint needed for testing. Store them under a local folder (e.g., `modelzoo_mmdetection3d/`) for consistency. Run the demo script to verify the installation:
 ```bash
-(py310) [mmdetection3d]$ python demo/pcd_demo.py demo/data/kitti/000008.bin pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth --out-dir demo/results
+(py310) [mmdetection3d]$ python demo/pcd_demo.py demo/data/kitti/000008.bin modelzoo_mmdetection3d/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-car.py modelzoo_mmdetection3d/hv_pointpillars_secfpn_6x8_160e_kitti-3d-car_20220331_134606-d42d15ed.pth --out-dir demo/results
 ```
 
 Explanation
@@ -167,19 +138,18 @@ Explanation
 - The output should include visualizations saved under `demo/results`.
 
 ### Request one GPU node
+Submit an interactive GPU job through Slurm (`gpuqs` partition). Do all heavy work (data processing, evaluation, training) on your assigned GPU node.
 ```bash
 srun -p gpuqs --pty /bin/bash
 ```
-Explanation
-- Submit an interactive GPU job through Slurm (`gpuqs` partition).
-- Do all heavy work (data processing, evaluation, training) on your assigned GPU node.
+
 
 After you got the GPU node, check the GPU status:
 ```bash
 nvidia-smi
 ```
-Explanation
-- Confirm CUDA devices are visible and drivers load successfully.
+Confirm CUDA devices are visible and drivers load successfully.
+
 
 The internal GPU node does not have internet access, set internet proxy environment variables to enable the internet access for the GPU node (you can run the command line or put in `~/.bashrc`):
 ```bash
@@ -190,12 +160,14 @@ curl "https://www.sjsu.edu"  # also works
 ```
 
 Explanation
-- Some GPU nodes are behind a firewall without direct internet. Configure proxies to allow `git`, `pip`, and `curl` to work.
+- GPU nodes are behind a firewall without direct internet. Configure proxies to allow `git`, `pip`, and `curl` to work.
 - You can add these to `~/.bashrc` if you need persistent access.
 
 ### Run benchmark evaluation
 
-Run the benchmark evaluation inside the mmdetection3d directory and make sure the python environment is activated:
+Run the benchmark evaluation inside the mmdetection3d directory and make sure the python environment is activated.
+
+Create a symlink to the actual dataset location (e.g., data/kitti or data/nuscenes inside the mmdetection3d folder). This benchmark evaluation runs on the validation split of the NuScenes dataset:
 ```bash
 (py310) [010796032@g21 mmdetection3d]$ python tools/test.py ./modelzoo_mmdetection3d/pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d.py ./modelzoo_mmdetection3d/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth
 ```
@@ -225,10 +197,6 @@ $ git clone https://github.com/open-mmlab/mmdetection3d.git
 3.3.0
 ```
 
-Explanation
-- This “quick path” is suitable on local machines where internet is unrestricted and CUDA toolchains are standard.
-- `pip install -e .` installs from source (editable mode) for development.
-- Validate MMDet/MMDet3D versions after install.
 
 ## Dataset Preparation
 ```bash
