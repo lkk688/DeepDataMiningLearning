@@ -167,9 +167,26 @@ Explanation
 
 Run the benchmark evaluation inside the mmdetection3d directory and make sure the python environment is activated.
 
-Create a symlink to the actual dataset location (e.g., data/kitti or data/nuscenes inside the mmdetection3d folder). This benchmark evaluation runs on the validation split of the NuScenes dataset:
+Create a symlink to the actual dataset location (e.g., data/kitti or data/nuscenes inside the mmdetection3d folder). 
 ```bash
-(py310) [010796032@g21 mmdetection3d]$ python tools/test.py ./modelzoo_mmdetection3d/pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d.py ./modelzoo_mmdetection3d/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth
+# 1) Set your repo path
+MMDETECTION3D=/yourpath/mmdetection3d
+
+# 2) Create data dir
+mkdir -p "$MMDETECTION3D/data"
+
+# 3) Symlinks (idempotent: -s=symlink, -n=treat link as file, -f=overwrite link)
+ln -snf /data/cmpe249-fa25/nuscenes/v1.0-trainval      "$MMDETECTION3D/data/nuScenes"
+ln -snf /data/cmpe249-fa25/kitti         "$MMDETECTION3D/data/kitti"
+ln -snf /data/cmpe249-fa25/waymov143_individuals         "$MMDETECTION3D/data/waymo"
+
+# 4) Verify
+ls -l "$MMDETECTION3D/data"
+```
+
+This benchmark evaluation runs on the validation split of the NuScenes dataset:
+```bash
+(py310) mmdetection3d]$ python tools/test.py ./modelzoo_mmdetection3d/pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d.py ./modelzoo_mmdetection3d/hv_pointpillars_secfpn_sbn-all_4x8_2x_nus-3d_20210826_225857-f19d00a3.pth
 ```
 
 Explanation
@@ -200,6 +217,7 @@ $ git clone https://github.com/open-mmlab/mmdetection3d.git
 
 ## Dataset Preparation
 ```bash
+python tools/create_data.py kitti --root-path ./data/kitti --out-dir ./data/kitti --extra-tag kitti
 (py310) lkk688@newalienware:~/Developer/mmdetection3d$ ln -snf /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval ./data/nuScenes
 (py310) lkk688@newalienware:~/Developer/mmdetection3d$ python tools/create_data.py nuscenes --root-path ./data/nuScenes --out-dir ./data/nuScenes --extra-tag nuscenes
 ```
