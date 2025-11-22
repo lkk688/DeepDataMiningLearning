@@ -99,7 +99,7 @@ def validate_weights_only(path: Path):
 
 def main():
     ap = argparse.ArgumentParser(description="Convert a checkpoint to weights-only format with backup.")
-    ap.add_argument("--ckpt", default="/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9/epoch_2.pth", type=str, help="Path to checkpoint (e.g., epoch_1.pth)")
+    ap.add_argument("--ckpt", default="/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion12v2/epoch_8.pth", type=str, help="Path to checkpoint (e.g., epoch_1.pth)")
     ap.add_argument("--prefer-ema", action="store_true", help="Prefer EMA weights if present.")
     ap.add_argument("--backup-suffix", type=str, default=None,
                     help="Backup suffix (default: .backup-YYYYmmdd-HHMMSS)")

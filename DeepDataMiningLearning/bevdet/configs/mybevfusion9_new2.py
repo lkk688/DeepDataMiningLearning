@@ -122,7 +122,7 @@ model = dict(
     view_transform=dict(
         type='CrossAttnLSSTransform',
         in_channels=256,           # matches P3/P3' channel
-        out_channels=64,           # camera BEV channels kept small for bandwidth
+        out_channels=128,           # camera BEV channels kept small for bandwidth
         image_size=[256, 704],
         feature_size=[32, 88],     # consumes P3/P3' (stride 8)
         xbound=[-54.0, 54.0, 0.3],
@@ -141,7 +141,7 @@ model = dict(
     # OUTPUT: fused BEV   [B, 256, 180, 180]
     fusion_layer=dict(
         type='ConvFuser',
-        in_channels=[64, 256],
+        in_channels=[128, 256],
         out_channels=256
     ),
     bbox_head=dict(in_channels=256),
@@ -186,7 +186,7 @@ if voxel_painting_on:
         feature_size=[32, 88],      # align with VT input level
         img_feat_level=0,           # use P3/P3' for painting
         cam_pool='avg',             # 'avg' (smoother) or 'max'
-        img_feat_out=32,            # per-voxel image descriptor dim before gating
+        img_feat_out=64,            # per-voxel image descriptor dim before gating
         fuse='gated',               # channel-wise sigmoid gate
         detach_img=True,            # backprop only through LiDAR branch
         align_corners=True,
@@ -271,7 +271,7 @@ train_pipeline = [
 test_pipeline = [
     dict(type='BEVLoadMultiViewImageFromFiles', to_float32=True, color_type='color', backend_args=backend_args),
     dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=5, use_dim=5, backend_args=backend_args),
-    dict(type='LoadPointsFromMultiSweeps', sweeps_num=5, load_dim=5, use_dim=5, pad_empty_sweeps=True, remove_close=True, backend_args=backend_args),
+    dict(type='LoadPointsFromMultiSweeps', sweeps_num=10, load_dim=5, use_dim=5, pad_empty_sweeps=True, remove_close=True, backend_args=backend_args),
     dict(type='ImageAug3D', final_dim=[256, 704], resize_lim=[0.48, 0.48], bot_pct_lim=[0.0, 0.0], rot_lim=[0.0, 0.0], rand_flip=False, is_train=False),
     dict(type='PointsRangeFilter', point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]),
     dict(type='Pack3DDetInputs', keys=['img','points','gt_bboxes_3d','gt_labels_3d'],
@@ -279,7 +279,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=32, num_workers=16, persistent_workers=True, pin_memory=True, prefetch_factor=4,
+    batch_size=16, num_workers=16, persistent_workers=True, pin_memory=True, prefetch_factor=4,
     dataset=dict(dataset=dict(pipeline=train_pipeline, modality=input_modality))
 )
 val_dataloader = dict(
@@ -361,7 +361,7 @@ custom_hooks = [
             'img_rpf_neck',   # 2D RPF enhancer
             'pts_neck'        # FireRPF neck (when replacing SECFPN)
         ),
-        freeze_norm=True, verbose=True, use_regex=False
+        freeze_norm=False, verbose=True, use_regex=False
     ),
     #dict(type='EMAHook', momentum=0.0002, update_buffers=True),
     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True),
@@ -369,14 +369,9 @@ custom_hooks = [
 # custom_hooks=[
 #     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True),
 # ]
-#load_from = '/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth'  # ← EDIT ME
-load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new/epoch_6.pth'  # ← EDIT ME
 
-#load_from = '/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth'  # ← EDIT ME
+load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new/epoch_6.pth'  # ← EDIT ME
 load_cfg = dict(strict=False)
 # Make sure we don’t pick up an old run’s last_checkpoint
 auto_resume = False
 resume = False
-
-# (Optional) send outputs to a fresh work_dir to avoid accidental resume
-work_dir = 'work_dirs/mybevfusion11_new'

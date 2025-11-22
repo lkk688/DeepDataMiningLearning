@@ -1,3 +1,5 @@
+
+#copy from mybevfusion9_new2
 # ===============================================================
 # BEVFusion + CrossAttn LSS + (optional) VoxelPainting with Gating
 # + Optional Image RPF neck (post-FPN enhancer)
@@ -25,10 +27,8 @@ default_scope = 'mmdet3d'
 custom_imports = dict(
     imports=[
         # Your existing modules
-        'projects.bevdet.bevfusion',               # BEVFusion core
-        'projects.bevdet.cross_attn_lss',          # CrossAttnLSSTransform
-        'projects.bevdet.bevfusion_with_aux_mvx',  # subclass with AUX loss & hooks
-        'projects.bevdet.painting_context',
+        'projects.bevdet.cross_attn_lss2',          # CrossAttnLSSTransform
+        'projects.bevdet.bevfusion_ca',  # subclass with AUX loss & hooks
         'projects.bevdet.mvx_voxel_painting',
         'projects.bevdet.freeze_utils',
         # OPTIONAL RPF modules (from extension branch). Only needed if switches are True.
@@ -56,15 +56,26 @@ input_modality = dict(use_lidar=True, use_camera=True)
 #   Ncam := #cameras (usually 6 for nuScenes)
 #   BEV grid: xbound/ybound with step 0.3m → 108/0.3 = 360 cells, downsample=2 → 180
 model = dict(
-    type='BEVFusionWithAux',
+    type='BEVFusionCA',
     voxel_painting_on=voxel_painting_on,
+    use_two_scale_tokens=True,                        # send [P3,P4] into VT
 
     # Data preprocessor (RGB order; Swin expects RGB)
+    # data_preprocessor=dict(
+    #     type='Det3DDataPreprocessor',
+    #     mean=[123.675, 116.28, 103.53],
+    #     std=[58.395, 57.12, 57.375],
+    #     bgr_to_rgb=True
+    # ),
     data_preprocessor=dict(
         type='Det3DDataPreprocessor',
-        mean=[123.675, 116.28, 103.53],
-        std=[58.395, 57.12, 57.375],
-        bgr_to_rgb=True
+        mean=[123.675,116.28,103.53], std=[58.395,57.12,57.375], bgr_to_rgb=True,
+        voxelize_cfg=dict(
+            voxelize_reduce=True,
+            max_num_points=10,
+            voxel_size=[0.075,0.075,0.2],
+            point_cloud_range=point_cloud_range
+        )
     ),
 
     # ------------------------ IMAGE BRANCH -------------------------------
@@ -122,7 +133,7 @@ model = dict(
     view_transform=dict(
         type='CrossAttnLSSTransform',
         in_channels=256,           # matches P3/P3' channel
-        out_channels=64,           # camera BEV channels kept small for bandwidth
+        out_channels=128,           # camera BEV channels kept small for bandwidth
         image_size=[256, 704],
         feature_size=[32, 88],     # consumes P3/P3' (stride 8)
         xbound=[-54.0, 54.0, 0.3],
@@ -130,9 +141,13 @@ model = dict(
         zbound=[-5.0, 5.0, 10.0],
         dbound=[1.0, 60.0, 0.5],
         downsample=2,              # BEV 180 x 180
-        num_z=2,
+        num_z=4,
         use_cam_embed=True,
         attn_chunk=8192,           # H100-friendly; 16384 if memory allows
+        # multiscale adapters: because FPN P3/P4 are 256ch each
+        ms_extra_in_channels=[256],                 # for P4
+        ms_fuse_mode="gated_add",
+        ms_align_corners=False,
         debug=False
     ),
 
@@ -141,7 +156,7 @@ model = dict(
     # OUTPUT: fused BEV   [B, 256, 180, 180]
     fusion_layer=dict(
         type='ConvFuser',
-        in_channels=[64, 256],
+        in_channels=[128, 256],
         out_channels=256
     ),
     bbox_head=dict(in_channels=256),
@@ -186,7 +201,7 @@ if voxel_painting_on:
         feature_size=[32, 88],      # align with VT input level
         img_feat_level=0,           # use P3/P3' for painting
         cam_pool='avg',             # 'avg' (smoother) or 'max'
-        img_feat_out=32,            # per-voxel image descriptor dim before gating
+        img_feat_out=64,            # per-voxel image descriptor dim before gating
         fuse='gated',               # channel-wise sigmoid gate
         detach_img=True,            # backprop only through LiDAR branch
         align_corners=True,
@@ -210,6 +225,36 @@ model.update(dict(
 #   SECFPN.out_channels = [256, 256]
 #   #outs = 2 ; first deblock uses stride 1 (128->256), second uses stride 2 (256->256)
 if use_rpf_lidar:
+    # Keep SECFPN and add FireRPF *after* it
+    # model.update(dict(
+    #     pts_neck=dict(
+    #         _delete_=True,                   # override the base pts_neck
+    #         type='StackNeck',
+    #         necks=[
+    #             # 1) original SECFPN (same pins as your base)
+    #             dict(
+    #                 type='SECONDFPN',
+    #                 in_channels=[128, 256],
+    #                 out_channels=[256, 256],
+    #                 upsample_strides=[1, 2],
+    #                 norm_cfg=dict(type='BN', eps=0.001, momentum=0.01),
+    #                 upsample_cfg=dict(type='deconv', bias=False),
+    #                 use_conv_for_no_stride=True
+    #             ),
+    #             # 2) FireRPFNeck refiners operating on SECFPN outputs
+    #             dict(
+    #                 type='FireRPFNeck',
+    #                 in_channels=[256, 256],   # <-- match SECFPN outputs
+    #                 out_channels=256,
+    #                 num_outs=2,
+    #                 upsample_strides=[1, 1],  # keep scales; no extra upsampling
+    #                 blocks_per_stage=1,       # start small; increase if headroom
+    #                 with_residual=True,
+    #                 use_cbam=True, ca_reduction=16, sa_kernel=7
+    #             )
+    #         ]
+    #     )
+    # ))
     model.update(dict(
         pts_neck=dict(
             type='FireRPFNeck',            # from extension branch
@@ -217,7 +262,7 @@ if use_rpf_lidar:
             out_channels=256,
             num_outs=2,                    # << pinned
             upsample_strides=[1, 2],       # keep spatial scale behavior aligned with SECFPN
-            blocks_per_stage=1,            # tiny, stable; increase if headroom
+            blocks_per_stage=2,            # tiny, stable; increase if headroom
             with_residual=True,
             use_cbam=True, ca_reduction=16, sa_kernel=7,
         )
@@ -261,7 +306,6 @@ train_pipeline = [
         keys=['points','img','gt_bboxes_3d','gt_labels_3d','gt_bboxes','gt_labels'],
         meta_keys=[
             'cam2img','ori_cam2img','lidar2cam','lidar2img','cam2lidar',
-            'img_aug_matrix','lidar_aug_matrix',
             'box_type_3d','sample_idx','lidar_path','img_path',
             'transformation_3d_flow','pcd_rotation','pcd_scale_factor','pcd_trans',
             'img_aug_matrix','lidar_aug_matrix','num_pts_feats'
@@ -271,7 +315,7 @@ train_pipeline = [
 test_pipeline = [
     dict(type='BEVLoadMultiViewImageFromFiles', to_float32=True, color_type='color', backend_args=backend_args),
     dict(type='LoadPointsFromFile', coord_type='LIDAR', load_dim=5, use_dim=5, backend_args=backend_args),
-    dict(type='LoadPointsFromMultiSweeps', sweeps_num=5, load_dim=5, use_dim=5, pad_empty_sweeps=True, remove_close=True, backend_args=backend_args),
+    dict(type='LoadPointsFromMultiSweeps', sweeps_num=10, load_dim=5, use_dim=5, pad_empty_sweeps=True, remove_close=True, backend_args=backend_args),
     dict(type='ImageAug3D', final_dim=[256, 704], resize_lim=[0.48, 0.48], bot_pct_lim=[0.0, 0.0], rot_lim=[0.0, 0.0], rand_flip=False, is_train=False),
     dict(type='PointsRangeFilter', point_cloud_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]),
     dict(type='Pack3DDetInputs', keys=['img','points','gt_bboxes_3d','gt_labels_3d'],
@@ -279,7 +323,7 @@ test_pipeline = [
 ]
 
 train_dataloader = dict(
-    batch_size=32, num_workers=16, persistent_workers=True, pin_memory=True, prefetch_factor=4,
+    batch_size=16, num_workers=16, persistent_workers=True, pin_memory=True, prefetch_factor=4,
     dataset=dict(dataset=dict(pipeline=train_pipeline, modality=input_modality))
 )
 val_dataloader = dict(
@@ -361,7 +405,7 @@ custom_hooks = [
             'img_rpf_neck',   # 2D RPF enhancer
             'pts_neck'        # FireRPF neck (when replacing SECFPN)
         ),
-        freeze_norm=True, verbose=True, use_regex=False
+        freeze_norm=False, verbose=True, use_regex=False
     ),
     #dict(type='EMAHook', momentum=0.0002, update_buffers=True),
     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True),
@@ -369,14 +413,9 @@ custom_hooks = [
 # custom_hooks=[
 #     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True),
 # ]
-#load_from = '/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth'  # ← EDIT ME
-load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new/epoch_6.pth'  # ← EDIT ME
 
-#load_from = '/data/rnd-liu/MyRepo/mmdetection3d/modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth'  # ← EDIT ME
+load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new/epoch_6.pth'  # ← EDIT ME
 load_cfg = dict(strict=False)
 # Make sure we don’t pick up an old run’s last_checkpoint
 auto_resume = False
 resume = False
-
-# (Optional) send outputs to a fresh work_dir to avoid accidental resume
-work_dir = 'work_dirs/mybevfusion11_new'
