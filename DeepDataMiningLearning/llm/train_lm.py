@@ -29,15 +29,20 @@ class Evaluator:
       ✅ Hugging Face `evaluate` integration (optional BLEU/ROUGE)
     """
 
-    def __init__(self, model, data, mode="teacher-forced", hf_model=False):
+    def __init__(self, model, data, mode="teacher-forced", hf_model=False, task="lm"):
         self.model = model
         self.data = data
         self.mode = mode
         self.hf_model = hf_model
+        self.task = task
         self.device = next(model.parameters()).device
     
     def _get_pad_id(self):
         """Retrieve pad token ID dynamically from dataset/tokenizer."""
+        # For instruction tuning, we use -100 for masking, but we still need the pad_id for the model input
+        # However, the loss calculation should ignore -100.
+        # If task is instruction, the labels already contain -100 where appropriate.
+        
         # Try in several places
         if hasattr(self.data, "pad_id") and self.data.pad_id is not None:
             return self.data.pad_id
@@ -48,7 +53,8 @@ class Evaluator:
             if hasattr(tok, "tokenizer") and hasattr(tok.tokenizer, "pad_token_id"):
                 return tok.tokenizer.pad_token_id
         # Fallback
-        return -100 #0
+        return 0 # Default to 0 if not found
+
 
     # ------------------------------------------------------------
     # Main Evaluation
@@ -114,7 +120,11 @@ class Evaluator:
                         x = x.to(self.device)
                         labels = x.clone()
                         # HF causal LM expects ignore_index == -100 at padded positions
-                        labels[labels == pad_id] = -100
+                        # If task is instruction, labels might already have -100.
+                        # If task is lm, we need to mask padding.
+                        if self.task != "instruction":
+                             labels[labels == pad_id] = -100
+                        
                         inputs = {
                             "input_ids": x,
                             "labels": labels, # same as the input y.to(self.device),
@@ -167,6 +177,7 @@ class Evaluator:
                         total_correct += (preds.eq(shift_labels) & mask).sum().item()
                         total_count   += mask.sum().item()
                     continue
+
 
                 # --------------------------------------------------
                 # Case 2 — Encoder–Decoder (FullTransformer, PyTorchTransformer)
@@ -244,17 +255,27 @@ class Evaluator:
                     T = x.size(1)
                     mask = TransformerLM.causal_mask(T, x.device)
                     logits = self.model(x, attn_mask=mask)
-                    pad_idx = getattr(self.data, "pad_idx", -100)
+                    
+                    # Determine ignore_index
+                    pad_idx = self._get_pad_id()
+                    ignore_index = -100 if self.task == "instruction" else pad_idx
+
                     loss = F.cross_entropy(
                         logits.view(-1, logits.size(-1)),
                         y.view(-1),
-                        ignore_index=pad_idx,
+                        ignore_index=ignore_index,
                     )
                     total_loss += loss.item()
                     preds = logits.argmax(-1)
-                    total_correct += (preds == y).sum().item()
-                    total_count += y.numel()
+                    
+                    # Correctness check
+                    # For instruction, y has -100. For LM, y has pad_idx.
+                    # We should mask out ignore_index for accuracy calc.
+                    valid_mask = (y != ignore_index)
+                    total_correct += (preds == y).masked_select(valid_mask).sum().item()
+                    total_count += valid_mask.sum().item()
                     continue
+
 
                 elif self.hf_model==False and self.mode == "final-token":
                     x, y, lengths = [t.to(self.device) for t in batch]
@@ -302,8 +323,9 @@ class Trainer:
       ✅ Supports teacher-forced and final-token modes
       ✅ Early stopping
       ✅ Optional Hugging Face model compatibility
+      ✅ Torch Compile support
     """
-    def __init__(self, model, data, tcfg, mode="teacher-forced", hf_model=False, early_stop_patience=2):
+    def __init__(self, model, data, tcfg, mode="teacher-forced", hf_model=False, early_stop_patience=2, task="lm", peft_config=None):
         """
         Args:
             model: TransformerLM or Hugging Face model (e.g. AutoModelForCausalLM)
@@ -311,32 +333,46 @@ class Trainer:
             tcfg: TrainConfig dataclass (lr, epochs, warmup, etc.)
             mode: 'teacher-forced' or 'final-token'
             hf_model: if True, assume Hugging Face forward signature (model(input_ids, labels=...))
+            task: 'lm', 'typing', 'instruction', 'seq2seq'
+            peft_config: Optional LoraConfig or PEFT config
         """
         self.model = model
         self.data = data
         self.mode = mode
         self.hf_model = hf_model
         self.tcfg = tcfg
+        self.task = task
 
         # Device selection
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
+        
+        # Keep reference to raw model for isinstance checks (in case of compilation)
+        self.raw_model = self.model
 
-        # # Optimizer and scheduler setup
-        # no_decay = ["bias", "LayerNorm.weight", "norm", "emb"]
-        # grouped_params = [
-        #     {
-        #         "params": [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)],
-        #         "weight_decay": tcfg.weight_decay,
-        #         "initial_lr": tcfg.lr,
-        #     },
-        #     {
-        #         "params": [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)],
-        #         "weight_decay": 0.0,
-        #         "initial_lr": tcfg.lr,
-        #     },
-        # ]
-        # self.opt = torch.optim.AdamW(grouped_params, lr=tcfg.lr, betas=(0.9, 0.95), eps=1e-8)
+        # ------------------------------------------------------------
+        # PEFT / LoRA Integration
+        # ------------------------------------------------------------
+        if peft_config is not None:
+            try:
+                from peft import get_peft_model
+                print("�️  Wrapping model with PEFT/LoRA...")
+                self.model = get_peft_model(self.model, peft_config)
+                self.model.print_trainable_parameters()
+                # Update raw_model reference if needed, though usually we check base model type
+                # self.raw_model = self.model.base_model.model # depends on structure
+            except ImportError:
+                print("⚠️  PEFT library not found. Skipping PEFT wrapping.")
+
+        # Optional: Compile model (PyTorch 2.0+)
+        if hasattr(torch, "compile") and os.name != "nt": # Skip on Windows if problematic
+             print("🚀 Compiling model with torch.compile()...")
+             try:
+                 self.model = torch.compile(self.model)
+             except Exception as e:
+                 print(f"⚠️ torch.compile failed: {e}. Proceeding without compilation.")
+
+
         # Optimizer and scheduler setup
         no_decay = ["bias", "LayerNorm.weight", "norm", "emb"]
 
@@ -434,7 +470,7 @@ class Trainer:
             if hasattr(tok, "tokenizer") and hasattr(tok.tokenizer, "pad_token_id"):
                 return tok.tokenizer.pad_token_id
         # Fallback
-        return -100 #0
+        return 0 # Default to 0
 
     def _compute_loss(self, batch):
         """
@@ -450,29 +486,12 @@ class Trainer:
             logits (Tensor): Model output logits
         """
         pad_idx = self._get_pad_id()
+        ignore_index = -100 if self.task == "instruction" else pad_idx
+        
         # -----------------------------------------------------------
         # Case 1: Hugging Face models (AutoModelForCausalLM)
         # -----------------------------------------------------------
         if self.hf_model:
-            # if isinstance(batch, dict):
-            #     inputs = {k: v.to(self.device) for k, v in batch.items()}
-            # elif isinstance(batch, (tuple, list)):
-            #     # Support (x, y) or (x, y, lengths)
-            #     x, y = batch[:2]
-            #     if x.size(0) != y.size(0):
-            #         raise ValueError(
-            #             f"❌ Input batch_size ({x.size(0)}) "
-            #             f"!= target batch_size ({y.size(0)}). "
-            #             "Check dataset: HF models require equal batch and seq length."
-            #         )
-            #     inputs = {
-            #         "input_ids": x.to(self.device),
-            #         "labels": y.to(self.device),
-            #         "attention_mask": (x != self._get_pad_id()).to(self.device),
-            #     }
-            # else:
-            #     raise TypeError(f"Unsupported batch type: {type(batch)}")
-
             #outputs = self.model(**inputs)
             # Normalize batch -> x (input_ids)
             if isinstance(batch, dict):
@@ -488,8 +507,12 @@ class Trainer:
             attention_mask = (x != pad_idx).to(self.device)
 
             # Labels = input_ids, with pads -> -100 (ignore_index)
-            labels = x.clone()
-            labels[labels == pad_idx] = -100
+            # For instruction tuning, if batch has labels, use them!
+            if self.task == "instruction" and isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                 labels = batch[1].to(self.device)
+            else:
+                 labels = x.clone()
+                 labels[labels == pad_idx] = -100
 
             outputs = self.model(
                 input_ids=x,
@@ -498,10 +521,11 @@ class Trainer:
             )
             return outputs.loss, outputs.logits
 
+
         # -----------------------------------------------------------
         # Case 2: RNN / LSTM (with optional sequence lengths)
         # -----------------------------------------------------------
-        if isinstance(self.model, (RNNLanguageModel, LSTMLanguageModel)):
+        if isinstance(self.raw_model, (RNNLanguageModel, LSTMLanguageModel)):
             # Handle both (x, y) and (x, y, lengths)
             if len(batch) == 3:
                 x, y, lengths = batch
@@ -532,7 +556,10 @@ class Trainer:
         # -----------------------------------------------------------
         # Case 3: Full Encoder–Decoder Transformer
         # -----------------------------------------------------------
-        if isinstance(self.model, (FullTransformer,PyTorchTransformer)):
+        # -----------------------------------------------------------
+        # Case 3: Full Encoder–Decoder Transformer
+        # -----------------------------------------------------------
+        if isinstance(self.raw_model, (FullTransformer,PyTorchTransformer)):
             # Batch structure: (src, tgt_input, tgt_output, src_lengths, tgt_lengths)
             src, tgt_in, tgt_out, _, _ = [t.to(self.device) for t in batch]
 
@@ -551,7 +578,10 @@ class Trainer:
         # -----------------------------------------------------------
         # Case 4: Decoder-only Transformers (TransformerLM)
         # -----------------------------------------------------------
-        if isinstance(self.model, (TransformerLM, TraditionalTransformerLM)):
+        # -----------------------------------------------------------
+        # Case 4: Decoder-only Transformers (TransformerLM)
+        # -----------------------------------------------------------
+        if isinstance(self.raw_model, (TransformerLM, TraditionalTransformerLM)):
             #pad_idx = getattr(self.data, "pad_id", -100)
             mode = getattr(self, "mode", "teacher-forced")
 
@@ -587,7 +617,7 @@ class Trainer:
                 loss = F.cross_entropy(
                     logits.reshape(-1, V),
                     y.reshape(-1),
-                    ignore_index=pad_idx,   # ✅ correct pad ID
+                    ignore_index=ignore_index,   # ✅ correct pad ID or -100
                 )
 
                 # Compute full-sequence cross-entropy loss
@@ -597,6 +627,7 @@ class Trainer:
                 #     ignore_index=pad_idx,
                 # )
                 return loss, logits
+
 
             # ========================================================
             # Final-token mode (prefix → next-token prediction)
@@ -683,9 +714,10 @@ class Trainer:
             
             # Validation at end of each epoch
             #evaluator = Evaluator(self.model, self.data, self.mode, hf_model=self.hf_model)
-            evaluator = Evaluator(model=self.model, data=self.data, mode=self.mode, hf_model=self.hf_model)
+            evaluator = Evaluator(model=self.model, data=self.data, mode=self.mode, hf_model=self.hf_model, task=self.task)
             val_loss, val_acc, val_ppl = evaluator.evaluate(split="valid")
             self.val_losses.append(val_loss)
+
             # Scheduler step
             # Scheduler step (only if scheduler exists)
             if self.scheduler:
@@ -759,8 +791,14 @@ def main():
     # --- General arguments ---
     parser.add_argument("--model_type", type=str, default="TransformerLM",
                         choices=["TransformerLM", "TraditionalTransformerLM", "FullTransformer", "RNN", "LSTM", "hf"])
+    parser.add_argument("--task", type=str, default="lm",
+                        choices=["lm", "typing", "instruction", "seq2seq"],
+                        help="Task type: 'lm', 'typing', 'instruction', 'seq2seq'")
     parser.add_argument("--hf_model_name", type=str, default="gpt2")
     parser.add_argument("--hf_name", type=str, default=None)
+    parser.add_argument("--tokenizer", type=str, default="char", help="Tokenizer type: 'char', 'hf:gpt2', etc.")
+
+
     parser.add_argument(
         "--scheduler",
         type=str,
@@ -790,7 +828,8 @@ def main():
     # ------------------------------------------------------------
     # 1️⃣ Dataset Creation
     # ------------------------------------------------------------
-    data = build_dataset(args.model_type, args)
+    # Pass 'task' explicitly to build_dataset
+    data = build_dataset(args.task, args)
 
     # ------------------------------------------------------------
     # 2️⃣ Model Initialization
@@ -811,15 +850,16 @@ def main():
         save_path=args.save,
     )
 
-    trainer = Trainer(model, data, tcfg, mode=args.mode, hf_model=hf_mode)
+    trainer = Trainer(model, data, tcfg, mode=args.mode, hf_model=hf_mode, task=args.task)
     trainer.fit()
 
     # ------------------------------------------------------------
     # 4️⃣ Evaluation
     # ------------------------------------------------------------
-    evaluator = Evaluator(model, data, mode=args.mode, hf_model=hf_mode)
+    evaluator = Evaluator(model, data, mode=args.mode, hf_model=hf_mode, task=args.task)
     loss, acc, ppl = evaluator.evaluate(split="valid")
     print(f"🏁 Final Evaluation | loss={loss:.4f} | acc={acc*100:.2f}% | ppl={ppl:.2f}")
+
     
 if __name__ == "__main__":
     #test_charmodel()

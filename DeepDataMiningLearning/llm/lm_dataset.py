@@ -386,10 +386,162 @@ class Seq2SeqDataset(Dataset):
             torch.tensor(tgt_input, dtype=torch.long),
             torch.tensor(tgt_output, dtype=torch.long),
         )
+
+# ============================================================
+# Instruction Dataset (for Instruction Tuning)
+# ============================================================
+class InstructionDataset(Dataset):
+    """
+    Dataset for Instruction Tuning (e.g., Alpaca, Vicuna style).
+    
+    Format:
+      Instruction: {instruction}
+      Input: {input} (optional)
+      Response: {output}
+      
+    The model is trained to predict the Response given the Instruction + Input.
+    We mask the loss for the Instruction + Input part (labels = -100).
+    """
+    def __init__(
+        self, 
+        data: List[Dict], 
+        tokenizer, 
+        seq_len: int = 256,
+        instruction_key: str = "instruction",
+        input_key: str = "input",
+        output_key: str = "output",
+        train_on_inputs: bool = False, # If False, mask out instruction/input in labels
+    ):
+        self.data = data
+        self.tokenizer = tokenizer
+        self.seq_len = seq_len
+        self.instruction_key = instruction_key
+        self.input_key = input_key
+        self.output_key = output_key
+        self.train_on_inputs = train_on_inputs
         
-# ============================================================
-# Modern Seq2Seq DataModule for Hugging Face translation datasets
-# ============================================================
+        # Templates can be customized. For now, using a simple default.
+        self.prompt_input = (
+            "Below is an instruction that describes a task, paired with an input that provides further context. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n"
+        )
+        self.prompt_no_input = (
+            "Below is an instruction that describes a task. "
+            "Write a response that appropriately completes the request.\n\n"
+            "### Instruction:\n{instruction}\n\n### Response:\n"
+        )
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        instruction = item.get(self.instruction_key, "")
+        input_text = item.get(self.input_key, "")
+        output_text = item.get(self.output_key, "")
+
+        if input_text:
+            prompt = self.prompt_input.format(instruction=instruction, input=input_text)
+        else:
+            prompt = self.prompt_no_input.format(instruction=instruction)
+
+        # Tokenize prompt and full source (prompt + output)
+        # We want the model to predict 'output_text' given 'prompt'.
+        # So full_text = prompt + output_text
+        
+        full_text = prompt + output_text + self.tokenizer.eos_token if hasattr(self.tokenizer, "eos_token") and self.tokenizer.eos_token else prompt + output_text
+        
+        # We need to be careful with tokenization to align labels.
+        # Strategy:
+        # 1. Tokenize prompt -> len_prompt
+        # 2. Tokenize full_text -> len_full
+        # 3. Labels = copy of input_ids
+        # 4. Labels[:len_prompt] = -100 (ignore)
+        
+        # Note: This simple strategy assumes tokenizer(prompt) is a prefix of tokenizer(prompt + output).
+        # This is usually true for BPE/WordPiece but edge cases exist. 
+        # A safer way is to tokenize separately and concatenate, but that might add extra spaces.
+        # For simplicity and speed, we'll use the concatenation approach if the tokenizer supports it,
+        # or just tokenize the full text and find the boundary.
+        
+        # Let's try the separate tokenization and concat approach for robustness with 'add_special_tokens=False'
+        
+        # Check if tokenizer is HF or custom
+        is_hf = hasattr(self.tokenizer, "encode_plus") or hasattr(self.tokenizer, "pad_token_id")
+        
+        if is_hf:
+            # Hugging Face Tokenizer
+            # Use encode to get IDs
+            prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+            output_ids = self.tokenizer.encode(output_text, add_special_tokens=False)
+            
+            # Add EOS to output
+            if self.tokenizer.eos_token_id is not None:
+                output_ids += [self.tokenizer.eos_token_id]
+                
+            input_ids = prompt_ids + output_ids
+            labels = input_ids.copy()
+            
+            # Mask prompt
+            if not self.train_on_inputs:
+                labels[:len(prompt_ids)] = [-100] * len(prompt_ids)
+                
+        else:
+            # Custom tokenizer (from this file's TokenizerFactory usually returns a wrapper or simple object)
+            # Assuming it has .encode() returning list of ints
+            prompt_ids = self.tokenizer.encode(prompt)
+            if hasattr(prompt_ids, "ids"): prompt_ids = prompt_ids.ids # handle ByteLevelBPETokenizer object
+            
+            output_ids = self.tokenizer.encode(output_text)
+            if hasattr(output_ids, "ids"): output_ids = output_ids.ids
+            
+            # Add EOS if available (custom tokenizers might not have standard EOS attr, assume handled or not needed)
+            # For safety, let's just use what we have.
+            
+            input_ids = prompt_ids + output_ids
+            labels = input_ids.copy()
+            
+            if not self.train_on_inputs:
+                labels[:len(prompt_ids)] = [-100] * len(prompt_ids)
+
+        # Truncate or Pad
+        if len(input_ids) > self.seq_len:
+            input_ids = input_ids[:self.seq_len]
+            labels = labels[:self.seq_len]
+        
+        # Padding
+        pad_len = self.seq_len - len(input_ids)
+        pad_id = getattr(self.tokenizer, "pad_token_id", 0)
+        if pad_id is None: pad_id = 0
+        
+        if pad_len > 0:
+            input_ids = input_ids + [pad_id] * pad_len
+            labels = labels + [-100] * pad_len # Ignore padding in loss
+            
+        x = torch.tensor(input_ids, dtype=torch.long)
+        y = torch.tensor(labels, dtype=torch.long)
+        
+        return x, y
+
+def collate_instruction(batch, pad_token_id=0):
+    """
+    Collate for InstructionDataset.
+    Returns:
+        x_batch [B, seq_len]
+        y_batch [B, seq_len]
+        attention_mask [B, seq_len]
+    """
+    xs, ys = zip(*batch)
+    x_batch = torch.stack(xs)
+    y_batch = torch.stack(ys)
+    
+    # Create attention mask (1 for non-padding, 0 for padding)
+    # Assuming pad_token_id is used for padding x
+    attention_mask = (x_batch != pad_token_id).long()
+    
+    return x_batch, y_batch, attention_mask
+
 
 class Seq2SeqDataModuleHF:
     """
@@ -630,9 +782,10 @@ class DataConfig:
     task: str = "lm"
     """
     Defines how the dataset will be structured:
-      - 'lm':      Standard causal language modeling (next-token prediction)
-      - 'typing':  Predictive typing (prefix → next few tokens)
-      - 'seq2seq': Encoder–decoder tasks (translation, summarization, etc.)
+      - 'lm':          Standard causal language modeling (next-token prediction)
+      - 'typing':      Predictive typing (prefix → next few tokens)
+      - 'seq2seq':     Encoder–decoder tasks (translation, summarization, etc.)
+      - 'instruction': Instruction tuning (Alpaca style)
     """
 
     seq_len: int = 256
@@ -660,6 +813,15 @@ class DataConfig:
       - 'teacher-forced': Predict every next token (standard LM training)
       - 'final-token':    Predict only the final next token (prefix completion)
     """
+    
+    # ============================================================
+    # 🧪  Instruction-Specific Parameters
+    # ============================================================
+    instruction_key: str = "instruction"
+    input_key: str = "input"
+    output_key: str = "output"
+    train_on_inputs: bool = False
+
 
     # ============================================================
     # ⌨️  Typing-Specific Parameters
@@ -769,6 +931,8 @@ class DataModule:
         # --- 3️⃣ Build dataset ---
         if cfg.task == "typing":
             self.train_dataset, self.valid_dataset = self._build_typing_dataset()
+        elif cfg.task == "instruction":
+            self.train_dataset, self.valid_dataset = self._build_instruction_dataset()
         else:
             self._build_lm_dataset(cleaned_text)
 
@@ -780,7 +944,28 @@ class DataModule:
         - Multi-column text merge (user-specified via cfg.hf_features)
         - Automatic field detection fallback
         - Safe handling when requested columns are missing
+        
+        For 'instruction' task, we might need to load the raw dataset object (list of dicts)
+        instead of flattening to a string. But _load_text currently returns str.
+        
+        Refactoring:
+        If task is 'instruction', we will bypass the flattening in _load_text and 
+        load the data directly in _build_instruction_dataset, OR we adjust _load_text 
+        to return data structures.
+        
+        For now, to keep it clean:
+        If task == 'instruction', we'll skip the heavy text processing in __init__ 
+        and handle loading inside _build_instruction_dataset using the config.
+        However, __init__ calls _load_text first.
+        
+        Let's modify __init__ to be smarter or just return empty string for instruction task here
+        and let the builder handle it.
         """
+        if self.cfg.task == "instruction":
+            # Instruction dataset needs structured data, not a flat string.
+            # We will load it specifically in _build_instruction_dataset.
+            return "" 
+
         import os
         from datasets import load_dataset, get_dataset_config_names
         from datasets.features import Value
@@ -1222,11 +1407,116 @@ class DataModule:
         return train_samples, valid_samples
 
     # ============================================================
+    # INSTRUCTION DATASET
+    # ============================================================
+    def _build_instruction_dataset(self):
+        """
+        Build Instruction Tuning dataset.
+        Loads data from HF or JSON files, formats it, and creates InstructionDataset objects.
+        """
+        print("🧪 Building Instruction dataset...")
+        
+        data_items = []
+        
+        # 1. Load Data
+        if self.cfg.hf_name:
+            print(f"📚 Loading HF dataset: {self.cfg.hf_name}")
+            try:
+                ds = load_dataset(self.cfg.hf_name, self.cfg.hf_config, split=self.cfg.hf_split)
+                # Convert to list of dicts
+                data_items = [item for item in ds]
+            except Exception as e:
+                raise RuntimeError(f"❌ Failed to load HF dataset: {e}")
+                
+        elif self.cfg.files:
+            print(f"📄 Loading local files: {self.cfg.files}")
+            for fpath in self.cfg.files:
+                with open(fpath, 'r', encoding='utf-8') as f:
+                    if fpath.endswith('.json'):
+                        try:
+                            content = json.load(f)
+                            if isinstance(content, list):
+                                data_items.extend(content)
+                            else:
+                                print(f"⚠️ JSON file {fpath} is not a list of records.")
+                        except json.JSONDecodeError:
+                             # Try reading line by line (jsonl)
+                             f.seek(0)
+                             for line in f:
+                                 if line.strip():
+                                     data_items.append(json.loads(line))
+                    elif fpath.endswith('.jsonl'):
+                        for line in f:
+                            if line.strip():
+                                data_items.append(json.loads(line))
+                    else:
+                        print(f"⚠️ Unsupported file format for instruction tuning: {fpath}")
+        
+        print(f"✅ Loaded {len(data_items):,} instruction records.")
+        
+        # 2. Split
+        split_idx = int(len(data_items) * self.cfg.split_ratio)
+        train_data = data_items[:split_idx]
+        valid_data = data_items[split_idx:]
+        
+        # 3. Create Datasets
+        # We need the tokenizer object. In __init__, we called _setup_tokenizer.
+        # But for instruction task, we skipped _load_text so 'cleaned_text' was empty.
+        # _setup_tokenizer might have initialized a tokenizer with empty text.
+        # If it's a trainable tokenizer (BPE), it needs text.
+        # If it's HF tokenizer, it's fine.
+        
+        # If the tokenizer wasn't properly trained because text was empty, we might have an issue.
+        # Let's check if we need to train it on instruction data.
+        if not hasattr(self.tok, "tokenizer") and self.cfg.tokenizer not in ["char", "word"]:
+             # It's a custom BPE that needs training.
+             # We should gather text from instructions to train it.
+             print("⚠️ Tokenizer needs training data. Gathering text from instructions...")
+             texts = []
+             for item in data_items:
+                 texts.append(item.get(self.cfg.instruction_key, ""))
+                 texts.append(item.get(self.cfg.input_key, ""))
+                 texts.append(item.get(self.cfg.output_key, ""))
+             full_text = "\n".join(texts)
+             self._setup_tokenizer(full_text)
+        
+        # Now create the datasets
+        train_ds = InstructionDataset(
+            train_data, 
+            self.tok.tokenizer if hasattr(self.tok, "tokenizer") else self.tok,
+            seq_len=self.cfg.seq_len,
+            instruction_key=self.cfg.instruction_key,
+            input_key=self.cfg.input_key,
+            output_key=self.cfg.output_key,
+            train_on_inputs=self.cfg.train_on_inputs
+        )
+        
+        valid_ds = InstructionDataset(
+            valid_data, 
+            self.tok.tokenizer if hasattr(self.tok, "tokenizer") else self.tok,
+            seq_len=self.cfg.seq_len,
+            instruction_key=self.cfg.instruction_key,
+            input_key=self.cfg.input_key,
+            output_key=self.cfg.output_key,
+            train_on_inputs=self.cfg.train_on_inputs
+        )
+        
+        return train_ds, valid_ds
+
+    # ============================================================
     # DATALOADERS
     # ============================================================
     def loaders(self):
         if self.cfg.task == "typing":
             collate = lambda b: collate_teacher(b, pad_token_id=self.pad_id)
+            dl_train = DataLoader(self.train_dataset, batch_size=self.cfg.batch_size,
+                                shuffle=True, collate_fn=collate)
+            dl_valid = DataLoader(self.valid_dataset, batch_size=self.cfg.batch_size,
+                                shuffle=False, collate_fn=collate)
+            return dl_train, dl_valid
+            
+        if self.cfg.task == "instruction":
+            collate = lambda b: collate_instruction(b, pad_token_id=self.pad_id)
             dl_train = DataLoader(self.train_dataset, batch_size=self.cfg.batch_size,
                                 shuffle=True, collate_fn=collate)
             dl_valid = DataLoader(self.valid_dataset, batch_size=self.cfg.batch_size,
@@ -1253,10 +1543,11 @@ def get_dataset_config_template():
         dict: parameter names and their detailed descriptions.
     """
     return {
-        "task": "Task type — one of ['lm', 'typing', 'seq2seq'].\n"
+        "task": "Task type — one of ['lm', 'typing', 'seq2seq', 'instruction'].\n"
                 "  - 'lm': standard language modeling\n"
                 "  - 'typing': predictive typing (prefix → next)\n"
-                "  - 'seq2seq': translation/summarization",
+                "  - 'seq2seq': translation/summarization\n"
+                "  - 'instruction': instruction tuning (Alpaca style)",
 
         # -------------------- Data source --------------------
         "hf_name": "Hugging Face dataset name, e.g. 'wikitext' or 'OpenAssistant/oasst1'.",
@@ -1291,6 +1582,12 @@ def get_dataset_config_template():
         # -------------------- Typing dataset --------------------
         "num_prefixes_per_sentence": "Number of prefixes generated per sentence (typing task).",
         "next_token_window": "Number of next tokens predicted after each prefix (typing task).",
+        
+        # -------------------- Instruction dataset --------------------
+        "instruction_key": "Key for instruction text in dataset (default: 'instruction').",
+        "input_key": "Key for input text in dataset (default: 'input').",
+        "output_key": "Key for output text in dataset (default: 'output').",
+        "train_on_inputs": "If True, calculate loss on instruction+input as well (default: False).",
 
         # -------------------- Seq2Seq dataset --------------------
         "src_lang": "Source language key (e.g., 'en') for translation datasets.",
@@ -1341,7 +1638,7 @@ def build_dataset(task: str, args):
         return data
 
     # --- 2️⃣  Causal LM or Typing tasks ---
-    elif task in ["lm", "typing"]:
+    elif task in ["lm", "typing", "instruction"]:
         cfg = DataConfig(
             files=getattr(args, "files", None), #args.files,
             hf_name=args.hf_name,
@@ -1367,6 +1664,11 @@ def build_dataset(task: str, args):
             max_train_samples=getattr(args, "max_train_samples", None),  # optional subset
             encode_batch_size=getattr(args, "encode_batch_size", 1000),  # HF tokenizer batch size
             chunk_size=getattr(args, "chunk_size", 50_000),   # non-HF tokenizer chunk size
+            # Instruction dataset options
+            instruction_key=getattr(args, "instruction_key", "instruction"),
+            input_key=getattr(args, "input_key", "input"),
+            output_key=getattr(args, "output_key", "output"),
+            train_on_inputs=getattr(args, "train_on_inputs", False),
         )
 
         print(f"📗 Building DataModule for task='{task}' "
@@ -1377,7 +1679,7 @@ def build_dataset(task: str, args):
 
     # --- 3️⃣  Unknown task type ---
     else:
-        raise ValueError(f"❌ Unknown task type '{task}'. Use 'lm', 'typing', or 'seq2seq'.")
+        raise ValueError(f"❌ Unknown task type '{task}'. Use 'lm', 'typing', 'seq2seq', or 'instruction'.")
 
 # ============================================================
 # DATASET TEST FUNCTION (supports typing, LM, seq2seq, HF)
@@ -1511,7 +1813,7 @@ def inspect_dataset(data, task="lm", num_batches=1, num_samples=2, show_tokens=4
 
                     if labels is not None:
                         y_ids = labels[n].cpu().tolist()
-                        y_ids = [x for x in y_ids if x != pad_id]
+                        y_ids = [x for x in y_ids if x != pad_id and x != -100]
                         try:
                             y_text = tokenizer.decode(y_ids, skip_special_tokens=True)
                         except TypeError:
@@ -1695,6 +1997,27 @@ def run_all_dataset_tests():
         inspect_dataset(data, task="hf", num_batches=1, num_samples=2)
     except Exception as e:
         print(f"❌ HF (Qwen2.5) dataset test failed: {e}")
+
+    # --------------------------------------------------------
+    # 6️⃣ Instruction Dataset (Alpaca Style)
+    # --------------------------------------------------------
+    print("\n🧪 [6] Testing Instruction Dataset (Alpaca)...")
+    try:
+        args.task = "instruction"
+        # Using a small instruction dataset or a subset of one
+        args.hf_name = "yahma/alpaca-cleaned" 
+        args.hf_config = None
+        args.hf_split = "train"
+        args.tokenizer = "hf:gpt2" # Use a standard tokenizer
+        args.seq_len = 128
+        args.instruction_key = "instruction"
+        args.input_key = "input"
+        args.output_key = "output"
+        
+        data = build_dataset(args.task, args)
+        inspect_dataset(data, task="instruction", num_batches=2, num_samples=2)
+    except Exception as e:
+        print(f"❌ Instruction dataset test failed: {e}")
 
     print("\n✅ ===== All Dataset Tests Completed Successfully =====\n")
     

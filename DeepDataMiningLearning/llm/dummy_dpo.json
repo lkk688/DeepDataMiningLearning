@@ -1,0 +1,17 @@
+[
+    {
+        "prompt": "Hello",
+        "chosen": "Hi there!",
+        "rejected": "Bye."
+    },
+    {
+        "prompt": "What is 1+1?",
+        "chosen": "It is 2.",
+        "rejected": "It is 3."
+    },
+    {
+        "prompt": "Explain AI",
+        "chosen": "AI is Artificial Intelligence.",
+        "rejected": "AI is magic."
+    }
+]
