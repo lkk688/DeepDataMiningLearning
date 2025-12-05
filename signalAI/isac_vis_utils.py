@@ -559,33 +559,35 @@ def viz_fmcw_extras(
     """
     Visualize intermediate FMCW radar objects stored in `extra_fmcw`.
 
-    This version is aligned with fmcw_torch(..., return_extra=True):
+    This version is aligned with the extra dict you use in simulation:
 
         extra_fmcw = {
-            "iq"     : (M,N) complex64   # IQ cube (after MTI/window)
-            "RD"     : (M,K) complex64   # complex RD map (K=N//2)
-            "H_gt"   : (M,K) complex64   # ground-truth RD grid (optional)
-            "ranges" : (K,) float        # range axis [m]
-            "vels"   : (M,) float        # velocity axis [m/s]
-            "R"      : (P,) torch.Tensor # per-scatterer ranges [m]
-            "vr"     : (P,) torch.Tensor # per-scatterer radial vel [m/s]
-            "amp"    : (P,) torch.Tensor # per-scatterer amplitude
-            "gts"    : list of GT dicts (optional)
+            "iq"    : (M,N) complex64   # baseband IQ after MTI/window, [slow, fast]
+            "RD"    : (M,K) complex64   # complex Range–Doppler map
+            "H_gt"  : (M,K) complex64   # ground-truth RD grid (may be all zeros)
+            "ranges": (K,) float        # range axis [m] (for RD/H_gt)
+            "vels"  : (M,) float        # radial velocity axis [m/s]
+            "R"     : (P,) tensor/nd    # per-scatterer range [m]
+            "vr"    : (P,) tensor/nd    # per-scatterer radial velocity [m/s]
+            "amp"   : (P,) tensor/nd    # per-scatterer amplitude (linear)
+            "gts"   : list of GT dicts with fields 'c' (center) and 'v' (vel) (optional)
             # optional legacy keys: 'tx_chirp', 't_fast', 'iq_raw', 'iq_mti',
             # 'iq_win', 'RD_cplx', 'rd_db'
         }
 
-    Key ideas:
-      - Each image is normalized per-map to avoid "flat" plots.
-      - If H_gt is present but all zeros, we reconstruct a sparse
-        ground-truth RD map from (R, vr, amp, ranges, vels) so you can
-        see where the analytic peaks should live.
+    Plots:
+      1) IQ magnitude heatmap (normalized per-map).
+      2) Measured RD heatmap (from RD / RD_cplx / rd_db; normalized per-map).
+      3) Ground-truth RD heatmap:
+         - If H_gt has non-zero entries, use it directly.
+         - If H_gt is all zeros but (R, vr, amp) exist, reconstruct a sparse
+           H_gt by placing each scatterer at its nearest (range, velocity) bin.
 
     Physically:
-      - Measured RD map: full 2D FFT of IQ, including windowing, MTI,
-        clutter, sidelobes, etc.
-      - Ground-truth RD map: very sparse impulses at the nearest
-        (range, Doppler) bins for each simulated scatterer.
+      - Measured RD map: full 2D FFT of IQ including windowing, MTI, noise.
+      - Ground-truth RD map: sparse impulses at the analytic target bins.
+        You should see bright peaks at the true locations, which you can
+        compare against the measured RD (and CFAR output elsewhere).
     """
     import numpy as np
     import matplotlib.pyplot as plt
@@ -594,18 +596,23 @@ def viz_fmcw_extras(
     out_prefix = Path(out_prefix)
     out_prefix.parent.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     # 0) Choose GT list if not explicitly given
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     if gts is None and "gts" in extra_fmcw and extra_fmcw["gts"] is not None:
         gts = extra_fmcw["gts"]
 
-    # ------------------------------------------------------
-    # Helper: project GT boxes to (range, radial velocity)
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Helper: project 3D GT boxes to (range, radial velocity)
+    # ------------------------------------------------------------------
     def _project_gts_to_rv(gts_list, radar_pos_local):
         """
-        Map 3D GT boxes to (range, radial velocity) for overlay on RD maps.
+        Map 3D GT centers + velocities to (range, radial velocity)
+        for overlay on RD maps.
+
+        Each GT dict is expected to have:
+            gt["c"]: (3,) center position [m]
+            gt["v"]: (3,) velocity [m/s]
         """
         rv_list = []
         if not gts_list:
@@ -623,16 +630,16 @@ def viz_fmcw_extras(
             rv_list.append({"r": r, "v": vr})
         return rv_list
 
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     # Helper: choose range / velocity axes
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     def _get_axes(extra, ra_axis_user, va_axis_user, M, K):
         """
         Decide which range / velocity axes to use for plotting.
 
         Preference:
           1) User-provided ra_axis / va_axis.
-          2) extra["ranges"] / extra["vels"].
+          2) extra["ranges"] / extra["vels"] if present.
           3) Simple indices.
         """
         # X-axis (range)
@@ -659,19 +666,23 @@ def viz_fmcw_extras(
 
         return ra, va, xlab, ylab
 
-    # ------------------------------------------------------
-    # Helper: generic RD map plotter (normalized dB)
-    # ------------------------------------------------------
-    def _plot_rd_map(rd_complex_or_db, ra, va, xlab, ylab, title, fname_suffix):
+    # ------------------------------------------------------------------
+    # Helper: generic RD map plotter (normalized dB) + optional markers
+    # ------------------------------------------------------------------
+    def _plot_rd_map(rd_complex_or_db, ra, va, xlab, ylab, title, fname_suffix,
+                     marker_points=None, marker_label="GT"):
         """
-        Plot a Range–Doppler heatmap with per-map normalization:
+        Plot a Range–Doppler heatmap with per-map normalization.
 
-          - If input is complex, use magnitude, convert to dB.
-          - Shift so map max = 0 dB.
-          - Clamp color scale to [-60, 0] dB for good contrast.
-
-        Visually, you should see bright peaks at target bins and
-        sidelobes / noise elsewhere.
+        Inputs
+        ------
+        rd_complex_or_db : array-like
+            (M,K) complex or real. If complex, we use 20log10(|.|).
+        ra, va : array-like
+            Axes for range and velocity, length K and M respectively.
+        marker_points : list of dicts (optional)
+            Each dict must have 'r' and 'v' fields (range, velocity).
+            Used to overlay GT projections or scatterer locations.
         """
         arr = np.asarray(rd_complex_or_db)
         if np.iscomplexobj(arr):
@@ -685,7 +696,8 @@ def viz_fmcw_extras(
         min_val = float(np.min(db))
         print(f"[viz_fmcw_extras] {fname_suffix} dB range: [{min_val:.2f}, {max_val:.2f}]")
 
-        db_norm = db - max_val  # max → 0 dB
+        # Normalize so that the map maximum is at 0 dB.
+        db_norm = db - max_val
         vmin = -60.0
         vmax = 0.0
 
@@ -703,16 +715,99 @@ def viz_fmcw_extras(
         ax.set_xlabel(xlab)
         ax.set_ylabel(ylab)
         cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label("Power [dB] (relative)")
+        cbar.set_label("Power [dB] (relative to max in this map)")
         ax.grid(alpha=0.25, linestyle=":")
+
+        # Optional GT / scatter markers
+        if marker_points is not None:
+            for i, rv in enumerate(marker_points):
+                r = rv["r"]
+                v = rv["v"]
+                if not (ra[0] <= r <= ra[-1]) or not (va[0] <= v <= va[-1]):
+                    continue
+                ax.plot(r, v, "wx", ms=8, mew=2)
+                ax.text(
+                    r,
+                    v,
+                    f"{i}",
+                    color="white",
+                    fontsize=7,
+                    ha="left",
+                    va="bottom",
+                )
 
         plt.tight_layout()
         plt.savefig(out_prefix.with_name(out_prefix.name + fname_suffix), dpi=170)
         plt.close(fig)
 
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Helper: build sparse H_gt from scatterers (R, vr, amp)
+    # ------------------------------------------------------------------
+    def build_fmcw_H_gt_from_scatters(R, vr, amp, ranges_axis, vels_axis, rd_shape):
+        """
+        Reconstruct a sparse ground-truth RD grid from per-scatterer
+        (range, radial velocity, amplitude).
+
+        We snap each scatterer to its nearest (range, velocity) bin and
+        accumulate its amplitude in that bin.
+
+        Parameters
+        ----------
+        R, vr, amp : array-like / torch.Tensor, shape (P,)
+            Scatterer range, radial velocity, and amplitude.
+        ranges_axis : (K,) float
+            Range axis corresponding to RD columns.
+        vels_axis : (M,) float
+            Velocity axis corresponding to RD rows.
+        rd_shape : tuple
+            (M, K) = shape of RD / H_gt.
+
+        Returns
+        -------
+        H_gt : (M,K) complex64
+            Sparse RD grid containing analytic scatterer peaks.
+        """
+        import numpy as np
+
+        M, K = rd_shape
+        H = np.zeros((M, K), dtype=np.complex64)
+
+        R_np = np.asarray(R, dtype=float).ravel()
+        vr_np = np.asarray(vr, dtype=float).ravel()
+        amp_np = np.asarray(amp, dtype=float).ravel()
+
+        if ranges_axis is None or vels_axis is None:
+            raise ValueError("ranges_axis and vels_axis must be provided to build H_gt.")
+
+        ranges_axis = np.asarray(ranges_axis, dtype=float).ravel()
+        vels_axis = np.asarray(vels_axis, dtype=float).ravel()
+
+        assert ranges_axis.ndim == 1 and vels_axis.ndim == 1
+        assert len(ranges_axis) == K and len(vels_axis) == M
+
+        used = 0
+        for r_i, v_i, a_i in zip(R_np, vr_np, amp_np):
+            # Skip purely zero-amplitude scatterers
+            if not np.isfinite(a_i) or abs(a_i) <= 0.0:
+                continue
+
+            # Map continuous (r_i, v_i) to nearest axis bins
+            k = int(np.argmin(np.abs(ranges_axis - r_i)))
+            m = int(np.argmin(np.abs(vels_axis - v_i)))
+
+            if 0 <= m < M and 0 <= k < K:
+                H[m, k] += np.complex64(a_i)
+                used += 1
+
+        print(
+            f"[viz_fmcw_extras] Rebuilt H_gt from scatters: "
+            f"{used} non-zero bins out of {H.size}."
+        )
+        return H
+
+    # ------------------------------------------------------------------
     # 1) Transmit chirp (if available)
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     if "tx_chirp" in extra_fmcw:
         tx = np.asarray(extra_fmcw["tx_chirp"])  # (N,)
         N = tx.shape[0]
@@ -764,9 +859,9 @@ def viz_fmcw_extras(
         plt.savefig(out_prefix.with_name(out_prefix.name + "_fmcw_tx_spectrum.png"), dpi=170)
         plt.close(fig)
 
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     # 2) IQ cube(s)
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     def _viz_iq(iq, suffix, title):
         iq = np.asarray(iq)
         M, N = iq.shape
@@ -807,9 +902,9 @@ def viz_fmcw_extras(
     if "iq" in extra_fmcw:
         _viz_iq(extra_fmcw["iq"], "_fmcw_iq.png", "FMCW IQ cube (main)")
 
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     # 3) Measured RD map
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     rd_complex = None
     rd_db = None
 
@@ -820,6 +915,8 @@ def viz_fmcw_extras(
     elif "rd_db" in extra_fmcw:
         rd_db = np.asarray(extra_fmcw["rd_db"])
 
+    marker_points_from_gts = _project_gts_to_rv(gts, radar_pos) if gts is not None else None
+
     if rd_complex is not None:
         M, K = rd_complex.shape
         ra, va, xlab, ylab = _get_axes(extra_fmcw, ra_axis, va_axis, M, K)
@@ -829,8 +926,9 @@ def viz_fmcw_extras(
             va,
             xlab,
             ylab,
-            title="FMCW Range–Doppler (measured, normalized)",
+            title="FMCW Range–Doppler (measured H_est, normalized)",
             fname_suffix="_fmcw_rd_measured.png",
+            marker_points=marker_points_from_gts,
         )
     elif rd_db is not None:
         M, K = rd_db.shape
@@ -841,23 +939,24 @@ def viz_fmcw_extras(
             va,
             xlab,
             ylab,
-            title="FMCW Range–Doppler (measured, from rd_db)",
+            title="FMCW Range–Doppler (measured from rd_db)",
             fname_suffix="_fmcw_rd_measured.png",
+            marker_points=marker_points_from_gts,
         )
 
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     # 4) RD ground-truth (H_gt) – with fallback from scatters
-    # ------------------------------------------------------
+    # ------------------------------------------------------------------
     if "H_gt" in extra_fmcw:
         H = np.asarray(extra_fmcw["H_gt"])
         M2, K2 = H.shape
 
-        # Decide axes for GT map
+        # Axes for GT map
         ra_gt, va_gt, xlab_gt, ylab_gt = _get_axes(extra_fmcw, ra_axis, va_axis, M2, K2)
 
         # If H_gt is all zeros but we have scatter info, rebuild H_gt
-        if not np.any(H) and all(k in extra_fmcw for k in ("R", "vr", "amp")):
-            print("[viz_fmcw_extras] H_gt is all zeros; rebuilding from (R, vr, amp).")
+        if (not np.any(H)) and all(k in extra_fmcw for k in ("R", "vr", "amp")):
+            print("[viz_fmcw_extras] H_gt appears empty; rebuilding from (R, vr, amp).")
             H = build_fmcw_H_gt_from_scatters(
                 extra_fmcw["R"],
                 extra_fmcw["vr"],
@@ -867,7 +966,7 @@ def viz_fmcw_extras(
                 rd_shape=(M2, K2),
             )
 
-        # Now plot (even if still zero; you'll know if no scatter matched)
+        # Even if still zero, we plot it so you can visually confirm.
         _plot_rd_map(
             H,
             ra_gt,
@@ -876,6 +975,7 @@ def viz_fmcw_extras(
             ylab_gt,
             title="FMCW RD – ground-truth grid (H_gt, normalized)",
             fname_suffix="_fmcw_rd_gt.png",
+            marker_points=marker_points_from_gts,
         )
 
     if show:
@@ -1142,9 +1242,9 @@ def viz_channel_scatterers(
         Plot title.
     """
     out_path = Path(out_path)
-    R = np.asarray(extra_chan.get("R_targets", []))
-    vr = np.asarray(extra_chan.get("vr_targets", []))
-    amp = np.asarray(extra_chan.get("amp_targets", []))
+    R = np.asarray(extra_chan.get("R", []))
+    vr = np.asarray(extra_chan.get("vr", []))
+    amp = np.asarray(extra_chan.get("amp", []))
 
     if R.size == 0 or vr.size == 0:
         print("[viz_channel_scatterers] No R_targets / vr_targets in extra_chan; skipping.")

@@ -1167,6 +1167,7 @@ def manual_training_loop(args) -> None:
             scaler,
             map_location=device,
         )
+        print(f"[Resume] Resumed from {args.resume_from}")
         scheduler.last_epoch = start_epoch * steps_per_epoch
 
     # Evaluation
@@ -1417,7 +1418,7 @@ def parse_args():
     p.add_argument("--clip-grad-norm", default=None, type=float)
     p.add_argument("--warmup-epochs", default=0.0, type=float)
     p.add_argument("--fp16", action="store_true")
-    p.add_argument("--resume-from", type=str, default=None)
+    p.add_argument("--resume-from", type=str, default="outputs/mm3dtrain/last_state.pth")
     p.add_argument("--no-pin-memory", action="store_true")
         # Logging / W&B
     p.add_argument(
@@ -1454,7 +1455,7 @@ def parse_args():
     p.add_argument(
         "--eval-backend",
         choices=["runner", "manual", "none"],
-        default="manual",
+        default="runner",
         help=(
             "Evaluation backend for manual training:\n"
             "  runner: run_benchmark_evaluation (Runner.test())\n"

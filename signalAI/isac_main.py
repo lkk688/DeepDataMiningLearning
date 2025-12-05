@@ -573,7 +573,7 @@ def evaluate_and_visualize(
 # TOP-LEVEL PIPELINE (Parts 1–4)
 # ---------------------------------------------------------------------
 from isac_utils import comm_dl_gen_batch_OFDM_geom, comm_dl_gen_batch_OTFS_geom
-def run_isac_experiment(out_dir="./output/isac_main1"):
+def run_isac_experiment(out_dir="./output/isac_main2"):
     """
     Main pipeline tying together the 4 parts:
 

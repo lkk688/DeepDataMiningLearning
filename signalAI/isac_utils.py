@@ -1151,7 +1151,7 @@ def fmcw_torch(
         return (rd_db,)
 
     extra = dict(
-        iq=iq.detach().cpu().numpy().astype(np.complex64), #[512, 512]
+        iq=iq.detach().cpu().numpy().astype(np.complex64), #baseband IQ [512, 512]
         RD=RD_complex, #(512, 256)
         H_gt=H_gt, #(512, 256)
         ranges=ra, #(256,)
@@ -6214,8 +6214,8 @@ class RadarSimDataset(torch.utils.data.Dataset):
             
             # Convert delay [s] → equivalent range [m]:
             #   τ = 2R / c  ⇒  R = c τ / 2
-            delays_s = np.asarray(extra_o["delays"], dtype=np.float64)   # (N,)
-            ra_o = delays_s * C0 / 2.0                                   # (N,) range [m]
+            delays_s = np.asarray(extra_o["delays"], dtype=np.float64)   # (512,) (N,)
+            ra_o = delays_s * C0 / 2.0    #(512,) (N,) range [m]
 
             # Convert Doppler [Hz] → radial velocity [m/s]:
             #   f_d = 2 v_r / λ  ⇒  v_r = f_d λ / 2
