@@ -370,8 +370,11 @@ custom_hooks = [
 #     dict(type='EmptyCacheHook', after_iter=False, after_epoch=True),
 # ]
 
-load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new/epoch_6.pth'  # ← EDIT ME
+#load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new/epoch_6.pth'  # ← EDIT ME
+load_from = '/data/rnd-liu/MyRepo/mmdetection3d/work_dirs/mybevfusion9_new2/epoch_6.pth'  # ← EDIT ME
 load_cfg = dict(strict=False)
 # Make sure we don’t pick up an old run’s last_checkpoint
 auto_resume = False
 resume = False
+
+#(py310) [010796032@g20 mmdetection3d]$ python tools/train.py --config projects/bevdet/configs/mybevfusion9_new2.py 

@@ -730,7 +730,6 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main():
     args = parse_args()
-    # 默认 info_prefix = dataset 名
     if args.info_prefix is None:
         args.info_prefix = args.dataset
 
