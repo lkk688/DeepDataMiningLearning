@@ -1,4 +1,35 @@
 # MMdetection3d
+## Lab Server and Jetson access
+Open your config file (nano ~/.ssh/config) and add the following blocks. For Windows system, the full path to the config file is: "C:\Users\<YourUserName>\.ssh\config".
+
+```bash
+Host edge-gateway
+    Hostname edgeai.duckdns.org
+    User vmuser
+
+Host edgeaiserver
+    Hostname 127.0.0.1
+    User student
+    Port 2224
+    ProxyJump edge-gateway
+Host jetson01
+    Hostname 127.0.0.1
+    User student
+    Port 2222
+    ProxyJump edge-gateway
+```
+Once you save that file, you only need to run one command to ssh into our server (same spec with HPC):
+```bash
+ssh edgeaiserver
+```
+If you want to ssh into our jetson device, only one command:
+```bash
+ssh jetson01
+```
+
+If you are using VScode or similar (like Google's Antigravity), you can install "Remote - SSH" extension created by Microsoft. Because you saved your config file correctly, VS Code will automatically list the hosts (`edgeaiserver` and `jetson01`). You can simply click to connect. 
+
+The jeton tutorial can be access in this link: [sjsujetontool](https://lkk688.github.io/edgeAI/curriculum/00b_sjsujetsontool_cheatsheet/). Bascially, you can just run `sjsujetsontool shell` to enter container shell.
 
 ## mmdetection3d Installation in SJSU HPC - Step by Step Guide
 
