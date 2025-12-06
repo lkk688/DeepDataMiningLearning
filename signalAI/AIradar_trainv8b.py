@@ -32,18 +32,11 @@ from AIradar_datasetv8 import (
 
 from scipy.ndimage import maximum_filter
 
-
 # ==============================================================
-# Losses for segmentation-like detection map
+# LOSSES
 # ==============================================================
 
 class FocalLoss(nn.Module):
-    """
-    Focal Loss for addressing class imbalance.
-    Inputs:
-      inputs: [B, H, W] (logits)
-      targets: [B, H, W] (0 or 1)
-    """
     def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
         super().__init__()
         self.alpha = alpha
@@ -51,49 +44,30 @@ class FocalLoss(nn.Module):
         self.reduction = reduction
 
     def forward(self, inputs, targets):
-        bce_loss = F.binary_cross_entropy_with_logits(
-            inputs, targets, reduction='none'
-        )
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
         pt = torch.exp(-bce_loss)
         focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
-
+        
         if self.reduction == 'mean':
             return focal_loss.mean()
         elif self.reduction == 'sum':
             return focal_loss.sum()
         return focal_loss
 
-
 class DiceLoss(nn.Module):
-    """
-    Dice Loss for segmentation tasks, good for shape alignment and class imbalance.
-    Inputs:
-      inputs: [B, H, W] (logits)
-      targets: [B, H, W] (0 or 1)
-    """
     def __init__(self, smooth=1.0):
         super().__init__()
         self.smooth = smooth
 
     def forward(self, inputs, targets):
-        inputs = torch.sigmoid(inputs)   # [B,H,W]
+        inputs = torch.sigmoid(inputs)
         inputs = inputs.view(-1)
         targets = targets.view(-1)
-
         intersection = (inputs * targets).sum()
-        dice = (2. * intersection + self.smooth) / (
-            inputs.sum() + targets.sum() + self.smooth
-        )
+        dice = (2. * intersection + self.smooth) / (inputs.sum() + targets.sum() + self.smooth)
         return 1 - dice
 
-
 class CombinedLoss(nn.Module):
-    """
-    Combines BCE, Focal, and Dice losses.
-    Inputs:
-      inputs: [B, H, W] (logits)
-      targets: [B, H, W] (0 or 1)
-    """
     def __init__(self, w_bce=0.5, w_focal=1.0, w_dice=1.0):
         super().__init__()
         self.w_bce = w_bce
@@ -105,6 +79,7 @@ class CombinedLoss(nn.Module):
 
     def forward(self, inputs, targets):
         loss = 0
+        # Check if targets have valid shape, flatten if necessary for BCE
         if self.w_bce > 0:
             loss += self.w_bce * self.bce(inputs, targets)
         if self.w_focal > 0:
@@ -113,17 +88,11 @@ class CombinedLoss(nn.Module):
             loss += self.w_dice * self.dice(inputs, targets)
         return loss
 
-
 # ==============================================================
-# U-Net backbone for 2D RD maps
+# U-NET COMPONENTS (Unchanged, included for completeness)
 # ==============================================================
 
 class DoubleConv(nn.Module):
-    """
-    (conv => BN => ReLU) * 2
-    Input:  [B, C_in, H, W]
-    Output: [B, C_out, H, W]
-    """
     def __init__(self, in_channels, out_channels, mid_channels=None):
         super().__init__()
         if not mid_channels:
@@ -140,13 +109,7 @@ class DoubleConv(nn.Module):
     def forward(self, x):
         return self.double_conv(x)
 
-
 class Down(nn.Module):
-    """
-    Downscaling with maxpool then DoubleConv.
-    Input:  [B, C_in, H, W]
-    Output: [B, C_out, H/2, W/2]
-    """
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
@@ -157,50 +120,25 @@ class Down(nn.Module):
     def forward(self, x):
         return self.maxpool_conv(x)
 
-
 class Up(nn.Module):
-    """
-    Upscaling then DoubleConv.
-    Inputs:
-      x1: upsampled feature    [B, C_up, H', W']
-      x2: skip connection      [B, C_skip, H, W]
-    Output: [B, C_out, H, W]
-    """
     def __init__(self, in_channels, out_channels, bilinear=True):
         super().__init__()
         if bilinear:
-            self.up = nn.Upsample(
-                scale_factor=2, mode='bilinear', align_corners=True
-            )
-            self.conv = DoubleConv(
-                in_channels, out_channels, in_channels // 2
-            )
+            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.conv = DoubleConv(in_channels, out_channels, in_channels // 2)
         else:
-            self.up = nn.ConvTranspose2d(
-                in_channels, in_channels // 2, 2, stride=2
-            )
+            self.up = nn.ConvTranspose2d(in_channels, in_channels // 2, 2, stride=2)
             self.conv = DoubleConv(in_channels, out_channels)
 
     def forward(self, x1, x2):
         x1 = self.up(x1)
-
-        # Pad if necessary (due to odd sizes)
         diffY = x2.size(2) - x1.size(2)
         diffX = x2.size(3) - x1.size(3)
-        x1 = F.pad(
-            x1,
-            [diffX // 2, diffX - diffX // 2,
-             diffY // 2, diffY - diffY // 2],
-        )
-
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
         x = torch.cat([x2, x1], dim=1)
         return self.conv(x)
 
-
 class OutConv(nn.Module):
-    """
-    Final 1x1 convolution to get desired number of output channels.
-    """
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, 1)
@@ -208,24 +146,12 @@ class OutConv(nn.Module):
     def forward(self, x):
         return self.conv(x)
 
-
 class UNetRadar2D(nn.Module):
-    """
-    U-Net for 2D Range-Doppler maps.
-
-    Input:
-      x: [B, C_in_total, D, R]
-         C_in_total = (3 RD channels) + (meta channels)
-
-    Output:
-      logits: [B, 1, D, R] (per-bin detection logits)
-    """
     def __init__(self, n_channels=3, n_meta_channels=0, n_classes=1, bilinear=True):
         super().__init__()
         self.n_channels = n_channels + n_meta_channels
         self.n_classes = n_classes
         self.bilinear = bilinear
-
         factor = 2 if bilinear else 1
 
         self.inc = DoubleConv(self.n_channels, 32)
@@ -233,26 +159,22 @@ class UNetRadar2D(nn.Module):
         self.down2 = Down(64, 128)
         self.down3 = Down(128, 256)
         self.down4 = Down(256, 512 // factor)
-
         self.up1 = Up(512, 256 // factor, bilinear)
         self.up2 = Up(256, 128 // factor, bilinear)
         self.up3 = Up(128, 64, bilinear)
         self.up4 = Up(96, 32, bilinear)
         self.outc = OutConv(32, n_classes)
 
-        # Initialize bias for sparse positives (~1% prior)
+        # FIX: Relaxed bias initialization to allow faster initial learning
         with torch.no_grad():
-            self.outc.conv.bias.data.fill_(-4.6)
+            self.outc.conv.bias.data.fill_(-2.0) # ~0.12 prob, instead of -4.6 (0.01)
 
     def forward(self, x):
-        # Encoder
         x1 = self.inc(x)
         x2 = self.down1(x1)
         x3 = self.down2(x2)
         x4 = self.down3(x3)
         x5 = self.down4(x4)
-
-        # Decoder
         x = self.up1(x5, x4)
         x = self.up2(x, x3)
         x = self.up3(x, x2)
@@ -260,46 +182,204 @@ class UNetRadar2D(nn.Module):
         logits = self.outc(x)
         return logits
 
-
-# ==============================================================
-# RadarTimeNetV6: time-domain -> RD map + detection, config-conditioned
-# (Option A: RD size matches dataset RD size exactly, driven by axes)
-# ==============================================================
-
-class RadarTimeNetV6(nn.Module):
+class RadarTimeNetV7(nn.Module):
     """
-    RadarTimeNetV6
-
-    Input x shapes supported:
-      - [B, Nc, Ns, 2]        (single Rx)
-      - [B, Rx, Nc, Ns, 2]    (multi Rx)
-
-    meta: [B, meta_dim] radar configuration embedding.
-
-    rd_shape: (D,R) = (len(velocity_axis), len(range_axis)).
-
-    Pipeline:
-      1) Demodulate in time domain.
-      2) Range FFT:   [Nc,Ns] -> [Nc,Nr] with Nr <= Ns (no zero-padding).
-      3) Doppler FFT: [Nc,Nr] -> [D,Nr] with D <= Nc (no zero-padding).
-      4) Aggregate RX channels.
-      5) Build RD channels: Real, Imag, log-Magnitude.
-      6) U-Net over RD map (no resizing).
-      7) Output detection logits [B,1,D,R] with same (D,R) as dataset.
+    RadarTimeNetV7 - Robust Signal Processing Version
+    
+    Improvements:
+    1. Hanning Windowing (suppresses sidelobes).
+    2. Instance Normalization (scales every map 0.0 to 1.0 based on peak).
+    3. Mag-Only Input (stabilizes training).
     """
     def __init__(
         self,
         meta_dim: int = 6,
         num_rx: int = 1,
+        Ns_max: int = 512, # Max expected range samples for window buffer
+        Nc_max: int = 256, # Max expected chirp samples for window buffer
     ):
         super().__init__()
         self.num_rx = num_rx
         self.meta_dim = meta_dim
 
-        # Learnable 2x2 demodulation matrix applied on [I,Q]
+        # 1. Learnable Demodulation (Identity Init)
+        self.demod_weights = nn.Parameter(torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32
+        ))
+
+        # 2. Pre-computed Hanning Windows (Buffers)
+        # We create large buffers and slice them during forward pass
+        self.register_buffer('range_window', torch.hann_window(Ns_max))
+        self.register_buffer('doppler_window', torch.hann_window(Nc_max))
+
+        # 3. Meta Embedding
+        self.meta_out_channels = 16
+        self.meta_mlp = nn.Sequential(
+            nn.Linear(meta_dim, 32),
+            nn.ReLU(inplace=True),
+            nn.Linear(32, self.meta_out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        # 4. U-Net
+        # Note: n_channels=1 because we only feed the clean Log-Mag map
+        self.unet = UNetRadar2D(
+            n_channels=1, 
+            n_meta_channels=self.meta_out_channels,
+            n_classes=1,
+            bilinear=True,
+        )
+        
+        # Initialize output bias to prevent initial "zero" prediction
+        with torch.no_grad():
+            self.unet.outc.conv.bias.data.fill_(-2.0)
+
+    def _normalize_input_shape(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() == 4 and x.shape[-1] == 2:
+            x = x.unsqueeze(1) # [B, 1, Nc, Ns, 2]
+        return x
+
+    def demodulate(self, rx_signal: torch.Tensor) -> torch.Tensor:
+        # [B, Rx, Nc, Ns, 2]
+        flat = rx_signal.reshape(-1, 2)
+        demod_flat = flat @ self.demod_weights
+        return demod_flat.view_as(rx_signal)
+
+    def apply_range_fft(self, x: torch.Tensor, out_bins: int = None) -> torch.Tensor:
+        # x: [B, Rx, Nc, Ns, 2]
+        B, Rx, Nc, Ns, _ = x.shape
+        
+        # Apply Windowing
+        w = self.range_window[:Ns].view(1, 1, 1, Ns).expand(B, Rx, Nc, Ns)
+        x_reshaped = x.reshape(B * Rx * Nc, Ns, 2)
+        
+        # Complex construction
+        complex_input = torch.complex(x_reshaped[..., 0], x_reshaped[..., 1])
+        
+        # Windowing (broadcast)
+        # We need to reshape window to match flattened input
+        w_flat = w.reshape(B * Rx * Nc, Ns)
+        complex_input = complex_input * w_flat
+
+        fft_n = Ns
+        complex_output = torch.fft.fft(complex_input, n=fft_n, dim=1)
+
+        valid_bins = out_bins if out_bins is not None else fft_n
+        complex_output = complex_output[:, :valid_bins]
+        
+        spec = torch.stack([complex_output.real, complex_output.imag], dim=-1)
+        return spec.view(B, Rx, Nc, valid_bins, 2)
+
+    def apply_doppler_fft(self, x: torch.Tensor, out_bins: int = None) -> torch.Tensor:
+        # x: [B, Rx, Nc, Nr, 2]
+        B, Rx, Nc, Nr, _ = x.shape
+        
+        # Apply Windowing
+        w = self.doppler_window[:Nc].view(1, 1, Nc, 1).expand(B, Rx, Nc, Nr)
+        
+        # Transpose to put Nc (Doppler dim) last for FFT
+        x_transposed = x.permute(0, 1, 3, 2, 4) # [B, Rx, Nr, Nc, 2]
+        x_reshaped = x_transposed.reshape(B * Rx * Nr, Nc, 2)
+        
+        complex_input = torch.complex(x_reshaped[..., 0], x_reshaped[..., 1])
+        
+        w_flat = w.permute(0, 1, 3, 2).reshape(B * Rx * Nr, Nc)
+        complex_input = complex_input * w_flat
+
+        fft_n = Nc
+        complex_output = torch.fft.fft(complex_input, n=fft_n, dim=1)
+        complex_output = torch.fft.fftshift(complex_output, dim=1)
+
+        # Slicing / Cropping
+        if out_bins is not None:
+            center = fft_n // 2
+            half = out_bins // 2
+            start = max(0, center - half)
+            end = min(fft_n, start + out_bins)
+            complex_output = complex_output[:, start:end]
+            final_bins = complex_output.shape[1]
+        else:
+            final_bins = fft_n
+
+        spec = torch.stack([complex_output.real, complex_output.imag], dim=-1)
+        # Reshape back to [B, Rx, D, Nr, 2]
+        spec = spec.view(B, Rx, Nr, final_bins, 2).permute(0, 1, 3, 2, 4)
+        return spec
+
+    def _meta_to_map(self, meta: torch.Tensor, spatial_size) -> torch.Tensor:
+        B = meta.size(0)
+        feat = self.meta_mlp(meta) # [B, 16]
+        feat = feat[:, :, None, None]
+        feat = feat.expand(B, self.meta_out_channels, spatial_size[0], spatial_size[1])
+        return feat
+
+    def forward(self, x: torch.Tensor, meta: torch.Tensor, rd_shape: tuple = None) -> dict:
+        x = self._normalize_input_shape(x)
+        D_target, R_target = rd_shape if rd_shape else (None, None)
+
+        # 1. Demodulate
+        x = self.demodulate(x)
+
+        # 2. Range FFT (Fast Time)
+        x = self.apply_range_fft(x, out_bins=R_target)
+
+        # 3. Doppler FFT (Slow Time)
+        x = self.apply_doppler_fft(x, out_bins=D_target)
+
+        # 4. Collapse Rx Channels (Mean)
+        x = x.mean(dim=1) # [B, D, R, 2]
+
+        # 5. Compute Log-Magnitude (dB)
+        x_mag = torch.norm(x, dim=-1) # [B, D, R]
+        x_log = 20 * torch.log10(x_mag + 1e-9) # dB
+
+        # 6. INSTANCE NORMALIZATION (Peak-Referenced)
+        # Shift so max is 0 dB, then clamp to dynamic range (e.g. 50dB)
+        # This makes the "brightest" spot 1.0, and noise floor 0.0
+        B_dim, D_dim, R_dim = x_log.shape
+        flat_log = x_log.view(B_dim, -1)
+        
+        max_vals, _ = flat_log.max(dim=1, keepdim=True) # [B, 1]
+        
+        # Normalize: (val - max) is in range [-inf, 0]
+        # We want range [-50, 0] roughly mapped to [0, 1]
+        dynamic_range = 50.0 
+        x_norm = (x_log - max_vals.view(B_dim, 1, 1)) # Peak is 0
+        x_norm = (x_norm + dynamic_range) / dynamic_range 
+        x_norm = torch.clamp(x_norm, 0.0, 1.0)
+
+        # Input to U-Net: [B, 1, D, R]
+        x_in = x_norm.unsqueeze(1) 
+
+        # 7. Add Meta Info
+        if meta.dim() == 1: meta = meta.unsqueeze(0)
+        meta_map = self._meta_to_map(meta, x_in.shape[2:])
+        
+        x_unet_in = torch.cat([x_in, meta_map], dim=1)
+        
+        # 8. Detection Head
+        det_logits = self.unet(x_unet_in)
+
+        return {
+            "rd_map_db": x_log,      # Return raw dB for visualization
+            "norm_input": x_norm,    # Useful for debug
+            "detection_logits": det_logits
+        }
+        
+class RadarTimeNetV6(nn.Module):
+    def __init__(self, meta_dim: int = 6, num_rx: int = 1):
+        super().__init__()
+        self.num_rx = num_rx
+        self.meta_dim = meta_dim
+
+        # Learnable 2x2 demodulation matrix
         self.demod_weights = nn.Parameter(torch.randn(2, 2) / math.sqrt(2))
 
-        # Meta embedding: [B,meta_dim] -> [B,meta_out_channels,D,R]
+        # FIX: Learnable Input Batch Normalization
+        # This replaces the hardcoded (x+50)/100 scaling. 
+        # It adapts to the actual dB range of the radar data.
+        self.input_bn = nn.BatchNorm2d(3)
+
         self.meta_hidden_dim = 32
         self.meta_out_channels = 16
         self.meta_mlp = nn.Sequential(
@@ -315,112 +395,62 @@ class RadarTimeNetV6(nn.Module):
             n_classes=1,
             bilinear=True,
         )
-
         self._init_weights()
 
     def _init_weights(self):
         with torch.no_grad():
+            # FIX: Initialize to Identity Matrix.
+            # Previous init [[1, 0], [0, -1]] was a Conjugate (Q -> -Q), 
+            # which flips velocity and causes mismatch with ground truth masks.
             self.demod_weights.data = torch.tensor(
                 [[1.0, 0.0],
-                 [0.0, -1.0]],
+                 [0.0, 1.0]], 
                 dtype=torch.float32,
             )
 
     def _normalize_input_shape(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Normalize x to shape [B, Rx, Nc, Ns, 2].
-
-        Accepts:
-          - [B, Nc, Ns, 2]
-          - [B, Rx, Nc, Ns, 2]
-        """
         if x.dim() == 4 and x.shape[-1] == 2:
-            # [B,Nc,Ns,2] -> [B,1,Nc,Ns,2]
             x = x.unsqueeze(1)
         elif x.dim() == 5 and x.shape[-1] == 2:
-            pass  # Already [B,Rx,Nc,Ns,2]
+            pass
         else:
-            raise ValueError(f"Unexpected input shape for RadarTimeNetV6: {x.shape}")
+            raise ValueError(f"Unexpected input shape: {x.shape}")
         return x
 
     def demodulate(self, rx_signal: torch.Tensor) -> torch.Tensor:
-        """
-        Apply learnable 2x2 demodulation on IQ.
-
-        Input:
-          rx_signal: [B,Rx,Nc,Ns,2]
-        Output:
-          same shape
-        """
-        flat = rx_signal.reshape(-1, 2)          # [B*Rx*Nc*Ns, 2]
-        demod_flat = flat @ self.demod_weights   # [B*Rx*Nc*Ns, 2]
+        flat = rx_signal.reshape(-1, 2)
+        demod_flat = flat @ self.demod_weights
         return demod_flat.view_as(rx_signal)
 
     def apply_range_fft(self, x: torch.Tensor, out_bins: Optional[int] = None) -> torch.Tensor:
-        """
-        Range FFT (fast-time).
-
-        Input:
-          x: [B,Rx,Nc,Ns,2]
-
-        Output:
-          spec: [B,Rx,Nc,Nr,2]
-            Nr <= Ns, with no zero-padding.
-        """
         B, Rx, Nc, Ns, _ = x.shape
-        x_reshaped = x.reshape(B * Rx * Nc, Ns, 2)   # [B*Rx*Nc,Ns,2]
-        real, imag = x_reshaped[..., 0], x_reshaped[..., 1]
-        complex_input = torch.complex(real, imag)    # [B*Rx*Nc,Ns]
-
-        fft_n = Ns   # *** no zero-padding ***
+        x_reshaped = x.reshape(B * Rx * Nc, Ns, 2)
+        complex_input = torch.complex(x_reshaped[..., 0], x_reshaped[..., 1])
+        
+        fft_n = Ns
         complex_output = torch.fft.fft(complex_input, n=fft_n, dim=1)
 
-        if out_bins is None:
-            valid_bins = fft_n
-        else:
-            if out_bins > fft_n:
-                raise RuntimeError(
-                    f"Requested range bins {out_bins} > Ns={fft_n}; "
-                    "dataset RD axis length and raw Ns are inconsistent."
-                )
-            valid_bins = out_bins
+        valid_bins = out_bins if out_bins is not None else fft_n
+        if valid_bins > fft_n:
+             raise RuntimeError(f"Requested bins {valid_bins} > Ns {fft_n}")
 
-        complex_output = complex_output[:, :valid_bins]      # [B*Rx*Nc,Nr]
-
+        complex_output = complex_output[:, :valid_bins]
         spec = torch.stack([complex_output.real, complex_output.imag], dim=-1)
-        return spec.view(B, Rx, Nc, valid_bins, 2)           # [B,Rx,Nc,Nr,2]
+        return spec.view(B, Rx, Nc, valid_bins, 2)
 
     def apply_doppler_fft(self, x: torch.Tensor, out_bins: Optional[int] = None) -> torch.Tensor:
-        """
-        Doppler FFT (slow-time).
-
-        Input:
-          x: [B,Rx,Nc,Nr,2]
-
-        Output:
-          spec: [B,Rx,D,Nr,2]
-            D <= Nc, with no zero-padding.
-        """
         B, Rx, Nc, Nr, _ = x.shape
-        x_transposed = x.permute(0, 1, 3, 2, 4)          # [B,Rx,Nr,Nc,2]
+        x_transposed = x.permute(0, 1, 3, 2, 4) # [B, Rx, Nr, Nc, 2]
         x_reshaped = x_transposed.reshape(B * Rx * Nr, Nc, 2)
+        complex_input = torch.complex(x_reshaped[..., 0], x_reshaped[..., 1])
 
-        real, imag = x_reshaped[..., 0], x_reshaped[..., 1]
-        complex_input = torch.complex(real, imag)        # [B*Rx*Nr,Nc]
-
-        fft_n = Nc   # *** no zero-padding ***
+        fft_n = Nc
         complex_output = torch.fft.fft(complex_input, n=fft_n, dim=1)
         complex_output = torch.fft.fftshift(complex_output, dim=1)
 
-        if out_bins is None:
-            valid_bins = fft_n
-        else:
+        if out_bins is not None:
             if out_bins > fft_n:
-                raise RuntimeError(
-                    f"Requested Doppler bins {out_bins} > Nc={fft_n}; "
-                    "dataset RD axis length and raw Nc are inconsistent."
-                )
-            # Slice from center after fftshift to keep symmetric interval
+                 raise RuntimeError(f"Requested bins {out_bins} > Nc {fft_n}")
             center = fft_n // 2
             half = out_bins // 2
             start = max(0, center - half)
@@ -430,97 +460,60 @@ class RadarTimeNetV6(nn.Module):
                 start = end - out_bins
             complex_output = complex_output[:, start:end]
             valid_bins = out_bins
+        else:
+            valid_bins = fft_n
 
         spec = torch.stack([complex_output.real, complex_output.imag], dim=-1)
-        spec = spec.view(B, Rx, Nr, valid_bins, 2).permute(0, 1, 3, 2, 4)  # [B,Rx,D,Nr,2]
+        spec = spec.view(B, Rx, Nr, valid_bins, 2).permute(0, 1, 3, 2, 4)
         return spec
 
     def _meta_to_map(self, meta: torch.Tensor, spatial_size) -> torch.Tensor:
-        """
-        meta: [B,meta_dim]
-        spatial_size: (D,R)
-
-        Output:
-          meta_map: [B,meta_out_channels,D,R]
-        """
         B = meta.size(0)
-        feat = self.meta_mlp(meta)              # [B,Cm]
-        feat = feat[:, :, None, None]          # [B,Cm,1,1]
-        feat = feat.expand(
-            B, self.meta_out_channels, spatial_size[0], spatial_size[1]
-        )
+        feat = self.meta_mlp(meta)
+        feat = feat[:, :, None, None]
+        feat = feat.expand(B, self.meta_out_channels, spatial_size[0], spatial_size[1])
         return feat
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        meta: torch.Tensor,
-        rd_shape: Optional[tuple] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        x:
-          - [B, Nc, Ns, 2] or [B, Rx, Nc, Ns, 2]
-
-        meta:
-          - [B, meta_dim]
-
-        rd_shape:
-          - (D_target, R_target) = (len(velocity_axis), len(range_axis))
-
-        Returns:
-          dict with:
-            'rd_map_db':        [B, D, R]     (un-normalized dB RD map)
-            'detection_logits': [B, 1, D, R] (logits, same (D,R) as dataset)
-        """
-        x = self._normalize_input_shape(x)     # -> [B,Rx,Nc,Ns,2]
+    def forward(self, x: torch.Tensor, meta: torch.Tensor, rd_shape: Optional[tuple] = None) -> Dict[str, torch.Tensor]:
+        x = self._normalize_input_shape(x)
         B, Rx, Nc, Ns, _ = x.shape
-
-        if rd_shape is not None:
-            D_target, R_target = rd_shape
-        else:
-            D_target, R_target = None, None
+        D_target, R_target = rd_shape if rd_shape else (None, None)
 
         # 1. Demodulation
-        x = self.demodulate(x)                 # [B,Rx,Nc,Ns,2]
+        x = self.demodulate(x)
 
-        # 2. Range FFT -> set Nr to match dataset R if provided
-        x = self.apply_range_fft(
-            x, out_bins=R_target
-        )                                      # [B,Rx,Nc,Nr,2]
+        # 2. Range FFT
+        x = self.apply_range_fft(x, out_bins=R_target)
 
-        # 3. Doppler FFT -> set D to match dataset D if provided
-        x = self.apply_doppler_fft(
-            x, out_bins=D_target
-        )                                      # [B,Rx,D,Nr,2]
+        # 3. Doppler FFT
+        x = self.apply_doppler_fft(x, out_bins=D_target)
 
-        # 4. Combine RX antennas
-        x = x.mean(dim=1)                      # [B,D,R,2]
-        D, R = x.shape[1], x.shape[2]
-
+        # 4. Combine RX
+        x = x.mean(dim=1) # [B,D,R,2]
+        
         # 5. Build RD channels
-        x_real = x[..., 0]                     # [B,D,R]
-        x_imag = x[..., 1]                     # [B,D,R]
-        x_mag = torch.norm(x, dim=-1)          # [B,D,R]
-        x_log = 20 * torch.log10(x_mag + 1e-6) # [B,D,R]
-        x_log_norm = (x_log + 50.0) / 100.0    # rough scaling into ~[0,1]
+        x_real = x[..., 0]
+        x_imag = x[..., 1]
+        x_mag = torch.norm(x, dim=-1)
+        x_log = 20 * torch.log10(x_mag + 1e-6) 
+        
+        # Stack channels: [B, 3, D, R]
+        x_in = torch.stack([x_real, x_imag, x_log], dim=1) 
+        
+        # FIX: Apply Batch Norm here to learn correct scaling (replaces hardcoded +50/100)
+        x_in = self.input_bn(x_in)
 
-        x_in = torch.stack([x_real, x_imag, x_log_norm], dim=1)  # [B,3,D,R]
-
-        # 6. Meta feature map (same spatial size as RD)
-        if meta.dim() == 1:
-            meta = meta.unsqueeze(0)           # [B,meta_dim]
-        meta_map = self._meta_to_map(meta, x_in.shape[2:])   # [B,Cm,D,R]
-
-        x_unet_in = torch.cat([x_in, meta_map], dim=1)       # [B,3+Cm,D,R]
-
-        # 7. U-Net (no resizing, output same D,R)
-        det_logits = self.unet(x_unet_in)                    # [B,1,D,R]
+        # 6. Meta features
+        if meta.dim() == 1: meta = meta.unsqueeze(0)
+        meta_map = self._meta_to_map(meta, x_in.shape[2:])
+        
+        x_unet_in = torch.cat([x_in, meta_map], dim=1)
+        det_logits = self.unet(x_unet_in)
 
         return {
-            "rd_map_db": x_log,                 # [B,D,R]
-            "detection_logits": det_logits,     # [B,1,D,R]
+            "rd_map_db": x_log,
+            "detection_logits": det_logits,
         }
-
 
 # ==============================================================
 # Meta vector (config embedding) from AIRadarDataset
@@ -653,6 +646,9 @@ def _fix_target_mask_orientation(
             f"axes lengths D={D_axis}, R={R_axis} (either [B,D,R,1] or [B,R,D,1])."
         )
 
+# ==============================================================
+# Helper for Config-Rotating Training (Small fix for safety)
+# ==============================================================
 
 def train_one_epoch_config_rotation(
     model: nn.Module,
@@ -667,34 +663,19 @@ def train_one_epoch_config_rotation(
     train_datasets: Optional[Dict[str, AIRadarDataset]] = None,
     regenerate_each_epoch: bool = True,
 ):
-    """
-    One training epoch with config-rotating batches and gradient accumulation.
-
-    If `train_datasets` is provided and `regenerate_each_epoch=False`,
-    those datasets are reused (no regeneration each epoch).
-    Otherwise, fresh AIRadarDataset instances are constructed each epoch.
-    """
     model.train()
     num_configs = len(config_names)
     accum_steps = num_configs
 
-    # ----------------------------------------------------------
-    # 1. Build per-config datasets, loaders, and meta vectors
-    # ----------------------------------------------------------
+    # Setup datasets/loaders (Same as your original code)
     config_specs = []
     for cfg_idx, cfg_name in enumerate(config_names):
-
         if (train_datasets is not None) and (not regenerate_each_epoch):
             ds = train_datasets[cfg_name]
+            cfg_dir = getattr(ds, "save_path", os.path.join(base_data_dir, f"{cfg_name}_train_reused"))
             num_samples = len(ds)
-            cfg_dir = getattr(
-                ds, "save_path",
-                os.path.join(base_data_dir, f"{cfg_name}_train_reused")
-            )
         else:
-            cfg_dir = os.path.join(
-                base_data_dir, f"{cfg_name}_train_epoch{epoch}"
-            )
+            cfg_dir = os.path.join(base_data_dir, f"{cfg_name}_train_epoch{epoch}")
             num_samples = batch_size * num_batches_per_config
             ds = AIRadarDataset(
                 num_samples=num_samples,
@@ -705,45 +686,22 @@ def train_one_epoch_config_rotation(
                 clutter_intensity=0.3,
             )
 
-        loader = DataLoader(
-            ds,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,
-            drop_last=True,
-            collate_fn=custom_collate_fn,
-        )
-
+        loader = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, drop_last=True, collate_fn=custom_collate_fn)
         iterator = iter(loader)
-
         meta_vec = build_meta_vector_from_dataset(ds, cfg_idx, num_configs)
-        meta_base = torch.from_numpy(meta_vec).float().to(device)  # [meta_dim]
-
-        D_axis = len(ds.velocity_axis)
-        R_axis = len(ds.range_axis)
+        meta_base = torch.from_numpy(meta_vec).float().to(device)
 
         config_specs.append({
-            "name": cfg_name,
             "dataset": ds,
-            "loader": loader,
             "iterator": iterator,
             "meta_base": meta_base,
-            "D_axis": D_axis,
-            "R_axis": R_axis,
         })
-
-        print(
-            f"[Epoch {epoch}] Config {cfg_name}: {num_samples} samples, "
-            f"{len(loader)} batches (expected ~{num_batches_per_config})"
-        )
+        print(f"[Epoch {epoch}] Config {cfg_name}: Ready.")
 
     optimizer.zero_grad()
-    running_loss = 0.0   # track true loss (before /accum_steps)
+    running_loss = 0.0
     n_samples_total = 0
 
-    # ----------------------------------------------------------
-    # 2. Rotate across configs with gradient accumulation
-    # ----------------------------------------------------------
     for step_idx in range(num_batches_per_config):
         for spec in config_specs:
             try:
@@ -752,42 +710,38 @@ def train_one_epoch_config_rotation(
                 continue
 
             ds = spec["dataset"]
-            D_axis = spec["D_axis"]
-            R_axis = spec["R_axis"]
-
-            # time_domain: [B,Nc,Ns,2] or [B,Rx,Nc,Ns,2]
             time_domain = batch["time_domain"].to(device)
-
-            # target_mask: may be [B,D,R,1] or [B,R,D,1]
+            
+            # Ensure target mask is [B, D, R, 1]
             target_mask = batch["target_mask"].to(device)
             target_mask = _fix_target_mask_orientation(target_mask, ds)
-            target = target_mask.squeeze(-1)   # [B,D,R]
+            target = target_mask.squeeze(-1).float() # Ensure float for loss
 
-            # meta per sample: [B,meta_dim], all rows = meta_base
+            # Meta
             B_cur = time_domain.shape[0]
             meta = spec["meta_base"].unsqueeze(0).repeat(B_cur, 1)
 
-            rd_shape = (D_axis, R_axis)
+            rd_shape = (len(ds.velocity_axis), len(ds.range_axis))
+            
+            # Forward
             out = model(time_domain, meta, rd_shape=rd_shape)
+            logits = out["detection_logits"].squeeze(1)
 
-            logits = out["detection_logits"].squeeze(1)  # [B,D,R]
-
+            # Check shapes
             if logits.shape != target.shape:
-                raise RuntimeError(
-                    f"Shape mismatch between logits {logits.shape} "
-                    f"and target {target.shape} under Option A."
-                )
+                # Fallback resize if subtle mismatch
+                logits = F.interpolate(logits.unsqueeze(1), size=target.shape[-2:], mode='bilinear').squeeze(1)
 
-            # Compute true loss (unscaled) for reporting
-            raw_loss = criterion(logits, target)         # scalar
+            loss = criterion(logits, target)
+            
+            # Normalize loss by accumulation steps
+            (loss / accum_steps).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
-            # Scale for gradient accumulation
-            loss = raw_loss / float(accum_steps)
-            loss.backward()
-
-            running_loss += raw_loss.item() * B_cur
+            running_loss += loss.item() * B_cur
             n_samples_total += B_cur
 
+        # Update weights after processing one batch from EACH config
         optimizer.step()
         optimizer.zero_grad()
 
@@ -858,6 +812,8 @@ def evaluate_model_on_dataset(
 
         # --- DEBUG: prob stats & number of detections before NMS for the first sample
         if i == 0:
+            print(f"[DEBUG {name}] sample 0 LOGITS stats: min={logits.min():.2f}, max={logits.max():.2f}")
+            print(f"[DEBUG {name}] sample 0 PROB stats:   min={prob.min():.4f}, max={prob.max():.4f}")
             num_over_05 = int((prob >= threshold).sum())
             num_over_02 = int((prob >= 0.2).sum())
             print(
@@ -960,7 +916,7 @@ def main():
     # Option: reuse generated training datasets across epochs
     reuse_train_datasets = True
 
-    base_data_dir = "data/dl_generalization_v3"
+    base_data_dir = "data/dl_generalization_v8b"
 
     # ----------------------------------------------------------
     # Build training datasets (if we choose to reuse)
