@@ -355,11 +355,13 @@ class Waymo3DDataset(Dataset):
             extr_vals = extr_vals.as_py() if hasattr(extr_vals, "as_py") else extr_vals
             #return np.array(extr_vals, np.float32).reshape(4, 4, order="C")
 
-            T_vl_lh = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
-            
-            # --- FIX: Convert loaded LH matrix to RH ---
-            T_vl_rh = self.M_reflect @ T_vl_lh @ self.M_reflect
-            return T_vl_rh
+            # Waymo v2.0.1 LiDAR extrinsic (LiDARCalibration.extrinsic.transform)
+            # is already in the right-handed vehicle frame per the v2 schema.
+            # No M_reflect conjugation needed — applying it mirrors the point
+            # cloud's y-axis, which then has to be undone elsewhere
+            # (the now-removed box y-flip was compensating for this LiDAR flip).
+            T_vl = np.array(extr_vals, np.float32).reshape(4, 4, order="C")
+            return T_vl
 
         # Pick LiDAR with largest Z translation (the TOP sensor)
         cand_ids = sorted(rows_t["key.laser_name"].unique().tolist()) #5 lidars: [1, 2, 3, 4, 5]
@@ -473,12 +475,11 @@ class Waymo3DDataset(Dataset):
                          (df_vp["key.frame_timestamp_micros"] == ts)].iloc[0] #(3,)
             vp_vals = vrow["[VehiclePoseComponent].world_from_vehicle.transform"]
             vp_vals = vp_vals.as_py() if hasattr(vp_vals, "as_py") else vp_vals #(16,)
+            # Waymo v2.0.1 VehiclePose.world_from_vehicle.transform is already
+            # right-handed per the v2 schema. The previous M_reflect
+            # conjugation was wrong (consistent with the also-removed
+            # LiDAR-extrinsic and box-center mirrors).
             T_wv = np.array(vp_vals, np.float32).reshape(4, 4, order="C") #(4, 4)
-
-            T_wv_lh = np.array(vp_vals, np.float32).reshape(4, 4, order="C")
-            
-            # --- FIX: Convert loaded LH matrix to RH ---
-            T_wv = self.M_reflect @ T_wv_lh @ self.M_reflect
         except Exception as e:
             print(f"[WARN] Failed to load vehicle pose for {seg}/{ts}: {e}")
             T_wv = np.eye(4, dtype=np.float32) # Identity fallback
@@ -539,17 +540,17 @@ class Waymo3DDataset(Dataset):
                  "[LiDARBoxComponent].box.size.y", "[LiDARBoxComponent].box.size.z",
                  "[LiDARBoxComponent].box.heading"]
             arr = rows_b[f].to_numpy().astype(np.float32)
-            # --- FIX: Boxes are in VEHICLE frame, but flipped handedness ---
-            #arr[:, 1] *= -1.0        # y -> -y
-            #arr[:, 6] *= -1.0        # heading -> -heading
-
-            # --- FIX: Convert LH box params to RH box params ---
-            # 1. Flip the Y-center coordinate
-            arr[:, 1] *= -1.0        # cy -> -cy
-            # 2. Flip the heading
-            # (LH clockwise -> LH ccw) & (LH ccw -> RH ccw)
-            arr[:, 6] *= -1.0
-            
+            # Waymo v2.0.1 LiDARBox.box.center.x/y/z is ALREADY in the
+            # right-handed vehicle frame (+x forward, +y left, +z up) per
+            # the Waymo Open Dataset v2 schema. NO y or heading flip is
+            # needed — applying one mirrors every off-center box to the
+            # opposite side of the road. Verified by:
+            #  (a) projecting box centers to FRONT image and matching the
+            #      actual vehicle pixels (white van on RIGHT side of U-haul
+            #      truck at frame 800 only matches when y is unflipped);
+            #  (b) cross-checking with the official Waymo v1 SDK on
+            #      /tmp/waymo143_extract/segment-1001...tfrecord — dots
+            #      land on real vehicles with no flip.
             centers_v = arr[:, :3]
             sizes = arr[:, 3:6]
             headings_v = arr[:, 6]

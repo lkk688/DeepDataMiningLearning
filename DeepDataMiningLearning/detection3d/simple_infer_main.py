@@ -142,6 +142,10 @@ from simple_infer_utils import (
     inference_loop,
     run_runner_benchmark,      # optional: keep the simple runner path
     run_benchmark_evaluation,  # NEW: full runner-based eval with PerfHook
+    # ---- Unified multitask inference (B11/B12+) ----
+    load_multitask_model,      # builds det_model + occ_head wrapper
+    unified_inference_loop,    # runs all three heads in one pass per sample
+    profile_inference,         # NEW: per-stage CUDA-event profiler (Phase 1)
 )
 
 
@@ -284,6 +288,81 @@ def parse_args() -> argparse.Namespace:
         )
     )
 
+    # -------------------------------------------------------------------------
+    # UNIFIED MULTITASK INFERENCE (B11/B12+)
+    # -------------------------------------------------------------------------
+    # When --unified-inference is set, the script ignores --eval and runs
+    # the multitask inference loop instead: 3D detection (always),
+    # occupancy grid (if occ_head weights are loadable), 2D detection (if
+    # the model exposes image2d_head, i.e. B11/B12).
+    ap.add_argument(
+        "--unified-inference", action="store_true",
+        help=(
+            "Run the multitask inference path. Produces 3D detection JSON, "
+            "occupancy NPY+top-down PNG, and per-camera 2D detection JSON "
+            "(if image2d_head is present). One folder per sample under "
+            "--out-dir. Recommended for inspecting B11/B12 outputs."
+        )
+    )
+    ap.add_argument(
+        "--unified-checkpoint-multitask",
+        default="",
+        help=(
+            "Optional path to the *_multitask.pth checkpoint that has "
+            "occ_head weights. If empty, --checkpoint is used and the "
+            "occ_head is built but its weights stay random (still works "
+            "for det + 2D-aux inspection)."
+        )
+    )
+    ap.add_argument(
+        "--occ-classes", type=int, default=2,
+        help="BEVOccHead num_classes (matches training; 2 = binary)."
+    )
+    ap.add_argument(
+        "--occ-num-z", type=int, default=16,
+        help="BEVOccHead num_z (Z slices)."
+    )
+    ap.add_argument(
+        "--unified-3d-score-thresh", type=float, default=0.10,
+        help="Score threshold for 3D detection JSON output."
+    )
+    ap.add_argument(
+        "--unified-2d-score-thresh", type=float, default=0.10,
+        help="Score threshold for 2D detection JSON output."
+    )
+    ap.add_argument(
+        "--unified-no-occ", action="store_true",
+        help="Skip occupancy output even if occ_head loaded."
+    )
+    ap.add_argument(
+        "--unified-no-2d", action="store_true",
+        help="Skip 2D detection output even if image2d_head loaded."
+    )
+
+    # -------------------------------------------------------------------------
+    # PHASE-1 PER-STAGE PROFILER
+    # -------------------------------------------------------------------------
+    # Runs the model on a small number of samples and reports GPU time per
+    # canonical stage (img_backbone, img_neck, view_transform, fusion_layer,
+    # pts_backbone, pts_neck, bbox_head, occ_head, image2d_head, etc.) via
+    # forward hooks + CUDA events. Used to decide which CUDA-BEVFusion-
+    # style optimizations to port first (see paper EXPERIMENTS.md §6.x).
+    ap.add_argument(
+        "--profile-stages", action="store_true",
+        help=(
+            "Run a per-stage GPU timing pass. Reports mean / p50 / p95 ms "
+            "per submodule + end-to-end FPS. Writes <out-dir>/profile.json."
+        )
+    )
+    ap.add_argument(
+        "--profile-num-samples", type=int, default=20,
+        help="Number of samples to profile (after warmup). Default 20."
+    )
+    ap.add_argument(
+        "--profile-warmup", type=int, default=2,
+        help="Number of initial samples to drop from the timing report."
+    )
+
     return ap.parse_args()
 
 
@@ -320,6 +399,92 @@ def main() -> None:
     # Gather system info once; reused for metrics / JSON output
     sys_info = get_system_info()
     os.makedirs(args.out_dir, exist_ok=True)
+
+    # -------------------------------------------------------------------------
+    # PATH -1: Per-stage GPU profiler (Phase 1)
+    # -------------------------------------------------------------------------
+    # Quick "where is the time" report. We load the multitask wrapper (so the
+    # profiler sees occ_head + image2d_head + temporal_attn when present) and
+    # run N samples through model.test_step.
+    if args.profile_stages:
+        ckpt = args.unified_checkpoint_multitask or args.checkpoint
+        print(f"\n[profile] Loading multitask wrapper from: {ckpt}")
+        model, cfg = load_multitask_model(
+            config_path=args.config,
+            checkpoint_path=ckpt,
+            device=args.device,
+            dataroot=args.dataroot if args.data_source == 'cfg' else None,
+            ann_file=args.ann_file,
+            occ_classes=args.occ_classes,
+            occ_num_z=args.occ_num_z,
+        )
+        pack = build_loader_pack(
+            data_source=args.data_source,
+            cfg=cfg,
+            dataroot=args.dataroot,
+            nus_version=args.nus_version,
+            ann_file=args.ann_file,
+            max_samples=max(args.profile_num_samples + args.profile_warmup,
+                            args.max_samples),
+            crop_policy=args.crop_policy,
+            workers=args.workers,
+            dataset=args.dataset,
+        )
+        out_json = osp.join(args.out_dir, 'profile.json')
+        profile_inference(
+            model=model,
+            pack=pack,
+            num_samples=args.profile_num_samples,
+            warmup=args.profile_warmup,
+            out_json=out_json,
+        )
+        print(f"[profile] Done. Report at {out_json}")
+        return
+
+    # -------------------------------------------------------------------------
+    # PATH 0: Unified multitask inference (3D det + occupancy + 2D det)
+    # -------------------------------------------------------------------------
+    # When --unified-inference is set we route through the new utilities
+    # that produce all three outputs per sample. Override --checkpoint
+    # with --unified-checkpoint-multitask if you want occ_head weights.
+    if args.unified_inference:
+        ckpt = args.unified_checkpoint_multitask or args.checkpoint
+        print(f"\n[unified] Loading multitask wrapper from: {ckpt}")
+        model, cfg = load_multitask_model(
+            config_path=args.config,
+            checkpoint_path=ckpt,
+            device=args.device,
+            dataroot=args.dataroot if args.data_source == 'cfg' else None,
+            ann_file=args.ann_file,
+            occ_classes=args.occ_classes,
+            occ_num_z=args.occ_num_z,
+        )
+        pack = build_loader_pack(
+            data_source=args.data_source,
+            cfg=cfg,
+            dataroot=args.dataroot,
+            nus_version=args.nus_version,
+            ann_file=args.ann_file,
+            max_samples=args.max_samples,
+            crop_policy=args.crop_policy,
+            workers=args.workers,
+            dataset=args.dataset,
+        )
+        class_names = getattr(cfg, 'class_names', None)
+        unified_inference_loop(
+            model=model,
+            pack=pack,
+            out_dir=args.out_dir,
+            device=args.device,
+            score_thresh=args.unified_3d_score_thresh,
+            decode_2d_score_thresh=args.unified_2d_score_thresh,
+            class_names=class_names,
+            save_3d=True,
+            save_2d=(not args.unified_no_2d),
+            save_occ=(not args.unified_no_occ),
+        )
+        print(f"[unified] Done. Outputs under {args.out_dir}/<sample_id>/")
+        return
 
     # -------------------------------------------------------------------------
     # PATH 1: Runner-based evaluation backend (recommended for official NDS)
@@ -451,6 +616,35 @@ python simple_infer_main.py \
     --out-dir ./bevfusion_infer_results_v4 \
     --data-source custom \
     --ann-file /data/rnd-liu/MyRepo/mmdetection3d/data/nuscenes/nuscenes_infos_val.pkl
+
+# -----------------------------------------------------------------------------
+# UNIFIED MULTITASK INFERENCE  (B11/B12+: 3D det + occupancy + 2D det)
+# -----------------------------------------------------------------------------
+# Writes one folder per sample under --out-dir containing:
+#   <sample_id>_3d_dets.json       — boxes/scores/labels in LiDAR frame
+#   <sample_id>_occ.npy            — argmax voxel grid [Z, H, W]
+#   <sample_id>_occ_bev.png        — top-down "any-occupied" projection
+#   <sample_id>_2d_dets.json       — per-camera boxes (xyxy in 256x704)
+#   <sample_id>_2d_camN.png        — per-camera box overlay (if custom loader)
+# Plus unified_metrics.json with per-sample latency + peak memory.
+#
+# Recommended: pass the *_multitask.pth so occ_head weights are loaded.
+# The bare epoch_N.pth works too but the occ_head stays randomly inited
+# (still useful for 3D + 2D-aux inspection).
+python simple_infer_main.py \
+    --config      /data/rnd-liu/MyRepo/mmdetection3d/projects/bevdet/configs/ablation/B11_image2d_aux.py \
+    --checkpoint  /data/rnd-liu/MyRepo/mmdetection3d/work_dirs/ablation_B11/epoch_3.pth \
+    --unified-checkpoint-multitask \
+                  /data/rnd-liu/MyRepo/mmdetection3d/work_dirs/ablation_B11/epoch_3_multitask.pth \
+    --dataroot    /data/rnd-liu/MyRepo/mmdetection3d/data/nuscenes \
+    --out-dir     ./b11_unified_results \
+    --data-source custom \
+    --max-samples 10 \
+    --unified-inference \
+    --occ-classes 2 \
+    --occ-num-z   16 \
+    --unified-3d-score-thresh 0.10 \
+    --unified-2d-score-thresh 0.10
 """
 
 #KITTI:

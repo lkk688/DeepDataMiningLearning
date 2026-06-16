@@ -1091,9 +1091,9 @@ if __name__ == "__main__":
     print(f"{'='*60}\n")
 
     for config_name in RADAR_COMM_CONFIGS.keys():
-        if 'OTFS' in config_name:
-            print(f"Skipping {config_name} (OTFS not stable yet)")
-            continue
+        # if 'OTFS' in config_name:
+        #     print(f"Skipping {config_name} (OTFS not stable yet)")
+        #     continue
         print(f"\n--- Testing Configuration: {config_name} ---")
         save_path = os.path.join(output_base_dir, config_name)
         

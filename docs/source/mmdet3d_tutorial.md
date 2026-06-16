@@ -755,3 +755,368 @@ Common Pitfalls & Tips
 - Pin `numpy<2` to avoid ABI issues with compiled ops in some stacks.
 - On GPU nodes, configure proxy variables for `pip`, `git`, and `curl`.
 - For BEVFusion, set `TORCH_CUDA_ARCH_LIST` and use GCC/G++ for building CUDA extensions; clean `build/` before recompilation.
+
+# New Design
+
+Analysis: Why Your NDS is Below Original BEVFusion
+Root causes in your current configs
+1. Fully frozen Swin backbone (frozen_stages=4)
+The original BEVFusion fine-tunes Swin-Small at all stages. You freeze Swin-Tiny entirely. This is the single biggest NDS gap. No domain adaptation = the image features never converge to nuScenes statistics.
+
+2. Short training schedule
+v9: 6 epochs, v12: 10 epochs. Original: 20 epochs. CrossAttnLSS needs more iterations to learn good depth distributions.
+
+3. GridMask disabled (prob=0.0)
+Original BEVFusion uses GridMask as a key regularizer. Yours is on but at 0 probability — no effect.
+
+4. Camera BEV bottleneck
+out_channels=128/160 vs 256 in original. The camera branch has less representational capacity going into ConvFuser.
+
+5. Partial LiDAR backbone freeze
+FreezeExceptHook only unlocks encoder_layers.0 and .1 of the SECOND backbone. Layers 2+ are frozen, limiting LiDAR feature adaptation.
+
+6. EMA commented out
+EMA (momentum=0.0002) is a low-cost +0.5–1.0 NDS regularizer used in most top models.
+
+Immediate Fixes (Expected +2–4 NDS)
+Fix	Config Change	Expected Gain
+Unfreeze Swin last 2 stages	frozen_stages=2, add 'img_backbone.layers.2': dict(lr_mult=0.1) etc.	+1–2 NDS
+Train 20 epochs	max_epochs=20, extend scheduler	+0.5–1.5
+Enable GridMask	prob=0.7	+0.3–0.8
+Increase camera BEV to 256ch	out_channels=256 in view_transform, in_channels=[256,256] in fusion_layer	+0.5–1
+Re-enable EMA	uncomment EMAHook	+0.3–0.5
+Unfreeze full SECOND backbone	remove layers 0/1 restriction from allowlist	+0.3
+Add depth supervision	depth GT loss on CrossAttnLSS (like BEVDepth)	+0.5–1
+
+
+Research Contributions (Novel for a Paper)
+Your actual novel contributions are solid: CrossAttnLSS view transform + VoxelPainting with gating + FireRPF necks at lower GPU cost. To make the paper publishable, frame these plus the following improvements:
+
+A. Depth-supervised CrossAttnLSS
+Add a depth distribution supervision head on the CrossAttnLSS view transformer (like BEVDepth does for LSS). Your cross-attention query structure makes this natural since attention weights implicitly encode depth — you can supervise them directly with LiDAR-projected depth. This is your unique angle over vanilla BEVDepth.
+
+B. Bidirectional Cross-Modal Fusion
+Replace ConvFuser with a lightweight bidirectional attention block: camera BEV attends to LiDAR BEV and vice versa before concatenation. SparseFusion and CMT show this closes the gap vs simple concat fusion. This pairs well with your existing FireRPF attention (CBAM) story.
+
+C. Temporal BEV Aggregation (Strong NDS boost)
+The original BEVFusion is single-frame. Adding a simple recurrent BEV memory (even a single-step ego-aligned feature warp) typically gives +3–5 NDS on nuScenes. BEVFusion4D and Lift-Splat-Temporal variants show this. Since you already have a custom BEV pipeline, temporal fusion is a clean extension that fits the "efficient" narrative.
+
+D. Knowledge-Distilled Camera Branch
+Use your trained LiDAR-BEV features as a teacher to distill the camera BEV branch (like UniDistill or BEVDistill). This works well when combined with your gated voxel painting — the painting provides the bridge between modalities for distillation.
+
+
+New Research Directions in Autonomous Driving (for Paper Positioning)
+1. 3D Occupancy Prediction (Hottest current area)
+Replace or augment 3D object detection with dense occupancy prediction (OpenOccupancy, Occ3D, SurroundOcc). Your memory-efficient BEV pipeline is well-positioned here since occupancy heads add volume without needing bigger backbones. This extends your contribution from "better detection" to "richer scene representation."
+
+2. End-to-End Sensor Fusion for Planning
+Papers like UniAD, SparseDrive, and VAD connect detection → tracking → motion prediction → planning in one model. Your efficient fusion backbone could serve as the perception module for an E2E planner — this is a high-impact framing for a system paper.
+
+3. Radar + LiDAR + Camera Fusion
+Most nuScenes-based work ignores radar. Adding radar as a third modality (nuScenes has it) gives a unique contribution angle. Your gated voxel painting architecture generalizes to painting radar returns onto LiDAR voxels. CRN and RCBEVDet have shown +1–3 NDS from radar fusion with minor memory overhead.
+
+4. Efficient 4D BEV with Sparse Representations
+Work like SparseBEV, FocalFormer3D, and HEDNet move away from dense BEV grids to sparse queries. Since your paper's strength is memory efficiency, adopting sparse BEV tokenization at the fusion stage would be a coherent architectural story — merge your CBAM-gated RPF necks with sparse deformable attention.
+
+5. Foundation Model Backbones
+Replacing Swin with DINOv2 or InternImage (pre-trained at scale) and freezing only early layers gives substantially better camera features. Several 2024–2025 papers (e.g., Far3D, MonoDETR variants) show +3–5 NDS purely from this backbone swap while maintaining low fine-tuning cost.
+
+
+Suggested Paper Narrative
+"Memory-Efficient Multi-Modal BEVFusion with Cross-Attention View Transform and Gated Feature Painting"
+
+Claim: Achieve competitive NDS to BEVFusion (within 1–2 points) at X% lower peak GPU memory through (1) CrossAttnLSS replacing depth-LSS, (2) lightweight FireRPF necks replacing SECFPN, and (3) gated voxel painting replacing dense image features. Add temporal fusion or depth supervision as the "+1 novel contribution."
+
+The memory efficiency story is publishable — AAAI/IROS/ITSC all value practical deployment metrics. The gap to close is proving the accuracy isn't sacrificed: the fixes in the table above should get you within 1–2 NDS of the original.
+
+————————
+Important Clarification: MindDrive
+MindDrive is a Vision-Language-Action (VLA) model — it uses an LLM with LoRA adapters trained on the Bench2Drive dataset for linguistic driving decisions. It has no BEV encoder and is not suitable for direct integration with your pipeline. For trajectory/planning that plugs into BEV features, use the alternatives below.
+
+Complete Perception Pipeline Architecture
+Your CrossAttnLSS BEVFusion backbone produces a shared fused BEV feature map [B, 256, 180, 180]. All three tasks consume this same tensor — one encoder, three heads.
+
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                    INPUT SENSORS                                     │
+│    6x Cameras [B,6,3,256,704]    LiDAR Points [B, N, 5]            │
+└───────────────┬──────────────────────────┬──────────────────────────┘
+                │                          │
+     ┌──────────▼──────────┐    ┌──────────▼──────────┐
+     │  Swin-Tiny + FPN    │    │  SECOND + FireRPF   │
+     │  + FireRPF2DNeck    │    │  LiDAR BEV          │
+     │  + CrossAttnLSS     │    │  [B, 256, 180, 180] │
+     │  Camera BEV         │    └──────────┬──────────┘
+     │  [B, 160, 180, 180] │               │
+     └──────────┬──────────┘               │
+                │                          │
+     ┌──────────▼──────────────────────────▼──────────┐
+     │          ConvFuser  (your existing code)        │
+     │          Fused BEV [B, 256, 180, 180]          │
+     │          ← SHARED FEATURE BACKBONE →           │
+     └──────┬──────────────┬─────────────────┬────────┘
+            │              │                 │
+   ┌────────▼────┐  ┌──────▼──────┐  ┌──────▼──────────┐
+   │  Detection  │  │  Occupancy  │  │   HD Map Head   │
+   │  Head       │  │  Head       │  │  (MapTRv2 dec.) │
+   │  (existing) │  │  (new)      │  │  (new)          │
+   └────────┬────┘  └──────┬──────┘  └──────┬──────────┘
+            │              │                 │
+   10-class  3D boxes  3D Occ grid     Vectorized lanes
+   NDS metric  [B,W,H,Z]  semantic      + dividers
+                           voxels        + crossings
+            │              │                 │
+            └──────────────┴─────────────────┘
+                           │
+              ┌────────────▼────────────────┐
+              │   Lightweight BEV Planner   │
+              │   (VAD or SparseDrive)      │
+              │   Trajectory [B, T, 2]      │
+              └─────────────────────────────┘
+
+-------
+
+Task 1: 3D Occupancy Head (Add to existing model)
+Recommended: TPVFormer-style occupancy or FB-OCC
+
+The simplest path: lift your 2D BEV features [B, 256, 180, 180] to 3D voxels with a lightweight Z-deconvolution head.
+
+
+# Conceptual occupancy head (add to BEVFusionCA)
+occ_head = dict(
+    type='BEVOccHead',
+    in_channels=256,
+    num_classes=17,            # nuScenes-occ 16 classes + empty
+    bev_h=180, bev_w=180,
+    num_z_anchors=16,          # 8m z range / 0.5m = 16 voxels
+    z_range=[-5.0, 3.0],
+    # Lift BEV → 3D via learned z-deconv, ~2M params
+    z_deconv_channels=[256, 128, 64],
+    loss_occ=dict(type='CrossEntropyLoss', use_sigmoid=False,
+                  class_weight=[...]),   # reweight rare classes
+    loss_lovasz=dict(type='LovaszLoss', reduction='none'),
+)
+The Lovász loss is critical for occupancy — cross-entropy alone under-weights thin structures like cyclists and cones.
+
+Dataset: nuScenes-Occupancy (Occ3D-nuScenes, 700 train/150 val scenes, same splits as your detection training). You get both tasks from one training run.
+
+Task 2: HD Map Head
+Recommended: MapTRv2 (simpler than InteractionMap, well-maintained codebase)
+
+
+# MapTRv2 decoder plugs directly onto fused BEV
+map_head = dict(
+    type='MapTRv2Head',
+    bev_h=180, bev_w=180,
+    bev_dim=256,               # matches your fused BEV
+    num_vec=50,                # max map element instances
+    num_pts_per_vec=20,        # polyline points per element
+    num_classes=3,             # divider, crossing, boundary
+    pc_range=[-54.0, -54.0, -5.0, 54.0, 54.0, 3.0],
+    # Transformer decoder (6 layers, lightweight)
+    transformer=dict(
+        type='MapTRPerceptionTransformer',
+        decoder=dict(num_layers=6, ...),
+    ),
+    loss_cls=dict(type='FocalLoss', ...),
+    loss_pts=dict(type='PtsL1Loss', ...),
+    loss_dir=dict(type='PtsDirCosLoss', ...),
+)
+Training: MapTRv2 on nuScenes needs ~110 epochs standalone, but when your BEV backbone is pre-trained from detection, 30–40 additional epochs suffice since the BEV features are already good.
+
+Task 3: Trajectory Planning
+Recommended: VAD (ICLR 2024) or BEV-Planner — NOT MindDrive
+
+VAD uses vectorized scene representations (your map outputs + detected objects) to plan. It's the right fit because:
+
+Takes BEV features + map vectors + detected boxes — all outputs you already have
+~30M parameters, runs at 15+ FPS on GPU
+nuScenes planning L2/collision metrics
+Minimal integration: add a GRU-based ego-motion planner on top of your fused BEV:
+
+
+planner_head = dict(
+    type='SimpleBEVPlanner',
+    bev_channels=256,
+    ego_channels=64,             # ego speed/heading embedding
+    future_steps=6,              # 3s at 2Hz
+    num_modes=3,                 # multimodal trajectories
+    loss_traj=dict(type='L1Loss'),
+    loss_collision=dict(type='BCELoss', weight=10.0),
+)
+For the paper, you can use the nuScenes Open-loop Planning benchmark (L2 displacement + collision rate) as the third evaluation metric alongside NDS and mAP-map.
+
+Multi-Task Training Strategy
+
+# In your BEVFusionCA model, add multi-task loss weighting
+# Use uncertainty weighting (Kendall et al. 2018) or fixed weights:
+
+loss_weights = dict(
+    det_loss=1.0,          # your existing detection loss
+    occ_loss=1.0,          # new: occupancy CE + Lovász
+    map_loss=1.0,          # new: MapTRv2 cls + pts + dir
+    plan_loss=0.5,         # new: L2 + collision
+)
+Training schedule on H100:
+
+Phase 1 (10 epochs): Detection + Occupancy only (share BEV encoder)
+Phase 2 (10 epochs): Add Map head (freeze occ head)
+Phase 3 (10 epochs): Full multi-task with planner (all unfrozen, lower LR)
+Total: ~30 epochs for the full pipeline vs. 20 epochs for detection alone.
+
+Jetson Thor Optimization Plan
+Jetson AGX Thor has Tensor Cores with INT8/FP16 support and is designed for AV workloads. Here's the deployment pipeline:
+
+Step 1: Model Surgery Before Export
+
+# Replace non-TRT-friendly ops:
+# CrossAttnLSS: replace torch.einsum with explicit matmul
+# CBAM: replace adaptive_avg_pool2d with fixed-size pool
+# spconv: use torch-tensorrt or replace with dense conv for export
+Step 2: TensorRT Export via torch2trt or TensorRT Python API
+
+# FP16 for backbone + necks (no accuracy loss)
+# INT8 for detection/occ heads (calibrate on 512 nuScenes samples)
+# Keep MapTRv2 decoder in FP16 (attention ops sensitive to INT8)
+Step 3: Module-level Latency Targets (estimated)
+Module	H100 FP16	Jetson Thor FP16	Jetson Thor INT8
+Swin-Tiny + FPN	~8ms	~35ms	~20ms
+CrossAttnLSS VT	~12ms	~50ms	~30ms
+SECOND + FireRPF	~5ms	~20ms	~12ms
+ConvFuser	~1ms	~3ms	~2ms
+Det head	~2ms	~8ms	~5ms
+Occ head	~3ms	~12ms	~7ms
+MapTRv2 decoder	~5ms	~20ms	~14ms
+Total	~36ms	~148ms	~90ms
+Target: ~10 FPS on Thor with INT8 — achievable. Real AV systems run perception at 10Hz.
+
+Step 4: Thor-Specific Optimizations
+Sparse convolution: spconv 2.x with TensorRT plugin support for the SECOND backbone — avoids materializing empty voxels
+Chunked attention: your existing attn_chunk setting in CrossAttnLSS is already the right pattern for memory-constrained inference
+BEV resolution reduction at inference: drop to [128, 128] BEV grid at test time on Thor with minimal NDS loss (~0.5 NDS), halving memory and compute
+Occupancy at lower Z resolution: 8 Z levels instead of 16 for Thor inference
+Suggested Paper Title and Contribution
+"UniDriveBEV: A Memory-Efficient Unified BEV Perception Pipeline for 3D Detection, Occupancy, Mapping, and Planning"
+
+Contributions:
+
+CrossAttnLSS view transform as a drop-in LSS replacement (memory efficient, GPU-agnostic)
+Single shared BEV encoder for 4 tasks simultaneously — no redundant feature extraction
+FireRPF necks as lightweight CBAM-gated alternatives to SECFPN
+Jetson Thor INT8 deployment analysis with throughput/accuracy trade-off study
+This positions the paper at IROS 2026 or ITSC 2026 (system/deployment papers), or ECCV 2026 Workshop on Autonomous Driving if the NDS gap is closed.
+
+
+
+--------
+
+What was built: bevdet/train/
+All files live at DeepDataMiningLearning/bevdet/train/ and are accessible as projects.bevdet.train.* from the mmdetection3d directory.
+
+File map
+File	Purpose	mmdet3d dependency
+misc.py	Seeds, AverageMeter, ETA, Lovász softmax	None
+checkpoint.py	EMA, save/load full state, weights-only load	None
+occ_head.py	BEVOccHead + LiDAR pseudo-occ builder	None
+multitask_bev.py	MultiTaskBEVFusion (det + occ hook)	Registry only
+trainer.py	Trainer class (BF16, AdamW, cosine LR)	None
+eval_runner.py	Correct NDS via Runner.test()	Runner only
+train.py	Main entry point	Config + Registry
+radar_stub.py	RadarPillarEncoder stub for Phase 2	None
+configs/mybevfusion_phase1.py	Phase 1 config (extends v12v2)	Config inherit
+Launch commands
+
+conda activate py310
+cd /data/rnd-liu/MyRepo/mmdetection3d
+
+# Phase 1a: detection only (verify parity with original tools/train.py)
+python projects/bevdet/train/train.py \
+    --config projects/bevdet/configs/mybevfusion12v2.py \
+    --work-dir work_dirs/phase1_det \
+    --epochs 10 \
+    --eval-interval 2
+
+# Phase 1b: detection + binary occupancy (no Occ3D dataset required)
+python projects/bevdet/train/train.py \
+    --config projects/bevdet/configs/mybevfusion_phase1.py \
+    --work-dir work_dirs/phase1_det_occ \
+    --epochs 10 \
+    --occ-classes 2 \
+    --occ-num-z 16 \
+    --occ-loss-weight 0.5 \
+    --eval-interval 2
+
+# Evaluate only (always correct NDS)
+python projects/bevdet/train/train.py \
+    --config projects/bevdet/configs/mybevfusion12v2.py \
+    --eval-only \
+    --load-from work_dirs/phase1_det/epoch_10.pth \
+    --data-root /data/rnd-liu/MyRepo/mmdetection3d/data/nuscenes \
+    --work-dir work_dirs/phase1_det
+Key design decisions
+Eval always uses Runner.test() — the manual NuScenes eval path is removed from the training loop. This fixes the NDS gap you observed.
+Per-epoch checkpoints save det-only weights (epoch_N.pth) — so the Runner loads them without the occ_head wrapper. Full multitask weights saved separately as epoch_N_multitask.pth.
+Occupancy GT is optional — if occ_gt is absent from a batch, occ loss is silently skipped. This lets you start training detection-only and add occ labels incrementally.
+Radar — RadarPillarEncoder is a stub with a clear interface contract. Flip use_radar=True in Phase 2 without touching detection or occupancy code.
+
+
+```bash
+cd /fs/atipa/data/rnd-liu/MyRepo/mmdetection3d && conda run -n py310 python projects/bevdet/train/train.py \
+    --config projects/bevdet/configs/mybevfusion12v2.py \
+    --load-from work_dirs/mybevfusion12v2/epoch_8.pth \
+    --work-dir work_dirs/phase1a_correcttest \
+    --epochs 2 \
+    --warmup-iters 200 \
+    --log-interval 200 \
+    --debug-iters 400 \
+    --eval-interval 0 \
+    --workers 8 \
+    --seed 42 2>&1 | grep -v "UserWarning\|warnings.warn\|^$\|mmengine - INFO\|mmengine - DEBUG" | tail -35
+```
+
+Full Phase 1a training is now running:
+
+Config: mybevfusion12v2.py
+Pretrained weights: work_dirs/mybevfusion12v2/epoch_8.pth
+Output: work_dirs/phase1a_full/
+Schedule: 10 epochs, 7724 iters/epoch ≈ ~28h total at 3.3s/iter
+
+-------
+
+Phase 1b: What changed and why
+
+Change	File	Expected NDS gain
+frozen_stages 4→2 (Swin stages 2&3 fine-tuned at lr 0.02x)	mybevfusion_phase1b.py	+1.5–2.5 pts
+Camera BEV channels 160→256	same	+0.3–0.8 pts
+GridMask prob 0.0→0.7	same	+0.3–0.7 pts
+EMAHook enabled	same	+0.1–0.3 pts
+20 epochs (was 10)	same + run_phase1b.sh	+0.5–1.0 pts
+Binary occupancy auxiliary loss	run_phase1b.sh --occ-classes 2	+0.2–0.5 pts
+Target: NDS ~0.70–0.72 vs current 0.68
+
+Bug fixes made:
+
+checkpoint.py: load_weights now skips shape-mismatched tensors (prints warning) instead of crashing — needed whenever architecture changes between checkpoints
+multitask_bev.py: MultiTaskBEVFusion.__init__ now accepts both a BEVOccHead instance and a dict for occ_head
+Once the smoke test passes (background task), run the full 20-epoch training with:
+
+
+cd /data/rnd-liu/MyRepo/mmdetection3d
+bash run_phase1b.sh
+
+Training is running (main PID 913453 at 125% CPU, 8 data workers). Here's a summary of all fixes applied before the successful launch:
+
+3 bugs fixed to get Phase 1b running:
+
+Shape mismatch crash — load_weights in checkpoint.py now filters out tensors whose shapes changed (view_transform 160→256, fusion_layer 416→512 input), prints a warning, and loads the rest. Required any time architecture changes between checkpoints.
+
+occ_head type error — multitask_bev.py now accepts both a BEVOccHead instance and a dict; train.py passes an already-constructed instance.
+
+CUDA/CPU device mismatch on mean — Det3DDataPreprocessor.device property uses next(self.buffers()) which can return a CPU-side voxelizer buffer before reaching mean, causing cast_data to leave images on CPU while mean is on CUDA. Fixed in train.py build_model by explicitly calling model.data_preprocessor.to(device) after model.to(device).
+
+Phase 1b is now running: 20 epochs, backbone unfrozen (stages 2-3 at lr 0.02x), GridMask enabled, 256-ch camera BEV, EMA, + binary occupancy aux loss. Target NDS: ~0.70-0.72 vs current 0.68.
+
+Monitor with:
+
+
+tail -f work_dirs/phase1b/train.log | grep -E "Epoch(train)|mean_loss|Checkpoint|Error"

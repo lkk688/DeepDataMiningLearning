@@ -158,3 +158,13 @@ tmp_*
 *.tex
 outputs/
 wandb
+
+# Local tooling / session config
+.claude/
+
+# Massive autolabel data + sim outputs + checkpoints (525GB) — never commit
+physicalai_autolabel/
+
+# Paper drafts, PDFs, LaTeX (kept local, not tracked)
+DeepDataMiningLearning/bevdet/paper/
+paper_corl/

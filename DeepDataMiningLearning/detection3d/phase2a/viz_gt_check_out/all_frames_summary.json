@@ -1,0 +1,109 @@
+[
+  {
+    "frame_idx": 0,
+    "segment": "10203656353524179475_7625_000_7645_000",
+    "timestamp": 1522688014970187,
+    "a_clusters": 43,
+    "b_lifts": 18,
+    "pseudo_count": 1,
+    "gt_3d_total": 24,
+    "gt_3d_transfer": 10,
+    "gt_3d_by_waymo_class": {
+      "1": 10,
+      "3": 14
+    },
+    "gt_2d_by_cam": {
+      "FRONT": 23,
+      "FRONT_LEFT": 21,
+      "FRONT_RIGHT": 2,
+      "SIDE_LEFT": 17,
+      "SIDE_RIGHT": 1
+    }
+  },
+  {
+    "frame_idx": 200,
+    "segment": "10203656353524179475_7625_000_7645_000",
+    "timestamp": 1522688018965905,
+    "a_clusters": 36,
+    "b_lifts": 9,
+    "pseudo_count": 0,
+    "gt_3d_total": 21,
+    "gt_3d_transfer": 10,
+    "gt_3d_by_waymo_class": {
+      "1": 10,
+      "3": 11
+    },
+    "gt_2d_by_cam": {
+      "FRONT": 31,
+      "FRONT_LEFT": 21,
+      "FRONT_RIGHT": 4,
+      "SIDE_LEFT": 18
+    }
+  },
+  {
+    "frame_idx": 400,
+    "segment": "1024360143612057520_3580_000_3600_000",
+    "timestamp": 1553735856162181,
+    "a_clusters": 81,
+    "b_lifts": 48,
+    "pseudo_count": 6,
+    "gt_3d_total": 76,
+    "gt_3d_transfer": 50,
+    "gt_3d_by_waymo_class": {
+      "1": 36,
+      "2": 13,
+      "3": 26,
+      "4": 1
+    },
+    "gt_2d_by_cam": {
+      "FRONT": 12,
+      "FRONT_LEFT": 31,
+      "FRONT_RIGHT": 10,
+      "SIDE_LEFT": 3,
+      "SIDE_RIGHT": 13
+    }
+  },
+  {
+    "frame_idx": 600,
+    "segment": "10247954040621004675_2180_000_2200_000",
+    "timestamp": 1553810172257968,
+    "a_clusters": 34,
+    "b_lifts": 14,
+    "pseudo_count": 2,
+    "gt_3d_total": 20,
+    "gt_3d_transfer": 18,
+    "gt_3d_by_waymo_class": {
+      "1": 16,
+      "2": 2,
+      "3": 2
+    },
+    "gt_2d_by_cam": {
+      "FRONT": 5,
+      "FRONT_LEFT": 1,
+      "FRONT_RIGHT": 4,
+      "SIDE_LEFT": 1
+    }
+  },
+  {
+    "frame_idx": 800,
+    "segment": "10289507859301986274_4200_000_4220_000",
+    "timestamp": 1557847393272572,
+    "a_clusters": 86,
+    "b_lifts": 53,
+    "pseudo_count": 9,
+    "gt_3d_total": 95,
+    "gt_3d_transfer": 69,
+    "gt_3d_by_waymo_class": {
+      "1": 23,
+      "2": 44,
+      "3": 26,
+      "4": 2
+    },
+    "gt_2d_by_cam": {
+      "FRONT": 40,
+      "FRONT_LEFT": 15,
+      "FRONT_RIGHT": 8,
+      "SIDE_RIGHT": 2
+    }
+  }
+]

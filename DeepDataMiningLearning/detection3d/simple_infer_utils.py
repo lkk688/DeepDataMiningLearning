@@ -17,6 +17,7 @@ Key features:
 
 import os
 import os.path as osp
+import sys
 import math
 import time
 import json
@@ -36,6 +37,7 @@ from typing import (
 )
 import numpy as np
 import torch
+import torch.nn.functional as F
 import cv2
 import psutil
 from tqdm import tqdm
@@ -2496,5 +2498,976 @@ def inference_loop(model: torch.nn.Module,
                 save_ply_files(out_dir, str(token), pts, pred_boxes, gt_boxes)
             elif (not headless) and show_open3d:
                 run_open3d_viz(pts, pred_boxes, gt_boxes, window_name=f"Sample {token}")
-                
+
+    return metrics
+
+
+# =============================================================================
+# UNIFIED MULTITASK INFERENCE  (B11/B12+: 3D det + occupancy + 2D det)
+# =============================================================================
+#
+# Our newer BEVFusion variants emit THREE outputs at training time but the
+# stock MultiTaskBEVFusion wrapper's `predict()` only routes through the
+# detector. The functions below run a single forward pass and decode all
+# three heads at inference, capturing intermediate features via the same
+# hook pattern the training wrapper already uses.
+#
+# What each function does:
+#
+#   * ``load_multitask_model(...)``        — build full wrapper (det + occ +
+#                                            optional image2d) and load
+#                                            either a det-only or a full
+#                                            multitask checkpoint.
+#   * ``infer_all_outputs(model, ...)``    — single forward; returns
+#                                            {boxes_3d, occ_grid, boxes_2d}.
+#   * ``decode_centernet_2d(...)``         — heatmap+wh → list of 2D boxes.
+#   * ``save_2d_detections(...)``          — JSON + per-camera overlay PNGs.
+#   * ``save_occupancy_grid(...)``         — NPY + optional voxel-grid PNG.
+# =============================================================================
+
+def _strip_prefix(state_dict: Dict[str, Any], prefix: str) -> Dict[str, Any]:
+    """Return a new state dict where any keys starting with ``prefix`` have
+    that prefix removed; keys without the prefix are dropped."""
+    out = {}
+    for k, v in state_dict.items():
+        if k.startswith(prefix):
+            out[k[len(prefix):]] = v
+    return out
+
+
+def _load_checkpoint_state(path: str) -> Dict[str, Any]:
+    """Open a .pth and return the state_dict portion (handles wrapper format)."""
+    # PyTorch 2.6+ defaults to weights_only=True, which rejects mmengine's
+    # checkpoint format (contains pickled mmengine.Config + numpy ndarrays).
+    # Pass weights_only=False explicitly — these are checkpoints we trained.
+    try:
+        obj = torch.load(path, map_location='cpu', weights_only=False)
+    except TypeError:
+        obj = torch.load(path, map_location='cpu')   # older torch
+    if isinstance(obj, dict):
+        if 'state_dict' in obj:
+            return obj['state_dict']
+        if 'model' in obj and isinstance(obj['model'], dict):
+            return obj['model']
+    return obj  # already a state dict
+
+
+def load_multitask_model(
+    config_path: str,
+    checkpoint_path: str,
+    device: str = 'cuda',
+    dataroot: Optional[str] = None,
+    ann_file: str = '',
+    occ_classes: int = 2,
+    occ_num_z: int = 16,
+    occ_in_channels: int = 256,
+):
+    """
+    Build the MultiTaskBEVFusion wrapper (det_model + occ_head) and load
+    a checkpoint into it.
+
+    Args:
+        config_path: ablation config (e.g., B11_image2d_aux.py). The
+            ``cfg.model`` is used to build ``det_model``.
+        checkpoint_path: either
+            * ``epoch_N.pth`` (det-only — occ_head will be RANDOMLY
+              initialized, ok for det-only or 2D-aux inference), or
+            * ``epoch_N_multitask.pth`` (full wrapper — recommended; has
+              ``det_model.``, ``occ_head.``, possibly ``depth_head.``
+              prefixed keys; loaded into the wrapper directly).
+        occ_classes / occ_num_z / occ_in_channels: BEVOccHead build args.
+            Match what training used (defaults are the 25%-subset settings).
+
+    Returns:
+        model (eval-mode), cfg
+    """
+    cfg = Config.fromfile(config_path)
+    if dataroot is not None:
+        patch_cfg_paths(cfg, dataroot, ann_file)
+
+    init_default_scope('mmdet3d')
+
+    # Build the det_model from the registered class in cfg.model.
+    det_model = MODELS.build(cfg.model)
+
+    # Build BEVOccHead. We deliberately keep this code parallel to
+    # train.py's build_model() so weights from a multitask checkpoint
+    # load cleanly.
+    # The bevdet.train package may not be on sys.path when this script
+    # is run from detection3d/. Inject its parent if needed.
+    _here = osp.dirname(osp.abspath(__file__))
+    _ddml_root = osp.dirname(osp.dirname(_here))   # .../MyRepo/DeepDataMiningLearning
+    if _ddml_root not in sys.path:
+        sys.path.insert(0, _ddml_root)
+    from DeepDataMiningLearning.bevdet.train.occ_head import BEVOccHead
+    occ_head = BEVOccHead(
+        in_channels=occ_in_channels,
+        num_classes=occ_classes,
+        num_z=occ_num_z,
+    )
+
+    from DeepDataMiningLearning.bevdet.train.multitask_bev import MultiTaskBEVFusion
+    model = MultiTaskBEVFusion(
+        det_model=det_model,
+        occ_head=occ_head,
+        depth_head=None,           # depth head not needed for inference outputs
+    )
+
+    # Load checkpoint. Auto-detect format.
+    state = _load_checkpoint_state(checkpoint_path)
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    # If the keys don't start with 'det_model.', assume det-only ckpt
+    # and re-load into det_model directly.
+    if any(k.startswith('det_model.') for k in state.keys()):
+        # multitask format — already loaded above
+        pass
+    else:
+        # det-only — load into det_model
+        det_state = state
+        det_model.load_state_dict(det_state, strict=False)
+    print(f'[load_multitask_model] {checkpoint_path}: '
+          f'missing={len(missing)}, unexpected={len(unexpected)}')
+
+    target_device = torch.device(device)
+    model.to(target_device).eval()
+    # Det3DDataPreprocessor.device is a @property that mmdet3d doesn't
+    # update when the parent module is moved with .to(). Without this
+    # explicit move, calling model.test_step(cpu_batch) raises
+    # "Expected all tensors to be on the same device, but found cuda:0
+    # and cpu". (Same bug we already worked around in eval_runner.py.)
+    if hasattr(model, 'data_preprocessor') and model.data_preprocessor is not None:
+        model.data_preprocessor = model.data_preprocessor.to(target_device)
+    return model, cfg
+
+
+def _attach_image2d_p3_hook(det_model) -> Dict[str, Any]:
+    """
+    Register a forward hook on ``img_neck`` to capture FPN P3 for the
+    image 2D aux head. Mirrors the hook the training-time
+    Image2DAuxBEVFusion installs (since at inference we run predict()
+    which doesn't fire the head).
+
+    Returns a dict whose ``'p3'`` key is set to the P3 tensor each
+    forward pass.
+    """
+    cache: Dict[str, Any] = {'p3': None, 'handle': None}
+
+    def _hook(module, inputs, output):
+        cache['p3'] = output[0] if isinstance(output, (list, tuple)) else output
+
+    if hasattr(det_model, 'img_neck') and det_model.img_neck is not None:
+        cache['handle'] = det_model.img_neck.register_forward_hook(_hook)
+    return cache
+
+
+@torch.no_grad()
+def decode_centernet_2d(
+    heatmap_logit: torch.Tensor,
+    wh: torch.Tensor,
+    image_size: Tuple[int, int],
+    score_thresh: float = 0.1,
+    topk: int = 100,
+    nms_iou_thresh: float = 0.5,
+) -> List[Dict[str, np.ndarray]]:
+    """
+    Decode CenterNet-style heatmap + (w, h) regression into 2D boxes
+    per camera.
+
+    Args:
+        heatmap_logit: [N_cam, num_classes, Hf, Wf]  — pre-sigmoid logits.
+        wh:            [N_cam, 2,           Hf, Wf]  — (w, h) at the
+                                                       center cell, in
+                                                       FEATURE-grid units.
+        image_size:    (img_h, img_w)  — target image size for box coords.
+        score_thresh:  drop detections with score below this.
+        topk:          keep at most ``topk`` boxes per camera (pre-NMS).
+        nms_iou_thresh: per-class NMS IoU threshold (applied per camera).
+
+    Returns:
+        list of length N_cam; each element is
+            {'boxes': [N,4] xyxy in pixel coords,
+             'scores': [N],
+             'labels': [N]}
+    """
+    N_cam, num_classes, Hf, Wf = heatmap_logit.shape
+    img_h, img_w = image_size
+    stride_x = img_w / Wf
+    stride_y = img_h / Hf
+
+    out_list: List[Dict[str, np.ndarray]] = []
+
+    heatmap = heatmap_logit.sigmoid()
+
+    # Simple 3x3 max-pool to find peaks (CenterNet trick).
+    hmax = F.max_pool2d(heatmap, kernel_size=3, stride=1, padding=1)
+    peaks = (heatmap == hmax).float() * heatmap
+
+    for c in range(N_cam):
+        # Flatten across (class, y, x) and pick topk.
+        flat = peaks[c].reshape(num_classes * Hf * Wf)
+        scores_all, idx_all = flat.topk(min(topk, flat.numel()))
+        keep = scores_all > score_thresh
+        scores = scores_all[keep]
+        idx = idx_all[keep]
+        if idx.numel() == 0:
+            out_list.append({
+                'boxes': np.zeros((0, 4), dtype=np.float32),
+                'scores': np.zeros((0,), dtype=np.float32),
+                'labels': np.zeros((0,), dtype=np.int64),
+            })
+            continue
+        cls = idx // (Hf * Wf)
+        rem = idx % (Hf * Wf)
+        ys = rem // Wf
+        xs = rem % Wf
+        # Read box w/h at the center cell.
+        w_feat = wh[c, 0, ys, xs]
+        h_feat = wh[c, 1, ys, xs]
+        # Convert center+wh to xyxy in pixels.
+        cx_px = (xs.float() + 0.5) * stride_x
+        cy_px = (ys.float() + 0.5) * stride_y
+        w_px = w_feat.clamp(min=1.0) * stride_x
+        h_px = h_feat.clamp(min=1.0) * stride_y
+        x1 = (cx_px - w_px / 2).clamp(min=0, max=img_w - 1)
+        y1 = (cy_px - h_px / 2).clamp(min=0, max=img_h - 1)
+        x2 = (cx_px + w_px / 2).clamp(min=0, max=img_w - 1)
+        y2 = (cy_px + h_px / 2).clamp(min=0, max=img_h - 1)
+        boxes = torch.stack([x1, y1, x2, y2], dim=-1)
+
+        # Per-class NMS using torchvision.
+        try:
+            from torchvision.ops import batched_nms
+            keep_idx = batched_nms(
+                boxes.float(), scores.float(), cls.long(),
+                iou_threshold=nms_iou_thresh,
+            )
+            boxes = boxes[keep_idx]
+            scores = scores[keep_idx]
+            cls = cls[keep_idx]
+        except ImportError:
+            pass
+
+        out_list.append({
+            'boxes': boxes.cpu().numpy().astype(np.float32),
+            'scores': scores.cpu().numpy().astype(np.float32),
+            'labels': cls.cpu().numpy().astype(np.int64),
+        })
+    return out_list
+
+
+@torch.no_grad()
+def infer_all_outputs(
+    model,
+    data: Dict[str, Any],
+    class_names: Optional[List[str]] = None,
+    decode_2d: bool = True,
+    decode_2d_score_thresh: float = 0.1,
+    img_size_2d: Tuple[int, int] = (256, 704),
+) -> Dict[str, Any]:
+    """
+    One forward pass; returns 3D detection, occupancy logits, and decoded
+    2D detection per camera (if the model has an ``image2d_head``).
+
+    Args:
+        model: a ``MultiTaskBEVFusion`` instance (built by
+            ``load_multitask_model``).
+        data: a single test_step-style batch (e.g., from the dataloader
+            iterator or a ``model.data_preprocessor(...)`` call).
+        class_names: optional list; included in the output dict for
+            downstream JSON dumping.
+        decode_2d: whether to run + decode the image 2D aux head.
+        decode_2d_score_thresh: threshold for 2D decoder.
+        img_size_2d: image size to which the 2D decoder maps box coords.
+
+    Returns:
+        dict with keys:
+            * ``data_samples``  — List[Det3DDataSample] (mmdet3d predict output)
+            * ``occ_grid``      — torch.Tensor [B, num_classes, Z, H, W]
+            * ``occ_argmax``    — torch.Tensor [B, Z, H, W]    (argmax labels)
+            * ``boxes_2d``      — list of length B; each entry is a list of
+                                  per-cam dicts (see ``decode_centernet_2d``)
+                                  or ``None`` if no image2d_head present.
+    """
+    det_model = model.det_model
+
+    # Attach P3 hook (no-op if image2d_head doesn't exist).
+    p3_cache = _attach_image2d_p3_hook(det_model)
+
+    # The MultiTaskBEVFusion wrapper already installs hooks on
+    # ``fusion_layer`` (sets self._fused_bev) and ``view_transform``.
+    # Calling ``test_step`` runs the standard det.predict() and fires
+    # those hooks as a side effect.
+    out = model.test_step(data)
+    # ``out`` is List[Det3DDataSample] — the standard mmdet3d output.
+
+    # Pull captured features.
+    fused_bev = getattr(model, '_fused_bev', None)
+    p3 = p3_cache.get('p3', None)
+
+    result: Dict[str, Any] = {
+        'data_samples': out,
+        'occ_grid': None,
+        'occ_argmax': None,
+        'boxes_2d': None,
+        'class_names': class_names,
+    }
+
+    # ---- Occupancy decode ----
+    if fused_bev is not None and model.occ_head is not None:
+        occ_logit = model.occ_head(fused_bev)            # [B, C, Z, H, W]
+        result['occ_grid'] = occ_logit.detach()
+        result['occ_argmax'] = occ_logit.argmax(dim=1).detach()
+
+    # ---- 2D detection decode ----
+    if decode_2d and p3 is not None and hasattr(det_model, 'image2d_head'):
+        hm_logit, wh = det_model.image2d_head(p3.float())
+        # Reshape to [B, Nc, ...]
+        B = len(out)
+        BNc = hm_logit.shape[0]
+        if BNc % B == 0:
+            Nc = BNc // B
+            num_cls = hm_logit.shape[1]
+            Hf, Wf = hm_logit.shape[-2], hm_logit.shape[-1]
+            hm_b = hm_logit.view(B, Nc, num_cls, Hf, Wf)
+            wh_b = wh.view(B, Nc, 2, Hf, Wf)
+            boxes_2d_per_sample = []
+            for b in range(B):
+                boxes_2d_per_sample.append(
+                    decode_centernet_2d(
+                        hm_b[b], wh_b[b],
+                        image_size=img_size_2d,
+                        score_thresh=decode_2d_score_thresh,
+                    )
+                )
+            result['boxes_2d'] = boxes_2d_per_sample
+
+    # Tidy up
+    if p3_cache.get('handle') is not None:
+        p3_cache['handle'].remove()
+    return result
+
+
+# -----------------------------------------------------------------------------
+# Output writers
+# -----------------------------------------------------------------------------
+
+def save_2d_detections(
+    boxes_per_cam: List[Dict[str, np.ndarray]],
+    image_paths: Optional[Sequence[str]],
+    out_dir: str,
+    sample_id: str,
+    class_names: Optional[List[str]] = None,
+    draw_overlay: bool = True,
+    img_size: Tuple[int, int] = (256, 704),
+) -> Dict[str, Any]:
+    """
+    Write per-camera 2D detections to disk.
+
+    * JSON: ``<out_dir>/<sample_id>_2d_dets.json``
+      Schema:
+          {
+            "image_size": [h, w],
+            "cameras": [{"camera_idx": 0, "boxes": [[x1,y1,x2,y2], ...],
+                         "scores": [...], "labels": [...]}, ...]
+          }
+
+    * If ``image_paths`` are provided and ``draw_overlay=True``, also write
+      ``<out_dir>/<sample_id>_2d_cam<idx>.png`` with detections drawn.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+
+    cameras = []
+    for c_idx, d in enumerate(boxes_per_cam):
+        cameras.append({
+            'camera_idx': c_idx,
+            'boxes':  d['boxes'].tolist(),
+            'scores': d['scores'].tolist(),
+            'labels': d['labels'].tolist(),
+        })
+    summary = {
+        'image_size': list(img_size),
+        'cameras': cameras,
+    }
+    json_path = os.path.join(out_dir, f'{sample_id}_2d_dets.json')
+    with open(json_path, 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    n_total = sum(len(d['boxes']) for d in boxes_per_cam)
+    print(f'[save_2d_detections] {n_total} detections across '
+          f'{len(boxes_per_cam)} cameras → {json_path}')
+
+    # Overlay drawing (optional)
+    if draw_overlay and image_paths:
+        for c_idx, d in enumerate(boxes_per_cam):
+            if c_idx >= len(image_paths):
+                continue
+            p = image_paths[c_idx]
+            if not os.path.exists(p):
+                continue
+            img = cv2.imread(p)
+            if img is None:
+                continue
+            # Boxes are in our augmented-image frame (256x704). Scale to
+            # the actual on-disk image size for drawing.
+            H, W = img.shape[:2]
+            sx = W / img_size[1]
+            sy = H / img_size[0]
+            for n in range(d['boxes'].shape[0]):
+                x1, y1, x2, y2 = d['boxes'][n]
+                x1, y1, x2, y2 = int(x1 * sx), int(y1 * sy), int(x2 * sx), int(y2 * sy)
+                lbl = int(d['labels'][n])
+                sc  = float(d['scores'][n])
+                color = ((lbl * 53) % 255, (lbl * 97) % 255, (lbl * 31) % 255)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+                name = class_names[lbl] if class_names and lbl < len(class_names) else str(lbl)
+                cv2.putText(img, f'{name} {sc:.2f}', (x1, max(15, y1 - 5)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            out_png = os.path.join(out_dir, f'{sample_id}_2d_cam{c_idx}.png')
+            cv2.imwrite(out_png, img)
+    return summary
+
+
+def save_occupancy_grid(
+    occ_grid: torch.Tensor,
+    out_dir: str,
+    sample_id: str,
+    pc_range: Tuple[float, ...] = PC_RANGE_DEFAULT,
+    save_npy: bool = True,
+    save_bev_png: bool = True,
+) -> Dict[str, Any]:
+    """
+    Save occupancy outputs to disk.
+
+    Args:
+        occ_grid: ``[num_classes, Z, H, W]`` logits (single sample) or
+                  ``[B, num_classes, Z, H, W]`` (we'll save sample 0 if so).
+        out_dir:  output directory.
+        sample_id: filename stem.
+        pc_range: point-cloud range used to label the BEV PNG axes.
+        save_npy: save raw argmax voxel grid as .npy.
+        save_bev_png: save a top-down PNG by collapsing the Z axis.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    if occ_grid.dim() == 5:
+        occ_grid = occ_grid[0]                          # take first sample
+    # Argmax → [Z, H, W] label grid.
+    occ_lbl = occ_grid.argmax(dim=0).cpu().numpy().astype(np.int16)
+    summary = {
+        'shape_zhw': list(occ_lbl.shape),
+        'pc_range': list(pc_range),
+        'num_classes': int(occ_grid.shape[0]),
+        'occupied_voxels': int((occ_lbl > 0).sum()),
+    }
+
+    if save_npy:
+        npy_path = os.path.join(out_dir, f'{sample_id}_occ.npy')
+        np.save(npy_path, occ_lbl)
+        summary['npy'] = npy_path
+
+    if save_bev_png:
+        # Top-down "any-occupied" projection: 1 if any Z slice marks
+        # the cell as occupied, else 0. Cheap viz.
+        bev_occ = (occ_lbl > 0).any(axis=0).astype(np.uint8) * 255
+        png_path = os.path.join(out_dir, f'{sample_id}_occ_bev.png')
+        # Flip Y so forward (x) points up in the saved image.
+        cv2.imwrite(png_path, np.flipud(bev_occ))
+        summary['bev_png'] = png_path
+
+    print(f'[save_occupancy_grid] shape={summary["shape_zhw"]}, '
+          f'occupied_voxels={summary["occupied_voxels"]} → {out_dir}')
+    return summary
+
+
+def save_3d_detections_json(
+    data_sample,
+    out_dir: str,
+    sample_id: str,
+    class_names: Optional[List[str]] = None,
+    score_thresh: float = 0.1,
+) -> Dict[str, Any]:
+    """
+    Dump the predicted 3D detections (in LiDAR frame) to a JSON for
+    downstream tools. Compact, no NuScenes-protocol conversion (use
+    ``run_manual_benchmark`` for that).
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    pred = data_sample.pred_instances_3d
+    boxes = pred.bboxes_3d.tensor.cpu().numpy()       # [N, 9]
+    scores = pred.scores_3d.cpu().numpy()
+    labels = pred.labels_3d.cpu().numpy()
+    keep = scores >= score_thresh
+    boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
+
+    out = {
+        'sample_id': sample_id,
+        'num_detections': int(boxes.shape[0]),
+        'boxes_lidar': boxes.tolist(),       # [x,y,z,w,l,h,yaw,vx,vy]
+        'scores':      scores.tolist(),
+        'labels':      labels.tolist(),
+    }
+    if class_names:
+        out['class_names'] = [
+            class_names[int(l)] if int(l) < len(class_names) else str(int(l))
+            for l in labels
+        ]
+    p = os.path.join(out_dir, f'{sample_id}_3d_dets.json')
+    with open(p, 'w') as f:
+        json.dump(out, f, indent=2)
+    print(f'[save_3d_detections_json] {out["num_detections"]} dets → {p}')
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Unified inference loop — calls infer_all_outputs + all three writers
+# -----------------------------------------------------------------------------
+
+# =============================================================================
+# PHASE-1 PER-STAGE PROFILER  (informs which CUDA-BEVFusion-style ports we do)
+# =============================================================================
+#
+# Attaches forward pre-/post-hooks to well-known submodules and records GPU
+# time via CUDA events. Synchronization happens ONCE at report() time so the
+# hooks themselves don't serialize the pipeline (which would distort the
+# measurements we're trying to capture).
+#
+# Stage discovery is automatic: we look for canonical attribute paths inside
+# the multitask wrapper. Modules that don't exist on the loaded model are
+# silently skipped — so this works for B5, B5R, B10c, B11 alike.
+#
+# Output (per stage): mean / p50 / p95 / total over the warmup-trimmed run.
+# =============================================================================
+
+import collections as _collections
+
+
+class StageProfiler:
+    """
+    Per-stage GPU profiler. Attach to a MultiTaskBEVFusion (or any nn.Module
+    tree) and run inference; call ``report()`` once at the end.
+
+    Records time for *every* call of each tracked module — useful for
+    modules that fire multiple times per sample (e.g. transformer
+    decoder layers, repeated view-transform passes).
+
+    Example::
+
+        profiler = StageProfiler()
+        profiler.attach(model)
+        for _ in range(num_samples):
+            model.test_step(data)
+        rep = profiler.report()  # dict[name] = {mean_ms, p50_ms, p95_ms, ...}
+        profiler.detach()
+    """
+
+    # Canonical paths to probe. The first existing attribute wins; we try
+    # ``model.det_model.<name>`` first (multitask wrapper), then ``model.<name>``.
+    CANONICAL_PATHS = [
+        # LiDAR branch
+        ('pts_voxel_encoder',       'pts_voxel_encoder'),
+        ('pts_middle_encoder',      'pts_middle_encoder'),
+        # Camera branch
+        ('img_backbone',            'img_backbone'),
+        ('img_neck',                'img_neck'),
+        ('img_rpf_neck',            'img_rpf_neck'),
+        ('view_transform',          'view_transform'),
+        # Post-fusion
+        ('fusion_layer',            'fusion_layer'),
+        ('pts_backbone',            'pts_backbone'),
+        ('pts_neck',                'pts_neck'),
+        ('bbox_head',               'bbox_head'),
+        # B11 image-side aux + B10c temporal
+        ('temporal_attn',           'temporal_attn'),
+        ('temporal_aux_head',       'temporal_aux_head'),
+        ('image2d_head',            'image2d_head'),
+        # Wrapper-level heads (no det_model. prefix)
+        ('occ_head',                'occ_head'),
+        ('depth_head',              'depth_head'),
+    ]
+
+    def __init__(self, warmup: int = 2):
+        """
+        Args:
+            warmup: drop the first ``warmup`` calls of each stage from the
+                report (cudnn-search and TF32 calibration are noisy).
+        """
+        self.warmup = int(warmup)
+        self._raw: Dict[str, List[Tuple[Any, Any]]] = _collections.defaultdict(list)
+        self._active: Dict[str, Any] = {}
+        self._handles: List[Any] = []
+        self._stage_names: List[str] = []
+
+    def _find_module(self, model, display: str, attr: str):
+        """Try ``model.det_model.<attr>`` then ``model.<attr>``. Return module or None."""
+        for path in ([['det_model', attr]] if hasattr(model, 'det_model') else []) + [[attr]]:
+            obj = model
+            ok = True
+            for p in path:
+                obj = getattr(obj, p, None)
+                if obj is None:
+                    ok = False
+                    break
+            if ok and obj is not None and isinstance(obj, torch.nn.Module):
+                return obj
+        return None
+
+    def attach(self, model: torch.nn.Module) -> List[str]:
+        """Discover + hook all canonical stages on ``model``. Returns list of
+        attached stage names."""
+        attached = []
+        for display, attr in self.CANONICAL_PATHS:
+            mod = self._find_module(model, display, attr)
+            if mod is None:
+                continue
+            attached.append(display)
+
+            def make_pre_hook(name):
+                def pre_hook(module, inputs):
+                    if not torch.cuda.is_available():
+                        return
+                    e = torch.cuda.Event(enable_timing=True)
+                    e.record()
+                    # If multiple nested calls happen, we keep a stack.
+                    self._active.setdefault(name, []).append(e)
+                return pre_hook
+
+            def make_post_hook(name):
+                def post_hook(module, inputs, output):
+                    if not torch.cuda.is_available():
+                        return
+                    stack = self._active.get(name)
+                    if not stack:
+                        return
+                    start = stack.pop()
+                    end = torch.cuda.Event(enable_timing=True)
+                    end.record()
+                    self._raw[name].append((start, end))
+                return post_hook
+
+            h1 = mod.register_forward_pre_hook(make_pre_hook(display))
+            h2 = mod.register_forward_hook(make_post_hook(display))
+            self._handles.extend([h1, h2])
+        self._stage_names = attached
+        return attached
+
+    def detach(self) -> None:
+        for h in self._handles:
+            try:
+                h.remove()
+            except Exception:
+                pass
+        self._handles = []
+
+    def report(self) -> Dict[str, Dict[str, float]]:
+        """Synchronize once, convert events → ms, return per-stage stats."""
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        out: Dict[str, Dict[str, float]] = {}
+        for name, events in self._raw.items():
+            times_ms = [s.elapsed_time(e) for s, e in events]
+            if self.warmup and len(times_ms) > self.warmup:
+                times_ms = times_ms[self.warmup:]
+            if not times_ms:
+                continue
+            t = np.array(times_ms, dtype=np.float64)
+            out[name] = {
+                'mean_ms':  float(t.mean()),
+                'p50_ms':   float(np.median(t)),
+                'p95_ms':   float(np.percentile(t, 95)),
+                'count':    int(len(t)),
+                'total_ms': float(t.sum()),
+            }
+        return out
+
+    @staticmethod
+    def format_report(report: Dict[str, Dict[str, float]],
+                      total_iters: Optional[int] = None) -> str:
+        """Format the report dict as a table sorted by mean time, with a
+        cumulative-% column."""
+        if not report:
+            return '(empty profiler report — no stages timed)'
+        items = sorted(report.items(), key=lambda kv: -kv[1]['mean_ms'])
+        total_mean = sum(v['mean_ms'] for _, v in items)
+
+        lines = []
+        lines.append(f'{"stage":28s}  {"mean(ms)":>10s}  {"p50(ms)":>10s}  '
+                     f'{"p95(ms)":>10s}  {"%total":>8s}  {"count":>6s}')
+        lines.append('-' * 80)
+        cum = 0.0
+        for name, v in items:
+            pct = (v['mean_ms'] / total_mean * 100.0) if total_mean > 0 else 0.0
+            cum += pct
+            lines.append(f'{name:28s}  {v["mean_ms"]:10.3f}  {v["p50_ms"]:10.3f}  '
+                         f'{v["p95_ms"]:10.3f}  {pct:7.2f}%  {v["count"]:6d}')
+        lines.append('-' * 80)
+        lines.append(f'{"SUM (mean per sample)":28s}  {total_mean:10.3f}  '
+                     f'{"":>10s}  {"":>10s}  {"100.00":>7s}%')
+        if total_iters:
+            lines.append(f'(profiled {total_iters} sample(s), warmup-trimmed)')
+        return '\n'.join(lines)
+
+
+def profile_inference(
+    model,
+    pack,
+    num_samples: int = 20,
+    warmup: int = 2,
+    out_json: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Run inference on ``num_samples`` items from the loader and report
+    per-stage GPU time.
+
+    Saves a JSON to ``out_json`` if given. Returns the parsed report dict.
+    """
+    profiler = StageProfiler(warmup=warmup)
+    attached = profiler.attach(model)
+    print(f'[profile_inference] hooked {len(attached)} stages: {attached}')
+
+    # Reuse the exact iteration pattern from ``inference_loop`` which we
+    # know works: iter_fn yields a 6-tuple (token, pts, imgs, meta,
+    # paths, gt_boxes); we manually re-wrap into the dict shape
+    # ``test_step`` expects (``inputs={'points': [t], 'img': [t]}``,
+    # ``data_samples=[Det3DDataSample]``).
+    loader = pack['loader']
+    iter_fn = pack.get('iter_fn', None)
+    iterator = iter_fn(loader) if iter_fn is not None else iter(loader)
+
+    device_obj = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    n_done = 0
+    end_to_end_ms = []
+    for batch in tqdm(iterator, total=num_samples, desc='profiling'):
+        if n_done >= num_samples:
+            break
+
+        # Unpack the 6-tuple from iter_fn.
+        try:
+            token, pts, imgs, meta, paths, _ = batch
+        except (TypeError, ValueError):
+            # Fall back: assume the loader yields the raw dict.
+            if isinstance(batch, dict) and 'data_samples' in batch:
+                ds = batch['data_samples']
+                if not isinstance(ds, list):
+                    ds = [ds]
+                data = dict(inputs=batch['inputs'], data_samples=ds)
+            else:
+                print(f'[profile_inference] sample {n_done}: unknown batch type')
+                n_done += 1
+                continue
+        else:
+            pts_t = torch.as_tensor(pts).float().to(device_obj)
+            inputs = dict(points=[pts_t])
+            if imgs is not None:
+                imgs_t = imgs if torch.is_tensor(imgs) else torch.as_tensor(imgs)
+                inputs['img'] = [imgs_t.to(device_obj)]
+            ds = Det3DDataSample()
+            ds.set_metainfo(meta)
+            data = dict(inputs=inputs, data_samples=[ds])
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t0 = time.time()
+        try:
+            with torch.no_grad():
+                _ = model.test_step(data)
+        except Exception as e:
+            print(f'[profile_inference] sample {n_done} failed: {type(e).__name__}: {e}')
+            n_done += 1
+            continue
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        end_to_end_ms.append((time.time() - t0) * 1000.0)
+        n_done += 1
+
+    report = profiler.report()
+    profiler.detach()
+
+    print()
+    print(StageProfiler.format_report(report, total_iters=n_done))
+    print()
+    # Trim warmup; guard against an empty list (every sample failed).
+    trimmed = end_to_end_ms[warmup:] if len(end_to_end_ms) > warmup else end_to_end_ms
+    if not trimmed:
+        print('End-to-end wallclock: no successful samples (every iter raised). '
+              'Check the per-sample errors above.')
+        e2e_mean = 0.0
+        e2e_arr = np.array([], dtype=np.float64)
+    else:
+        e2e_arr = np.array(trimmed, dtype=np.float64)
+        e2e_mean = float(e2e_arr.mean())
+        print(f'End-to-end wallclock (warmup-trimmed): '
+              f'mean={e2e_mean:.2f} ms, '
+              f'p95={float(np.percentile(e2e_arr, 95)):.2f} ms')
+        print(f'Implied FPS: {(1000.0 / e2e_mean) if e2e_mean > 0 else float("nan"):.2f}')
+    e2e = e2e_arr
+
+    if out_json:
+        os.makedirs(os.path.dirname(out_json) or '.', exist_ok=True)
+        with open(out_json, 'w') as f:
+            json.dump({
+                'per_stage_ms': report,
+                'end_to_end_ms': {
+                    'mean': e2e_mean,
+                    'p50':  float(np.median(e2e)) if e2e.size else 0.0,
+                    'p95':  float(np.percentile(e2e, 95)) if e2e.size else 0.0,
+                    'count': int(e2e.size),
+                    'samples_processed': n_done,
+                },
+            }, f, indent=2)
+        print(f'[profile_inference] report saved → {out_json}')
+    return {
+        'per_stage_ms': report,
+        'end_to_end_ms_list': end_to_end_ms,
+    }
+
+
+def unified_inference_loop(
+    model,
+    pack,
+    out_dir: str,
+    device: str = 'cuda',
+    score_thresh: float = 0.25,
+    decode_2d_score_thresh: float = 0.1,
+    class_names: Optional[List[str]] = None,
+    img_size_2d: Tuple[int, int] = (256, 704),
+    save_3d: bool = True,
+    save_2d: bool = True,
+    save_occ: bool = True,
+    save_images: bool = False,
+    metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Iterate ``pack['loader']`` (or ``iter_fn``), run ``infer_all_outputs``
+    on every sample, and persist 3D dets / occupancy / 2D dets to
+    ``out_dir`` with one folder per sample.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    if metrics is None:
+        metrics = {'samples': [], 'latency_ms': [], 'peak_mem_mb': []}
+
+    loader = pack['loader']
+    iter_fn = pack.get('iter_fn', None)
+    iterator = iter_fn(loader) if iter_fn is not None else iter(loader)
+    device_obj = torch.device(device)
+
+    n_done = 0
+    for batch in tqdm(iterator, desc='unified inference'):
+        # cfg_iter yields the canonical 6-tuple (token, pts, imgs, meta,
+        # paths, gt_boxes). We reconstruct the dict shape test_step
+        # expects (inputs={'points':[t],'img':[t]} + data_samples=[ds]).
+        try:
+            token, pts, imgs, meta, paths, _ = batch
+        except (TypeError, ValueError):
+            # Fall back: raw cfg dict.
+            if isinstance(batch, dict) and 'data_samples' in batch:
+                ds_list = batch['data_samples']
+                if not isinstance(ds_list, list):
+                    ds_list = [ds_list]
+                data = dict(inputs=batch['inputs'], data_samples=ds_list)
+                token = str(n_done)
+                meta = ds_list[0].metainfo if ds_list else {}
+            else:
+                print(f'[unified] sample {n_done}: unknown batch format')
+                n_done += 1
+                continue
+        else:
+            pts_t = torch.as_tensor(pts).float().to(device_obj)
+            inputs = dict(points=[pts_t])
+            if imgs is not None:
+                imgs_t = imgs if torch.is_tensor(imgs) else torch.as_tensor(imgs)
+                inputs['img'] = [imgs_t.to(device_obj)]
+            ds = Det3DDataSample()
+            ds.set_metainfo(meta)
+            data = dict(inputs=inputs, data_samples=[ds])
+
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        t0 = time.time()
+        try:
+            with torch.no_grad():
+                out = infer_all_outputs(
+                    model, data,
+                    class_names=class_names,
+                    decode_2d=save_2d,
+                    decode_2d_score_thresh=decode_2d_score_thresh,
+                    img_size_2d=img_size_2d,
+                )
+        except Exception as e:
+            print(f'[unified] sample {token} failed: {type(e).__name__}: {e}')
+            n_done += 1
+            continue
+        torch.cuda.synchronize() if torch.cuda.is_available() else None
+        latency = (time.time() - t0) * 1000.0
+        metrics['latency_ms'].append(latency)
+        if torch.cuda.is_available():
+            metrics['peak_mem_mb'].append(
+                torch.cuda.max_memory_allocated() / 1024 / 1024
+            )
+            torch.cuda.reset_peak_memory_stats()
+
+        sample_dir = os.path.join(out_dir, str(token))
+        os.makedirs(sample_dir, exist_ok=True)
+
+        # ----- 3D dets -----
+        if save_3d and out['data_samples']:
+            ds = out['data_samples'][0]
+            save_3d_detections_json(
+                ds, sample_dir, str(token),
+                class_names=class_names, score_thresh=score_thresh,
+            )
+
+        # ----- 2D dets -----
+        if save_2d and out['boxes_2d']:
+            # ``paths`` came from cfg_iter (per-cam image disk paths).
+            img_paths = paths if isinstance(paths, (list, tuple)) and len(paths) > 0 else None
+            save_2d_detections(
+                out['boxes_2d'][0],
+                image_paths=img_paths,
+                out_dir=sample_dir,
+                sample_id=str(token),
+                class_names=class_names,
+                draw_overlay=(img_paths is not None),
+                img_size=img_size_2d,
+            )
+
+        # Save metainfo (lidar2img, cam2img, etc.) for downstream
+        # 2D-vs-3D comparison scripts.
+        if isinstance(meta, dict) and meta:
+            meta_path = os.path.join(sample_dir, f'{token}_meta.json')
+            try:
+                with open(meta_path, 'w') as f:
+                    safe = {}
+                    for k, v in meta.items():
+                        if isinstance(v, (list, tuple)):
+                            try:
+                                safe[k] = np.asarray(v).tolist()
+                            except Exception:
+                                pass
+                        elif isinstance(v, np.ndarray):
+                            safe[k] = v.tolist()
+                        elif isinstance(v, (int, float, str, bool)) or v is None:
+                            safe[k] = v
+                    json.dump(safe, f, indent=2)
+            except Exception:
+                pass
+
+        # ----- Occupancy -----
+        if save_occ and out['occ_grid'] is not None:
+            save_occupancy_grid(
+                out['occ_grid'],
+                sample_dir, str(token),
+            )
+
+        n_done += 1
+        metrics['samples'].append(str(token))
+
+    # Summary
+    metrics['summary'] = {
+        'num_samples': n_done,
+        'mean_latency_ms': float(np.mean(metrics['latency_ms'])) if metrics['latency_ms'] else None,
+        'p95_latency_ms':  float(np.percentile(metrics['latency_ms'], 95)) if metrics['latency_ms'] else None,
+        'peak_mem_mb':     float(np.max(metrics['peak_mem_mb'])) if metrics['peak_mem_mb'] else None,
+    }
+    with open(os.path.join(out_dir, 'unified_metrics.json'), 'w') as f:
+        json.dump(metrics['summary'], f, indent=2)
+    print(f'[unified_inference_loop] done. {n_done} samples → {out_dir}')
     return metrics

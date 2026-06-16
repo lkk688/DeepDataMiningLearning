@@ -4,6 +4,9 @@ from copy import deepcopy
 from typing import Dict, List, Optional, Tuple
 from typing import List, Union
 
+import os
+import random
+
 import numpy as np
 import torch
 import torch.distributed as dist
@@ -301,10 +304,51 @@ class BEVFusionCA(Base3DDetector):
         return feats, coords, sizes
 
     # ---------- Top-level feature path ----------
+    def _modality_mask(self, img_feature, pts_feature):
+        """Zero one BEV branch for modality-dropout training or forced single-
+        modality eval. Controlled entirely by env vars (no-op when unset):
+          BEV_MODALITY = full|lidar|camera    -> force a mode (eval/diagnostic)
+          BEV_MOD_DROP = "pFull,pLidar,pCam"  -> random per-forward (training only)
+        'lidar' = LiDAR-only (drop camera BEV); 'camera' = camera-only (drop LiDAR BEV).
+        """
+        forced = os.environ.get('BEV_MODALITY', '').strip().lower()
+        mode = forced if forced in ('full', 'lidar', 'camera') else None
+        if mode is None and self.training:
+            spec = os.environ.get('BEV_MOD_DROP', '').strip()
+            if spec:
+                try:
+                    pf, pl, pc = (float(x) for x in spec.split(','))
+                except Exception:
+                    pf, pl, pc = 1.0, 0.0, 0.0
+                r = random.random() * (pf + pl + pc)
+                mode = 'full' if r < pf else ('lidar' if r < pf + pl else 'camera')
+        if mode == 'lidar':
+            img_feature = torch.zeros_like(img_feature)
+        elif mode == 'camera':
+            pts_feature = torch.zeros_like(pts_feature)
+        return img_feature, pts_feature
+
+    def _kd_feat_loss(self, student, teacher):
+        """RMS-normalized MSE distillation: pull the camera-only BEV (student)
+        toward the full-LC BEV (teacher, detached). BEV features have small
+        magnitude (~0.06 RMS), so a raw MSE is ~0.004 and contributes no gradient.
+        Dividing by the teacher RMS makes the loss scale-invariant (~O(1)) so a
+        sane feat_w (~1-3) actually drives the camera branch. Handles a tensor or
+        list/tuple of multiscale feats."""
+        def _one(s, t):
+            t = t.detach()
+            scale = t.pow(2).mean().sqrt().clamp(min=1e-3)
+            return F.mse_loss(s / scale, t / scale)
+        if isinstance(student, (list, tuple)):
+            terms = [_one(s, t) for s, t in zip(student, teacher)]
+            return sum(terms) / max(len(terms), 1)
+        return _one(student, teacher)
+
     def extract_feat(self, batch_inputs_dict, batch_input_metas, **kwargs):
         imgs = batch_inputs_dict.get('imgs', None)
         points = batch_inputs_dict.get('points', None)
         features = []
+        img_feature = None
 
         if imgs is not None:
             imgs = imgs.contiguous()
@@ -329,10 +373,15 @@ class BEVFusionCA(Base3DDetector):
                 lidar2image, camera_intrinsics, camera2lidar,
                 img_aug_matrix, lidar_aug_matrix, batch_input_metas
             )
-            features.append(img_feature)
+            # (append deferred until after optional modality masking below)
 
         # LiDAR BEV (SECOND/spconv → BEV)
         pts_feature = self.extract_pts_feat(batch_inputs_dict)
+
+        # Optional modality dropout / forced single-modality (no-op unless env set).
+        if img_feature is not None:
+            img_feature, pts_feature = self._modality_mask(img_feature, pts_feature)
+            features.append(img_feature)
         features.append(pts_feature)
 
         # Late fusion in BEV space (BEVFusion-style)
@@ -344,6 +393,7 @@ class BEVFusionCA(Base3DDetector):
 
         x = self.pts_backbone(x)
         x = self.pts_neck(x)
+        self._last_bev = x  # stash final BEV for LC->C distillation (see loss())
         return x
 
     def predict(self, batch_inputs_dict: Dict[str, Optional[Tensor]],
@@ -408,6 +458,15 @@ class BEVFusionCA(Base3DDetector):
                 set_painting_context(fpn_feats, metas)
             vt_pre = self.view_transform.register_forward_pre_hook(_vt_pre_hook)
 
+        # LC->C distillation (env-gated, training only). Two forwards/batch:
+        # full-LC anchor (supervised, preserves L/LC) + camera-only student whose
+        # BEV is pulled toward the detached full-LC BEV. BEV_KD="featW[,camSupW]".
+        kd_spec = os.environ.get('BEV_KD', '').strip()
+        kd_on = bool(kd_spec) and self.training
+        prev_mod = os.environ.get('BEV_MODALITY', '')
+        if kd_on:
+            os.environ['BEV_MODALITY'] = 'full'
+
         try:
             batch_input_metas = [item.metainfo for item in batch_data_samples]
             feats = self.extract_feat(batch_inputs_dict, batch_input_metas)
@@ -425,6 +484,29 @@ class BEVFusionCA(Base3DDetector):
                 target = self._build_aux_target(batch_data_samples, H, W, img_bev.device)
                 losses['loss_aux_img_bev'] = self.aux_loss_fn(pred, target) * float(self.aux_weight)
 
+            if kd_on:
+                teacher_bev = self._last_bev  # full-LC BEV (anchor)
+                try:
+                    _w = [float(s) for s in kd_spec.split(',') if s != '']
+                except Exception:
+                    _w = []
+                feat_w = _w[0] if len(_w) > 0 else 1.0
+                cam_sup_w = _w[1] if len(_w) > 1 else 0.0
+                # preserve temporal flow caches from the full (anchor) pass
+                _sf = getattr(self, '_cached_v_pred_flow', None)
+                _st = getattr(self, '_cached_v_pred_temporal', None)
+                os.environ['BEV_MODALITY'] = 'camera'
+                feats_cam = self.extract_feat(batch_inputs_dict, batch_input_metas)
+                losses['loss_kd_feat'] = self._kd_feat_loss(self._last_bev, teacher_bev) * feat_w
+                if cam_sup_w > 0.0 and self.with_bbox_head:
+                    for k, v in self.bbox_head.loss(feats_cam, batch_data_samples).items():
+                        if isinstance(v, torch.Tensor) and v.requires_grad:
+                            losses[f'cam_{k}'] = v * cam_sup_w
+                # restore anchor-pass caches so temporal flow aux is on the full pass
+                self._cached_v_pred_flow = _sf
+                self._cached_v_pred_temporal = _st
+                self._last_bev = teacher_bev
+
             return losses
         finally:
             if vt_handle is not None:
@@ -432,3 +514,5 @@ class BEVFusionCA(Base3DDetector):
             if vt_pre is not None:
                 vt_pre.remove()
                 clear_painting_context()
+            if kd_on:
+                os.environ['BEV_MODALITY'] = prev_mod

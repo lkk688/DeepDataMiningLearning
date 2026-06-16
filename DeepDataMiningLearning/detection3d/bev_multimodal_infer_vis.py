@@ -43,10 +43,14 @@ import torch
 import cv2
 import matplotlib.pyplot as plt
 
-from mmcv import Config
-from mmengine.config import ConfigDict
+from mmengine.config import Config, ConfigDict
 from mmdet3d.apis import init_model
-from mmdet3d.datasets import build_dataset
+try:
+    from mmdet3d.datasets import build_dataset
+except ImportError:  # mmdet3d 1.x: build via registry
+    from mmdet3d.registry import DATASETS
+    def build_dataset(cfg):
+        return DATASETS.build(cfg)
 from mmdet3d.structures import LiDARInstance3DBoxes
 
 # Optional Open3D (interactive 3D view)
@@ -76,7 +80,7 @@ def get_box_corners_3d(box: np.ndarray) -> np.ndarray:
     Convention: dx along x, dy along y, dz height; yaw around z.
     Output shape: (8, 3)
     """
-    x, y, z, dx, dy, dz, yaw = box.tolist()
+    x, y, z, dx, dy, dz, yaw = box.tolist()[:7]  # nuScenes boxes carry vx,vy after yaw
     # local corners around origin
     corners = np.array([
         [ dx/2,  dy/2,  dz/2],
@@ -196,7 +200,9 @@ def visualize_bev_and_occupancy(result, save_dir: Path, bev_shape=(800,800), sca
     if pred is not None and pred.bboxes_3d is not None:
         boxes_np = pred.bboxes_3d.tensor.detach().cpu().numpy()
 
-    # Draw boxes BEV
+    # Draw boxes BEV (nuScenes boxes are 9-dim incl. velocity; keep x,y,z,l,w,h,yaw)
+    if boxes_np is not None and boxes_np.shape[1] > 7:
+        boxes_np = boxes_np[:, :7]
     bev_img = rasterize_boxes_to_bev(boxes_np if boxes_np is not None else np.zeros((0,7)), bev_shape, scale)
 
     # Occupancy heatmap (prefer model output if available)
@@ -326,7 +332,9 @@ def visualize_open3d_scene(data_sample, result, max_points: int = 200000):
     if pred is not None and pred.bboxes_3d is not None:
         boxes_np = pred.bboxes_3d.tensor.detach().cpu().numpy()
 
-    # Draw boxes BEV
+    # Draw boxes BEV (nuScenes boxes are 9-dim incl. velocity; keep x,y,z,l,w,h,yaw)
+    if boxes_np is not None and boxes_np.shape[1] > 7:
+        boxes_np = boxes_np[:, :7]
     bev_img = rasterize_boxes_to_bev(boxes_np if boxes_np is not None else np.zeros((0,7)), bev_shape, scale)
 
     # Occupancy heatmap (prefer model output if available)
@@ -388,12 +396,12 @@ class MMDet3DRunner:
 
     @torch.no_grad()
     def infer_index(self, idx: int):
+        from mmengine.dataset import pseudo_collate
         sample = self.dataset[idx]
-        # MMDet3D model expects list of data dicts
-        data_list = [sample]
-        data = self.model.data_preprocessor(data_list, training=False)
+        # mmdet3d 1.x: collate to a batch of 1; test_step runs the
+        # data_preprocessor internally and returns list[Det3DDataSample].
+        data = pseudo_collate([sample])
         results = self.model.test_step(data)
-        # results is a list with one Det3DDataSample
         return sample, results[0]
 
 
@@ -439,9 +447,10 @@ def main():
         case_dir = save_root / f"case_{i:06d}"
         case_dir.mkdir(parents=True, exist_ok=True)
 
-        # Per-camera overlays
+        # Per-camera overlays (pred is a Det3DDataSample carrying metainfo:
+        # img_path / lidar2img, plus pred_instances_3d for the boxes).
         try:
-            visualize_camera_overlays(data_sample, pred, case_dir / 'cams')
+            visualize_camera_overlays(pred, pred, case_dir / 'cams')
         except Exception as e:
             print(f"[Warn] camera overlay failed for sample {i}: {e}")
 

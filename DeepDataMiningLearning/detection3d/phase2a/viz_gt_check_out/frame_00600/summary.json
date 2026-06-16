@@ -1,0 +1,21 @@
+{
+  "frame_idx": 600,
+  "segment": "10247954040621004675_2180_000_2200_000",
+  "timestamp": 1553810172257968,
+  "a_clusters": 34,
+  "b_lifts": 14,
+  "pseudo_count": 2,
+  "gt_3d_total": 20,
+  "gt_3d_transfer": 18,
+  "gt_3d_by_waymo_class": {
+    "1": 16,
+    "2": 2,
+    "3": 2
+  },
+  "gt_2d_by_cam": {
+    "FRONT": 5,
+    "FRONT_LEFT": 1,
+    "FRONT_RIGHT": 4,
+    "SIDE_LEFT": 1
+  }
+}

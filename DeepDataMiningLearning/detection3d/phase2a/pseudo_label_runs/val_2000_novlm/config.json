@@ -1,0 +1,13 @@
+{
+  "waymo_root": "/fs/atipa/data/rnd-liu/Datasets/waymo201",
+  "split": "validation",
+  "max_frames": 2000,
+  "frame_stride": 3,
+  "use_vlm": false,
+  "frcnn_thresh": 0.5,
+  "vlm_conf": 0.8,
+  "skip_a_only": false,
+  "out_dir": "/fs/atipa/data/rnd-liu/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/detection3d/phase2a/pseudo_label_runs/val_2000_novlm",
+  "device": "cuda",
+  "progress_every": 25
+}
