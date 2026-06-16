@@ -29,6 +29,7 @@ This repository contains educational materials and practical implementations for
   - [☁️ Cloud Data Analytics](#️-cloud-data-analytics)
   - [🤖 Machine Learning Algorithms](#-machine-learning-algorithms)
   - [🔥 Deep Learning with PyTorch](#-deep-learning-with-pytorch)
+  - [🚗 3D Object Detection & Autonomous Driving](#-3d-object-detection--autonomous-driving)
   - [🧠 Deep Learning with TensorFlow](#-deep-learning-with-tensorflow)
   - [📈 Unsupervised Learning](#-unsupervised-learning)
   - [📝 NLP and Text Mining](#-nlp-and-text-mining)
@@ -252,6 +253,40 @@ Other Deep Learning sample code based on Pytorch (under the folder of "DeepDataM
       * [WaymoCOCODetectron2train.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/WaymoCOCODetectron2train.py): WaymoCOCO training based on Detectron2
       * [mymmdetection2dtrain.py](https://github.com/lkk688/WaymoObjectDetection/blob/master/2DObject/mymmdetection2dtrain.py): Object Detection training and evaluation based on MMdetection2D
    * [CustomDetectron2](https://github.com/lkk688/CustomDetectron2)
+
+
+## 🚗 3D Object Detection & Autonomous Driving
+
+LiDAR–camera 3D perception for autonomous driving (nuScenes / Waymo), built on
+top of [MMDetection3D](https://github.com/open-mmlab/mmdetection3d). Two main code
+areas:
+
+- **[`DeepDataMiningLearning/detection3d/`](DeepDataMiningLearning/detection3d)** — end-to-end 3D detection pipeline (data prep, training, inference, visualization, evaluation).
+- **[`DeepDataMiningLearning/bevdet/`](DeepDataMiningLearning/bevdet)** — our modified **BEVFusion** detector and experiments.
+
+### 📦 Data preparation
+- [mmdet3d_create_data.py](DeepDataMiningLearning/detection3d/mmdet3d_create_data.py) / [mmdet3d_create_gt_database.py](DeepDataMiningLearning/detection3d/mmdet3d_create_gt_database.py): build MMDet3D info pickles + GT database.
+- [waymo2kitti.py](DeepDataMiningLearning/detection3d/waymo2kitti.py), [dataset_waymo3dv201.py](DeepDataMiningLearning/detection3d/dataset_waymo3dv201.py): Waymo (v2.0.1) → KITTI/MMDet3D conversion and dataset.
+- [gen_NUS_info.py](DeepDataMiningLearning/detection3d/gen_NUS_info.py), [nuscenes_data.py](DeepDataMiningLearning/detection3d/nuscenes_data.py): nuScenes info generation.
+
+### 🏋️ Training & inference
+- [simple_train_main.py](DeepDataMiningLearning/detection3d/simple_train_main.py) / [simple_infer_main.py](DeepDataMiningLearning/detection3d/simple_infer_main.py): standalone train/infer entry points.
+- [bev_multimodal_infer_vis.py](DeepDataMiningLearning/detection3d/bev_multimodal_infer_vis.py), [mmdet3d_inference.py](DeepDataMiningLearning/detection3d/mmdet3d_inference.py), [3dvisualizer.py](DeepDataMiningLearning/detection3d/3dvisualizer.py): multi-modal inference + BEV/point-cloud visualization.
+
+### 📊 Evaluation
+- [eval_waymo_tracking.py](DeepDataMiningLearning/detection3d/eval_waymo_tracking.py), [eval_waymo_zeroshot.py](DeepDataMiningLearning/detection3d/eval_waymo_zeroshot.py), [compare_2d_vs_3d.py](DeepDataMiningLearning/detection3d/compare_2d_vs_3d.py): tracking / zero-shot / 2D-vs-3D evaluation.
+
+### 🔀 Modified BEVFusion (`bevdet/`)
+A LiDAR–camera BEV detector with several enhancements:
+- **CA-LSS** cross-attention view transform ([cross_attn_lss2.py](DeepDataMiningLearning/bevdet/cross_attn_lss2.py)) + GQA gated voxel painting ([bevfusion_ca.py](DeepDataMiningLearning/bevdet/bevfusion_ca.py)).
+- **Q-Mix** reliability-weighted multi-source training ([qmix.py](DeepDataMiningLearning/bevdet/qmix.py)) — mix GT + pseudo-labels across datasets.
+- **Flow-guided temporal fusion** ([flow_guided_temporal.py](DeepDataMiningLearning/bevdet/flow_guided_temporal.py)).
+- **Modality-robust backbone** — one weight set robust to camera dropout (LiDAR-only ≈ fused); experiment configs under [configs/finetune/](DeepDataMiningLearning/bevdet/configs/finetune).
+
+### 📚 Tutorials & docs
+- [mmdet3d_tutorial.md](docs/source/mmdet3d_tutorial.md): MMDetection3D workflow walkthrough.
+- [mydetector3d_tutorial.md](docs/source/mydetector3d_tutorial.md) · [mydetector3d_bev.md](docs/source/mydetector3d_bev.md) · [mydetector3d_nuscenes.md](docs/source/mydetector3d_nuscenes.md): our 3D detector usage.
+- [waymo_v201_pipeline.md](docs/source/waymo_v201_pipeline.md) · [WaymoV2_Tutorial.md](docs/source/WaymoV2_Tutorial.md): Waymo data pipeline.
 
 
 ## 🧠 Deep Learning with TensorFlow (Archived)
