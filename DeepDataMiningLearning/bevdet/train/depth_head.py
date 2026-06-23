@@ -219,4 +219,33 @@ def build_depth_gt(
             cam_target = depth_gt_full[b, c]
             cam_target[valid_cells] = d_bin[valid_cells]
 
+    # DENSIFY (env DEPTH_DENSIFY=1): nearest-fill the -1 cells so depth supervision
+    # is dense (sparse LiDAR coverage is the bottleneck for a lift-splat detector).
+    # Fast nearest-fill (min-bin = closest depth, matching per-cell min-depth);
+    # SLIC-superpixel fill is the quality upgrade if this helps.
+    import os as _os
+    if _os.environ.get("DEPTH_DENSIFY", "").strip() in ("1", "true", "True"):
+        depth_gt_full = _densify_bins(depth_gt_full)
     return depth_gt_full.view(B * Nc, Hf, Wf)
+
+
+def _densify_bins(gt, iters=24):
+    """gt [B,Nc,Hf,Wf] long, -1=empty -> nearest-fill empties with min-bin neighbor."""
+    import torch.nn.functional as _F
+    B, Nc, Hf, Wf = gt.shape
+    g = gt.float().view(B * Nc, 1, Hf, Wf)
+    valid = (g >= 0).float()
+    big = torch.where(valid > 0, g, torch.full_like(g, 1e4))
+    for _ in range(iters):
+        empty = valid < 0.5
+        if not bool(empty.any()):
+            break
+        nbr = -_F.max_pool2d(-big, 3, stride=1, padding=1)          # min bin in 3x3
+        nbr_has = _F.max_pool2d(valid, 3, stride=1, padding=1) > 0.5
+        fill = empty & nbr_has
+        g = torch.where(fill, nbr, g)
+        big = torch.where(fill, nbr, big)
+        valid = torch.where(fill, torch.ones_like(valid), valid)
+    out = torch.where(valid > 0.5, g.round().long(),
+                      torch.full_like(g, -1).long())
+    return out.view(B, Nc, Hf, Wf)
