@@ -168,3 +168,7 @@ physicalai_autolabel/
 # Paper drafts, PDFs, LaTeX (kept local, not tracked)
 DeepDataMiningLearning/bevdet/paper/
 paper_corl/
+slides/
+.github/
+.DS_Store
+docs/.DS_Store
