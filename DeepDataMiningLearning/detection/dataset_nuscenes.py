@@ -106,10 +106,12 @@ class NuScenesDataset(Dataset):
                  target_transform: Optional[transforms.Compose] = None,
                  load_lidar: bool = False,
                  max_samples: Optional[int] = None,
-                 validate_on_init: bool = True):
+                 validate_on_init: bool = True,
+                 min_visibility: int = 3,
+                 require_lidar_pts: bool = True):
         """
         Initialize simplified NuScenes dataset.
-        
+
         Args:
             root_dir: Root directory of NuScenes dataset
             split: Dataset split ('train', 'val', 'test')
@@ -119,6 +121,12 @@ class NuScenesDataset(Dataset):
             load_lidar: Whether to load LiDAR data
             max_samples: Maximum number of samples to load (for debugging)
             validate_on_init: Whether to validate dataset structure on initialization
+            min_visibility: Drop annotations whose visibility_token is below this
+                level. NuScenes visibility tokens are '1'=0-40%, '2'=40-60%,
+                '3'=60-80%, '4'=80-100%. Default 3 keeps boxes that are >=60%
+                visible (clean 2D labels). Set to 1 to keep all (no filtering).
+            require_lidar_pts: If True, drop annotations with num_lidar_pts == 0
+                (fully occluded objects that have no visible support in the scene).
         """
         self.root_dir = root_dir
         self.split = split
@@ -127,6 +135,8 @@ class NuScenesDataset(Dataset):
         self.target_transform = target_transform
         self.load_lidar = load_lidar
         self.max_samples = max_samples
+        self.min_visibility = min_visibility
+        self.require_lidar_pts = require_lidar_pts
         
         # Dataset paths
         self.samples_dir = os.path.join(root_dir, 'samples')
@@ -380,10 +390,24 @@ class NuScenesDataset(Dataset):
         labels = []
         
         for ann in sample_annotations:
+            # --- Visibility filtering ---------------------------------------
+            # NuScenes only ships 3D labels; we derive 2D boxes by projecting
+            # them. Heavily occluded / unseen objects (low visibility, no LiDAR
+            # support) project to "ghost" boxes with no visible object behind
+            # them, so we drop them here for clean 2D training labels.
+            try:
+                vis = int(ann.get('visibility_token', '4'))
+            except (TypeError, ValueError):
+                vis = 4
+            if vis < self.min_visibility:
+                continue
+            if self.require_lidar_pts and ann.get('num_lidar_pts', 1) == 0:
+                continue
+
             # Get category
             instance = self.instance_lookup[ann['instance_token']]
             category_name = self.category_lookup[instance['category_token']]
-            
+
             # Map to simplified category
             if category_name in NUSCENES_CATEGORIES:
                 label = NUSCENES_CATEGORIES[category_name]

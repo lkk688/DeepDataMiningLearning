@@ -1,0 +1,4 @@
+# ngdet run artifacts (videos, metrics, reports, heatmaps, temp roots)
+output/
+__pycache__/
+*.pyc

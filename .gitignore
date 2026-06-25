@@ -172,3 +172,6 @@ slides/
 .github/
 .DS_Store
 docs/.DS_Store
+
+DeepDataMiningLearning/ngdet/EVAL_FRAMEWORK_PLAN.md
+*.engine
