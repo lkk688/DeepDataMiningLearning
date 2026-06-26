@@ -114,6 +114,7 @@ ngdet/
 ├── video.py           # annotated mp4 writer (reuses detection/verify_datasets_video.py)
 ├── report.py          # model x dataset summary, generalization gap, heatmap PNG
 ├── latency.py         # native-vs-accelerated latency benchmark (fp16/compile/tensorrt/onnx)
+├── train.py           # unified trainer: raw PyTorch loop (FasterRCNN/YOLO) + HF Trainer
 └── run_eval.py        # the single CLI entry point
 ```
 
@@ -145,6 +146,27 @@ Switch the taxonomy (the label space is configurable):
 --taxonomy driving3        # vehicle / person / cyclist  (default)
 --taxonomy vehicle_person  # 2-class
 --taxonomy driving5        # car / truck / bus / person / cyclist
+```
+
+## Training (raw PyTorch loop + HuggingFace Trainer)
+
+[train.py](train.py) is a compact, **teaching-oriented** trainer showing both styles
+on the same `EvalDataset` data + unified taxonomy. See TUTORIAL §16 for details.
+
+```bash
+# Raw PyTorch loop — Faster R-CNN style (you see loss_classifier/box_reg/objectness/...)
+python -m DeepDataMiningLearning.ngdet.train --trainer pytorch \
+    --backend torchvision --model fasterrcnn_resnet50_fpn_v2 \
+    --dataset nuimages --nuimages-version v1.0-train --epochs 5 --batch-size 4
+
+# YOLO — raw loop (teaching) OR Ultralytics native (proper K-class fine-tune + built-in mAP)
+python -m DeepDataMiningLearning.ngdet.train --trainer pytorch \
+    --backend yolo --yolo-trainer native --model yolo11n.pt --dataset nuimages
+
+# HuggingFace Trainer — DETR / RT-DETR; reports validation COCO mAP each epoch
+python -m DeepDataMiningLearning.ngdet.train --trainer hf \
+    --model facebook/detr-resnet-50 --dataset nuimages \
+    --nuimages-version v1.0-train --eval-version v1.0-val
 ```
 
 ## Per-file self-tests

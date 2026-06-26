@@ -731,3 +731,91 @@ VLM but lacks its custom architecture, so it is the serving path, not a drop-in 
 
 **One-line takeaway:** match the accelerator to the architecture — **CNN→FP16/TensorRT,
 transformer(DETR)→torch.compile, YOLO→TensorRT**.
+
+---
+
+## 16. Training — raw PyTorch loop vs HuggingFace Trainer
+
+So far everything was *zero-shot* (no training). [train.py](train.py) is a compact,
+**modular, teaching-first** trainer that shows the two ways to train a detector, on the
+same `EvalDataset` data + unified taxonomy. It is deliberately simple (no heavy
+augmentation) so students can read every step.
+
+### 16.1 The two trainers
+
+| `--trainer` | what it shows | good for |
+|---|---|---|
+| `pytorch` | a **raw loop** you can read line-by-line: forward → loss → `backward()` → `optimizer.step()` → LR schedule → checkpoint | understanding the mechanics |
+| `hf` | HuggingFace **`Trainer` + `TrainingArguments`** (the batteries-included path) | DETR/RT-DETR, less boilerplate |
+
+### 16.2 One loop, two model "styles" (`--backend`)
+
+The raw loop is **backend-agnostic** — a small `TrainBackend` abstraction lets one
+loop drive two very different families (mirroring `detection/mytrainv2.py` and
+`detection/mytrain_yolo.py`):
+
+- **`torchvision`** (Faster R-CNN / RetinaNet / FCOS) — the *FasterRCNN style*:
+  `loss_dict = model(images, targets)`; we sum the dict. You see
+  `loss_classifier / loss_box_reg / loss_objectness / loss_rpn_box_reg`.
+- **`yolo`** (Ultralytics) — the *YOLO style*: `loss, items = model.loss(batch)` over
+  **box(CIoU) / cls(BCE) / dfl** (§14.4). YOLO has **two sub-modes** (`--yolo-trainer`):
+  - `raw` (default) — our PyTorch loop; keeps the pretrained 80-class head and maps
+    unified ids→a representative COCO id (no head surgery; for *teaching the loop*).
+  - `native` — exports our data to **YOLO format on disk** + runs Ultralytics'
+    optimized `model.train()` (resets the head to K classes → **proper fine-tuning**,
+    mosaic aug, EMA, and **built-in mAP50 / mAP50-95 reported each epoch**).
+
+Each backend supplies its own `collate` that turns our canonical
+`(PIL image, boxes_xyxy_abs, unified_labels)` sample into that model's batch format —
+so adding a dataset (any `EvalDataset`) or a backend stays decoupled.
+
+### 16.2b Validation mAP during training
+
+- **HF Trainer** path reports **COCO mAP** on a held-out split after each epoch via a
+  `TrainerCallback` that runs our [`COCOUnifiedEvaluator`](evaluator.py) on the current
+  model (logs `mAP / AP50 / AP75`). Control with `--eval-version` / `--eval-max-images`.
+- **YOLO native** reports Ultralytics' built-in **mAP50 / mAP50-95** each epoch.
+- The **raw PyTorch loop** prints training loss; evaluate its checkpoint with `run_eval`
+  (§16.4) for mAP.
+
+### 16.3 Commands (verified to run)
+
+```bash
+# (1) Raw loop, Faster R-CNN style — on nuImages real-2D boxes
+python -m DeepDataMiningLearning.ngdet.train --trainer pytorch \
+    --backend torchvision --model fasterrcnn_resnet50_fpn_v2 \
+    --dataset nuimages --nuimages-version v1.0-train \
+    --max-images 400 --epochs 5 --batch-size 4 --lr 1e-4
+# → e0 s0/100 loss=2.154 loss_classifier=1.375 loss_box_reg=0.034 loss_objectness=0.695 ...
+
+# (2a) Raw loop, YOLO style (teaching the loop mechanics)
+python -m DeepDataMiningLearning.ngdet.train --trainer pytorch \
+    --backend yolo --yolo-trainer raw --model yolo11n.pt --dataset nuimages \
+    --image-size 640 --max-images 400 --epochs 5 --batch-size 8
+# → e0 s0/50 loss=18.114 box=1.912 cls=5.802 dfl=1.343 ...
+
+# (2b) YOLO NATIVE (proper K-class fine-tune; built-in mAP each epoch)
+python -m DeepDataMiningLearning.ngdet.train --trainer pytorch \
+    --backend yolo --yolo-trainer native --model yolo11n.pt --dataset nuimages \
+    --image-size 640 --max-images 400 --epochs 20 --batch-size 16
+# → ...  all   N   M   P   R   mAP50   mAP50-95   (per epoch)
+
+# (3) HuggingFace Trainer, DETR — head auto-resized; reports val COCO mAP each epoch
+python -m DeepDataMiningLearning.ngdet.train --trainer hf \
+    --model facebook/detr-resnet-50 --dataset nuimages --nuimages-version v1.0-train \
+    --eval-version v1.0-val --eval-max-images 200 \
+    --max-images 400 --epochs 5 --batch-size 4
+# → [val @ epoch 1] mAP=0.007 AP50=0.015 AP75=0.004 (n=200 imgs)
+```
+
+Add `--max-images 8 --epochs 1 --batch-size 2 --num-workers 0` for a fast smoke test.
+Checkpoints land in `output/train/` (git-ignored).
+
+### 16.4 Train → evaluate loop
+
+Train a checkpoint, then score it with the same harness you used zero-shot (§2/§12) to
+see if fine-tuning closed the cross-domain gap — the natural next experiment for the
+research directions this repo supports.
+
+- Config: [`TrainConfig`](train.py) (dataclass) · raw loop: [`train_loop`](train.py) ·
+  HF path: [`train_hf`](train.py) · backends: [`TorchvisionBackend` / `YoloBackend`](train.py).
