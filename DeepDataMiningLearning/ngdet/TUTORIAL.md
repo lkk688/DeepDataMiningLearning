@@ -1098,14 +1098,13 @@ before blaming the model; (2) mAP needs a ranking signal — manufacture one fro
 order if the model gives none; (3) VLM latency is dominated by vision-token count —
 resolution is the first knob.
 
-> **On fine-tuning LocateAnything (LoRA):** investigated and **blocked**. PEFT wraps
-> the 3B model fine and its outer `forward` computes a standard CE loss, but the inner
-> Qwen variant's attention-mask + loss are built for **Parallel Box Decoding** — the
-> eval path needs `input_ids` (passed as `None`), the train path needs undocumented
-> PBD `x0_len`/`position_ids` and a custom multi-position loss. Standard autoregressive
-> LoRA SFT can't run without monkeypatching those internals (risking a wrong attention
-> mask). It needs NVIDIA's training code. **The trainable open-vocab path here is
-> Grounding DINO (§19)**, which gains on every domain and is fully reproducible.
+> **On fine-tuning LocateAnything (LoRA):** first investigated and thought **blocked**
+> — its inner Qwen variant builds attention masks + a multi-position loss for **Parallel
+> Box Decoding**, and a naive training forward hit an `UnboundLocalError`. **This verdict
+> was later overturned** (§22.4): the outer `forward` *does* compute a plain CE loss and
+> boxes are discrete location tokens, so an **autoregressive LoRA** works after a tiny
+> one-line workaround. The blocker was the *PBD* path, not the model. See §22 — LA AR-LoRA
+> now gains on every domain (mean +0.063). Grounding DINO (§19) is still the strongest.
 
 ---
 
@@ -1157,14 +1156,172 @@ stronger there, and is far cheaper to run (~30 ms vs ~15 s/image for the 3B VLM)
 ### 21.3 Engineering lessons
 
 1. **Standard model ≫ custom model for training.** Qwen2.5-VL trains in ~80 lines of
-   collate; LocateAnything's PBD internals blocked it entirely (§20). Pick documented
-   architectures when you intend to fine-tune.
+   collate; LocateAnything needed reverse-engineering its location-token format plus a
+   bug workaround (§22). Standard architectures are far cheaper to fine-tune.
 2. **Gradient checkpointing is the VLM-LoRA OOM fix.** Batch-2 of a 3B VLM + 1024px
    images OOM'd at 24 GB; `gradient_checkpointing=True` (+ `enable_input_require_grads`)
    dropped it to **~12 GB**.
 3. **Mind the coordinate space.** Qwen outputs boxes in the *smart-resized* image; both
    the target builder and the adapter must rescale consistently, or every box is wrong.
 
+### 21.4 Latency: a general VLM vs LocateAnything's Parallel Box Decoding
+
+A VLM detector is **slow** — it generates the answer token by token. The interesting
+question is how a general VLM (Qwen) compares to LocateAnything's **Parallel Box Decoding
+(PBD)**, which emits a box's 4 coordinates as one atomic block instead of ~20 sequential
+tokens. Measured on the same 5 KITTI images, same 1024px cap, one `generate()` each:
+
+| (RTX 3090, bf16, sdpa) | s/img | out-tokens/img | **ms/token** |
+|---|---|---|---|
+| Qwen2.5-VL-3B (autoregressive JSON) | 4.40 | 118 | **37.3** |
+| LocateAnything-3B (PBD) | 2.98 | 387 | **7.7** |
+
+**≈5× faster per decode step** is the PBD payoff (parallel coords vs token-by-token);
+end-to-end it is 1.5× because LA emits more tokens here. The location-token format (§22.1)
+is *what makes PBD possible* — fixed 4-slot boxes can be predicted in parallel; Qwen's
+variable-length text numbers cannot.
+
+**Can we go faster with kernels?** We built `flash-attn` from source (no prebuilt wheel
+for torch 2.10) to test — and the honest answer is **no, not on this setup**:
+
+- **LocateAnything can't use it.** Its PBD attention only implements `sdpa` and `magi`;
+  `flash_attention_2` raises `NotImplementedError` (modeling_qwen2.py:1335). The full PBD
+  fast-path needs **`magi_attention`** — SandAI's *flexible-mask* flash kernel
+  (`flex_flash_attn_func` with arbitrary `q_ranges`/`k_ranges`), which is what lets PBD's
+  non-causal block mask run on a flash kernel instead of sdpa. But that kernel is
+  **Hopper-only (H100/H800, sm_90)**: it is built on FlashAttention-3 primitives (TMA async
+  copies, warpgroup WGMMA tensor-core ops, the producer/consumer async pipeline) that
+  **physically do not exist on Ampere/Ada** (a 3090 is sm_86). So it isn't a "single GPU vs
+  cluster" issue — it's a GPU-*generation* one: on commodity GPUs the kernel won't run at
+  all, and LA is stuck on `sdpa`. (MagiAttention's *other* feature — distributed
+  context-parallel attention for ultra-long sequences across many GPUs — is what its name
+  refers to, but LA doesn't use that part.)
+- **Qwen doesn't benefit either.** At detection's short generation lengths (~120 tokens)
+  attention isn't the bottleneck, so flash added overhead (44 vs 37 ms/token).
+
+So the realistic figure on commodity hardware is the **sdpa 1.5× / 5×-per-step** above;
+the paper's 10× requires `magi_attention`. **Lesson: a custom kernel claimed in a paper
+is part of the result — without it you measure a different, usually smaller, number.**
+
 This gives ngdet a **trainable VLM-detector** path. Across the whole framework, every
 detector paradigm is now both evaluable *and* trainable: CNN (raw loop), DETR/RT-DETR
 (HF Trainer), YOLO (native), open-vocab Grounding DINO (§19), and VLM Qwen2.5-VL (LoRA).
+
+---
+
+## 22. How VLMs encode box coordinates — and why it (re)opens LocateAnything LoRA
+
+§21's Qwen path and §20's "LocateAnything is untrainable" verdict actually hinge on the
+same detail: **how the model turns a box into tokens.** There are two schools, and they
+explain both PBD's speed and why LA *can* be LoRA-tuned after all.
+
+### 22.1 Two ways to put a box into a token stream
+
+**(A) Coordinates as text** — general VLMs (Qwen2.5-VL, most chat VLMs).
+The box is plain text inside JSON: `{"bbox_2d":[123,456,789,12]}`. Those digits go
+through the normal BPE tokenizer, so `"123"` is 1–3 tokens depending on merges — a box
+is ~15–25 *variable-length* tokens in **pixel** space. No vocabulary change; works with
+any LLM out of the box; but verbose, and you must parse JSON back out.
+
+**(B) Coordinates as dedicated location tokens** — detection-specialized models
+(LocateAnything, **Florence-2**, Kosmos-2, Pix2Seq). The vocabulary is *extended* with N
+"location" tokens. LocateAnything adds **`<0>` … `<1000>`** (token ids **151677 … 152677**).
+A coordinate is **quantized**: normalize to `[0,1]`, multiply by 1000, round → **one
+token**. A whole box is a fixed 6-token block:
+
+```
+<box> <x1> <y1> <x2> <y2> </box>          # ids: 151668, then 4 coord tokens, then 151669
+        where  <k> = id 151677 + round(coord/dim * 1000),  k ∈ [0,1000]
+```
+
+grouped under a class tag: `<ref>car</ref><box>…</box><box>…</box><ref>person</ref>…`,
+empty class = `<ref>truck</ref><box>None</box>`. (Verified empirically: the order is
+**x1,y1,x2,y2** — a code comment in the model says `x1,x2,y1,y2`, but a known wide bus
+decodes correctly only as x1,y1,x2,y2, and our adapter already uses that.)
+
+### 22.2 Is this the same as a normal VLM? No — and that's the point
+
+| | text coords (Qwen) | location tokens (LocateAnything) |
+|---|---|---|
+| a box costs | ~15–25 tokens, variable | **6 tokens, fixed** |
+| coordinate space | pixels (abs) | normalized `[0,1]`→1000 bins (res-independent) |
+| vocab change | none (any LLM) | +1001 tokens, must be **pretrained** |
+| decode | autoregressive + JSON parse | fixed 4 slots → enables **PBD parallel decode** |
+
+The fixed 4-slot box is *exactly* what lets PBD (§21.4) emit a box in one parallel
+step instead of ~20 sequential tokens. Qwen can't do that — its boxes aren't fixed-width.
+
+### 22.3 Why 1000 bins?
+
+A **precision vs vocab-size** trade-off. 1000 bins = 0.1% positional resolution (1 px on
+a 1000 px image, 2 px on 2000 px) — well below what mAP@[.5:.95] cares about. Fewer bins
+(say 100) caps IoU; many more (4000) bloats the embedding/output matrix and starves each
+bin of training signal. **1000 is a community convention**: Florence-2 uses exactly 1000
+(`<loc_0>…<loc_999>`), Kosmos-2 used 1024 (a 32×32 grid), Pix2Seq ~1000–2000.
+
+### 22.4 The payoff: LocateAnything LoRA *is* possible (via the AR path)
+
+§20 concluded LA was untrainable — but that was only true of its **PBD training path**
+(custom block-mask from `x0_len`/`position_ids` + a `pos_loss`; we hit an
+`UnboundLocalError` there). Reading `forward()` (modeling_locateanything.py:256-266)
+shows it is otherwise a **completely standard causal-LM cross-entropy**:
+
+```python
+loss_fct = CrossEntropyLoss()
+loss = loss_fct(logits[..., :-1, :], labels[..., 1:])   # no pos_loss, no custom mask
+```
+
+PBD/MTP lives **only in `generate()`**. Because boxes are *discrete vocab tokens*
+(§22.1B), they're covered by the ordinary `lm_head` + CE. So LocateAnything LoRA is just
+the Qwen recipe (§21) with a different target encoder:
+
+- **freeze MoonViT** (it's only a feature extractor — never the blocker),
+- LoRA the LLM's linear layers,
+- build the answer as the **location-token sequence** above (not JSON),
+- mask the prompt, train with standard CE, and generate with
+  `generation_mode='slow'` (pure autoregressive — uses your tuned weights).
+
+Trade-off: this tunes the **AR path (accuracy)**, not the MTP heads (speed). Generate in
+`'slow'` for your fine-tuned accuracy, or `'hybrid'` to keep PBD's pretrained speed while
+the AR path corrects it.
+
+```bash
+python -m DeepDataMiningLearning.ngdet.train --trainer la_lora \
+    --model nvidia/LocateAnything-3B --dataset mixed --root .../output/mixed_large \
+    --max-images 800 --epochs 3 --batch-size 1        # ~13GB, no grad-checkpointing
+# evaluate the adapter (auto-detected; generates in 'slow' AR mode):
+... --models locate_anything:.../train_la/la_lora
+```
+
+**The one-line workaround.** LA's *training* path has a bug: its inner LLM returns
+`(output, pos_loss_list)` when `self.training` is True (modeling_qwen2.py:1534), but the
+outer model calls it without `labels`, so `pos_loss_list` is unbound *and* the outer
+expects a single `outputs.logits`. The outer already computes a clean CE loss, so we just
+force the inner LM's `training=False` during forward — autograd is unaffected by that flag,
+so LoRA grads still flow. That single line is the whole difference between "blocked" and
+"+39% mAP".
+
+### 22.5 Result — LA AR-LoRA gains on every domain
+
+![la zero-shot vs lora](docs/heatmap_la_lora.png)
+
+| LocateAnything-3B (held-out mAP) | kitti | waymo | nuimages | mean |
+|---|---|---|---|---|
+| zero-shot | 0.075 | 0.148 | 0.259 | 0.161 |
+| **AR-LoRA** | **0.124** | **0.201** | **0.346** | **0.224** |
+| Δ | +0.049 (+65%) | +0.053 (+36%) | +0.087 (+34%) | **+0.063 (+39%)** |
+
+Every domain improves (loss 0.87 after 3 epochs, ~17 min). Two honest observations:
+
+- **LA is a much stronger *zero-shot* detector than Qwen** (mean 0.161 vs Qwen's 0.068,
+  §21) — the location-token + detection-specialized design pays off out of the box.
+- **But its LoRA *gains* are smaller** (+39% vs Qwen's 3×): LA starts far higher (less
+  headroom), and we tune the less-optimized `'slow'` AR path, not its native PBD path.
+  Notably Qwen-LoRA wins KITTI (0.352 vs 0.124) while LA-LoRA wins nuImages (0.346 vs
+  0.167) and Waymo — the two trainable VLMs are complementary, and **Grounding DINO (§19)
+  still leads overall** (mean ~0.32).
+
+> **Lesson:** "untrainable" usually means "the *documented* path is untrainable." Inspect
+> `forward()` for a plain CE branch before giving up — a model with a location-token
+> vocabulary almost always has one, because that is how it was pretrained. Here that
+> inspection turned a dead end into a reproducible +39%.

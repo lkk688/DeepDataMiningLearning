@@ -76,13 +76,29 @@ class LocateAnythingDetector(BaseDetector):
         # to the ORIGINAL size afterwards -> coordinates stay correct.
         self.image_max = int(kwargs.get("image_max", 1024))
 
+        # A LoRA checkpoint dir (from train_la_lora) has adapter_config.json; load the
+        # base model named inside it, then apply the adapter. A LoRA tunes only the AR
+        # path (§22.4), so we generate in 'slow' (pure autoregressive) mode for it.
+        import os, json as _json
+        lora_dir = self.model_name if os.path.isfile(
+            os.path.join(self.model_name, "adapter_config.json")) else None
+        base_name = (_json.load(open(os.path.join(lora_dir, "adapter_config.json")))
+                     ["base_model_name_or_path"]) if lora_dir else self.model_name
+        self.gen_mode = kwargs.get("generation_mode", "slow" if lora_dir else "hybrid")
+
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name, trust_remote_code=True, cache_dir=cache_dir)
+            lora_dir or base_name, trust_remote_code=True, cache_dir=cache_dir)
         self.processor = AutoProcessor.from_pretrained(
-            self.model_name, trust_remote_code=True, cache_dir=cache_dir)
+            lora_dir or base_name, trust_remote_code=True, cache_dir=cache_dir)
         self.model = AutoModel.from_pretrained(
-            self.model_name, torch_dtype=torch.bfloat16, trust_remote_code=True,
+            base_name, torch_dtype=torch.bfloat16, trust_remote_code=True,
             cache_dir=cache_dir).to(device).eval()
+        if lora_dir:
+            from peft import PeftModel
+            # merge_and_unload bakes the LoRA deltas into the base weights and returns the
+            # plain LA model, so its custom generate() works unchanged (no PeftModel wrapper).
+            self.model = PeftModel.from_pretrained(self.model, lora_dir).merge_and_unload().eval()
+            print(f"[locate_anything] merged LoRA adapter from {lora_dir} (mode={self.gen_mode})")
 
         # Curated prompt terms grouped per unified class. We prompt ONCE PER CLASS so
         # each class gets the full token budget (a single multi-class prompt loops on
@@ -116,7 +132,7 @@ class LocateAnythingDetector(BaseDetector):
                 image_grid_hws=inputs.get("image_grid_hws"),
                 tokenizer=self.tokenizer,
                 max_new_tokens=self.max_new_tokens,
-                generation_mode="hybrid",
+                generation_mode=self.gen_mode,
                 use_cache=True,   # required by the LocateAnything decoder
                 repetition_penalty=self.repetition_penalty,
             )

@@ -644,6 +644,130 @@ def train_qwen_lora(cfg: TrainConfig, taxonomy: Taxonomy):
     print(f"[train_qwen_lora] done -> {fd}")
 
 
+def train_la_lora(cfg: TrainConfig, taxonomy: Taxonomy):
+    """LoRA fine-tune **LocateAnything** via its autoregressive (AR) path.
+
+    §20 found LA's *PBD* training path blocked (custom block-mask + pos_loss). But its
+    `forward(labels=...)` is a plain causal-LM CrossEntropyLoss (modeling:256-266), and
+    boxes are *discrete location tokens* `<0>..<1000>` (ids 151677..152677), so it trains
+    exactly like Qwen (§21) — just with a location-token target instead of JSON. We freeze
+    MoonViT, LoRA the LLM, and supervise the answer:
+        <ref>car</ref><box><x1><y1><x2><y2></box>...   (coords = round(c/dim*1000))
+    Generate afterwards with generation_mode='slow' (AR, uses the tuned weights). See §22.
+    """
+    from transformers import AutoModel, AutoTokenizer, AutoProcessor, Trainer, TrainingArguments
+    from peft import LoraConfig, get_peft_model
+
+    name = cfg.model_name or "nvidia/LocateAnything-3B"
+    tok = AutoTokenizer.from_pretrained(name, trust_remote_code=True)
+    proc = AutoProcessor.from_pretrained(name, trust_remote_code=True)
+    model = AutoModel.from_pretrained(name, torch_dtype=torch.bfloat16, trust_remote_code=True)
+
+    # LA's special-token scheme (configuration_locateanything.py) — see §22.1.
+    C = model.config
+    BOX_S, BOX_E = C.box_start_token_id, C.box_end_token_id           # 151668, 151669
+    REF_S, REF_E = C.ref_start_token_id, C.ref_end_token_id           # 151672, 151673
+    COORD0 = C.coord_start_token_id                                   # 151677 == '<0>'
+    NBINS = C.coord_end_token_id - C.coord_start_token_id             # 1000
+    IM_END = getattr(getattr(C, "text_config", None), "eos_token_id", 151645)
+
+    # LoRA on the LLM projections only (MoonViT stays frozen — it is a feature extractor).
+    lcfg = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05,
+                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                      "gate_proj", "up_proj", "down_proj"])
+    model = get_peft_model(model, lcfg)
+    model.print_trainable_parameters()
+    model.config.use_cache = False
+    # NOTE: no gradient_checkpointing here. LA splices vision embeds with an in-place
+    # `input_embeds[selected] = ...` (modeling:240), which conflicts with the
+    # enable_input_require_grads() that checkpointing needs. MoonViT is frozen and its
+    # 2x2 patch-merge keeps the token count low, so bf16 LoRA at bs=1 fits without it.
+
+    # Work around a bug in LA's *training* path: the inner LLM returns
+    # `(output, pos_loss_list)` when `self.training` is True (modeling_qwen2.py:1534),
+    # but the outer model calls it without `labels`, so pos_loss_list is unbound AND the
+    # outer expects a single `outputs.logits`. The outer already computes a clean CE loss
+    # itself, so we force the inner LM's training flag off to take the normal return path.
+    # Autograd is unaffected by `.training` — LoRA grads still flow. See TUTORIAL §22.4.
+    import types as _types
+    _inner = getattr(model.base_model.model, "language_model", None)
+    if _inner is not None:
+        _orig_fwd = type(_inner).forward
+        def _no_mtp_forward(self, *a, _f=_orig_fwd, **k):
+            prev = self.training; self.training = False
+            try:
+                return _f(self, *a, **k)
+            finally:
+                self.training = prev
+        _inner.forward = _types.MethodType(_no_mtp_forward, _inner)
+
+    rep = {uid: terms[0] for uid, terms in taxonomy.open_vocab_terms_by_class().items()}
+    image_max = 1024
+
+    def _bin(v, dim):                       # pixel -> location-token id, clamped
+        return COORD0 + max(0, min(NBINS, round(float(v) / max(1, dim) * NBINS)))
+
+    def _answer_ids(boxes, labs, W, H):
+        """Build the location-token answer: classes grouped, boxes as <box>x1 y1 x2 y2</box>."""
+        ids = []
+        for uid in sorted(set(int(l) for l in labs)):
+            ids += [REF_S] + tok(rep[uid], add_special_tokens=False).input_ids + [REF_E]
+            for (x1, y1, x2, y2), l in zip(boxes, labs):
+                if int(l) != uid:
+                    continue
+                ids += [BOX_S, _bin(x1, W), _bin(y1, H), _bin(x2, W), _bin(y2, H), BOX_E]
+        return ids + [IM_END]
+
+    data = CanonicalDetData(cfg, taxonomy,
+                            split="train" if cfg.dataset == "mixed" else None)
+
+    def collate(samples):
+        input_ids, labels_list, pix, grids = [], [], [], []
+        for pil, boxes, labs in samples:
+            W, H = pil.size                                  # normalize by ORIGINAL size
+            img = pil
+            if max(W, H) > image_max:                        # downscale only for the encoder
+                sc = image_max / max(W, H)
+                img = pil.resize((max(1, int(W * sc)), max(1, int(H * sc))))
+            msgs = [{"role": "user", "content": [
+                {"type": "image", "image": img},
+                {"type": "text", "text": "Locate all the instances that matches the "
+                 "following description: " + ", ".join(rep.values()) + "."}]}]
+            text = proc.py_apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+            imgs, vids = proc.process_vision_info(msgs)
+            enc = proc(text=[text], images=imgs, videos=vids, return_tensors="pt")
+            pid = enc["input_ids"][0]
+            ans = torch.tensor(_answer_ids(boxes, labs, W, H), dtype=torch.long)
+            ids = torch.cat([pid, ans])
+            lab = ids.clone(); lab[:pid.shape[0]] = -100     # supervise only the answer
+            input_ids.append(ids); labels_list.append(lab)
+            pix.append(enc["pixel_values"].to(torch.bfloat16))
+            grids.append(torch.as_tensor(enc["image_grid_hws"]))   # LA returns numpy
+        maxlen = max(x.shape[0] for x in input_ids)
+        pad_id = tok.pad_token_id or 0
+        ii = torch.full((len(input_ids), maxlen), pad_id, dtype=torch.long)
+        ll = torch.full((len(input_ids), maxlen), -100, dtype=torch.long)
+        am = torch.zeros((len(input_ids), maxlen), dtype=torch.long)
+        for i, (x, y) in enumerate(zip(input_ids, labels_list)):
+            ii[i, :x.shape[0]] = x; ll[i, :y.shape[0]] = y; am[i, :x.shape[0]] = 1
+        return {"input_ids": ii, "attention_mask": am, "labels": ll,
+                "pixel_values": torch.cat(pix), "image_grid_hws": torch.cat(grids)}
+
+    args = TrainingArguments(
+        output_dir=cfg.output_dir, per_device_train_batch_size=cfg.batch_size,
+        gradient_accumulation_steps=max(1, 8 // cfg.batch_size),
+        num_train_epochs=cfg.epochs, learning_rate=cfg.lr, weight_decay=cfg.weight_decay,
+        bf16=cfg.amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        dataloader_num_workers=cfg.num_workers, logging_steps=cfg.log_every,
+        save_strategy="epoch", remove_unused_columns=False, report_to="none")
+    trainer = Trainer(model=model, args=args, train_dataset=data, data_collator=collate)
+    print(f"[train_la_lora] {name} AR-LoRA, steps/epoch≈{len(data)//cfg.batch_size}")
+    trainer.train()
+    fd = os.path.join(cfg.output_dir, "la_lora")
+    model.save_pretrained(fd); tok.save_pretrained(fd); proc.save_pretrained(fd)
+    print(f"[train_la_lora] done -> {fd}")
+
+
 # ===========================================================================
 # YOLO native training (Ultralytics model.train) — proper K-class fine-tuning
 # ===========================================================================
@@ -707,9 +831,10 @@ def train_yolo_native(cfg: TrainConfig, taxonomy: Taxonomy):
 def main():
     cfg = TrainConfig()
     ap = argparse.ArgumentParser(description="ngdet unified detection trainer.")
-    ap.add_argument("--trainer", choices=["pytorch", "hf", "gdino", "qwen_lora"],
+    ap.add_argument("--trainer", choices=["pytorch", "hf", "gdino", "qwen_lora", "la_lora"],
                     default=cfg.trainer,
-                    help="raw loop | HF Trainer (DETR) | gdino | qwen_lora (Qwen2.5-VL LoRA)")
+                    help="raw loop | HF Trainer (DETR) | gdino | qwen_lora (Qwen2.5-VL LoRA) "
+                         "| la_lora (LocateAnything AR-LoRA, §22)")
     ap.add_argument("--backend", choices=["torchvision", "yolo"], default=cfg.backend,
                     help="raw-loop model family (ignored when --trainer hf)")
     ap.add_argument("--yolo-trainer", choices=["raw", "native"], default=cfg.yolo_trainer,
@@ -764,6 +889,9 @@ def main():
         return
     if cfg.trainer == "qwen_lora":
         train_qwen_lora(cfg, taxonomy)
+        return
+    if cfg.trainer == "la_lora":
+        train_la_lora(cfg, taxonomy)
         return
     if cfg.backend == "yolo" and cfg.yolo_trainer == "native":
         train_yolo_native(cfg, taxonomy)

@@ -49,6 +49,23 @@ pip install lmdb            # required by the LocateAnything custom modeling cod
 ```
 The model is pulled from `nvidia/LocateAnything-3B` with `trust_remote_code=True`.
 
+**Attention kernels (speed only — optional).** LocateAnything runs on `sdpa` by default.
+Two faster kernels exist; see TUTORIAL §21.4 for the measured impact (TL;DR: neither
+helps much on commodity GPUs, and LA does **not** support `flash_attention_2`).
+
+```bash
+# flash-attn — speeds MoonViT's vision encoder (NOT LA's LLM, which raises
+# NotImplementedError on flash). No prebuilt wheel for torch 2.10, so build from source
+# (~1.5-3 h, needs nvcc + ~16GB RAM; MAX_JOBS caps parallelism/RAM):
+MAX_JOBS=8 CUDA_HOME=/path/to/cuda pip install flash-attn==2.8.3.post1 --no-build-isolation
+
+# magi_attention — the kernel LA's Parallel Box Decoding actually needs for its claimed
+# ~10x speedup (SandAI MagiAttention's flexible-mask flash kernel). HOPPER-ONLY (H100/H800,
+# sm_90): its FFA kernel uses Hopper hardware (TMA, WGMMA, the FA-3 async pipeline) that does
+# not exist on Ampere/Ada. So on a 3090/4090 it won't run regardless — not a single-vs-multi
+# GPU issue, a GPU-generation one. Not on PyPI; source build (submodules + ~20-30 min).
+```
+
 ### 4. Optional: acceleration backends (for the latency study)
 
 ```bash
@@ -193,6 +210,12 @@ python -m DeepDataMiningLearning.ngdet.train --trainer qwen_lora \
     --model Qwen/Qwen2.5-VL-3B-Instruct --dataset mixed --root .../output/mixed_large \
     --max-images 800 --epochs 3 --batch-size 1     # grad-checkpointing keeps it <13GB
 # then evaluate the adapter:  --models qwen_vl:.../train_qwen/qwen_lora
+
+# LocateAnything AR-LoRA (a location-token VLM; --trainer la_lora). TUTORIAL §22.
+python -m DeepDataMiningLearning.ngdet.train --trainer la_lora \
+    --model nvidia/LocateAnything-3B --dataset mixed --root .../output/mixed_large \
+    --max-images 800 --epochs 3 --batch-size 1     # gains on all domains (+39% mean)
+# then evaluate the adapter:  --models locate_anything:.../train_la/la_lora
 ```
 
 ## Per-file self-tests
