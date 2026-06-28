@@ -14,15 +14,24 @@ This adapter follows the official inference recipe from the model card:
   * output boxes in the text format `<box><x1><y1><x2><y2></box>` with integer
     coords in [0, 1000], rescaled to absolute pixels.
 
-LABELING STRATEGY: the model's multi-category output does not cleanly tag each box
-with its class, so for reliable labels we prompt ONCE PER UNIFIED CLASS using that
-class's curated terms (joined by the model's "</c>" separator) and assign every
-returned box that class's unified id. That is `num_classes` generate() calls per
-image (3 for driving3) -- slower than a single pass, but gives correct labels.
+Three adapter choices make this work well (the box *quality* is excellent — the
+model predicts near-exact boxes — but naive use scores very low; see TUTORIAL §20):
 
-STATUS: requires a GPU + network. The model has no calibrated per-box confidence,
-so we emit score=1.0 (mAP then ranks its boxes equally -- a known limitation noted
-in the report).
+  1. PROMPT ONCE PER UNIFIED CLASS (not one multi-class prompt). The hybrid decoder
+     loops on the first class and eats the token budget, starving the rest, so a
+     single prompt returns only "car". One generate() per class (3 for driving3)
+     gives every class its own budget. The label is then known per prompt.
+  2. ORDER-BASED CONFIDENCE. The model emits no calibrated score, but it outputs its
+     most-confident detections FIRST, so we rank boxes by output order (loops / false
+     positives land last -> low score). This is what lets COCO mAP rank correctly.
+  3. DOWNSCALE LARGE INPUTS + `repetition_penalty`. A 1920x1280 frame makes a huge
+     number of vision tokens (300+ s/image); capping the longest edge to `image_max`
+     (boxes are normalized, so coords stay correct) brings it to ~7 s/image.
+
+These took nuImages mAP from ~0.05 to ~0.30 and cut Waymo latency ~46x.
+
+STATUS: requires a GPU + network. Still ~7 s/image (a 3B VLM, 3 generates) -- much
+slower than a real-time detector, fine for evaluation.
 """
 
 from __future__ import annotations
@@ -57,7 +66,15 @@ class LocateAnythingDetector(BaseDetector):
         self.model_name = model_name or "nvidia/LocateAnything-3B"
         cache_dir = kwargs.get("cache_dir", None)
         # Detection output is short; 768 is plenty and far faster than 2048.
-        self.max_new_tokens = int(kwargs.get("max_new_tokens", 768))
+        self.max_new_tokens = int(kwargs.get("max_new_tokens", 384))
+        # >1 discourages the hybrid decoder's box-repeat loops (which otherwise eat
+        # the token budget and starve later classes).
+        self.repetition_penalty = float(kwargs.get("repetition_penalty", 1.05))
+        # Downscale large inputs before generation. A 1920x1280 Waymo frame makes a
+        # huge number of vision tokens (100s of seconds/image); capping the longest
+        # edge cuts that dramatically. Boxes are normalized [0,1000], so we rescale
+        # to the ORIGINAL size afterwards -> coordinates stay correct.
+        self.image_max = int(kwargs.get("image_max", 1024))
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name, trust_remote_code=True, cache_dir=cache_dir)
@@ -67,12 +84,19 @@ class LocateAnythingDetector(BaseDetector):
             self.model_name, torch_dtype=torch.bfloat16, trust_remote_code=True,
             cache_dir=cache_dir).to(device).eval()
 
-        # Curated concrete prompt terms (car/truck/bus/... ) for the single
-        # multi-class prompt; returned boxes are labeled from the <ref> tags.
+        # Curated prompt terms grouped per unified class. We prompt ONCE PER CLASS so
+        # each class gets the full token budget (a single multi-class prompt loops on
+        # the first class and starves the rest); the label is then known per prompt.
         self._term_list = [t for t, _ in self.taxonomy.open_vocab_terms()]
+        self._terms_by_class = self.taxonomy.open_vocab_terms_by_class()
 
     def _generate(self, image, cats_str: str) -> str:
         """Run one generate() pass for a "</c>"-joined category string."""
+        # downscale large images for speed (boxes are normalized -> still correct)
+        w, h = image.size
+        if max(w, h) > self.image_max:
+            sc = self.image_max / max(w, h)
+            image = image.resize((max(1, int(w * sc)), max(1, int(h * sc))))
         prompt = (f"Locate all the instances that matches the following "
                   f"description: {cats_str}.")
         messages = [{"role": "user", "content": [
@@ -94,8 +118,25 @@ class LocateAnythingDetector(BaseDetector):
                 max_new_tokens=self.max_new_tokens,
                 generation_mode="hybrid",
                 use_cache=True,   # required by the LocateAnything decoder
+                repetition_penalty=self.repetition_penalty,
             )
         return response[0] if isinstance(response, tuple) else response
+
+    @staticmethod
+    def _parse_boxes_ordered(text, w: int, h: int):
+        """All boxes in OUTPUT ORDER, de-duplicated. For a single-class prompt every
+        box belongs to that class, and the order is the model's confidence order."""
+        seen, out = set(), []
+        for bm in _BOX_RE.finditer(str(text)):
+            quad = tuple(int(g) for g in bm.groups())
+            if quad in seen:
+                continue
+            seen.add(quad)
+            x1, y1, x2, y2 = [v / _COORD_RANGE for v in quad]
+            bx = [x1 * w, y1 * h, x2 * w, y2 * h]
+            if bx[2] > bx[0] and bx[3] > bx[1]:
+                out.append(bx)
+        return out
 
     def _parse_ref_boxes(self, text, w: int, h: int):
         """Parse a multi-class answer into (box_xyxy, unified_id) pairs.
@@ -127,24 +168,32 @@ class LocateAnythingDetector(BaseDetector):
 
     def predict(self, image, prompt: Optional[List[str]] = None) -> Detection:
         w, h = image.size
-        # ONE generate() with all curated terms; labels come from the <ref> tags.
-        cats_str = "</c>".join(self._term_list)
-        try:
-            answer = self._generate(image, cats_str)
-        except Exception as e:  # noqa: BLE001
-            print(f"[locate_anything] generate failed: {e}")
+        boxes, scores, labels, names = [], [], [], []
+        # One generate() per unified class -> full token budget per class.
+        for uid, terms in self._terms_by_class.items():
+            try:
+                answer = self._generate(image, "</c>".join(terms))
+            except Exception as e:  # noqa: BLE001 - keep other classes if one fails
+                print(f"[locate_anything] generate failed (uid {uid}): {e}")
+                continue
+            bxs = self._parse_boxes_ordered(answer, w, h)
+            n = len(bxs)
+            for i, b in enumerate(bxs):
+                boxes.append(b)
+                # Order-based confidence: the model emits its most confident
+                # detections first, so rank by output order (loops/false positives
+                # come later -> lower score). This is what lets mAP rank correctly
+                # despite the model emitting no calibrated scores.
+                scores.append(1.0 - 0.7 * (i / max(1, n - 1)) if n > 1 else 1.0)
+                labels.append(uid)
+                names.append(self.taxonomy.classes[uid])
+        if not boxes:
             return Detection()
-
-        pairs = self._parse_ref_boxes(answer, w, h)
-        if not pairs:
-            return Detection()
-        boxes = np.asarray([p[0] for p in pairs], np.float32).reshape(-1, 4)
-        labels = np.asarray([p[1] for p in pairs], np.int64)
         return Detection(
-            boxes=boxes,
-            scores=np.ones(len(boxes), np.float32),  # no calibrated confidence
-            labels=labels,
-            names=[self.taxonomy.classes[int(l)] for l in labels],
+            boxes=np.asarray(boxes, np.float32).reshape(-1, 4),
+            scores=np.asarray(scores, np.float32),
+            labels=np.asarray(labels, np.int64),
+            names=names,
         )
 
 

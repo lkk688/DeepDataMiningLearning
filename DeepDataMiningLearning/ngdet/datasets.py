@@ -107,10 +107,11 @@ class EvalDataset:
             "nuscenes": self._build_nuscenes,
             "nuimages": self._build_nuimages,
             "coco": self._build_coco,
+            "mixed": self._build_mixed,
         }.get(name)
         if builder is None:
-            raise KeyError(f"Unknown dataset '{name}'. "
-                           f"Choose from kitti/waymo/nuscenes/nuimages/coco.")
+            raise KeyError(f"Unknown dataset '{name}'. Choose from "
+                           f"kitti/waymo/nuscenes/nuimages/coco/mixed.")
         builder(root, **kw)
         # Build the (strided, capped) list of underlying indices we will read.
         idxs = list(range(0, len(self._ds), self.stride))
@@ -176,6 +177,18 @@ class EvalDataset:
                                   anns_by_img[sdt]))
         self._ds = self._records          # so __init__ stride/len logic works
         self._mode = "nuimages"
+
+    def _build_mixed(self, root, split="train", **kw):
+        """The mixed KITTI+Waymo+nuImages base built by ngdet.mixed_dataset — a
+        COCO-format dir (`images/` + `train.json`/`val.json`) in unified categories."""
+        import torchvision
+        img_dir = os.path.join(root, "images")
+        ann = os.path.join(root, f"{split}.json")
+        self._ds = torchvision.datasets.CocoDetection(img_dir, ann)
+        coco = self._ds.coco
+        cocoid2name = {c["id"]: c["name"] for c in coco.loadCats(coco.getCatIds())}
+        self._gt_lut = self.taxonomy.build_id_lut(cocoid2name)
+        self._mode = "coco"
 
     def _build_coco(self, root, ann_file=None, **kw):
         # root points to the val images dir; ann_file to instances_val2017.json.

@@ -149,7 +149,7 @@ def build_detector(spec: str, taxonomy, device: str = "cuda",
     # Import adapters here (not at top) so registration happens on demand and a
     # missing optional dependency only breaks the backend that needs it.
     from . import (  # noqa: F401  (side-effect: register)
-        hf_detr, yolo, torchvision_det, grounding_dino, locate_anything,
+        hf_detr, yolo, torchvision_det, grounding_dino, locate_anything, qwen_vl,
     )
 
     # Optional per-model threshold override: "backend:model@0.05" lets open-vocab
@@ -158,6 +158,12 @@ def build_detector(spec: str, taxonomy, device: str = "cuda",
     if "@" in spec:
         spec, thr = spec.rsplit("@", 1)
         score_thr = float(thr)
+    # Optional trained-checkpoint override: "torchvision:model#/path/ckpt.pt" loads
+    # a fine-tuned state_dict (head sized to the taxonomy) instead of COCO weights.
+    checkpoint = None
+    if "#" in spec:
+        spec, checkpoint = spec.rsplit("#", 1)
+        kwargs["checkpoint"] = checkpoint
 
     if ":" in spec:
         key, model_name = spec.split(":", 1)

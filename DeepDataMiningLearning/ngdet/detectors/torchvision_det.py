@@ -47,10 +47,25 @@ class TorchvisionDetector(BaseDetector):
         self._to_tensor = to_tensor
         self.model_name = model_name or "fasterrcnn_resnet50_fpn_v2"
 
-        # Use the default (best) pretrained weights for the chosen architecture.
-        weights = get_model_weights(self.model_name).DEFAULT
-        self.model = get_model(self.model_name, weights=weights)
-        self.model.to(device).eval()
+        checkpoint = kwargs.get("checkpoint", None)
+        if checkpoint:
+            # Evaluate a FINE-TUNED model: head sized to the taxonomy (+1 background),
+            # weights loaded from our training checkpoint. Native labels are 1..K
+            # (0 = background), so they map to unified ids l -> l-1.
+            self.model = get_model(self.model_name, weights=None,
+                                   num_classes=self.taxonomy.num_classes + 1)
+            sd = torch.load(checkpoint, map_location="cpu")
+            self.model.load_state_dict(sd.get("model", sd) if isinstance(sd, dict) else sd)
+            self.id_lut = {l: l - 1 for l in range(1, self.taxonomy.num_classes + 1)}
+            self.id_lut[0] = None
+            self.model.to(device).eval()
+            self._fold_setup_done = True
+        else:
+            # Default: COCO-pretrained weights; map COCO names -> unified by name.
+            weights = get_model_weights(self.model_name).DEFAULT
+            self.model = get_model(self.model_name, weights=weights)
+            self.model.to(device).eval()
+            self._fold_setup_done = False
 
         # Acceleration: fp16 (half) or torch.compile.
         self._half = (accel == "fp16")
@@ -59,10 +74,12 @@ class TorchvisionDetector(BaseDetector):
         elif accel == "compile":
             self.model = torch.compile(self.model, mode="reduce-overhead")
 
-        # weights.meta["categories"] is a list; index == COCO label id.
-        cats = weights.meta["categories"]
-        id2name = {i: name for i, name in enumerate(cats)}
-        self.id_lut = self.taxonomy.build_id_lut(id2name)
+        # For COCO-pretrained models, map COCO names -> unified by name. (For a
+        # fine-tuned checkpoint the LUT was already set in __init__ above.)
+        if not self._fold_setup_done:
+            cats = weights.meta["categories"]      # index == COCO label id
+            id2name = {i: name for i, name in enumerate(cats)}
+            self.id_lut = self.taxonomy.build_id_lut(id2name)
 
     def predict(self, image, prompt: Optional[List[str]] = None) -> Detection:
         # PIL RGB -> CHW float[0,1]; the model normalizes/resizes internally.

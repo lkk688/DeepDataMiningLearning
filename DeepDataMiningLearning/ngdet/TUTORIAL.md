@@ -354,10 +354,11 @@ the env from §0; first runs download model weights.
 Samples: coco/kitti/waymo/nuscenes = 120 imgs; **nuimages = 500 (v1.0-val)**; LA = 30.
 Waymo used `--waymo-stride 40`; open-vocab used `gdino@0.15`, `owlv2@0.05`.
 
-† **LocateAnything mAP is structurally understated** — the VLM emits no calibrated
-confidence (all boxes score 1.0), and mAP needs ranked detections, so AP is
-penalized even though the boxes are visually correct. Read its row as "runs &
-localizes", not as a quality ranking.
+† **LocateAnything row is the *old* naive adapter** (single multi-class prompt, no
+scores). The boxes were always excellent but the adapter starved most classes and
+gave mAP no way to rank. **§20 fixes this** (per-class prompting + order-based scores
++ input downscaling): nuImages **0.055 → ~0.30**, Waymo latency **−46×**. Read this
+row as "what *not* to do"; §20 has the corrected numbers.
 
 **Headline reads:** in-domain COCO leaders are YOLO26x / RT-DETR (~0.60); cross-domain
 **everything compresses to ~0.25 on KITTI** regardless of architecture (domain shift
@@ -819,3 +820,351 @@ research directions this repo supports.
 
 - Config: [`TrainConfig`](train.py) (dataclass) · raw loop: [`train_loop`](train.py) ·
   HF path: [`train_hf`](train.py) · backends: [`TorchvisionBackend` / `YoloBackend`](train.py).
+
+---
+
+## 17. Mixed multi-dataset training (KITTI + Waymo + nuImages)
+
+A single-domain model transfers poorly (§5a). The natural fix is to **train on a mix
+of domains**. [mixed_dataset.py](mixed_dataset.py) builds that base and the trainer +
+eval harness consume it directly.
+
+### 17.1 Generate the mixed base
+
+```bash
+python -m DeepDataMiningLearning.ngdet.mixed_dataset \
+    --out-dir DeepDataMiningLearning/ngdet/output/mixed \
+    --sources kitti waymo nuimages --per-source 300 \
+    --nuimages-version v1.0-train --waymo-stride 30
+```
+
+It samples each source, projects every box into the unified taxonomy, and writes a
+**COCO-format** dataset (`images/` + `train.json` / `val.json` + `manifest.json`).
+Example output: 889 imgs (300+299+290), train 712 / val 177, ~10.3k boxes,
+classes `vehicle / person / cyclist`.
+
+### 17.2 Train on it (`--dataset mixed`)
+
+```bash
+# YOLO native — resets head to 3 classes, reports mAP each epoch
+python -m DeepDataMiningLearning.ngdet.train --backend yolo --yolo-trainer native \
+    --model yolo11s.pt --dataset mixed --root .../output/mixed --epochs 40 --image-size 640
+# Faster R-CNN — raw PyTorch loop
+python -m DeepDataMiningLearning.ngdet.train --backend torchvision \
+    --model fasterrcnn_resnet50_fpn_v2 --dataset mixed --root .../output/mixed --epochs 12
+# RT-DETR — HF Trainer (per-epoch COCO mAP on mixed-val; trains stably, bf16)
+python -m DeepDataMiningLearning.ngdet.train --trainer hf \
+    --model PekingU/rtdetr_r50vd --dataset mixed --root .../output/mixed --epochs 40
+# (plain facebook/detr-resnet-50 diverges in a short schedule — see §17.4; the HF path
+#  auto-uses bf16 because fp16 makes the DETR GIoU loss NaN.)
+```
+
+### 17.3 Leakage-free evaluation (the experiment, done right)
+
+**The leakage trap.** A first attempt sampled the *first 300* images per source for
+training and then evaluated on the *first 150* of each source — overlapping images.
+FasterRCNN then "scored" 0.64 on KITTI… because it had **memorised** those images. So
+the generator now reserves a **disjoint held-out test block** per source (§17.1): train
+= block A, `val` + `test_<source>` = block B, with **0 image overlap** (verified). Every
+number below is leakage-free.
+
+**Threshold matters for mAP.** mAP *ranks* detections, so absolute score scale is
+irrelevant — evaluate at a **low threshold** (we use 0.01). A trained RT-DETR emits low
+scores (max ≈0.04); at `--score-thr 0.3` it reads as 0 mAP even though it's accurate.
+
+A trained checkpoint plugs straight into the eval harness — `yolo:<best.pt>`,
+`torchvision:<arch>#<ckpt.pt>` (the `#` loads a fine-tuned head), `hf_detr:<saved_dir>`
+— evaluated per held-out split (`--mixed-split test_kitti`, etc.).
+
+**Result — leakage-free held-out mAP (this repo's run; YOLO11s 60 ep, FasterRCNN 24 ep,
+RT-DETR 40 ep on the mixed train split):**
+
+![leakage-free trained vs pretrained](docs/heatmap_mixed_fair.png)
+
+| model | mixed | kitti | waymo | nuimages | **mean** |
+|---|---|---|---|---|---|
+| YOLO11s pretrained | 0.199 | 0.252 | 0.254 | 0.290 | 0.249 |
+| **YOLO11s mixed** | 0.230 | **0.373** | 0.208 | 0.288 | **0.275** |
+| FasterRCNN pretrained | 0.245 | 0.268 | 0.337 | 0.353 | **0.301** |
+| FasterRCNN mixed | 0.242 | **0.421** | 0.212 | 0.238 | 0.278 |
+| RT-DETR pretrained | 0.237 | 0.264 | 0.316 | 0.337 | 0.288 |
+| RT-DETR mixed | 0.229 | **0.401** | 0.205 | 0.234 | 0.267 |
+
+All four columns are held-out (disjoint from train). Mixed deltas (trained−pretrained):
+KITTI **+0.12/+0.15/+0.14**, but waymo/nuimages **−0.05…−0.13**.
+
+### 17.4 Reading the result — four real lessons
+
+1. **Mixed training clearly helps where the new data is informative.** Every family
+   gains **+0.12 to +0.15 mAP on KITTI** (now leakage-free) and learns `cyclist`
+   (≈0 zero-shot → 0.1–0.2) — multi-domain data fixes the COCO taxonomy mismatch.
+2. **…but small-scale fine-tuning *regresses* on harder domains.** All three drop on
+   waymo/nuimages (FasterRCNN nuimages 0.353 → 0.238). With only 400 imgs/source and a
+   short schedule, the model fits the easy domain (KITTI) and **forgets** the strong
+   COCO features the baseline relied on for waymo/nuimages — classic catastrophic
+   forgetting. Net mean: only **YOLO** comes out ahead (+0.026); it fine-tunes a strong
+   detector with heavy aug/EMA. Fix → more data, lower LR, freeze the backbone, or replay.
+3. **Architecture decides trainability.** Plain **DETR diverged** here (grad-norm spiked
+   to 1e9, mAP 0 — it needs 300+ epochs + per-group LRs), while **RT-DETR trained
+   stably and fast** (val mAP 0.28 → 0.43 by epoch 20) on the same setup. That's *why*
+   RT-DETR exists; we use it as the trainable transformer baseline.
+4. **Measure mAP at a low threshold.** The trained RT-DETR's accurate-but-low-scored
+   boxes read as 0 mAP at thr 0.3 — a methodology bug, not a model failure.
+
+This generate → train → evaluate loop is the practical core for the lab's research
+(multi-dataset robustness, VFM-enhanced detection): the harness makes leakage,
+under-training, forgetting, and threshold artifacts all visible — swap in a backbone or
+add a domain and re-measure with one command. **§18 turns the Waymo/nuImages regression
+into a win.**
+
+---
+
+## 18. Improving the training — fixing the Waymo/nuImages regression
+
+§17 left a problem: small-scale fine-tuning *helped KITTI but regressed Waymo/nuImages*
+(catastrophic forgetting). This section is the **methods playbook** to fix it — and a
+worked example of how to debug a training result, not just accept it.
+
+### 18.1 Diagnosis
+
+The fine-tuned model **fits the easy domain (KITTI) and forgets the broad COCO features**
+the baseline used for the harder domains. Two root causes: (a) the pretrained backbone
+drifts on small data; (b) the *fresh K-class head* is trained from scratch on only a few
+hundred images per source, far less than COCO's 118k.
+
+### 18.2 The anti-forgetting toolbox (new knobs in [train.py](train.py))
+
+| knob | flag | what it does |
+|---|---|---|
+| Freeze backbone | `--trainable-backbone-layers 0` (torchvision) · `--freeze-backbone` (HF) · `--freeze N` (YOLO) | keep pretrained features; only adapt head/neck |
+| Discriminative LR | `--lr-backbone-mult 0.1` | smaller LR on the backbone, full LR on the head |
+| Lower LR / longer | `--lr 1e-5 --epochs …` | gentler, slower adaptation |
+| **More data** | `--per-source` in `mixed_dataset.py` + `--max-images` | the most reliable lever (below) |
+
+### 18.3 Experiment A — freeze the backbone (a useful *negative* result)
+
+```bash
+python -m DeepDataMiningLearning.ngdet.train --backend torchvision \
+    --model fasterrcnn_resnet50_fpn_v2 --dataset mixed --root .../output/mixed \
+    --trainable-backbone-layers 0 --epochs 24            # backbone frozen
+```
+
+| FasterRCNN (held-out mAP) | mixed | kitti | waymo | nuimages | mean |
+|---|---|---|---|---|---|
+| pretrained | 0.245 | 0.268 | 0.337 | 0.353 | **0.301** |
+| full fine-tune | 0.242 | 0.421 | 0.212 | 0.238 | 0.278 |
+| **frozen backbone** | 0.228 | 0.389 | 0.197 | 0.230 | 0.261 |
+
+**Freezing the backbone did *not* recover Waymo/nuImages** (it's even a touch lower).
+Why: the *fresh detection head* still overfits the easy domain — freezing the backbone
+alone doesn't protect head competence. A real, honest negative result; don't assume a
+technique works without measuring.
+
+### 18.4 Experiment B — more data (the lever that works)
+
+Rebuild the mixed base with **800 images/source** instead of 400 (same held-out test),
+and retrain YOLO11s:
+
+```bash
+python -m DeepDataMiningLearning.ngdet.mixed_dataset --out-dir .../output/mixed_large \
+    --per-source 800 --test-per-source 200
+python -m DeepDataMiningLearning.ngdet.train --backend yolo --yolo-trainer native \
+    --model yolo11s.pt --dataset mixed --root .../output/mixed_large --max-images 99999 --epochs 50
+```
+
+![data size fixes forgetting](docs/heatmap_datasize.png)
+
+| YOLO11s (held-out mAP) | mixed | kitti | waymo | nuimages | mean |
+|---|---|---|---|---|---|
+| pretrained | 0.195 | 0.220 | 0.269 | 0.275 | 0.240 |
+| mixed **400/src** | 0.267 | 0.481 | 0.250 | **0.135** | 0.283 |
+| mixed **800/src** | **0.327** | 0.427 | **0.300** | **0.359** | **0.353** |
+
+**Doubling the data fixes it.** nuImages jumps **0.135 → 0.359 (+0.22)**, Waymo +0.05, and
+the 800/src model now **beats the pretrained baseline on all four domains** (mean
+0.240 → 0.353, **+0.11**). The forgetting at 400/src was a *data-scarcity* symptom, not a
+fundamental limit.
+
+### 18.5 Playbook — how to improve a fine-tune (in priority order)
+
+1. **More + more-diverse data** — the highest-leverage fix (Exp B). Sample more per
+   source, add domains, balance classes.
+2. **Longer schedule + warmup + cosine LR** — let the hard domains catch up (KITTI
+   converges first).
+3. **Lower / discriminative LR** — `--lr 1e-5` or `--lr-backbone-mult 0.1`: gentle
+   updates preserve pretrained knowledge.
+4. **Strong, balanced augmentation** — YOLO's mosaic/EMA is a big reason it's the most
+   robust family here; add aug for torchvision/DETR.
+5. **Preserve the pretrained head** — adapters/LoRA or partial head init instead of a
+   fresh K-class head (keeps broad competence; advanced).
+6. **Replay** — mix a little source-domain (COCO) data back in to anchor old knowledge.
+
+Freezing the backbone (Exp A) helps *only* when data is adequate and the head is
+preserved — measure, don't assume. The harness makes every one of these a one-command,
+leakage-free A/B test.
+
+---
+
+## 19. Fine-tuning an open-vocabulary detector (Grounding DINO)
+
+Open-vocab detectors can be fine-tuned too — and here it's a **clean win on every
+domain**, unlike the closed-set forgetting of §17–18.
+
+### 19.1 How it differs from DETR fine-tuning
+
+Grounding DINO is **text-prompted**, so training differs from DETR in two ways
+(handled by the `--trainer gdino` path, [`train_gdino`](train.py)):
+
+1. **The prompt is part of the input.** We feed the class names as text
+   (`"vehicle. person. cyclist."`) alongside the image.
+2. **Labels align to prompt phrases.** HF's `build_label_maps` segments the prompt by
+   `.`, so a box's `class_labels = its unified id` (= phrase order) — no manual
+   token-span bookkeeping. The loss is a contrastive query↔text-token matching.
+
+```bash
+python -m DeepDataMiningLearning.ngdet.train --trainer gdino \
+    --model IDEA-Research/grounding-dino-tiny --dataset mixed --root .../output/mixed_large \
+    --freeze-backbone --epochs 12 --batch-size 2 --lr 1e-4
+```
+(Freeze the backbone + bf16 to fit grounding's text+vision cross-attention in memory.)
+
+### 19.2 Result — fine-tuning helps **every** domain
+
+Both models prompted with the bare class names (so the comparison isolates the
+fine-tuning effect), evaluated leakage-free:
+
+![gdino zero-shot vs fine-tuned](docs/heatmap_gdino.png)
+
+| Grounding DINO-tiny | mixed | kitti | waymo | nuimages | mean |
+|---|---|---|---|---|---|
+| zero-shot | 0.123 | 0.118 | 0.173 | 0.161 | 0.144 |
+| **fine-tuned** | **0.295** | **0.345** | **0.272** | **0.330** | **0.311** |
+| Δ | +0.172 | +0.227 | +0.099 | +0.169 | **+0.167** |
+
+**More than doubled overall (0.144 → 0.311), up on all four domains** — including
+Waymo (+0.10) and nuImages (+0.17), the very domains where closed-set fine-tuning
+*regressed* (§17). Two reasons:
+
+1. **The grounding structure is preserved.** Fine-tuning sharpens the text↔region
+   alignment without throwing away a pretrained head (there is no fresh K-class head
+   to overfit); the frozen backbone keeps broad visual features.
+2. **It teaches the model *your* vocabulary.** Zero-shot, the bare word `"vehicle"`
+   is a weak prompt (§3 caveat) — hence the low 0.123. Fine-tuning makes the model
+   ground `"vehicle"` → vehicles, so you can use simple custom class names instead of
+   hand-tuned synonym prompts.
+
+### 19.3 Debugging note (a real gotcha)
+
+The fine-tune first read as 0.000 mAP — not a training failure but a **post-processing
+bug**: `post_process_grounded_object_detection(text_threshold=0)` returns the *whole
+prompt* (`"vehicle. person. cyclist. [SEP]"`) as each box's label instead of a single
+phrase, so every label failed to map. Setting `text_threshold≈0.25` fixed it. Lesson:
+when an open-vocab result looks dead, inspect the raw returned *phrases* first.
+
+**Takeaway:** for adapting a detector to a fixed driving taxonomy, fine-tuning an
+**open-vocab** model is the most robust recipe here — it gains everywhere and keeps
+the option of new classes via prompts. (LocateAnything LoRA — VLM instruction-tuning —
+is the heavier next step.)
+
+---
+
+## 20. Debugging a VLM detector adapter (LocateAnything) — the model was fine
+
+The LocateAnything (§12 †) row was the single worst in the whole benchmark (~0.05
+mAP) — yet online demos look great. That mismatch is the tell: **debug the adapter,
+not the model.** Inspecting the raw output proved the boxes are near-perfect
+(predicted `[481,179,513,203]` vs GT `[482,180,513,202]`). Three adapter bugs were
+hiding it:
+
+| problem | symptom | fix |
+|---|---|---|
+| **single multi-class prompt** | decoder loops on the 1st class, eats the token budget → only `car` ever returned (`person`/`cyclist` AP = 0) | **prompt once per unified class** — each gets its own budget |
+| **no confidence scores** (all 1.0) | mAP can't rank → false positives interleave true ones | **score by output order** — VLMs emit confident boxes first, so rank = order |
+| **huge input images** | 1920×1280 Waymo → 300+ s/image | **downscale to ≤1024px** (boxes are normalized → coords stay correct) + lower `max_new_tokens` |
+
+**Result (held-out, ~35 imgs/source):**
+
+| LocateAnything-3B | kitti | waymo | nuimages | latency |
+|---|---|---|---|---|
+| naive adapter (§12 row) | 0.058 | 0.132 | 0.055 | 342 s/img (Waymo) |
+| **fixed adapter** | **0.091** | **0.140** | **0.274** | **~7 s/img** |
+
+nuImages **5.5×**, `person`/`cyclist` AP recovered from 0, and **~46× faster** on
+large frames. The code lives in [locate_anything.py](detectors/locate_anything.py)
+(`_terms_by_class`, order-based scores in `predict`, `image_max` downscale).
+
+**Lessons:** (1) when a metric looks impossibly low, *visualize the raw predictions*
+before blaming the model; (2) mAP needs a ranking signal — manufacture one from output
+order if the model gives none; (3) VLM latency is dominated by vision-token count —
+resolution is the first knob.
+
+> **On fine-tuning LocateAnything (LoRA):** investigated and **blocked**. PEFT wraps
+> the 3B model fine and its outer `forward` computes a standard CE loss, but the inner
+> Qwen variant's attention-mask + loss are built for **Parallel Box Decoding** — the
+> eval path needs `input_ids` (passed as `None`), the train path needs undocumented
+> PBD `x0_len`/`position_ids` and a custom multi-position loss. Standard autoregressive
+> LoRA SFT can't run without monkeypatching those internals (risking a wrong attention
+> mask). It needs NVIDIA's training code. **The trainable open-vocab path here is
+> Grounding DINO (§19)**, which gains on every domain and is fully reproducible.
+
+---
+
+## 21. LoRA fine-tuning a *standard* VLM detector (Qwen2.5-VL)
+
+LocateAnything's training was blocked by its bespoke Parallel-Box-Decoding internals
+(§20). A **standard grounding VLM** sidesteps that entirely: **Qwen2.5-VL** grounds
+objects by generating JSON and its `forward` computes a normal LM loss, so plain HF
+**PEFT LoRA** works. This is the trainable-VLM-detector row LocateAnything couldn't give.
+
+### 21.1 How it works
+
+- **As a detector** ([qwen_vl.py](detectors/qwen_vl.py)): prompt → the model returns
+  `[{"bbox_2d":[x1,y1,x2,y2],"label":"car"}, ...]`. The adapter rescales coords from
+  the model's *smart-resized* space back to the original image, folds labels into the
+  unified taxonomy, and scores by output order (Qwen emits no confidence).
+- **Fine-tuning** ([train_qwen_lora](train.py), `--trainer qwen_lora`): LoRA on the
+  Qwen attention+MLP projections; the collate builds GT boxes as a JSON target (in the
+  resized coord space) and masks the prompt so loss applies only to the answer.
+
+```bash
+python -m DeepDataMiningLearning.ngdet.train --trainer qwen_lora \
+    --model Qwen/Qwen2.5-VL-3B-Instruct --dataset mixed --root .../output/mixed_large \
+    --max-images 800 --epochs 3 --batch-size 1        # grad-checkpointing keeps it <13GB
+# evaluate the saved adapter:
+... --models qwen_vl:.../train_qwen/qwen_lora
+```
+
+### 21.2 Result — LoRA helps a lot
+
+![qwen zero-shot vs lora](docs/heatmap_qwen.png)
+
+| Qwen2.5-VL-3B (held-out mAP) | kitti | waymo | nuimages | mean |
+|---|---|---|---|---|
+| zero-shot | 0.052 | 0.043 | 0.109 | 0.068 |
+| **LoRA fine-tuned** | **0.352** | **0.111** | **0.167** | **0.210** |
+| Δ | +0.300 (6.8×) | +0.068 | +0.058 | **+0.142 (3×)** |
+
+Per-class on KITTI: `person` **0.014 → 0.285 (20×)**, `cyclist` **0.008 → 0.346 (43×)**.
+A general VLM zero-shot lists only the few salient objects (low recall); **LoRA teaches
+it to detect our classes exhaustively** in our format. The win is largest on KITTI (the
+easiest domain — clear front camera, large objects, well-represented in the mix); Waymo
+gains least (its small objects suffer from the 1024px cap we use for memory).
+
+Versus the **Grounding DINO** fine-tune (§19): Qwen-LoRA *matches* it on KITTI
+(0.352 vs 0.345) but trails on Waymo/nuImages — a dedicated open-set detector is still
+stronger there, and is far cheaper to run (~30 ms vs ~15 s/image for the 3B VLM).
+
+### 21.3 Engineering lessons
+
+1. **Standard model ≫ custom model for training.** Qwen2.5-VL trains in ~80 lines of
+   collate; LocateAnything's PBD internals blocked it entirely (§20). Pick documented
+   architectures when you intend to fine-tune.
+2. **Gradient checkpointing is the VLM-LoRA OOM fix.** Batch-2 of a 3B VLM + 1024px
+   images OOM'd at 24 GB; `gradient_checkpointing=True` (+ `enable_input_require_grads`)
+   dropped it to **~12 GB**.
+3. **Mind the coordinate space.** Qwen outputs boxes in the *smart-resized* image; both
+   the target builder and the adapter must rescale consistently, or every box is wrong.
+
+This gives ngdet a **trainable VLM-detector** path. Across the whole framework, every
+detector paradigm is now both evaluable *and* trainable: CNN (raw loop), DETR/RT-DETR
+(HF Trainer), YOLO (native), open-vocab Grounding DINO (§19), and VLM Qwen2.5-VL (LoRA).

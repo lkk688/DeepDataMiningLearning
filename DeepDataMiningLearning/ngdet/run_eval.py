@@ -38,6 +38,7 @@ DEFAULT_ROOTS = {
     "nuscenes": "/mnt/e/Shared/Dataset/NuScenes/v1.0-trainval",
     "nuimages": "/mnt/e/Shared/Dataset/NuScenes/nuimages",
     "coco": "/mnt/e/Shared/Dataset/coco2017/val2017",
+    "mixed": os.path.join(DEFAULT_OUT_DIR, "mixed"),
 }
 
 
@@ -139,6 +140,8 @@ def main():
                     help="path to instances_val2017.json (required for coco)")
     ap.add_argument("--nuimages-version", default="v1.0-mini",
                     help="nuImages annotation split: v1.0-mini / v1.0-val / v1.0-train")
+    ap.add_argument("--mixed-split", default="val",
+                    help="which split of the mixed dataset to evaluate (train/val)")
     ap.add_argument("--roots", nargs="*", default=[],
                     help="override dataset roots as name=path pairs")
     a = ap.parse_args()
@@ -165,6 +168,8 @@ def main():
                 ds_kwargs["stride"] = a.waymo_stride
             if ds_name == "nuimages":
                 ds_kwargs["version"] = a.nuimages_version
+            if ds_name == "mixed":
+                ds_kwargs["split"] = a.mixed_split
             try:
                 m = evaluate_one(model_spec, ds_name, roots[ds_name], taxonomy,
                                  a.device, a.score_thr, max_images, a.video,

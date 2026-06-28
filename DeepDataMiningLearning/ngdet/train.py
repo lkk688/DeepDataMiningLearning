@@ -70,6 +70,12 @@ class TrainConfig:
     amp: bool = True
     num_workers: int = 4
     device: str = "cuda"
+    # anti-forgetting knobs (§18): preserve pretrained features when fine-tuning on
+    # small target data, so the easy domain doesn't overwrite the hard ones.
+    trainable_backbone_layers: Optional[int] = None  # torchvision: 0=freeze backbone..5=all
+    lr_backbone_mult: float = 1.0       # torchvision/HF: backbone LR = lr * this (e.g. 0.1)
+    freeze_backbone: bool = False       # HF (RT-DETR): freeze the backbone entirely
+    freeze: int = 0                     # YOLO native: freeze the first N layers
     # io
     output_dir: str = field(default_factory=lambda: os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "output", "train"))
@@ -86,10 +92,12 @@ class CanonicalDetData(Dataset):
     EvalDataset) or a backend stays decoupled.
     """
 
-    def __init__(self, cfg: TrainConfig, taxonomy: Taxonomy):
+    def __init__(self, cfg: TrainConfig, taxonomy: Taxonomy, split: Optional[str] = None):
         kw = {}
         if cfg.dataset == "nuimages":
             kw["version"] = cfg.nuimages_version
+        if cfg.dataset == "mixed":
+            kw["split"] = split or "train"     # train split for training
         self.ds = EvalDataset(cfg.dataset, cfg.root, taxonomy,
                               max_images=cfg.max_images, **kw)
 
@@ -114,6 +122,11 @@ class TrainBackend:
     def training_step(self, batch, device) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Return (scalar loss tensor, {name: value} for logging)."""
         raise NotImplementedError
+    def build_optimizer(self, cfg):
+        """Default: AdamW over all trainable params. Backends override for
+        discriminative (per-group) learning rates."""
+        return torch.optim.AdamW([p for p in self.parameters() if p.requires_grad],
+                                 lr=cfg.lr, weight_decay=cfg.weight_decay)
     def save(self, path): torch.save(self.model.state_dict(), path)
 
 
@@ -125,10 +138,30 @@ class TorchvisionBackend(TrainBackend):
         from torchvision.models import get_model
         from torchvision.transforms.functional import to_tensor
         self._to_tensor = to_tensor
+        self.cfg = cfg
         # +1 for the background class (torchvision detection convention). We build
         # with pretrained BACKBONE but a fresh detection head sized to our classes.
+        # trainable_backbone_layers (0..5) controls how much of the ResNet backbone is
+        # fine-tuned: 0 freezes it entirely (anti-forgetting), 5 trains all. None=default(3).
+        kw = {}
+        if cfg.trainable_backbone_layers is not None:
+            kw["trainable_backbone_layers"] = cfg.trainable_backbone_layers
         self.model = get_model(cfg.model_name, weights=None,
-                               weights_backbone="DEFAULT", num_classes=num_classes + 1)
+                               weights_backbone="DEFAULT", num_classes=num_classes + 1, **kw)
+
+    def build_optimizer(self, cfg):
+        # Discriminative LR: a smaller LR on the pretrained backbone preserves its
+        # features (less forgetting) while the head adapts at the full LR.
+        if cfg.lr_backbone_mult != 1.0:
+            bb, head = [], []
+            for n, p in self.model.named_parameters():
+                if not p.requires_grad:
+                    continue
+                (bb if "backbone" in n else head).append(p)
+            return torch.optim.AdamW(
+                [{"params": bb, "lr": cfg.lr * cfg.lr_backbone_mult},
+                 {"params": head, "lr": cfg.lr}], lr=cfg.lr, weight_decay=cfg.weight_decay)
+        return super().build_optimizer(cfg)
 
     def collate(self, samples):
         # images: list of CHW float[0,1] tensors; targets: list of {boxes, labels}.
@@ -218,8 +251,7 @@ def build_backend(cfg: TrainConfig, num_classes: int) -> TrainBackend:
 def train_loop(cfg: TrainConfig, backend: TrainBackend, loader: DataLoader):
     device = cfg.device
     backend.to(device)
-    optimizer = torch.optim.AdamW(backend.parameters(), lr=cfg.lr,
-                                  weight_decay=cfg.weight_decay)
+    optimizer = backend.build_optimizer(cfg)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
     scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp and device.startswith("cuda"))
     os.makedirs(cfg.output_dir, exist_ok=True)
@@ -313,13 +345,23 @@ def train_hf(cfg: TrainConfig, taxonomy: Taxonomy):
         cfg.model_name, num_labels=taxonomy.num_classes,
         id2label=id2label, label2id=label2id, ignore_mismatched_sizes=True)
 
+    if cfg.freeze_backbone:               # preserve pretrained backbone features
+        n_frozen = 0
+        for name, p in model.named_parameters():
+            if "backbone" in name:
+                p.requires_grad_(False)
+                n_frozen += 1
+        print(f"[train_hf] froze {n_frozen} backbone params (anti-forgetting)")
+
     data = CanonicalDetData(cfg, taxonomy)
 
-    # Held-out validation set for the COCO-mAP callback (nuimages val split if available).
+    # Held-out validation set for the COCO-mAP callback: the mixed dataset's "val"
+    # split, or the nuImages val split.
     val_cfg = TrainConfig(**{**cfg.__dict__, "nuimages_version": cfg.eval_version,
                              "max_images": cfg.eval_max_images})
     try:
-        val_data = CanonicalDetData(val_cfg, taxonomy).ds      # the underlying EvalDataset
+        val_split = "val" if cfg.dataset == "mixed" else None
+        val_data = CanonicalDetData(val_cfg, taxonomy, split=val_split).ds
     except Exception as e:  # noqa: BLE001
         print(f"[train_hf] no val split ({e}); skipping mAP callback")
         val_data = None
@@ -350,7 +392,10 @@ def train_hf(cfg: TrainConfig, taxonomy: Taxonomy):
         num_train_epochs=cfg.epochs,
         learning_rate=cfg.lr,
         weight_decay=cfg.weight_decay,
-        fp16=cfg.amp,
+        # DETR-family is numerically sensitive: fp16 makes the GIoU loss go NaN, so
+        # use bf16 (stable dynamic range on Ampere+); fall back to fp32. RT-DETR
+        # trains stably here; plain DETR needs a much longer schedule + per-group LRs.
+        bf16=cfg.amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
         dataloader_num_workers=cfg.num_workers,
         logging_steps=cfg.log_every,
         save_strategy="epoch",
@@ -369,8 +414,234 @@ def train_hf(cfg: TrainConfig, taxonomy: Taxonomy):
           f"classes={taxonomy.classes} steps/epoch≈{len(data)//cfg.batch_size} "
           f"val={'%d imgs' % len(val_data) if val_data is not None else 'none'}")
     trainer.train()
-    trainer.save_model(os.path.join(cfg.output_dir, "hf_final"))
-    print("[train_hf] done.")
+    final_dir = os.path.join(cfg.output_dir, "hf_final")
+    trainer.save_model(final_dir)
+    processor.save_pretrained(final_dir)    # so the eval harness can reload it
+    print(f"[train_hf] done -> {final_dir}")
+
+
+# ===========================================================================
+# Grounding DINO fine-tuning (open-vocabulary, text-prompted)
+# ===========================================================================
+def _gdino_postprocess(processor, outputs, prompt, w, h, taxonomy, device):
+    """Robustly post-process Grounding DINO outputs -> unified Detection (handles
+    transformers signature/key variants)."""
+    import numpy as np
+    from .detectors.base import Detection
+    ts = [(h, w)]
+    # box threshold low (mAP ranks all boxes); text_threshold ~0.25 so each box gets a
+    # CLEAN class phrase -- at text_threshold=0 the label becomes the whole prompt.
+    try:
+        res = processor.post_process_grounded_object_detection(
+            outputs, threshold=0.05, text_threshold=0.25, target_sizes=ts)[0]
+    except TypeError:
+        res = processor.post_process_grounded_object_detection(
+            outputs, threshold=0.05, target_sizes=ts)[0]
+    boxes = res["boxes"].detach().cpu().numpy().reshape(-1, 4)
+    scores = res["scores"].detach().cpu().numpy().reshape(-1)
+    labs = res.get("text_labels", res.get("labels"))
+    labs = labs.tolist() if hasattr(labs, "tolist") else labs
+
+    def _to_uid(lab):
+        if isinstance(lab, (int, np.integer)):
+            return None
+        uid = taxonomy.name_to_id(lab)
+        if uid is not None:
+            return uid
+        for u, name in enumerate(taxonomy.classes):    # substring fallback
+            if name.lower() in str(lab).lower():
+                return u
+        return None
+
+    kb, ks, kl, kn = [], [], [], []
+    for b, s, lab in zip(boxes, scores, labs):
+        uid = _to_uid(lab)
+        if uid is None:
+            continue
+        kb.append(b); ks.append(float(s)); kl.append(uid); kn.append(taxonomy.classes[uid])
+    return Detection(np.asarray(kb, np.float32).reshape(-1, 4),
+                     np.asarray(ks, np.float32), np.asarray(kl, np.int64), kn)
+
+
+def train_gdino(cfg: TrainConfig, taxonomy: Taxonomy):
+    """Fine-tune Grounding DINO (open-vocab) on our data. Unlike DETR, the prompt
+    text is part of the input and the loss aligns queries to the prompt's class
+    phrases (`build_label_maps` segments by '.'), so `class_labels` = unified id
+    when the prompt is the class names in order."""
+    from transformers import (AutoProcessor, AutoModelForZeroShotObjectDetection,
+                              Trainer, TrainingArguments, TrainerCallback)
+    from .evaluator import COCOUnifiedEvaluator
+
+    processor = AutoProcessor.from_pretrained(cfg.model_name)
+    model = AutoModelForZeroShotObjectDetection.from_pretrained(cfg.model_name)
+    if cfg.freeze_backbone:
+        nf = sum(p.requires_grad_(False).numel() for n, p in model.named_parameters()
+                 if "backbone" in n)
+        print(f"[train_gdino] froze backbone params ({nf/1e6:.1f}M)")
+
+    # prompt phrases = unified class names, in order -> class index aligns to phrase
+    prompt = ". ".join(c.lower() for c in taxonomy.classes) + "."
+    data = CanonicalDetData(cfg, taxonomy,
+                            split="train" if cfg.dataset == "mixed" else None)
+
+    def collate(samples):
+        images = [s[0] for s in samples]
+        enc = dict(processor(images=images, text=[prompt] * len(images),
+                             return_tensors="pt", padding=True))
+        labels = []
+        for pil, boxes, labs in samples:
+            w, h = pil.size
+            bb, cl = [], []
+            for (x1, y1, x2, y2), l in zip(boxes, labs):
+                bw, bh = (x2 - x1) / w, (y2 - y1) / h
+                if bw > 0 and bh > 0:
+                    bb.append([((x1 + x2) / 2) / w, ((y1 + y2) / 2) / h, bw, bh])
+                    cl.append(int(l))
+            labels.append({"class_labels": torch.tensor(cl, dtype=torch.long),
+                           "boxes": torch.tensor(bb, dtype=torch.float32).reshape(-1, 4)})
+        enc["labels"] = labels
+        return enc
+
+    val_split = "val" if cfg.dataset == "mixed" else None
+    try:
+        vcfg = TrainConfig(**{**cfg.__dict__, "nuimages_version": cfg.eval_version,
+                              "max_images": cfg.eval_max_images})
+        val_data = CanonicalDetData(vcfg, taxonomy, split=val_split).ds
+    except Exception as e:  # noqa: BLE001
+        print(f"[train_gdino] no val ({e})"); val_data = None
+
+    class Cb(TrainerCallback):
+        def on_epoch_end(self, args, state, control, model=None, **kw):
+            if model is None or val_data is None:
+                return
+            was = model.training; model.eval()
+            ev = COCOUnifiedEvaluator(taxonomy)
+            n = min(len(val_data), cfg.eval_max_images)
+            with torch.no_grad():
+                for i in range(n):
+                    s = val_data[i]; w, h = s.image.size
+                    inp = processor(images=s.image, text=prompt,
+                                    return_tensors="pt").to(cfg.device)
+                    ev.add(s, _gdino_postprocess(processor, model(**inp), prompt,
+                                                 w, h, taxonomy, cfg.device))
+            m = ev.summarize(verbose=False)
+            print(f"[val @ epoch {state.epoch:.0f}] mAP={m['mAP']:.3f} "
+                  f"AP50={m['AP50']:.3f} (n={n})")
+            if was:
+                model.train()
+
+    args = TrainingArguments(
+        output_dir=cfg.output_dir, per_device_train_batch_size=cfg.batch_size,
+        num_train_epochs=cfg.epochs, learning_rate=cfg.lr, weight_decay=cfg.weight_decay,
+        bf16=cfg.amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        dataloader_num_workers=cfg.num_workers, logging_steps=cfg.log_every,
+        save_strategy="epoch", remove_unused_columns=False, report_to="none")
+    trainer = Trainer(model=model, args=args, train_dataset=data, data_collator=collate,
+                      processing_class=processor,
+                      callbacks=[Cb()] if val_data is not None else [])
+    print(f"[train_gdino] {cfg.model_name} prompt='{prompt}' "
+          f"steps/epoch≈{len(data)//cfg.batch_size}")
+    trainer.train()
+    fd = os.path.join(cfg.output_dir, "hf_final")
+    trainer.save_model(fd); processor.save_pretrained(fd)
+    print(f"[train_gdino] done -> {fd}")
+
+
+# ===========================================================================
+# Qwen2.5-VL LoRA fine-tuning (a STANDARD grounding VLM -> clean PEFT SFT)
+# ===========================================================================
+def train_qwen_lora(cfg: TrainConfig, taxonomy: Taxonomy):
+    """LoRA fine-tune Qwen2.5-VL to detect our classes by generating JSON boxes.
+    Qwen2.5-VL (unlike LocateAnything) is a standard HF model whose `forward` computes
+    a normal LM loss, so PEFT + a masked-target collate just works. The target is the
+    GT boxes as JSON in the model's smart-resized coordinate space."""
+    import json as _json
+    from transformers import AutoProcessor, Trainer, TrainingArguments
+    from qwen_vl_utils import process_vision_info, smart_resize
+    from peft import LoraConfig, get_peft_model
+
+    if "2.5" in cfg.model_name or "2_5" in cfg.model_name:
+        from transformers import Qwen2_5_VLForConditionalGeneration as VL
+    else:
+        from transformers import Qwen2VLForConditionalGeneration as VL
+    # cap vision tokens (a 1920x1280 Waymo frame is otherwise huge/slow/OOM)
+    proc = AutoProcessor.from_pretrained(cfg.model_name, max_pixels=1024 * 1024)
+    model = VL.from_pretrained(cfg.model_name, torch_dtype=torch.bfloat16)
+    lcfg = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05,
+                      target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                                      "gate_proj", "up_proj", "down_proj"])
+    model = get_peft_model(model, lcfg)
+    model.print_trainable_parameters()
+    # gradient checkpointing keeps a 3B VLM + image activations inside 24GB
+    model.enable_input_require_grads()
+    model.config.use_cache = False
+
+    ip = proc.image_processor
+    factor = ip.patch_size * ip.merge_size               # 28 for Qwen2.5-VL
+    terms_by_class = taxonomy.open_vocab_terms_by_class()
+    rep = {uid: terms[0] for uid, terms in terms_by_class.items()}   # car/person/bicycle
+    prompt = ("Detect all " + ", ".join(t for t, _ in taxonomy.open_vocab_terms()) +
+              ' in the image. Output ONLY a JSON list, each item '
+              '{"bbox_2d":[x1,y1,x2,y2],"label":"<class>"}.')
+
+    data = CanonicalDetData(cfg, taxonomy,
+                            split="train" if cfg.dataset == "mixed" else None)
+
+    def _target_json(boxes, labs, w, h, rw, rh):
+        items = [{"bbox_2d": [round(x1 * rw / w), round(y1 * rh / h),
+                              round(x2 * rw / w), round(y2 * rh / h)],
+                  "label": rep[int(l)]}
+                 for (x1, y1, x2, y2), l in zip(boxes, labs)]
+        return _json.dumps(items)
+
+    def collate(samples):
+        input_ids, labels_list, pix, grids = [], [], [], []
+        for pil, boxes, labs in samples:
+            w, h = pil.size
+            rh, rw = smart_resize(h, w, factor=factor,
+                                  min_pixels=ip.min_pixels, max_pixels=ip.max_pixels)
+            tgt = _target_json(boxes, labs, w, h, rw, rh)
+            user = [{"role": "user", "content": [
+                {"type": "image", "image": pil}, {"type": "text", "text": prompt}]}]
+            full_msgs = user + [{"role": "assistant",
+                                 "content": [{"type": "text", "text": tgt}]}]
+            ptext = proc.apply_chat_template(user, tokenize=False, add_generation_prompt=True)
+            ftext = proc.apply_chat_template(full_msgs, tokenize=False)
+            imgs, vids = process_vision_info(full_msgs)
+            f = proc(text=[ftext], images=imgs, videos=vids, return_tensors="pt")
+            p = proc(text=[ptext], images=imgs, videos=vids, return_tensors="pt")
+            plen = p["input_ids"].shape[1]
+            ids = f["input_ids"][0]
+            lab = ids.clone(); lab[:plen] = -100        # supervise only the JSON answer
+            input_ids.append(ids); labels_list.append(lab)
+            pix.append(f["pixel_values"]); grids.append(f["image_grid_thw"])
+        # left/right pad to the longest sequence
+        maxlen = max(x.shape[0] for x in input_ids)
+        pad_id = proc.tokenizer.pad_token_id or 0
+        ii = torch.full((len(input_ids), maxlen), pad_id, dtype=torch.long)
+        ll = torch.full((len(input_ids), maxlen), -100, dtype=torch.long)
+        am = torch.zeros((len(input_ids), maxlen), dtype=torch.long)
+        for i, (x, y) in enumerate(zip(input_ids, labels_list)):
+            ii[i, :x.shape[0]] = x; ll[i, :y.shape[0]] = y; am[i, :x.shape[0]] = 1
+        return {"input_ids": ii, "attention_mask": am, "labels": ll,
+                "pixel_values": torch.cat(pix), "image_grid_thw": torch.cat(grids)}
+
+    args = TrainingArguments(
+        output_dir=cfg.output_dir, per_device_train_batch_size=cfg.batch_size,
+        gradient_accumulation_steps=max(1, 8 // cfg.batch_size),
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        num_train_epochs=cfg.epochs,
+        learning_rate=cfg.lr, weight_decay=cfg.weight_decay,
+        bf16=cfg.amp and torch.cuda.is_available() and torch.cuda.is_bf16_supported(),
+        dataloader_num_workers=cfg.num_workers, logging_steps=cfg.log_every,
+        save_strategy="epoch", remove_unused_columns=False, report_to="none")
+    trainer = Trainer(model=model, args=args, train_dataset=data, data_collator=collate)
+    print(f"[train_qwen_lora] {cfg.model_name} LoRA, steps/epoch≈{len(data)//cfg.batch_size}")
+    trainer.train()
+    fd = os.path.join(cfg.output_dir, "qwen_lora")
+    model.save_pretrained(fd); proc.save_pretrained(fd)   # LoRA adapter + processor
+    print(f"[train_qwen_lora] done -> {fd}")
 
 
 # ===========================================================================
@@ -418,12 +689,16 @@ def train_yolo_native(cfg: TrainConfig, taxonomy: Taxonomy):
     dev = 0 if cfg.device.startswith("cuda") else "cpu"
     print(f"[train_yolo_native] model={cfg.model_name} (head reset to "
           f"{taxonomy.num_classes} classes) — Ultralytics reports mAP each epoch")
-    YOLO(cfg.model_name).train(
+    # Absolute project path so Ultralytics doesn't nest it under its runs/ dir.
+    result = YOLO(cfg.model_name).train(
         data=yaml_path, epochs=cfg.epochs, imgsz=cfg.image_size,
         batch=cfg.batch_size, lr0=cfg.lr, device=dev,
-        project=cfg.output_dir, name="yolo_native", exist_ok=True,
+        freeze=cfg.freeze,                      # freeze first N layers (anti-forgetting)
+        project=os.path.abspath(cfg.output_dir), name="yolo_native", exist_ok=True,
         workers=cfg.num_workers, amp=cfg.amp, verbose=True)
-    print("[train_yolo_native] done.")
+    best = os.path.join(os.path.abspath(cfg.output_dir), "yolo_native", "weights", "best.pt")
+    print(f"[train_yolo_native] done -> {best}")
+    return best
 
 
 # ===========================================================================
@@ -432,8 +707,9 @@ def train_yolo_native(cfg: TrainConfig, taxonomy: Taxonomy):
 def main():
     cfg = TrainConfig()
     ap = argparse.ArgumentParser(description="ngdet unified detection trainer.")
-    ap.add_argument("--trainer", choices=["pytorch", "hf"], default=cfg.trainer,
-                    help="raw PyTorch loop, or HuggingFace Trainer (for DETR/RT-DETR)")
+    ap.add_argument("--trainer", choices=["pytorch", "hf", "gdino", "qwen_lora"],
+                    default=cfg.trainer,
+                    help="raw loop | HF Trainer (DETR) | gdino | qwen_lora (Qwen2.5-VL LoRA)")
     ap.add_argument("--backend", choices=["torchvision", "yolo"], default=cfg.backend,
                     help="raw-loop model family (ignored when --trainer hf)")
     ap.add_argument("--yolo-trainer", choices=["raw", "native"], default=cfg.yolo_trainer,
@@ -456,6 +732,15 @@ def main():
     ap.add_argument("--device", default=cfg.device)
     ap.add_argument("--num-workers", type=int, default=cfg.num_workers)
     ap.add_argument("--no-amp", action="store_true")
+    # anti-forgetting knobs (§18)
+    ap.add_argument("--trainable-backbone-layers", type=int, default=cfg.trainable_backbone_layers,
+                    help="torchvision: 0=freeze backbone .. 5=train all (default 3)")
+    ap.add_argument("--lr-backbone-mult", type=float, default=cfg.lr_backbone_mult,
+                    help="torchvision/HF: backbone LR = lr * this (e.g. 0.1)")
+    ap.add_argument("--freeze-backbone", action="store_true",
+                    help="HF (RT-DETR): freeze the backbone entirely")
+    ap.add_argument("--freeze", type=int, default=cfg.freeze,
+                    help="YOLO native: freeze the first N layers")
     ap.add_argument("--output-dir", default=cfg.output_dir)
     a = ap.parse_args()
 
@@ -466,11 +751,19 @@ def main():
         eval_max_images=a.eval_max_images, max_images=a.max_images,
         epochs=a.epochs, batch_size=a.batch_size, lr=a.lr, image_size=a.image_size,
         device=a.device, num_workers=a.num_workers, amp=not a.no_amp,
-        output_dir=a.output_dir)
+        trainable_backbone_layers=a.trainable_backbone_layers,
+        lr_backbone_mult=a.lr_backbone_mult, freeze_backbone=a.freeze_backbone,
+        freeze=a.freeze, output_dir=a.output_dir)
     taxonomy = Taxonomy.from_preset(cfg.taxonomy)
 
     if cfg.trainer == "hf":
         train_hf(cfg, taxonomy)
+        return
+    if cfg.trainer == "gdino":
+        train_gdino(cfg, taxonomy)
+        return
+    if cfg.trainer == "qwen_lora":
+        train_qwen_lora(cfg, taxonomy)
         return
     if cfg.backend == "yolo" and cfg.yolo_trainer == "native":
         train_yolo_native(cfg, taxonomy)

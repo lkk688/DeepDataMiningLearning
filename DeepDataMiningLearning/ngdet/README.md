@@ -115,6 +115,7 @@ ngdet/
 ├── report.py          # model x dataset summary, generalization gap, heatmap PNG
 ├── latency.py         # native-vs-accelerated latency benchmark (fp16/compile/tensorrt/onnx)
 ├── train.py           # unified trainer: raw PyTorch loop (FasterRCNN/YOLO) + HF Trainer
+├── mixed_dataset.py   # build a mixed KITTI+Waymo+nuImages COCO dataset for training
 └── run_eval.py        # the single CLI entry point
 ```
 
@@ -167,6 +168,31 @@ python -m DeepDataMiningLearning.ngdet.train --trainer pytorch \
 python -m DeepDataMiningLearning.ngdet.train --trainer hf \
     --model facebook/detr-resnet-50 --dataset nuimages \
     --nuimages-version v1.0-train --eval-version v1.0-val
+```
+
+### Mixed multi-dataset training (TUTORIAL §17)
+
+```bash
+# 1) build a mixed KITTI+Waymo+nuImages base (COCO format, unified labels)
+python -m DeepDataMiningLearning.ngdet.mixed_dataset \
+    --out-dir DeepDataMiningLearning/ngdet/output/mixed --per-source 300
+# 2) train on it     --dataset mixed --root .../output/mixed
+# 3) evaluate trained vs pretrained: yolo:<best.pt> / torchvision:<arch>#<ckpt.pt>
+```
+
+### Fine-tune an open-vocabulary detector (TUTORIAL §19)
+
+```bash
+# Grounding DINO fine-tune (text-prompted; --trainer gdino). Gains on ALL domains.
+python -m DeepDataMiningLearning.ngdet.train --trainer gdino \
+    --model IDEA-Research/grounding-dino-tiny --dataset mixed --root .../output/mixed_large \
+    --freeze-backbone --epochs 12 --batch-size 2
+
+# Qwen2.5-VL LoRA fine-tune (a standard grounding VLM; --trainer qwen_lora). TUTORIAL §21.
+python -m DeepDataMiningLearning.ngdet.train --trainer qwen_lora \
+    --model Qwen/Qwen2.5-VL-3B-Instruct --dataset mixed --root .../output/mixed_large \
+    --max-images 800 --epochs 3 --batch-size 1     # grad-checkpointing keeps it <13GB
+# then evaluate the adapter:  --models qwen_vl:.../train_qwen/qwen_lora
 ```
 
 ## Per-file self-tests

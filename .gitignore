@@ -174,4 +174,9 @@ slides/
 docs/.DS_Store
 
 DeepDataMiningLearning/ngdet/EVAL_FRAMEWORK_PLAN.md
+
+# Ultralytics / training artifacts
+runs/
+yolo*.pt
+*.pt
 *.engine
