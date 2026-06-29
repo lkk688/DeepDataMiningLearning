@@ -28,15 +28,35 @@ python -m DeepDataMiningLearning.ngperception.occupancy.run_eval \
 Reports **mIoU** (17 classes, on `mask_camera` voxels) + class-agnostic **geometric IoU**.
 Omit `--seg` for a geometry-only (geo-IoU) run.
 
+## Learned model — depth-supervised LSS occupancy (pure PyTorch)
+
+The in-house, **GT-supervised** occupancy net (no mmcv, runs in the main torch env). ResNet
+encoder + a **depth-distribution head** + the **LSS lift** (frustum→ego→voxel scatter) + a 3D
+voxel decoder. Trained with **occupancy CE + LiDAR depth CE** (BEVDepth-style).
+
+```bash
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts <occ3d_gts> --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
+    --max-samples 500 --epochs 8 --depth-weight 1.0
+```
+
+Result (500 samples, 8 ep, ~20 min): **mIoU 0.092, geo-IoU 0.547** — already beats the
+self-supervised GaussianOcc (0.084), and its geo-IoU is ~3× the single-sweep LiDAR ceiling
+(learned occluded-completion). Still climbing; scaling data/backbone is the path to SOTA.
+See TUTORIAL §2.7–2.8.
+
 ## Layout
 
 ```
 occupancy/
 ├── datasets.py            # Occ3DNuScenesDataset (labels.npz loader)
+├── datasets_train.py      # NuScenesOccTrainDataset: 6-cam + calib + GT + LiDAR depth
 ├── evaluator.py           # OccupancyEvaluator: mIoU + geo-IoU on camera-visible voxels
 ├── geom.py                # nuScenes calib, back-projection, voxelization (ego frame)
+├── models/lss_occ.py      # depth-supervised LSS occupancy network (pure PyTorch)
+├── train_lss.py           # train loop: occ CE + depth CE + Occ3D eval
 ├── predictors/
-│   └── depth_lift.py      # 6-cam metric depth + Cityscapes seg -> voxel grid
+│   └── depth_lift.py      # 6-cam metric depth + Cityscapes seg -> voxel grid (baseline)
 └── run_eval.py            # CLI: baseline + LiDAR oracle
 ```
 

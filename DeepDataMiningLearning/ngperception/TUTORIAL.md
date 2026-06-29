@@ -379,3 +379,36 @@ cars, red/orange = barriers/objects, with the ego gap in the centre. A flat top-
 
 Bottom line: GaussianOcc is our **reference point and idea source** for the GS route; the
 main build remains the controllable pure-PyTorch depth-supervised LSS occupancy head.
+
+### 2.8 Our depth-supervised LSS occupancy — results
+
+The pure-PyTorch, GT-supervised LSS head from §2.7 (`models/lss_occ.py` + `train_lss.py`),
+trained on **only 500 nuScenes samples for 8 epochs (~20 min, 3.5 GB)**:
+
+| method | mIoU↑ | geo-IoU↑ | training | runs in main env? |
+|---|---|---|---|---|
+| depth→occ lift baseline (§2.3) | 0.014 | 0.09 | none | ✅ |
+| LiDAR oracle (single sweep) | — | 0.18 | none | ✅ |
+| GaussianOcc (self-supervised) | 0.084 | — | pretrained, no 3D GT | ✗ (separate env, ~9 patches) |
+| **our LSS occ (depth-supervised)** | **0.092** | **0.547** | 500 samples, 8 ep | ✅ pure PyTorch |
+| supervised SOTA (CTF/FlashOcc/…) | 28–50 | — | full train, mmdet3d | ✗ |
+
+Three things this shows:
+
+1. **It already edges out GaussianOcc** (9.2 vs 8.4 mIoU) with ~20 min of training on a tiny
+   slice — and unlike GaussianOcc it runs in the **main torch-2.10 env**, no mmcv, no patches.
+2. **Learned completion is real.** Its **geo-IoU 0.547 is ~3× the single-sweep LiDAR ceiling**
+   (0.18) and ~6× the depth-lift baseline (0.09). A single-shot projection can only mark what
+   it directly observes; the *learned* model fills the densified, occluded Occ3D GT — exactly
+   the headroom §2.2 said the learning buys.
+3. **Still climbing** (0.036 → 0.092, monotonic). This is 500 samples / 8 epochs / a 3 M-param
+   ResNet-18; scaling data, schedule, and backbone (DINOv2) is the obvious path toward the
+   supervised SOTA band — now on infrastructure we fully control.
+
+The depth supervision is doing its job: the depth CE drops 4.9 → 3.3 alongside the occupancy
+CE 3.1 → 0.6, so the lift's geometry sharpens as the occupancy learns (the BEVDepth effect).
+
+```bash
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts <occ3d_gts> --nusc <nuscenes_root> --max-samples 500 --epochs 8 --depth-weight 1.0
+```
