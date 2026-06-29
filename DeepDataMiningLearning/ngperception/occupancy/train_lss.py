@@ -79,7 +79,10 @@ def main():
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--depth-weight", type=float, default=1.0)
-    ap.add_argument("--backbone", choices=["resnet18", "dinov2"], default="resnet18")
+    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
+    ap.add_argument("--decoder-layers", type=int, default=2)
+    ap.add_argument("--decoder-hidden", type=int, default=64)
+    ap.add_argument("--cosine", action="store_true", help="cosine LR schedule")
     ap.add_argument("--amp", action="store_true", help="mixed precision (faster, less memory)")
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--device", default="cuda")
@@ -91,7 +94,8 @@ def main():
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
     n = 2 if args.smoke else args.max_samples
     dev = args.device
-    model = LSSOccupancy(backbone=args.backbone).to(dev)
+    model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
+                         decoder_layers=args.decoder_layers).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n)
@@ -104,10 +108,13 @@ def main():
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
                             lr=args.lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
-    print(f"[lss_occ] backbone={args.backbone} {len(train_ds)} train / {len(val_ds)} val | "
+    epochs = 1 if args.smoke else args.epochs
+    sched = (torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=epochs * max(1, len(train_ld)))
+             if args.cosine else None)
+    print(f"[lss_occ] backbone={args.backbone} dec={args.decoder_layers}x{args.decoder_hidden} "
+          f"{len(train_ds)} train / {len(val_ds)} val | "
           f"{sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.1f}M trainable")
 
-    epochs = 1 if args.smoke else args.epochs
     for ep in range(epochs):
         model.train()
         for it, b in enumerate(train_ld):
@@ -118,6 +125,8 @@ def main():
                 l_dep = depth_loss(depth.float(), b["depth_gt"].to(dev))
                 loss = l_occ + args.depth_weight * l_dep
             opt.zero_grad(); scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
+            if sched is not None:
+                sched.step()
             if it % 20 == 0:
                 print(f"  ep{ep} it{it}: loss={loss.item():.3f} "
                       f"(occ={l_occ.item():.3f} depth={l_dep.item():.3f})", flush=True)

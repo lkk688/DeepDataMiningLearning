@@ -415,8 +415,19 @@ The depth supervision is doing its job: the depth CE drops alongside the occupan
 the lift's geometry sharpens as the occupancy learns (the BEVDepth effect).
 
 ```bash
-# strongest config: frozen DINOv2 + AMP + more data
+# strongest config: frozen DINOv2(-base) + deeper decoder + cosine + AMP + more data
 python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
-    --gts <occ3d_gts> --nusc <nuscenes_root> \
-    --backbone dinov2 --amp --max-samples 1500 --epochs 10 --depth-weight 1.0
+    --gts <occ3d_gts> --nusc <nuscenes_root> --backbone dinov2_base \
+    --decoder-layers 4 --decoder-hidden 96 --cosine --amp \
+    --max-samples 3000 --epochs 12 --depth-weight 1.0
 ```
+
+**Prediction vs ground truth.** Rendering the trained model's voxels next to the Occ3D GT
+(both camera-masked, same open3d view) shows it captures the scene's geometry *and*
+semantics — the road, sidewalk, terrain, and vegetation line up; the prediction is just
+denser/noisier than the densified GT:
+
+![lss occ vs gt](docs/lss_occ_vs_gt_frame.png)
+
+(Inference: `occupancy/` model + nuScenes calib; render: open3d `OffscreenRenderer`. The
+full clip is `output/lss_occ/lss_occ_vs_gt.mp4`.)

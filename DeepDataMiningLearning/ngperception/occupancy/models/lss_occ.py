@@ -61,12 +61,13 @@ class CamEncoder(nn.Module):
             self.stem = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool,
                                       net.layer1, net.layer2, net.layer3)   # stride 16, 256 ch
             feat_dim = 256
-        elif backbone == "dinov2":
+        elif backbone in ("dinov2", "dinov2_base"):
             from transformers import AutoModel
-            self.dino = AutoModel.from_pretrained("facebook/dinov2-small")
+            name = "facebook/dinov2-base" if backbone == "dinov2_base" else "facebook/dinov2-small"
+            self.dino = AutoModel.from_pretrained(name)
             for p in self.dino.parameters():
                 p.requires_grad = False
-            feat_dim = 384
+            feat_dim = 768 if backbone == "dinov2_base" else 384
         else:
             raise ValueError(backbone)
         self.depthnet = nn.Sequential(
@@ -93,14 +94,20 @@ class CamEncoder(nn.Module):
 
 
 class VoxelDecoder(nn.Module):
-    """Small 3D CNN: pooled context volume (C,X,Y,Z) -> occupancy logits (n_cls,X,Y,Z)."""
+    """3D CNN: pooled context volume (C,X,Y,Z) -> occupancy logits (n_cls,X,Y,Z).
 
-    def __init__(self, in_c: int, n_classes: int = 18):
+    `n_layers`/`hidden` set the depth/width. Defaults (2,64) match the original ResNet/
+    DINOv2-small runs so their checkpoints still load; deeper (e.g. 4,96) for scaling."""
+
+    def __init__(self, in_c: int, n_classes: int = 18, hidden: int = 64, n_layers: int = 2):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv3d(in_c, 64, 3, padding=1), nn.BatchNorm3d(64), nn.ReLU(inplace=True),
-            nn.Conv3d(64, 64, 3, padding=1), nn.BatchNorm3d(64), nn.ReLU(inplace=True),
-            nn.Conv3d(64, n_classes, 1))
+        layers, c = [], in_c
+        for _ in range(n_layers):
+            layers += [nn.Conv3d(c, hidden, 3, padding=1), nn.BatchNorm3d(hidden),
+                       nn.ReLU(inplace=True)]
+            c = hidden
+        layers += [nn.Conv3d(hidden, n_classes, 1)]
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
@@ -111,11 +118,12 @@ class LSSOccupancy(nn.Module):
 
     def __init__(self, image_hw: Tuple[int, int] = None,
                  downsample: int = None, ctx_channels: int = 64, n_classes: int = 18,
-                 backbone: str = "resnet18"):
+                 backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2):
         super().__init__()
         self.backbone = backbone
-        self.downsample = downsample or (14 if backbone == "dinov2" else 16)
-        self.image_hw = image_hw or ((252, 700) if backbone == "dinov2" else (256, 704))
+        _dino = backbone.startswith("dinov2")
+        self.downsample = downsample or (14 if _dino else 16)
+        self.image_hw = image_hw or ((252, 700) if _dino else (256, 704))
         self.C = ctx_channels
         self.n_classes = n_classes
         self.xb, self.yb, self.zb = XBOUND, YBOUND, ZBOUND
@@ -125,7 +133,8 @@ class LSSOccupancy(nn.Module):
         self.dlo, self.dhi, self.dstep, self.D = _gridcfg(DBOUND)
 
         self.encoder = CamEncoder(self.D, ctx_channels, backbone=backbone)
-        self.decoder = VoxelDecoder(ctx_channels, n_classes)
+        self.decoder = VoxelDecoder(ctx_channels, n_classes,
+                                    hidden=decoder_hidden, n_layers=decoder_layers)
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
         # grid lower-corner and voxel size, for pooling
         self.register_buffer("bx", torch.tensor([XBOUND[0], YBOUND[0], ZBOUND[0]]), persistent=False)
