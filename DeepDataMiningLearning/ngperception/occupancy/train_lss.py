@@ -79,6 +79,8 @@ def main():
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--depth-weight", type=float, default=1.0)
+    ap.add_argument("--backbone", choices=["resnet18", "dinov2"], default="resnet18")
+    ap.add_argument("--amp", action="store_true", help="mixed precision (faster, less memory)")
     ap.add_argument("--num-workers", type=int, default=4)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out-dir", default="DeepDataMiningLearning/ngperception/output/lss_occ")
@@ -88,28 +90,34 @@ def main():
     from nuscenes import NuScenes
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
     n = 2 if args.smoke else args.max_samples
-    train_ds = NuScenesOccTrainDataset(args.gts, nusc, max_samples=n)
-    val_ds = NuScenesOccTrainDataset(args.gts, nusc, max_samples=args.val_samples, stride=7)
+    dev = args.device
+    model = LSSOccupancy(backbone=args.backbone).to(dev)
+    ihw, ds_factor = model.image_hw, model.downsample
+    train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
+                                       max_samples=n)
+    val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
+                                     max_samples=args.val_samples, stride=7)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, collate_fn=collate, drop_last=True)
     val_ld = DataLoader(val_ds, batch_size=1, num_workers=2, collate_fn=collate)
 
-    dev = args.device
-    model = LSSOccupancy().to(dev)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    print(f"[lss_occ] {len(train_ds)} train / {len(val_ds)} val | "
-          f"{sum(p.numel() for p in model.parameters())/1e6:.1f}M params")
+    opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
+                            lr=args.lr, weight_decay=1e-4)
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+    print(f"[lss_occ] backbone={args.backbone} {len(train_ds)} train / {len(val_ds)} val | "
+          f"{sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.1f}M trainable")
 
     epochs = 1 if args.smoke else args.epochs
     for ep in range(epochs):
         model.train()
         for it, b in enumerate(train_ld):
-            occ, depth = model(b["imgs"].to(dev), b["rots"].to(dev),
-                               b["trans"].to(dev), b["intrins"].to(dev))
-            l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev))
-            l_dep = depth_loss(depth, b["depth_gt"].to(dev))
-            loss = l_occ + args.depth_weight * l_dep
-            opt.zero_grad(); loss.backward(); opt.step()
+            with torch.cuda.amp.autocast(enabled=args.amp):
+                occ, depth = model(b["imgs"].to(dev), b["rots"].to(dev),
+                                   b["trans"].to(dev), b["intrins"].to(dev))
+                l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev))
+                l_dep = depth_loss(depth.float(), b["depth_gt"].to(dev))
+                loss = l_occ + args.depth_weight * l_dep
+            opt.zero_grad(); scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
             if it % 20 == 0:
                 print(f"  ep{ep} it{it}: loss={loss.item():.3f} "
                       f"(occ={l_occ.item():.3f} depth={l_dep.item():.3f})", flush=True)

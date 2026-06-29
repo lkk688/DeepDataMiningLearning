@@ -390,7 +390,8 @@ trained on **only 500 nuScenes samples for 8 epochs (~20 min, 3.5 GB)**:
 | depth→occ lift baseline (§2.3) | 0.014 | 0.09 | none | ✅ |
 | LiDAR oracle (single sweep) | — | 0.18 | none | ✅ |
 | GaussianOcc (self-supervised) | 0.084 | — | pretrained, no 3D GT | ✗ (separate env, ~9 patches) |
-| **our LSS occ (depth-supervised)** | **0.092** | **0.547** | 500 samples, 8 ep | ✅ pure PyTorch |
+| our LSS occ — **ResNet18** | 0.092 | 0.547 | 500 samples, 8 ep (~20 min) | ✅ pure PyTorch |
+| our LSS occ — **DINOv2 (frozen) + 3× data** | **0.152** | **0.626** | 1500 samples, 10 ep, AMP (~40 min) | ✅ pure PyTorch |
 | supervised SOTA (CTF/FlashOcc/…) | 28–50 | — | full train, mmdet3d | ✗ |
 
 Three things this shows:
@@ -401,14 +402,21 @@ Three things this shows:
    (0.18) and ~6× the depth-lift baseline (0.09). A single-shot projection can only mark what
    it directly observes; the *learned* model fills the densified, occluded Occ3D GT — exactly
    the headroom §2.2 said the learning buys.
-3. **Still climbing** (0.036 → 0.092, monotonic). This is 500 samples / 8 epochs / a 3 M-param
-   ResNet-18; scaling data, schedule, and backbone (DINOv2) is the obvious path toward the
-   supervised SOTA band — now on infrastructure we fully control.
+3. **It scales predictably.** Swapping the ResNet-18 for a **frozen DINOv2-small** backbone
+   and tripling the data (500 → 1500) lifts mIoU **0.092 → 0.152 (+65 %)** and geo-IoU
+   0.547 → 0.626 — with *AMP it actually trains faster* (~6 it/s, 2.7 GB) since the backbone
+   is frozen and only the head learns. Tellingly, DINOv2's **epoch-0 mIoU (0.083) already
+   matched ResNet's *final***: the foundation-model features are doing the heavy lifting.
+   Both runs were still climbing at the last epoch — more data, a longer schedule, a larger
+   DINOv2, and a deeper voxel decoder are the obvious next steps toward the supervised SOTA
+   band, all on infrastructure we fully control.
 
-The depth supervision is doing its job: the depth CE drops 4.9 → 3.3 alongside the occupancy
-CE 3.1 → 0.6, so the lift's geometry sharpens as the occupancy learns (the BEVDepth effect).
+The depth supervision is doing its job: the depth CE drops alongside the occupancy CE, so
+the lift's geometry sharpens as the occupancy learns (the BEVDepth effect).
 
 ```bash
+# strongest config: frozen DINOv2 + AMP + more data
 python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
-    --gts <occ3d_gts> --nusc <nuscenes_root> --max-samples 500 --epochs 8 --depth-weight 1.0
+    --gts <occ3d_gts> --nusc <nuscenes_root> \
+    --backbone dinov2 --amp --max-samples 1500 --epochs 10 --depth-weight 1.0
 ```

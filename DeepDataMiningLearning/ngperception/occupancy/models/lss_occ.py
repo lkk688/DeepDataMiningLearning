@@ -45,21 +45,46 @@ def _gridcfg(b):
 
 
 class CamEncoder(nn.Module):
-    """ResNet-18 image encoder + a DepthNet head producing (depth-dist | context)."""
+    """Image encoder + a DepthNet head producing (depth-dist | context).
 
-    def __init__(self, depth_bins: int, ctx_channels: int = 64):
+    backbone="resnet18" (trainable, stride 16) or "dinov2" (frozen DINOv2-small, patch 14).
+    A frozen DINOv2 gives much stronger features; only the DepthNet + decoder then train."""
+
+    def __init__(self, depth_bins: int, ctx_channels: int = 64, backbone: str = "resnet18"):
         super().__init__()
-        from torchvision.models import resnet18
-        net = resnet18(weights=None)
-        self.stem = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool,
-                                  net.layer1, net.layer2, net.layer3)   # stride 16, 256 ch
+        self.backbone = backbone
         self.D = depth_bins
         self.C = ctx_channels
-        self.depthnet = nn.Conv2d(256, depth_bins + ctx_channels, kernel_size=1)
+        if backbone == "resnet18":
+            from torchvision.models import resnet18
+            net = resnet18(weights=None)
+            self.stem = nn.Sequential(net.conv1, net.bn1, net.relu, net.maxpool,
+                                      net.layer1, net.layer2, net.layer3)   # stride 16, 256 ch
+            feat_dim = 256
+        elif backbone == "dinov2":
+            from transformers import AutoModel
+            self.dino = AutoModel.from_pretrained("facebook/dinov2-small")
+            for p in self.dino.parameters():
+                p.requires_grad = False
+            feat_dim = 384
+        else:
+            raise ValueError(backbone)
+        self.depthnet = nn.Sequential(
+            nn.Conv2d(feat_dim, 256, kernel_size=3, padding=1), nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(256, depth_bins + ctx_channels, kernel_size=1))
+
+    def _features(self, x):
+        if self.backbone == "resnet18":
+            return self.stem(x)                                 # (B*N,256,H/16,W/16)
+        b, _, H, W = x.shape
+        with torch.no_grad():
+            tok = self.dino(x).last_hidden_state[:, 1:]         # drop CLS -> (B*N, h*w, 384)
+        h, w = H // 14, W // 14
+        return tok.transpose(1, 2).reshape(b, -1, h, w)         # (B*N,384,h,w)
 
     def forward(self, x):
-        x = self.stem(x)                       # (B*N, 256, h, w)
-        x = self.depthnet(x)                   # (B*N, D+C, h, w)
+        x = self.depthnet(self._features(x))   # (B*N, D+C, h, w)
         depth = x[:, : self.D].softmax(dim=1)  # categorical depth distribution
         ctx = x[:, self.D :]
         # lift: outer product context ⊗ depth -> (B*N, C, D, h, w)
@@ -84,11 +109,13 @@ class VoxelDecoder(nn.Module):
 class LSSOccupancy(nn.Module):
     """Depth-supervised LSS occupancy network."""
 
-    def __init__(self, image_hw: Tuple[int, int] = (256, 704),
-                 downsample: int = 16, ctx_channels: int = 64, n_classes: int = 18):
+    def __init__(self, image_hw: Tuple[int, int] = None,
+                 downsample: int = None, ctx_channels: int = 64, n_classes: int = 18,
+                 backbone: str = "resnet18"):
         super().__init__()
-        self.image_hw = image_hw
-        self.downsample = downsample
+        self.backbone = backbone
+        self.downsample = downsample or (14 if backbone == "dinov2" else 16)
+        self.image_hw = image_hw or ((252, 700) if backbone == "dinov2" else (256, 704))
         self.C = ctx_channels
         self.n_classes = n_classes
         self.xb, self.yb, self.zb = XBOUND, YBOUND, ZBOUND
@@ -97,7 +124,7 @@ class LSSOccupancy(nn.Module):
         _, _, _, self.nz = _gridcfg(ZBOUND)
         self.dlo, self.dhi, self.dstep, self.D = _gridcfg(DBOUND)
 
-        self.encoder = CamEncoder(self.D, ctx_channels)
+        self.encoder = CamEncoder(self.D, ctx_channels, backbone=backbone)
         self.decoder = VoxelDecoder(ctx_channels, n_classes)
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
         # grid lower-corner and voxel size, for pooling
