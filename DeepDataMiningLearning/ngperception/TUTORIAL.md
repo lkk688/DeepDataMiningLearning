@@ -383,7 +383,8 @@ main build remains the controllable pure-PyTorch depth-supervised LSS occupancy 
 ### 2.8 Our depth-supervised LSS occupancy — results
 
 The pure-PyTorch, GT-supervised LSS head from §2.7 (`models/lss_occ.py` + `train_lss.py`),
-trained on **only 500 nuScenes samples for 8 epochs (~20 min, 3.5 GB)**:
+trained at three scales on a single RTX 3090 — from a 20-minute ResNet run to a few-hour
+DINOv2-base run:
 
 | method | mIoU↑ | geo-IoU↑ | training | runs in main env? |
 |---|---|---|---|---|
@@ -391,8 +392,10 @@ trained on **only 500 nuScenes samples for 8 epochs (~20 min, 3.5 GB)**:
 | LiDAR oracle (single sweep) | — | 0.18 | none | ✅ |
 | GaussianOcc (self-supervised) | 0.084 | — | pretrained, no 3D GT | ✗ (separate env, ~9 patches) |
 | our LSS occ — **ResNet18** | 0.092 | 0.547 | 500 samples, 8 ep (~20 min) | ✅ pure PyTorch |
-| our LSS occ — **DINOv2 (frozen) + 3× data** | **0.152** | **0.626** | 1500 samples, 10 ep, AMP (~40 min) | ✅ pure PyTorch |
-| supervised SOTA (CTF/FlashOcc/…) | 28–50 | — | full train, mmdet3d | ✗ |
+| our LSS occ — **DINOv2-small + 3× data** | 0.152 | 0.626 | 1500 samples, 10 ep, AMP (~40 min) | ✅ pure PyTorch |
+| our LSS occ — **DINOv2-base + deeper dec + cosine** | **0.216** | **0.681** | 3000 samples, 12 ep (~2.8 h) | ✅ pure PyTorch |
+| *(published, for scale)* OccFormer / BEVFormer / CTF-Occ | 21 / 27 / 28.5 | — | full train, mmdet3d | ✗ |
+| supervised SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
 
 Three things this shows:
 
@@ -402,14 +405,15 @@ Three things this shows:
    (0.18) and ~6× the depth-lift baseline (0.09). A single-shot projection can only mark what
    it directly observes; the *learned* model fills the densified, occluded Occ3D GT — exactly
    the headroom §2.2 said the learning buys.
-3. **It scales predictably.** Swapping the ResNet-18 for a **frozen DINOv2-small** backbone
-   and tripling the data (500 → 1500) lifts mIoU **0.092 → 0.152 (+65 %)** and geo-IoU
-   0.547 → 0.626 — with *AMP it actually trains faster* (~6 it/s, 2.7 GB) since the backbone
-   is frozen and only the head learns. Tellingly, DINOv2's **epoch-0 mIoU (0.083) already
-   matched ResNet's *final***: the foundation-model features are doing the heavy lifting.
-   Both runs were still climbing at the last epoch — more data, a longer schedule, a larger
-   DINOv2, and a deeper voxel decoder are the obvious next steps toward the supervised SOTA
-   band, all on infrastructure we fully control.
+3. **It scales predictably — 0.092 → 0.152 → 0.216 mIoU.** Each lever compounds: a frozen
+   **DINOv2-small** + 3× data → 0.152 (+65 %); then **DINOv2-base + a deeper voxel decoder +
+   cosine schedule + 3000 samples** → **0.216 (geo-IoU 0.681)**, a **2.35× total gain** over
+   the ResNet baseline. Tellingly, DINOv2's **epoch-0 already matched ResNet's *final***: the
+   frozen foundation-model features do the heavy lifting (and AMP makes it *faster*, ~6 it/s,
+   since only the head trains). At **21.6 mIoU we are now in the published-method band** —
+   above MonoScene (6) and OccFormer (~21), nearing BEVFormer (27) / CTF-Occ (28.5) — on
+   **~10 % of the train split, a frozen backbone, and a single 3090**, in the main torch env.
+   Full data + a longer schedule is the clear path further up, all on infra we fully control.
 
 The depth supervision is doing its job: the depth CE drops alongside the occupancy CE, so
 the lift's geometry sharpens as the occupancy learns (the BEVDepth effect).
