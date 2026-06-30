@@ -8,10 +8,34 @@ headroom a learned occupancy net must earn. See [TUTORIAL.md](../TUTORIAL.md) §
 
 ## Data
 
-The Occ3D-nuScenes GT (`gts/scene-XXXX/<token>/labels.npz`: `semantics`, `mask_camera`,
-`mask_lidar`) from [Tsinghua-MARS-Lab/Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D),
-plus the nuScenes `v1.0-trainval` metadata + images (for the 6-camera calibration). Extract
-a subset of the `gts` tar to a working dir and point `--gts` at it.
+Two sources, both used:
+
+1. **Occ3D-nuScenes GT** (`gts/scene-XXXX/<token>/labels.npz` → `semantics` 200×200×16,
+   `mask_camera`, `mask_lidar`) from
+   [Tsinghua-MARS-Lab/Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D) — the **dense
+   occupancy GT** for training (occupancy CE) and the mIoU eval. It is itself built by
+   aggregating LiDAR over the whole sequence + nuScenes-lidarseg labels + occlusion masks
+   (see TUTORIAL §2.7.1).
+2. **nuScenes `v1.0-trainval`** images + metadata — the 6 surround images + per-camera
+   calibration (intrinsics/extrinsics), and the `LIDAR_TOP` sweeps used to make the
+   auxiliary **depth supervision** (projected into each camera). LiDAR is training-only;
+   inference is camera-only.
+
+On this machine:
+
+```bash
+# Occ3D gts archive lives here; extract it once to a local SSD working dir:
+ls /mnt/e/Shared/Dataset/gts/gts-002.tar.gz
+mkdir -p /home/lkk688/Developer/occ3d_data
+tar -xzf /mnt/e/Shared/Dataset/gts/gts-002.tar.gz -C /home/lkk688/Developer/occ3d_data
+# -> /home/lkk688/Developer/occ3d_data/gts  (34,149 labels.npz across 850 scenes)
+
+# nuScenes trainval (images + calib + LiDAR):
+ls /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval   # samples/ sweeps/ maps/ v1.0-trainval/
+```
+
+`--gts /home/lkk688/Developer/occ3d_data/gts` and
+`--nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval` are the paths used below.
 
 ## Run
 
@@ -30,20 +54,41 @@ Omit `--seg` for a geometry-only (geo-IoU) run.
 
 ## Learned model — depth-supervised LSS occupancy (pure PyTorch)
 
-The in-house, **GT-supervised** occupancy net (no mmcv, runs in the main torch env). ResNet
-encoder + a **depth-distribution head** + the **LSS lift** (frustum→ego→voxel scatter) + a 3D
-voxel decoder. Trained with **occupancy CE + LiDAR depth CE** (BEVDepth-style).
+The in-house, **GT-supervised** occupancy net (no mmcv, runs in the main torch env): image
+encoder (ResNet-18 or frozen **DINOv2**) + a **depth-distribution head** + the **LSS lift**
+(frustum→ego→voxel scatter) + a 3D voxel decoder. **Inference is camera-only**; trained with
+**occupancy CE (vs dense Occ3D GT) + auxiliary LiDAR depth CE** (BEVDepth-style). See
+TUTORIAL §2.7.1 for the supervision details.
 
 ```bash
+# baseline (ResNet-18, ~20 min) -> mIoU 0.092
 python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
-    --gts <occ3d_gts> --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
+    --gts /home/lkk688/Developer/occ3d_data/gts \
+    --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
     --max-samples 500 --epochs 8 --depth-weight 1.0
+
+# strongest (frozen DINOv2-base + deeper decoder + cosine + AMP, ~2.8 h) -> mIoU 0.216
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts /home/lkk688/Developer/occ3d_data/gts \
+    --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
+    --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 --cosine --amp \
+    --max-samples 3000 --epochs 12 --depth-weight 1.0 \
+    --out-dir DeepDataMiningLearning/ngperception/output/lss_occ_dinobase
 ```
 
-Result (500 samples, 8 ep, ~20 min): **mIoU 0.092, geo-IoU 0.547** — already beats the
-self-supervised GaussianOcc (0.084), and its geo-IoU is ~3× the single-sweep LiDAR ceiling
-(learned occluded-completion). Still climbing; scaling data/backbone is the path to SOTA.
-See TUTORIAL §2.7–2.8.
+Results (Occ3D val, camera-mask mIoU), scaling on a single RTX 3090:
+
+| config | mIoU | geo-IoU |
+|---|---|---|
+| ResNet-18, 500 samples / 8 ep | 0.092 | 0.547 |
+| DINOv2-small, 1500 / 10 ep, AMP | 0.152 | 0.626 |
+| **DINOv2-base + deeper dec + cosine, 3000 / 12 ep** | **0.216** | **0.681** |
+
+0.216 is **in the published-method band** (above MonoScene 6, OccFormer ~21; nearing
+BEVFormer 27 / CTF-Occ 28.5) — on ~10 % of the train split, a frozen backbone, pure
+PyTorch, no mmcv. Visualizations (open3d) in `output/lss_occ/`:
+`lss_occ_surround_demo.mp4` (6 cams + global occ + ego marker), `lss_occ_camview.mp4`
+(camera-aligned + global), `lss_occ_vs_gt.mp4` (pred vs GT). See TUTORIAL §2.7–2.8.
 
 ## Layout
 

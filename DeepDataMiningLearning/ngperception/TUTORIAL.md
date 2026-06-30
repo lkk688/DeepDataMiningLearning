@@ -380,6 +380,58 @@ cars, red/orange = barriers/objects, with the ego gap in the centre. A flat top-
 Bottom line: GaussianOcc is our **reference point and idea source** for the GS route; the
 main build remains the controllable pure-PyTorch depth-supervised LSS occupancy head.
 
+### 2.7.1 How it works, what supervises it, and where the GT comes from
+
+**Inference is camera-only — no LiDAR** (`models/lss_occ.py`). Given the 6 surround RGB
+images:
+
+```
+6 RGB images ─DINOv2(frozen)→ per-cam features
+   └DepthNet head→ (a) a per-pixel depth *distribution* over 112 bins  (b) context features
+   Lift:  context ⊗ depth  → a frustum of features; camera K + extrinsics place each
+          (pixel, depth-bin) point in the ego 3-D frame
+   Splat: scatter frustum points into the 200×200×16 voxel grid (pure-torch index_add)
+   Decode: 3-D CNN → 18-class logits → argmax = predicted occupancy
+```
+
+A camera can't know per-pixel depth, so the net predicts a **depth probability** and smears
+each image feature across all plausible depths before voxelizing — that is the Lift-Splat.
+
+**Did it use LiDAR? Yes — only as *training supervision*, never as input.** There are two
+losses, and it helps to see which is dense:
+
+| loss | target | density |
+|---|---|---|
+| **occupancy CE** (main) | the **Occ3D GT** voxel grid, on `mask_camera` | **fully dense** (whole grid labelled) |
+| **depth CE** (auxiliary) | **LiDAR** projected into each camera, binned | sparse at full-res, **but 69 % of cells at the 18×50 feature resolution** where it is applied |
+
+So the model is *not* short of dense supervision: the occupancy itself is densely
+supervised by Occ3D. The depth term is the BEVDepth trick — explicitly teaching the lift
+*where along the ray* a feature sits, which is what raised camera-occupancy from ~24 to
+~40 mIoU in the literature. And "sparse LiDAR" is misleading: a single sweep covers ~4–5 %
+of *image* pixels, but max-pooled to the coarse feature grid (18×50) it fills **~69 %** of
+cells — densely where it matters (ground/near field; the empty rows are sky/far, which are
+unoccupied anyway). Want it even denser? Two options: aggregate several LiDAR sweeps, or —
+elegantly — **render depth from the dense Occ3D GT** and supervise with that (free dense
+depth). That is a concrete next improvement.
+
+**Where the GT comes from (Occ3D-nuScenes).** We *do* use the
+[Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D) `gts` — it is the dense occupancy GT
+for both training and the mIoU eval. Tsinghua-MARS-Lab built it by:
+
+1. **aggregating LiDAR over the whole sequence** (key-frames + sweeps, ego-pose aligned) —
+   turning a sparse ~30 k-point sweep into a dense cloud;
+2. **separating dynamic objects** (aggregated inside their own 3-D boxes so moving cars
+   don't smear) from the static background (aggregated across all frames);
+3. **labelling** each voxel by majority vote of the **nuScenes-lidarseg** point semantics;
+4. **voxelizing** to 200×200×16 @ 0.4 m;
+5. **occlusion ray-casting** to produce `mask_camera` / `mask_lidar` (so you only score
+   observed voxels).
+
+That whole-sequence aggregation is exactly why the GT is dense (~30–42 k occupied voxels
+vs ~6 k from one sweep, §2.2) — and why a *learned* model that completes occluded space
+can beat any single-shot projection.
+
 ### 2.8 Our depth-supervised LSS occupancy — results
 
 The pure-PyTorch, GT-supervised LSS head from §2.7 (`models/lss_occ.py` + `train_lss.py`),
