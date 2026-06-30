@@ -435,3 +435,12 @@ denser/noisier than the densified GT:
 
 (Inference: `occupancy/` model + nuScenes calib; render: open3d `OffscreenRenderer`. The
 full clip is `output/lss_occ/lss_occ_vs_gt.mp4`.)
+
+**Same-angle comparison.** Rendering the occupancy from the **actual CAM_FRONT viewpoint**
+(open3d pinhole camera = the camera's intrinsics + extrinsics) puts the prediction in 1:1
+correspondence with the image — the road, kerbs, trees and building land where the camera
+sees them — alongside a forward-oriented global view:
+
+![lss occ camera view](docs/lss_occ_camview_frame.png)
+
+(`output/lss_occ/lss_occ_camview.mp4`.)
