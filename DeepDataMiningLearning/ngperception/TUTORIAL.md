@@ -421,9 +421,30 @@ unoccupied anyway).
 > **precision** was. Real LiDAR gives continuous range at the true surface, whereas the
 > rendered depth is quantized to the 0.4 m voxel grid and inherits the GT's densification
 > noise. Lesson: more dense supervision isn't automatically better — a *precise* sparse
-> signal beats a *coarse* dense one. (A `lidar + occ` combined loss, or sweep aggregation
-> for genuinely denser *real* depth, are the better follow-ups; both `--depth-source`
-> options are in `train_lss.py` so this is one flag to re-run.)
+> signal beats a *coarse* dense one.
+>
+> **Follow-up — a carefully-designed combined loss still didn't beat LiDAR.**
+> `--depth-source combined` adds the occ term back but smartly: a **tolerant
+> window** loss (reward predicted depth-*mass* within ±2 bins of the quantized target,
+> i.e. classification-in-a-window not regression, so quantization can't hard-pull) +
+> **region weighting** from the projected voxel class (road & objects full weight;
+> cluttered terrain/manmade/vegetation down-weighted to 0.3 — the bits that are
+> genuinely hard to learn). Sweeping the occ weight (same config):
+>
+> | depth supervision | mIoU |
+> |---|---|
+> | **LiDAR only** | **0.141** |
+> | combined (occ-weight 0.5, tolerant + region-weighted) | 0.132 |
+> | occ-rendered only | 0.124 |
+>
+> mIoU drops *monotonically* with the occ weight — the loss engineering reduced the harm
+> (0.132 > the 0.124 of occ-only) but couldn't make a **redundant, noisier** signal help:
+> where the rendered depth has signal it overlaps LiDAR's (which is more precise), so it
+> only adds noise. **The bottleneck is the depth *source* quality, not the loss shape.**
+> The genuinely promising direction is therefore denser *real* depth — **aggregate several
+> LiDAR sweeps** — not depth re-derived from the (quantized, completed) GT. All three
+> targets (`lidar` / `occ` / `combined`) ship in `train_lss.py` as one flag, so each claim
+> here is one command to reproduce.
 
 **Where the GT comes from (Occ3D-nuScenes).** We *do* use the
 [Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D) `gts` — it is the dense occupancy GT

@@ -58,28 +58,33 @@ class NuScenesOccTrainDataset(Dataset):
         self._gsz = np.asarray(GRID_SIZE, np.int64)
 
     def _occ_rendered_depth(self, sem, K, R_c2e, t_c2e, ow, oh):
-        """Render dense depth from the Occ3D GT: project occupied voxel centres into the
-        camera, keep the nearest (z-buffer) per feature cell. Dense + GT-consistent."""
+        """Render dense depth from the Occ3D GT: z-buffer occupied voxel corners into the
+        camera. Returns (depth-bins, region-class) per feature cell — the class of the
+        nearest surface (road/object/background), used to weight the loss; -1 = empty."""
         ii, jj, kk = np.where(sem != 17)                         # occupied voxels
+        cls = sem[ii, jj, kk]                                    # class per voxel
         centers = self._vorig + self._vs * (np.stack([ii, jj, kk], 1) + 0.5)  # ego (N,3)
         # project the 8 voxel corners (not just the centre) so each voxel fills its footprint
         offs = self._vs * np.array([[a, b, c] for a in (-.5, .5) for b in (-.5, .5)
                                     for c in (-.5, .5)], np.float32)             # (8,3)
         centers = (centers[:, None, :] + offs[None, :, :]).reshape(-1, 3)        # (N*8,3)
+        cls8 = np.repeat(cls, 8)
         cam = (centers - t_c2e) @ R_c2e                          # ego -> cam
         front = cam[:, 2] > 0.1
-        cam = cam[front]
+        cam, cls8 = cam[front], cls8[front]
         Kf = K.copy(); Kf[0] *= self.fW / ow; Kf[1] *= self.fH / oh  # K at feature resolution
         uvw = cam @ Kf.T
         u = (uvw[:, 0] / uvw[:, 2]).astype(int)
         v = (uvw[:, 1] / uvw[:, 2]).astype(int)
         d = cam[:, 2]
         inb = (u >= 0) & (u < self.fW) & (v >= 0) & (v < self.fH)
-        u, v, d = u[inb], v[inb], d[inb]
+        u, v, d, cls8 = u[inb], v[inb], d[inb], cls8[inb]
         dm = np.zeros((self.fH, self.fW), np.float32)
-        order = np.argsort(-d)                                   # far first -> near overwrites (z-buffer min)
+        cm = np.full((self.fH, self.fW), -1, np.int64)
+        order = np.argsort(-d)                                   # far first -> near overwrites (z-buffer)
         dm[v[order], u[order]] = d[order]
-        return _depth_to_bins(dm, self.dlo, self.dstep, self.D)
+        cm[v[order], u[order]] = cls8[order]
+        return _depth_to_bins(dm, self.dlo, self.dstep, self.D), cm
 
     def __len__(self):
         return len(self.occ)
@@ -116,6 +121,7 @@ class NuScenesOccTrainDataset(Dataset):
         s = self.occ[i]
         sample = self.nusc.get("sample", s.sample_token)
         imgs, Ks, Rs, ts, depths = [], [], [], [], []
+        occ_depths, occ_regions = [], []
         for cam in CAMS:
             sd = self.nusc.get("sample_data", sample["data"][cam])
             cs = self.nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
@@ -131,17 +137,27 @@ class NuScenesOccTrainDataset(Dataset):
             t = np.array(cs["translation"], np.float32)
             Rs.append(torch.from_numpy(R)); ts.append(torch.from_numpy(t))
             if self.depth_source == "occ":
-                dbin = self._occ_rendered_depth(s.semantics, K, R, t, ow, oh)
+                dbin, _ = self._occ_rendered_depth(s.semantics, K, R, t, ow, oh)
+                depths.append(torch.from_numpy(dbin))
+            elif self.depth_source == "combined":
+                depths.append(torch.from_numpy(
+                    self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)))
+                odbin, oreg = self._occ_rendered_depth(s.semantics, K, R, t, ow, oh)
+                occ_depths.append(torch.from_numpy(odbin)); occ_regions.append(torch.from_numpy(oreg))
             else:
-                dbin = self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)
-            depths.append(torch.from_numpy(dbin))
-        return {
+                depths.append(torch.from_numpy(
+                    self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)))
+        out = {
             "imgs": torch.stack(imgs), "intrins": torch.stack(Ks),
             "rots": torch.stack(Rs), "trans": torch.stack(ts),
             "depth_gt": torch.stack(depths),                       # (N,fH,fW) bin idx (-1 invalid)
             "semantics": torch.from_numpy(s.semantics.astype(np.int64)),
             "mask_camera": torch.from_numpy(s.mask_camera.astype(bool)),
         }
+        if self.depth_source == "combined":
+            out["occ_depth"] = torch.stack(occ_depths)             # (N,fH,fW) bins
+            out["occ_region"] = torch.stack(occ_regions)           # (N,fH,fW) class (-1 empty)
+        return out
 
 
 # ===========================================================================

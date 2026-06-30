@@ -40,7 +40,8 @@ def occ_loss(occ, semantics, mask_camera):
 
 
 def depth_loss(depth_pred, depth_gt):
-    """depth_pred: (B,N,D,h,w) prob; depth_gt: (B,N,h,w) bin idx (-1 invalid)."""
+    """depth_pred: (B,N,D,h,w) prob; depth_gt: (B,N,h,w) bin idx (-1 invalid). Hard CE —
+    used for the *precise* LiDAR target."""
     B, N, D, h, w = depth_pred.shape
     logp = torch.log(depth_pred.clamp_min(1e-6)).permute(0, 1, 3, 4, 2).reshape(-1, D)
     tgt = depth_gt.reshape(-1)
@@ -48,6 +49,36 @@ def depth_loss(depth_pred, depth_gt):
     if m.sum() == 0:
         return depth_pred.new_zeros(())
     return F.nll_loss(logp[m], tgt[m])
+
+
+# region weights for the occ (rendered) depth target: cluttered background (terrain,
+# manmade, vegetation) is hard/unlearnable -> low weight; road & objects -> full weight.
+REGION_W = torch.ones(18); REGION_W[[14, 15, 16]] = 0.3
+
+
+def depth_loss_occ_windowed(depth_pred, occ_bins, occ_region, k=2):
+    """Tolerant occ-depth loss: reward total predicted depth-probability **mass within ±k
+    bins** of the (voxel-quantized) target — classification-in-a-window, not regression —
+    so the 0.4 m quantization can't hard-pull the prediction. Each cell is weighted by its
+    surface class (REGION_W)."""
+    B, N, D, h, w = depth_pred.shape
+    pred = depth_pred.permute(0, 1, 3, 4, 2).reshape(-1, D)        # (M,D) prob
+    tgt = occ_bins.reshape(-1)
+    reg = occ_region.reshape(-1)
+    m = tgt >= 0
+    if m.sum() == 0:
+        return depth_pred.new_zeros(())
+    pred, tgt, reg = pred[m], tgt[m], reg[m]
+    csum = torch.cumsum(pred, dim=1)
+    hi = (tgt + k).clamp(max=D - 1)
+    lo = (tgt - k - 1)
+    mass = csum.gather(1, hi[:, None]).squeeze(1)
+    has_lo = lo >= 0
+    mass = mass - torch.where(has_lo, csum.gather(1, lo.clamp(min=0)[:, None]).squeeze(1),
+                              torch.zeros_like(mass))
+    wt = REGION_W.to(pred.device)[reg.clamp(min=0)]
+    loss = -(torch.log(mass.clamp_min(1e-6)) * wt)
+    return loss.sum() / wt.sum().clamp_min(1.0)
 
 
 def collate(batch):
@@ -79,8 +110,11 @@ def main():
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--depth-weight", type=float, default=1.0)
-    ap.add_argument("--depth-source", choices=["lidar", "occ"], default="lidar",
-                    help="depth-supervision target: sparse LiDAR or dense Occ3D-rendered")
+    ap.add_argument("--depth-source", choices=["lidar", "occ", "combined"], default="lidar",
+                    help="depth target: LiDAR | Occ3D-rendered | combined (LiDAR CE + "
+                         "region-weighted tolerant Occ3D loss)")
+    ap.add_argument("--occ-weight", type=float, default=0.5, help="weight of the occ term in 'combined'")
+    ap.add_argument("--occ-window", type=int, default=2, help="±bins tolerance for the occ term")
     ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
     ap.add_argument("--decoder-layers", type=int, default=2)
     ap.add_argument("--decoder-hidden", type=int, default=64)
@@ -125,7 +159,13 @@ def main():
                 occ, depth = model(b["imgs"].to(dev), b["rots"].to(dev),
                                    b["trans"].to(dev), b["intrins"].to(dev))
                 l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev))
-                l_dep = depth_loss(depth.float(), b["depth_gt"].to(dev))
+                depth = depth.float()
+                if args.depth_source == "combined":
+                    l_dep = depth_loss(depth, b["depth_gt"].to(dev)) + args.occ_weight * \
+                        depth_loss_occ_windowed(depth, b["occ_depth"].to(dev),
+                                                b["occ_region"].to(dev), k=args.occ_window)
+                else:
+                    l_dep = depth_loss(depth, b["depth_gt"].to(dev))
                 loss = l_occ + args.depth_weight * l_dep
             opt.zero_grad(); scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
             if sched is not None:
