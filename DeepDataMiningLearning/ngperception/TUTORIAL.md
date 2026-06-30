@@ -441,10 +441,37 @@ unoccupied anyway).
 > (0.132 > the 0.124 of occ-only) but couldn't make a **redundant, noisier** signal help:
 > where the rendered depth has signal it overlaps LiDAR's (which is more precise), so it
 > only adds noise. **The bottleneck is the depth *source* quality, not the loss shape.**
-> The genuinely promising direction is therefore denser *real* depth — **aggregate several
-> LiDAR sweeps** — not depth re-derived from the (quantized, completed) GT. All three
-> targets (`lidar` / `occ` / `combined`) ship in `train_lss.py` as one flag, so each claim
-> here is one command to reproduce.
+> The genuinely promising direction looked like denser *real* depth — **aggregate several
+> LiDAR sweeps** — so we built it (`--depth-source lidar_multi --lidar-sweeps N`) and ran a
+> proper ablation.
+>
+> **Multi-sweep + a 2×2 design ablation.** First a coverage surprise: at the **18×50
+> feature** resolution where the depth term is applied, **a single sweep already covers 69 %
+> of cells, and 5 or 10 sweeps cover the *same* 69 %** — the empty 31 % is sky/surfaceless,
+> so the *supervision resolution*, not depth density, is the ceiling. Multi-sweep still
+> makes each cell's value more robust, so we ablated the two loss-design knobs on it —
+> **tolerant window** (±2 bins) × **region weighting** (road/objects vs down-weighted
+> clutter):
+>
+> | multi-sweep (5) config | tolerant | region | peak mIoU | final |
+> |---|---|---|---|---|
+> | single-sweep baseline | — | — | 0.141 | — |
+> | plain | ✗ | ✗ | 0.139 | 0.134 |
+> | + region | ✗ | ✓ | 0.139 | 0.132 |
+> | + tolerant | ✓ | ✗ | 0.138 | 0.138 |
+> | **+ both** | ✓ | ✓ | **0.153** | **0.142** |
+>
+> Two takeaways. (1) **Multi-sweep alone ≈ single-sweep** (0.139 vs 0.141) — exactly as the
+> coverage check predicted: more points can't help where the supervision grid is already
+> saturated. (2) **The two loss-design knobs do nothing on their own but synergize** — only
+> **+both** clears the single-sweep baseline (peak 0.153). Plausibly: the tolerant window
+> absorbs the small depth noise that multi-sweep motion-compensation adds, *while* region
+> weighting keeps the loss focused on the learnable road/objects rather than cluttered
+> background — each fixes a different failure the other would otherwise reintroduce. Caveat:
+> these are single noisy runs (finals span 0.132–0.142); the synergy is **suggestive, not
+> conclusive** — a multi-seed run would be needed to nail the effect size. Every target and
+> knob (`lidar` / `occ` / `combined` / `lidar_multi` × `--depth-tolerant` × `--depth-region`)
+> is a flag in `train_lss.py`, so each row here is one command to reproduce.
 
 **Where the GT comes from (Occ3D-nuScenes).** We *do* use the
 [Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D) `gts` — it is the dense occupancy GT
