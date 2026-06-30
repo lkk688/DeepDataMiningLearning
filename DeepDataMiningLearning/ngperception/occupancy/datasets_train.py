@@ -40,7 +40,7 @@ def _depth_to_bins(depth, dlo, dstep, nbins):
 class NuScenesOccTrainDataset(Dataset):
     def __init__(self, gts_root: str, nusc, image_hw=(256, 704), downsample=16,
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
-                 depth_source: str = "lidar"):
+                 depth_source: str = "lidar", lidar_sweeps: int = 1):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
@@ -51,8 +51,10 @@ class NuScenesOccTrainDataset(Dataset):
         self.fH, self.fW = self.H // downsample, self.W // downsample
         self.dlo, self.dstep = DBOUND[0], DBOUND[2]
         self.D = int(round((DBOUND[1] - DBOUND[0]) / DBOUND[2]))
-        # "lidar" = project LiDAR sweep (sparse); "occ" = render depth from the dense Occ3D GT
+        # "lidar" = project LiDAR sweep; "occ" = render from Occ3D GT; "combined" = both;
+        # "lidar_multi" = aggregated multi-sweep LiDAR (+region map, for the loss ablation)
         self.depth_source = depth_source
+        self.lidar_sweeps = lidar_sweeps
         self._vorig = np.asarray(PC_RANGE[:3], np.float32)        # grid lower corner
         self._vs = float(VOXEL_SIZE)
         self._gsz = np.asarray(GRID_SIZE, np.int64)
@@ -89,13 +91,30 @@ class NuScenesOccTrainDataset(Dataset):
     def __len__(self):
         return len(self.occ)
 
-    def _lidar_depth(self, token, cam_sd_token, K, R_c2e, t_c2e, ow, oh, sx, sy):
-        """Project LIDAR_TOP into a camera -> sparse depth at the *resized* image size."""
-        from PIL import Image  # noqa
+    def _load_lidar_pts(self, token):
+        """Points in the keyframe LIDAR_TOP frame — a single sweep, or `lidar_sweeps`
+        motion-compensated sweeps aggregated (denser real depth). Cached per token (the 6
+        cameras of a sample share one cloud)."""
+        if getattr(self, "_lcache_tok", None) == token:
+            return self._lcache_pts
         s = self.nusc.get("sample", token)
+        if self.lidar_sweeps <= 1:
+            pts = np.fromfile(os.path.join(self.nusc.dataroot,
+                              self.nusc.get("sample_data", s["data"]["LIDAR_TOP"])["filename"]),
+                              dtype=np.float32).reshape(-1, 5)[:, :3]
+        else:
+            from nuscenes.utils.data_classes import LidarPointCloud
+            pc, _ = LidarPointCloud.from_file_multisweep(
+                self.nusc, s, "LIDAR_TOP", "LIDAR_TOP", nsweeps=self.lidar_sweeps)
+            pts = pc.points[:3].T.astype(np.float32)
+        self._lcache_tok, self._lcache_pts = token, pts
+        return pts
+
+    def _lidar_depth(self, token, cam_sd_token, K, R_c2e, t_c2e, ow, oh, sx, sy):
+        """Project LiDAR into a camera -> depth at the *resized* image size, binned."""
+        s = self.nusc.get("sample", token)
+        pts = self._load_lidar_pts(token)
         lsd = self.nusc.get("sample_data", s["data"]["LIDAR_TOP"])
-        pts = np.fromfile(os.path.join(self.nusc.dataroot, lsd["filename"]),
-                          dtype=np.float32).reshape(-1, 5)[:, :3]
         lcs = self.nusc.get("calibrated_sensor", lsd["calibrated_sensor_token"])
         Rl = self.Q(lcs["rotation"]).rotation_matrix
         tl = np.array(lcs["translation"])
@@ -139,6 +158,11 @@ class NuScenesOccTrainDataset(Dataset):
             if self.depth_source == "occ":
                 dbin, _ = self._occ_rendered_depth(s.semantics, K, R, t, ow, oh)
                 depths.append(torch.from_numpy(dbin))
+            elif self.depth_source == "lidar_multi":
+                depths.append(torch.from_numpy(
+                    self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)))
+                _, oreg = self._occ_rendered_depth(s.semantics, K, R, t, ow, oh)
+                occ_regions.append(torch.from_numpy(oreg))         # region for weighting
             elif self.depth_source == "combined":
                 depths.append(torch.from_numpy(
                     self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)))
@@ -157,6 +181,8 @@ class NuScenesOccTrainDataset(Dataset):
         if self.depth_source == "combined":
             out["occ_depth"] = torch.stack(occ_depths)             # (N,fH,fW) bins
             out["occ_region"] = torch.stack(occ_regions)           # (N,fH,fW) class (-1 empty)
+        if self.depth_source == "lidar_multi":
+            out["occ_region"] = torch.stack(occ_regions)           # region for loss weighting
         return out
 
 

@@ -56,6 +56,32 @@ def depth_loss(depth_pred, depth_gt):
 REGION_W = torch.ones(18); REGION_W[[14, 15, 16]] = 0.3
 
 
+def depth_loss_flex(depth_pred, bins, region=None, window=0, use_region=False):
+    """Depth loss with toggleable design (for the ablation). window=0 -> hard CE; window>0 ->
+    tolerant windowed-mass. use_region -> per-cell weight by surface class (REGION_W)."""
+    B, N, D, h, w = depth_pred.shape
+    pred = depth_pred.permute(0, 1, 3, 4, 2).reshape(-1, D)
+    tgt = bins.reshape(-1)
+    m = tgt >= 0
+    if m.sum() == 0:
+        return depth_pred.new_zeros(())
+    pred, tgt = pred[m], tgt[m]
+    if window > 0:
+        csum = torch.cumsum(pred, dim=1)
+        hi = (tgt + window).clamp(max=D - 1)
+        lo = (tgt - window - 1)
+        mass = csum.gather(1, hi[:, None]).squeeze(1)
+        mass = mass - torch.where(lo >= 0, csum.gather(1, lo.clamp(min=0)[:, None]).squeeze(1),
+                                  torch.zeros_like(mass))
+        per = -torch.log(mass.clamp_min(1e-6))
+    else:
+        per = -torch.log(pred.gather(1, tgt[:, None]).squeeze(1).clamp_min(1e-6))  # hard CE
+    if use_region and region is not None:
+        wt = REGION_W.to(pred.device)[region.reshape(-1)[m].clamp(min=0)]
+        return (per * wt).sum() / wt.sum().clamp_min(1.0)
+    return per.mean()
+
+
 def depth_loss_occ_windowed(depth_pred, occ_bins, occ_region, k=2):
     """Tolerant occ-depth loss: reward total predicted depth-probability **mass within ±k
     bins** of the (voxel-quantized) target — classification-in-a-window, not regression —
@@ -110,9 +136,14 @@ def main():
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--depth-weight", type=float, default=1.0)
-    ap.add_argument("--depth-source", choices=["lidar", "occ", "combined"], default="lidar",
-                    help="depth target: LiDAR | Occ3D-rendered | combined (LiDAR CE + "
-                         "region-weighted tolerant Occ3D loss)")
+    ap.add_argument("--depth-source", choices=["lidar", "occ", "combined", "lidar_multi"],
+                    default="lidar",
+                    help="LiDAR | Occ3D-rendered | combined | lidar_multi (aggregated sweeps)")
+    ap.add_argument("--lidar-sweeps", type=int, default=1, help="sweeps to aggregate (lidar_multi)")
+    ap.add_argument("--depth-tolerant", type=int, default=0,
+                    help="lidar_multi loss: ±bins tolerant window (0=hard CE)")
+    ap.add_argument("--depth-region", action="store_true",
+                    help="lidar_multi loss: weight by surface region (road/obj vs clutter)")
     ap.add_argument("--occ-weight", type=float, default=0.5, help="weight of the occ term in 'combined'")
     ap.add_argument("--occ-window", type=int, default=2, help="±bins tolerance for the occ term")
     ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
@@ -134,10 +165,11 @@ def main():
                          decoder_layers=args.decoder_layers).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
-                                       max_samples=n, depth_source=args.depth_source)
+                                       max_samples=n, depth_source=args.depth_source,
+                                       lidar_sweeps=args.lidar_sweeps)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
-                                     depth_source=args.depth_source)
+                                     depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, collate_fn=collate, drop_last=True)
     val_ld = DataLoader(val_ds, batch_size=1, num_workers=2, collate_fn=collate)
@@ -164,6 +196,10 @@ def main():
                     l_dep = depth_loss(depth, b["depth_gt"].to(dev)) + args.occ_weight * \
                         depth_loss_occ_windowed(depth, b["occ_depth"].to(dev),
                                                 b["occ_region"].to(dev), k=args.occ_window)
+                elif args.depth_source == "lidar_multi":
+                    l_dep = depth_loss_flex(depth, b["depth_gt"].to(dev),
+                                            b["occ_region"].to(dev),
+                                            window=args.depth_tolerant, use_region=args.depth_region)
                 else:
                     l_dep = depth_loss(depth, b["depth_gt"].to(dev))
                 loss = l_occ + args.depth_weight * l_dep
