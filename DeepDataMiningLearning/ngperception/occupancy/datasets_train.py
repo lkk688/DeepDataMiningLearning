@@ -39,8 +39,10 @@ def _depth_to_bins(depth, dlo, dstep, nbins):
 
 class NuScenesOccTrainDataset(Dataset):
     def __init__(self, gts_root: str, nusc, image_hw=(256, 704), downsample=16,
-                 scenes=None, max_samples: Optional[int] = None, stride: int = 1):
+                 scenes=None, max_samples: Optional[int] = None, stride: int = 1,
+                 depth_source: str = "lidar"):
         from pyquaternion import Quaternion
+        from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
         self.occ = Occ3DNuScenesDataset(gts_root, scenes=scenes,
                                         max_samples=max_samples, stride=stride)
@@ -49,6 +51,35 @@ class NuScenesOccTrainDataset(Dataset):
         self.fH, self.fW = self.H // downsample, self.W // downsample
         self.dlo, self.dstep = DBOUND[0], DBOUND[2]
         self.D = int(round((DBOUND[1] - DBOUND[0]) / DBOUND[2]))
+        # "lidar" = project LiDAR sweep (sparse); "occ" = render depth from the dense Occ3D GT
+        self.depth_source = depth_source
+        self._vorig = np.asarray(PC_RANGE[:3], np.float32)        # grid lower corner
+        self._vs = float(VOXEL_SIZE)
+        self._gsz = np.asarray(GRID_SIZE, np.int64)
+
+    def _occ_rendered_depth(self, sem, K, R_c2e, t_c2e, ow, oh):
+        """Render dense depth from the Occ3D GT: project occupied voxel centres into the
+        camera, keep the nearest (z-buffer) per feature cell. Dense + GT-consistent."""
+        ii, jj, kk = np.where(sem != 17)                         # occupied voxels
+        centers = self._vorig + self._vs * (np.stack([ii, jj, kk], 1) + 0.5)  # ego (N,3)
+        # project the 8 voxel corners (not just the centre) so each voxel fills its footprint
+        offs = self._vs * np.array([[a, b, c] for a in (-.5, .5) for b in (-.5, .5)
+                                    for c in (-.5, .5)], np.float32)             # (8,3)
+        centers = (centers[:, None, :] + offs[None, :, :]).reshape(-1, 3)        # (N*8,3)
+        cam = (centers - t_c2e) @ R_c2e                          # ego -> cam
+        front = cam[:, 2] > 0.1
+        cam = cam[front]
+        Kf = K.copy(); Kf[0] *= self.fW / ow; Kf[1] *= self.fH / oh  # K at feature resolution
+        uvw = cam @ Kf.T
+        u = (uvw[:, 0] / uvw[:, 2]).astype(int)
+        v = (uvw[:, 1] / uvw[:, 2]).astype(int)
+        d = cam[:, 2]
+        inb = (u >= 0) & (u < self.fW) & (v >= 0) & (v < self.fH)
+        u, v, d = u[inb], v[inb], d[inb]
+        dm = np.zeros((self.fH, self.fW), np.float32)
+        order = np.argsort(-d)                                   # far first -> near overwrites (z-buffer min)
+        dm[v[order], u[order]] = d[order]
+        return _depth_to_bins(dm, self.dlo, self.dstep, self.D)
 
     def __len__(self):
         return len(self.occ)
@@ -99,8 +130,11 @@ class NuScenesOccTrainDataset(Dataset):
             R = self.Q(cs["rotation"]).rotation_matrix.astype(np.float32)
             t = np.array(cs["translation"], np.float32)
             Rs.append(torch.from_numpy(R)); ts.append(torch.from_numpy(t))
-            depths.append(torch.from_numpy(
-                self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)))
+            if self.depth_source == "occ":
+                dbin = self._occ_rendered_depth(s.semantics, K, R, t, ow, oh)
+            else:
+                dbin = self._lidar_depth(s.sample_token, sd["token"], K, R, t, ow, oh, sx, sy)
+            depths.append(torch.from_numpy(dbin))
         return {
             "imgs": torch.stack(imgs), "intrins": torch.stack(Ks),
             "rots": torch.stack(Rs), "trans": torch.stack(ts),

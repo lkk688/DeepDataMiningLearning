@@ -411,9 +411,19 @@ supervised by Occ3D. The depth term is the BEVDepth trick — explicitly teachin
 ~40 mIoU in the literature. And "sparse LiDAR" is misleading: a single sweep covers ~4–5 %
 of *image* pixels, but max-pooled to the coarse feature grid (18×50) it fills **~69 %** of
 cells — densely where it matters (ground/near field; the empty rows are sky/far, which are
-unoccupied anyway). Want it even denser? Two options: aggregate several LiDAR sweeps, or —
-elegantly — **render depth from the dense Occ3D GT** and supervise with that (free dense
-depth). That is a concrete next improvement.
+unoccupied anyway).
+
+> **Experiment — we tried "render depth from the dense Occ3D GT" instead of LiDAR**, the
+> elegant-looking idea: z-buffer the occupied voxel *corners* into each camera for a dense,
+> GT-consistent depth target (`--depth-source occ`). At **matched ~70 % feature coverage**,
+> a controlled A/B (DINOv2-small, 1000 samples, 8 ep) found **LiDAR depth is better** —
+> mIoU **0.141 (LiDAR) vs 0.124 (Occ3D-rendered)**. *Why:* density wasn't the bottleneck;
+> **precision** was. Real LiDAR gives continuous range at the true surface, whereas the
+> rendered depth is quantized to the 0.4 m voxel grid and inherits the GT's densification
+> noise. Lesson: more dense supervision isn't automatically better — a *precise* sparse
+> signal beats a *coarse* dense one. (A `lidar + occ` combined loss, or sweep aggregation
+> for genuinely denser *real* depth, are the better follow-ups; both `--depth-source`
+> options are in `train_lss.py` so this is one flag to re-run.)
 
 **Where the GT comes from (Occ3D-nuScenes).** We *do* use the
 [Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D) `gts` — it is the dense occupancy GT

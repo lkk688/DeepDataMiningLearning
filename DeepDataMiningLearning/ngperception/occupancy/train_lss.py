@@ -79,6 +79,8 @@ def main():
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--lr", type=float, default=2e-3)
     ap.add_argument("--depth-weight", type=float, default=1.0)
+    ap.add_argument("--depth-source", choices=["lidar", "occ"], default="lidar",
+                    help="depth-supervision target: sparse LiDAR or dense Occ3D-rendered")
     ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
     ap.add_argument("--decoder-layers", type=int, default=2)
     ap.add_argument("--decoder-hidden", type=int, default=64)
@@ -98,9 +100,10 @@ def main():
                          decoder_layers=args.decoder_layers).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
-                                       max_samples=n)
+                                       max_samples=n, depth_source=args.depth_source)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
-                                     max_samples=args.val_samples, stride=7)
+                                     max_samples=args.val_samples, stride=7,
+                                     depth_source=args.depth_source)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, collate_fn=collate, drop_last=True)
     val_ld = DataLoader(val_ds, batch_size=1, num_workers=2, collate_fn=collate)
