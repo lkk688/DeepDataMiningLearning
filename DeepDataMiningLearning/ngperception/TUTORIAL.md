@@ -426,7 +426,7 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
     --max-samples 3000 --epochs 12 --depth-weight 1.0
 ```
 
-**Prediction vs ground truth.** Rendering the trained model's voxels next to the Occ3D GT
+**Prediction vs ground truth.** Rendering the strongest (mIoU 0.216) model's voxels next to the Occ3D GT
 (both camera-masked, same open3d view) shows it captures the scene's geometry *and*
 semantics — the road, sidewalk, terrain, and vegetation line up; the prediction is just
 denser/noisier than the densified GT:
