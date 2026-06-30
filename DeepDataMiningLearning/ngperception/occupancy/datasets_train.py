@@ -40,7 +40,7 @@ def _depth_to_bins(depth, dlo, dstep, nbins):
 class NuScenesOccTrainDataset(Dataset):
     def __init__(self, gts_root: str, nusc, image_hw=(256, 704), downsample=16,
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
-                 depth_source: str = "lidar", lidar_sweeps: int = 1):
+                 depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
@@ -55,6 +55,9 @@ class NuScenesOccTrainDataset(Dataset):
         # "lidar_multi" = aggregated multi-sweep LiDAR (+region map, for the loss ablation)
         self.depth_source = depth_source
         self.lidar_sweeps = lidar_sweeps
+        self.lidar_cache = lidar_cache               # dir to cache aggregated multi-sweep points
+        if lidar_cache:
+            os.makedirs(lidar_cache, exist_ok=True)
         self._vorig = np.asarray(PC_RANGE[:3], np.float32)        # grid lower corner
         self._vs = float(VOXEL_SIZE)
         self._gsz = np.asarray(GRID_SIZE, np.int64)
@@ -103,10 +106,17 @@ class NuScenesOccTrainDataset(Dataset):
                               self.nusc.get("sample_data", s["data"]["LIDAR_TOP"])["filename"]),
                               dtype=np.float32).reshape(-1, 5)[:, :3]
         else:
-            from nuscenes.utils.data_classes import LidarPointCloud
-            pc, _ = LidarPointCloud.from_file_multisweep(
-                self.nusc, s, "LIDAR_TOP", "LIDAR_TOP", nsweeps=self.lidar_sweeps)
-            pts = pc.points[:3].T.astype(np.float32)
+            cf = (os.path.join(self.lidar_cache, f"{token}_sw{self.lidar_sweeps}.npy")
+                  if self.lidar_cache else None)
+            if cf and os.path.exists(cf):
+                pts = np.load(cf)
+            else:
+                from nuscenes.utils.data_classes import LidarPointCloud
+                pc, _ = LidarPointCloud.from_file_multisweep(
+                    self.nusc, s, "LIDAR_TOP", "LIDAR_TOP", nsweeps=self.lidar_sweeps)
+                pts = pc.points[:3].T.astype(np.float32)
+                if cf:
+                    np.save(cf, pts)
         self._lcache_tok, self._lcache_pts = token, pts
         return pts
 

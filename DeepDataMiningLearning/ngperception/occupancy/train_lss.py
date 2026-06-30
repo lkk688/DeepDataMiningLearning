@@ -140,6 +140,8 @@ def main():
                     default="lidar",
                     help="LiDAR | Occ3D-rendered | combined | lidar_multi (aggregated sweeps)")
     ap.add_argument("--lidar-sweeps", type=int, default=1, help="sweeps to aggregate (lidar_multi)")
+    ap.add_argument("--lidar-cache", default=None, help="dir to cache aggregated multi-sweep points")
+    ap.add_argument("--seed", type=int, default=None, help="random seed (for multi-seed runs)")
     ap.add_argument("--depth-tolerant", type=int, default=0,
                     help="lidar_multi loss: ±bins tolerant window (0=hard CE)")
     ap.add_argument("--depth-region", action="store_true",
@@ -158,6 +160,12 @@ def main():
     args = ap.parse_args()
 
     from nuscenes import NuScenes
+    gen = None
+    if args.seed is not None:
+        import numpy as _np, random as _rnd
+        torch.manual_seed(args.seed); torch.cuda.manual_seed_all(args.seed)
+        _np.random.seed(args.seed); _rnd.seed(args.seed)
+        gen = torch.Generator(); gen.manual_seed(args.seed)
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
     n = 2 if args.smoke else args.max_samples
     dev = args.device
@@ -166,12 +174,14 @@ def main():
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
-                                       lidar_sweeps=args.lidar_sweeps)
+                                       lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
-                                     depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps)
+                                     depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
+                                     lidar_cache=args.lidar_cache)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                          num_workers=args.num_workers, collate_fn=collate, drop_last=True)
+                          num_workers=args.num_workers, collate_fn=collate, drop_last=True,
+                          generator=gen)
     val_ld = DataLoader(val_ds, batch_size=1, num_workers=2, collate_fn=collate)
 
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
