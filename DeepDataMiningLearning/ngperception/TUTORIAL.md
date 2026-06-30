@@ -444,3 +444,12 @@ sees them — alongside a forward-oriented global view:
 ![lss occ camera view](docs/lss_occ_camview_frame.png)
 
 (`output/lss_occ/lss_occ_camview.mp4`.)
+
+**Full surround demo.** Stitching all 6 cameras over the global occupancy — with the
+**ego vehicle drawn at the origin (black box) and its heading (yellow arrow)** — gives a
+complete bird's-eye scene the prediction reconstructs from the surround views:
+
+![lss occ surround demo](docs/lss_occ_surround_demo_frame.png)
+
+(`output/lss_occ/lss_occ_surround_demo.mp4`. The magenta drivable surface ahead matches the
+FRONT camera; vegetation/terrain flanks match the side cameras.)
