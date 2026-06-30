@@ -151,6 +151,8 @@ def main():
     ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
     ap.add_argument("--decoder-layers", type=int, default=2)
     ap.add_argument("--decoder-hidden", type=int, default=64)
+    ap.add_argument("--feat-upsample", type=int, default=1,
+                    help="upsample backbone features for a finer lift/supervision grid (2 -> 36x100)")
     ap.add_argument("--cosine", action="store_true", help="cosine LR schedule")
     ap.add_argument("--amp", action="store_true", help="mixed precision (faster, less memory)")
     ap.add_argument("--num-workers", type=int, default=4)
@@ -170,7 +172,7 @@ def main():
     n = 2 if args.smoke else args.max_samples
     dev = args.device
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
-                         decoder_layers=args.decoder_layers).to(dev)
+                         decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,

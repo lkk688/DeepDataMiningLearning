@@ -27,6 +27,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 # --------------------------------------------------------------------------- #
@@ -50,9 +51,11 @@ class CamEncoder(nn.Module):
     backbone="resnet18" (trainable, stride 16) or "dinov2" (frozen DINOv2-small, patch 14).
     A frozen DINOv2 gives much stronger features; only the DepthNet + decoder then train."""
 
-    def __init__(self, depth_bins: int, ctx_channels: int = 64, backbone: str = "resnet18"):
+    def __init__(self, depth_bins: int, ctx_channels: int = 64, backbone: str = "resnet18",
+                 upsample: int = 1):
         super().__init__()
         self.backbone = backbone
+        self.upsample = upsample        # >1 = supervise/lift at a finer feature resolution
         self.D = depth_bins
         self.C = ctx_channels
         if backbone == "resnet18":
@@ -85,7 +88,11 @@ class CamEncoder(nn.Module):
         return tok.transpose(1, 2).reshape(b, -1, h, w)         # (B*N,384,h,w)
 
     def forward(self, x):
-        x = self.depthnet(self._features(x))   # (B*N, D+C, h, w)
+        feat = self._features(x)
+        if self.upsample > 1:                  # finer feature/supervision resolution
+            feat = F.interpolate(feat, scale_factor=self.upsample, mode="bilinear",
+                                 align_corners=False)
+        x = self.depthnet(feat)                # (B*N, D+C, h, w)
         depth = x[:, : self.D].softmax(dim=1)  # categorical depth distribution
         ctx = x[:, self.D :]
         # lift: outer product context ⊗ depth -> (B*N, C, D, h, w)
@@ -118,11 +125,15 @@ class LSSOccupancy(nn.Module):
 
     def __init__(self, image_hw: Tuple[int, int] = None,
                  downsample: int = None, ctx_channels: int = 64, n_classes: int = 18,
-                 backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2):
+                 backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
+                 feat_upsample: int = 1):
         super().__init__()
         self.backbone = backbone
+        self.feat_upsample = feat_upsample
         _dino = backbone.startswith("dinov2")
-        self.downsample = downsample or (14 if _dino else 16)
+        base_ds = 14 if _dino else 16
+        # upsampling the features by U makes the effective patch/stride U× finer
+        self.downsample = downsample or (base_ds // feat_upsample)
         self.image_hw = image_hw or ((252, 700) if _dino else (256, 704))
         self.C = ctx_channels
         self.n_classes = n_classes
@@ -132,7 +143,7 @@ class LSSOccupancy(nn.Module):
         _, _, _, self.nz = _gridcfg(ZBOUND)
         self.dlo, self.dhi, self.dstep, self.D = _gridcfg(DBOUND)
 
-        self.encoder = CamEncoder(self.D, ctx_channels, backbone=backbone)
+        self.encoder = CamEncoder(self.D, ctx_channels, backbone=backbone, upsample=feat_upsample)
         self.decoder = VoxelDecoder(ctx_channels, n_classes,
                                     hidden=decoder_hidden, n_layers=decoder_layers)
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
