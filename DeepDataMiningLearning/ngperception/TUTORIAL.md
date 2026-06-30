@@ -463,14 +463,23 @@ unoccupied anyway).
 >
 > Two takeaways. (1) **Multi-sweep alone ≈ single-sweep** (0.139 vs 0.141) — exactly as the
 > coverage check predicted: more points can't help where the supervision grid is already
-> saturated. (2) **The two loss-design knobs do nothing on their own but synergize** — only
-> **+both** clears the single-sweep baseline (peak 0.153). Plausibly: the tolerant window
-> absorbs the small depth noise that multi-sweep motion-compensation adds, *while* region
-> weighting keeps the loss focused on the learnable road/objects rather than cluttered
-> background — each fixes a different failure the other would otherwise reintroduce. Caveat:
-> these are single noisy runs (finals span 0.132–0.142); the synergy is **suggestive, not
-> conclusive** — a multi-seed run would be needed to nail the effect size. Every target and
-> knob (`lidar` / `occ` / `combined` / `lidar_multi` × `--depth-tolerant` × `--depth-region`)
+> saturated. (2) In this *single* run **+both** looked like a synergy — the only config to
+> clear the baseline (peak 0.153). That is a tempting story (tolerant absorbs multi-sweep
+> noise, region weighting focuses on learnable surfaces). **But we did not trust it — we ran
+> a multi-seed check, and it was a false positive:**
+>
+> > **Multi-seed (plain vs +both, 3 seeds, 600 samples / 6 ep, cached):**
+> > plain **0.121 ± 0.005**, +both **0.123 ± 0.003** (final) — diff **+0.003, < 1 σ**; peak
+> > diff **+0.001**. **The "synergy" vanishes.** The single-run 0.153 was a lucky epoch/seed,
+> > not a real effect. *Lesson: a single run's peak is not evidence; multi-seed mean ± std is.
+> > Building `--seed` + a depth-cache so 6 runs were cheap was worth more than any one number.*
+>
+> So the honest bottom line of the whole depth-supervision study: **sparse-but-precise LiDAR
+> CE is the best simple choice; neither GT-rendered depth, nor a combined loss, nor multi-
+> sweep, nor the tolerant/region loss-design knobs beat it once you control for noise.** The
+> real lever left is the *supervision resolution* (finer than 18×50), not the depth signal.
+> Every target and knob (`lidar` / `occ` / `combined` / `lidar_multi` × `--depth-tolerant` ×
+> `--depth-region`, plus `--seed` / `--lidar-cache`)
 > is a flag in `train_lss.py`, so each row here is one command to reproduce.
 
 **Where the GT comes from (Occ3D-nuScenes).** We *do* use the
