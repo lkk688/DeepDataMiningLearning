@@ -538,6 +538,7 @@ DINOv2-base run:
 | our LSS occ — **DINOv2-small + 3× data** | 0.152 | 0.626 | 1500 samples, 10 ep, AMP (~40 min) | ✅ pure PyTorch |
 | our LSS occ — **DINOv2-base + deeper dec + cosine** | **0.216** | **0.681** | 3000 samples, 12 ep (~2.8 h) | ✅ pure PyTorch |
 | our LSS occ — **DINOv2-small + Lovász & class-bal. CE** (§2.8.1) | **0.226** | 0.623 | **1000 samples, 8 ep (~15 min)** | ✅ pure PyTorch |
+| our LSS occ — **DINOv2-base + deeper dec + Lovász & class-bal. CE** | **0.284** | **0.701** | 3000 samples, 12 ep | ✅ pure PyTorch |
 | *(published, for scale)* OccFormer / BEVFormer / CTF-Occ | 21 / 27 / 28.5 | — | full train, mmdet3d | ✗ |
 | supervised SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
 
@@ -613,6 +614,15 @@ Three points, and note how different this is from the §2.7.1 refutation:
    12 epochs (§2.8). A one-file loss change outran a 3× bigger, longer run. Of every lever we
    swept — depth source, depth density, supervision resolution, backbone, decoder, data — **the
    occupancy loss function was the highest-leverage one**, and it was the last we looked at.
+
+**And it compounds with scale.** Putting the fixed loss *back onto* the strong config
+(DINOv2-base + 4-layer decoder + cosine, 3000 samples, 12 ep) lifts our ceiling **0.216 →
+0.284 mIoU** (geo-IoU 0.681 → 0.701) — a **+31 %** jump from a loss change, and its *epoch-0*
+(0.173) nearly matches the old strong run's *final* 0.216. At **0.284 we sit at CTF-Occ's
+28.5 level** and above BEVFormer (27), camera-only and pure-PyTorch on ~10 % of the split.
+The class-balance/Lovász fix isn't a small-model crutch — it's a genuine correction to what
+the objective was optimizing, so it helps most exactly where the model is strong enough to
+act on the rare-class gradient it was previously ignoring.
 
 The knobs are opt-in flags (`--occ-lovasz`, `--occ-class-balance`, `--occ-cb-power`), so the
 plain-CE baseline above is still reproducible bit-for-bit. Lesson worth keeping: *before
