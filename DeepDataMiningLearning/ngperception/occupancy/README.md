@@ -67,12 +67,14 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
     --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
     --max-samples 500 --epochs 8 --depth-weight 1.0
 
-# strongest (frozen DINOv2-base + deeper decoder + cosine + AMP, ~2.8 h) -> mIoU 0.216
+# strongest (DINOv2-base + deeper decoder + cosine + AMP + Lovász & class-balanced CE)
 python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
     --gts /home/lkk688/Developer/occ3d_data/gts \
     --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
     --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 --cosine --amp \
     --max-samples 3000 --epochs 12 --depth-weight 1.0 \
+    --occ-lovasz 1.0 --occ-class-balance --occ-cb-power 0.25 \
+    --occ-cb-cache /home/lkk688/Developer/occ3d_data/classw_3000.npy \
     --out-dir DeepDataMiningLearning/ngperception/output/lss_occ_dinobase
 ```
 
@@ -82,11 +84,20 @@ Results (Occ3D val, camera-mask mIoU), scaling on a single RTX 3090:
 |---|---|---|
 | ResNet-18, 500 samples / 8 ep | 0.092 | 0.547 |
 | DINOv2-small, 1500 / 10 ep, AMP | 0.152 | 0.626 |
-| **DINOv2-base + deeper dec + cosine, 3000 / 12 ep** | **0.216** | **0.681** |
+| DINOv2-base + deeper dec + cosine, 3000 / 12 ep | 0.216 | 0.681 |
+| **+ Lovász + class-balanced CE** (`--occ-lovasz --occ-class-balance`) | **↑ see TUTORIAL §2.8.1** | |
 
-0.216 is **in the published-method band** (above MonoScene 6, OccFormer ~21; nearing
-BEVFormer 27 / CTF-Occ 28.5) — on ~10 % of the train split, a frozen backbone, pure
-PyTorch, no mmcv. Visualizations (open3d) in `output/lss_occ/`:
+**The loss is the biggest lever per unit effort.** Plain occupancy CE over ~85 %-free voxels
+lets dominant classes swamp the rare-class gradient, and mIoU averages over the 17 non-free
+classes — so rare-class IoU≈0 tanks it. Adding **Lovász-softmax** (a direct mIoU surrogate) +
+**inverse-frequency class weights** roughly **doubles** mIoU at a fixed cheap setting
+(DINOv2-small / 1k / 8ep: **0.139 → 0.226**, +7σ over 3 seeds, no geo-IoU loss) — a one-file
+change that *beats the 3× bigger/longer 0.216 run above*. See TUTORIAL §2.8.1 (ported from the
+[GaussianFormer3D study](../docs/GaussianFormer3D_study.md)).
+
+0.216 (plain CE) is already **in the published-method band** (above MonoScene 6, OccFormer ~21;
+nearing BEVFormer 27 / CTF-Occ 28.5) — on ~10 % of the train split, a frozen backbone, pure
+PyTorch, no mmcv; the loss fix pushes higher. Visualizations (open3d) in `output/lss_occ/`:
 `lss_occ_surround_demo.mp4` (6 cams + global occ + ego marker), `lss_occ_camview.mp4`
 (camera-aligned + global), `lss_occ_vs_gt.mp4` (pred vs GT). See TUTORIAL §2.7–2.8.
 

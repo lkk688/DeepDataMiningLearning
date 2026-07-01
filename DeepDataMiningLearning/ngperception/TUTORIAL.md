@@ -537,6 +537,7 @@ DINOv2-base run:
 | our LSS occ — **ResNet18** | 0.092 | 0.547 | 500 samples, 8 ep (~20 min) | ✅ pure PyTorch |
 | our LSS occ — **DINOv2-small + 3× data** | 0.152 | 0.626 | 1500 samples, 10 ep, AMP (~40 min) | ✅ pure PyTorch |
 | our LSS occ — **DINOv2-base + deeper dec + cosine** | **0.216** | **0.681** | 3000 samples, 12 ep (~2.8 h) | ✅ pure PyTorch |
+| our LSS occ — **DINOv2-small + Lovász & class-bal. CE** (§2.8.1) | **0.226** | 0.623 | **1000 samples, 8 ep (~15 min)** | ✅ pure PyTorch |
 | *(published, for scale)* OccFormer / BEVFormer / CTF-Occ | 21 / 27 / 28.5 | — | full train, mmdet3d | ✗ |
 | supervised SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
 
@@ -568,6 +569,54 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
     --decoder-layers 4 --decoder-hidden 96 --cosine --amp \
     --max-samples 3000 --epochs 12 --depth-weight 1.0
 ```
+
+### 2.8.1 The loss is the biggest lever — Lovász + class-balanced CE (from the GaussianFormer3D study)
+
+Studying [GaussianFormer3D](../docs/GaussianFormer3D_study.md) (a LiDAR-camera fusion Gaussian
+occupancy net) surfaced one change we could port straight into our pure-PyTorch trainer with
+**no new dependency**: they don't train the occupancy head on plain cross-entropy. They use
+**CE + Lovász-softmax + class-balanced weights**. We had been using plain CE. So we tested it —
+the same way we test everything here, **multi-seed**, since §2.7.1 taught us single runs lie.
+
+**Why it should matter.** Our occupancy CE scores every camera-visible voxel, and **~85 % of
+them are free**; a handful of classes (road, manmade, vegetation) dominate the rest. mIoU,
+though, is the **mean IoU over the 17 non-free classes** — so a model that nails free + road
+but never fires on *pedestrian/bicycle/motorcycle* still scores near zero on those, and mIoU
+collapses. Plain CE has no reason to fix this: the rare-class gradient is drowned. Two cheap
+changes attack exactly that: **inverse-frequency class weights** (up-weight rare classes,
+computed once from the GT over camera-visible voxels, tempered + normalized) and
+**Lovász-softmax** (a *direct differentiable surrogate for per-class IoU*, so the optimizer
+literally maximizes the metric).
+
+**Result** (DINOv2-small, 1000 samples, 8 ep — a deliberately cheap setting, 3 seeds each):
+
+| occ loss | mIoU (3-seed) | geo-IoU | Δ vs baseline |
+|---|---|---|---|
+| plain CE (baseline) | 0.139 ± 0.012 | 0.600 | — |
+| **+ Lovász + class-balanced CE** | **0.226 ± 0.010** | 0.623 | **+0.087 (~7σ)** |
+| — Lovász only (seed 0) | 0.224 | 0.587 | +0.081 |
+| — class-balance only (seed 0) | 0.233 | 0.631 | +0.090 |
+
+Three points, and note how different this is from the §2.7.1 refutation:
+
+1. **It is unambiguously real.** +0.087 mIoU is **~7σ** over the 3-seed baseline spread; *every*
+   seed (0.229, 0.213, 0.236) clears the baseline's *best* run (0.151) by a wide margin. This
+   is what a true effect looks like — the opposite of the tolerant/region "synergy" that
+   vanished under seeds. And **geo-IoU did not drop** (0.600 → 0.623), so it's a clean semantic
+   gain, not a geometry-for-mIoU trade.
+2. **The two knobs are redundant, not additive.** Lovász-only (+0.081) and class-balance-only
+   (+0.090) each recover *almost the entire* gain; together (+0.087) they don't stack — because
+   they fix the *same* problem (rare-class starvation) by two routes. Either alone is enough;
+   class-balance is marginally stronger and cheaper.
+3. **The loss beat the model.** This 0.226 (DINOv2-**small**, 1k samples, 8 ep) **exceeds our
+   previous best 0.216**, which needed DINOv2-**base** + a 4-layer decoder + **3×** the data +
+   12 epochs (§2.8). A one-file loss change outran a 3× bigger, longer run. Of every lever we
+   swept — depth source, depth density, supervision resolution, backbone, decoder, data — **the
+   occupancy loss function was the highest-leverage one**, and it was the last we looked at.
+
+The knobs are opt-in flags (`--occ-lovasz`, `--occ-class-balance`, `--occ-cb-power`), so the
+plain-CE baseline above is still reproducible bit-for-bit. Lesson worth keeping: *before
+scaling the model, check that your loss actually optimizes your metric.*
 
 **Prediction vs ground truth.** Rendering the strongest (mIoU 0.216) model's voxels next to the Occ3D GT
 (both camera-masked, same open3d view) shows it captures the scene's geometry *and*
