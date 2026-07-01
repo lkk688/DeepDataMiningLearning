@@ -474,13 +474,37 @@ unoccupied anyway).
 > > not a real effect. *Lesson: a single run's peak is not evidence; multi-seed mean ± std is.
 > > Building `--seed` + a depth-cache so 6 runs were cheap was worth more than any one number.*
 >
+> **Finer supervision resolution (`--feat-upsample`).** The one lever the ablations hadn't
+> refuted was the *supervision resolution* itself: the depth term is applied at the 18×50
+> feature grid, so maybe that coarse grid — not the depth signal — is the ceiling. We
+> upsample the backbone features ×2 before the DepthNet+lift, taking the depth distribution,
+> lift and splat to **36×100**, and re-check the coverage story: at 36×100 a single sweep now
+> covers only **53 %** of cells (vs 69 % at 18×50) and 5 sweeps recover **64 %** — so at the
+> finer grid multi-sweep density *should* finally matter. Three runs, fixed seed:
+>
+> | config | lift res | sweep | coverage | peak mIoU | final |
+> |---|---|---|---|---|---|
+> | A (baseline) | 18×50 | single | 69 % | 0.138 | 0.135 |
+> | B | 36×100 | single | 53 % | 0.134 | 0.132 |
+> | C | 36×100 | multi-5 | 64 % | 0.137 | 0.123 |
+>
+> **All three tie within the ±0.005 run noise** — finer resolution doesn't help, and even
+> though C restores coverage over B (64 % vs 53 %) it doesn't convert that into mIoU. The
+> reason is structural: **the output voxel grid is fixed at 200×200×16 @ 0.4 m.** The image
+> features at 18×50 already carry enough angular resolution to decide which 0.4 m voxel a
+> camera ray lands in; ×2 finer *image* lift just splats more sub-samples into the *same*
+> voxels. Supervision resolution isn't the bottleneck because the target resolution caps it.
+>
 > So the honest bottom line of the whole depth-supervision study: **sparse-but-precise LiDAR
-> CE is the best simple choice; neither GT-rendered depth, nor a combined loss, nor multi-
-> sweep, nor the tolerant/region loss-design knobs beat it once you control for noise.** The
-> real lever left is the *supervision resolution* (finer than 18×50), not the depth signal.
-> Every target and knob (`lidar` / `occ` / `combined` / `lidar_multi` × `--depth-tolerant` ×
-> `--depth-region`, plus `--seed` / `--lidar-cache`)
-> is a flag in `train_lss.py`, so each row here is one command to reproduce.
+> CE is the best simple choice; none of GT-rendered depth, a combined loss, multi-sweep, the
+> tolerant/region loss-design knobs, *or* finer lift resolution beat it once you control for
+> noise.** Every depth-supervision micro-optimization plateaus at ~0.14 (DINOv2-small, 1 k
+> samples). The levers that actually move mIoU are **model capacity and data** — the same
+> knobs that took the main model 0.092 → 0.152 → **0.216** (§2.8): backbone (ResNet→DINOv2-
+> base), decoder depth, and sample count, *not* the depth term. Every target and knob
+> (`lidar` / `occ` / `combined` / `lidar_multi` × `--depth-tolerant` × `--depth-region` ×
+> `--feat-upsample`, plus `--seed` / `--lidar-cache`) is a flag in `train_lss.py`, so each
+> row here is one command to reproduce.
 
 **Where the GT comes from (Occ3D-nuScenes).** We *do* use the
 [Occ3D](https://github.com/Tsinghua-MARS-Lab/Occ3D) `gts` — it is the dense occupancy GT
