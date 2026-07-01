@@ -72,7 +72,7 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
     --gts /home/lkk688/Developer/occ3d_data/gts \
     --nusc /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval \
     --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 --cosine --amp \
-    --max-samples 3000 --epochs 12 --depth-weight 1.0 \
+    --max-samples 3000 --epochs 12 --depth-weight 1.0 --refine-iters 2 \
     --occ-lovasz 1.0 --occ-class-balance --occ-cb-power 0.25 \
     --occ-cb-cache /home/lkk688/Developer/occ3d_data/classw_3000.npy \
     --out-dir DeepDataMiningLearning/ngperception/output/lss_occ_dinobase
@@ -85,7 +85,8 @@ Results (Occ3D val, camera-mask mIoU), scaling on a single RTX 3090:
 | ResNet-18, 500 samples / 8 ep | 0.092 | 0.547 |
 | DINOv2-small, 1500 / 10 ep, AMP | 0.152 | 0.626 |
 | DINOv2-base + deeper dec + cosine, 3000 / 12 ep | 0.216 | 0.681 |
-| **+ Lovász + class-balanced CE** (`--occ-lovasz --occ-class-balance`) | **0.284** | **0.701** |
+| + Lovász + class-balanced CE (`--occ-lovasz --occ-class-balance`) | 0.284 | 0.701 |
+| **+ iterative render-and-refine lift** (`--refine-iters 2`) | **0.298** | **0.710** |
 
 **The loss is the biggest lever per unit effort.** Plain occupancy CE over ~85 %-free voxels
 lets dominant classes swamp the rare-class gradient, and mIoU averages over the 17 non-free
@@ -96,8 +97,12 @@ change that *beats the 3× bigger/longer 0.216 run above* — and on the strong 
 **0.216 → 0.284** (geo-IoU 0.701). See TUTORIAL §2.8.1 (ported from the
 [GaussianFormer3D study](../docs/GaussianFormer3D_study.md)).
 
-**0.284 mIoU** is now at **CTF-Occ (28.5) level** and above BEVFormer (27) / OccFormer (~21) —
-camera-only, on ~10 % of the train split, a frozen backbone, pure PyTorch, no mmcv. Visualizations (open3d) in `output/lss_occ/`:
+On top of that, an **iterative render-and-refine lift** (`--refine-iters 2`, TUTORIAL §2.8.2)
+adds a further **+0.014 → 0.298 mIoU / 0.710 geo-IoU** — sampling the decoded occupancy back
+along each ray (first-hit transmittance) to sharpen the depth and re-lift, the pure-PyTorch
+analogue of GaussianFormer3D's iterative deformable refinement. **0.298 mIoU is past CTF-Occ
+(28.5)** and above BEVFormer (27) / OccFormer (~21) — camera-only, on ~10 % of the train
+split, a frozen backbone, pure PyTorch, no mmcv. Visualizations (open3d) in `output/lss_occ/`:
 `lss_occ_surround_demo.mp4` (6 cams + global occ + ego marker), `lss_occ_camview.mp4`
 (camera-aligned + global), `lss_occ_vs_gt.mp4` (pred vs GT). See TUTORIAL §2.7–2.8.
 
