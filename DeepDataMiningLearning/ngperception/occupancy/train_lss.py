@@ -30,13 +30,67 @@ from .datasets_train import NuScenesOccTrainDataset
 from .evaluator import OccupancyEvaluator
 
 
-def occ_loss(occ, semantics, mask_camera):
-    """occ: (B,C,X,Y,Z); semantics: (B,X,Y,Z); mask_camera: (B,X,Y,Z) bool."""
+def lovasz_grad(gt_sorted):
+    """Gradient of the Lovász extension of the Jaccard loss (Berman et al., CVPR'18)."""
+    p = len(gt_sorted)
+    gts = gt_sorted.sum()
+    intersection = gts - gt_sorted.float().cumsum(0)
+    union = gts + (1 - gt_sorted).float().cumsum(0)
+    jaccard = 1.0 - intersection / union
+    if p > 1:
+        jaccard[1:p] = jaccard[1:p] - jaccard[0:-1]
+    return jaccard
+
+
+def lovasz_softmax_flat(probas, labels, ignore=17):
+    """Multi-class Lovász-softmax on flat (P,C) probs / (P,) labels — a differentiable
+    surrogate for mIoU. `ignore` skips a class (free) so it optimizes the scored classes."""
+    C = probas.shape[1]
+    losses = []
+    for c in range(C):
+        if c == ignore:
+            continue
+        fg = (labels == c).float()
+        if fg.sum() == 0:                      # class absent in this batch -> no signal
+            continue
+        errors = (fg - probas[:, c]).abs()
+        errors_sorted, perm = torch.sort(errors, 0, descending=True)
+        losses.append(torch.dot(errors_sorted, lovasz_grad(fg[perm])))
+    if not losses:
+        return probas.sum() * 0.0
+    return torch.stack(losses).mean()
+
+
+def occ_loss(occ, semantics, mask_camera, class_w=None, lovasz_w=0.0):
+    """occ: (B,C,X,Y,Z); semantics: (B,X,Y,Z); mask_camera: (B,X,Y,Z) bool.
+    CE (optionally class-balanced) + optional Lovász-softmax (direct mIoU surrogate)."""
     B, C = occ.shape[:2]
-    logit = occ.permute(0, 2, 3, 4, 1).reshape(-1, C)
-    tgt = semantics.reshape(-1)
-    m = mask_camera.reshape(-1)
-    return F.cross_entropy(logit[m], tgt[m])
+    logit = occ.permute(0, 2, 3, 4, 1).reshape(-1, C)[mask_camera.reshape(-1)]
+    tgt = semantics.reshape(-1)[mask_camera.reshape(-1)]
+    loss = F.cross_entropy(logit, tgt, weight=class_w)
+    if lovasz_w > 0:
+        loss = loss + lovasz_w * lovasz_softmax_flat(logit.float().softmax(1), tgt, ignore=17)
+    return loss
+
+
+def compute_class_weights(occ_ds, n_classes=18, power=0.25, cache=None):
+    """Inverse-frequency class weights from the Occ3D GT over camera-visible voxels only
+    (what the CE scores). `power` tempers it (0=uniform, 1=full inverse-freq); normalized to
+    mean 1 and clamped so the loss scale is unchanged. Cached (only GT npz loads, no images)."""
+    import numpy as _np
+    if cache and os.path.exists(cache):
+        return torch.tensor(_np.load(cache), dtype=torch.float32)
+    counts = _np.zeros(n_classes, _np.float64)
+    for i in range(len(occ_ds)):
+        s = occ_ds[i]
+        sem = s.semantics[s.mask_camera].reshape(-1)
+        counts += _np.bincount(sem, minlength=n_classes)[:n_classes]
+    freq = counts / max(counts.sum(), 1.0)
+    w = (freq + 1e-6) ** (-power)
+    w = _np.clip(w / w.mean(), 0.2, 8.0).astype(_np.float32)
+    if cache:
+        _np.save(cache, w)
+    return torch.tensor(w, dtype=torch.float32)
 
 
 def depth_loss(depth_pred, depth_gt):
@@ -148,6 +202,13 @@ def main():
                     help="lidar_multi loss: weight by surface region (road/obj vs clutter)")
     ap.add_argument("--occ-weight", type=float, default=0.5, help="weight of the occ term in 'combined'")
     ap.add_argument("--occ-window", type=int, default=2, help="±bins tolerance for the occ term")
+    ap.add_argument("--occ-lovasz", type=float, default=0.0,
+                    help="weight of the Lovász-softmax term on the occ head (0=off; mIoU surrogate)")
+    ap.add_argument("--occ-class-balance", action="store_true",
+                    help="inverse-frequency class weights on the occ CE")
+    ap.add_argument("--occ-cb-power", type=float, default=0.25,
+                    help="tempering exponent for class weights (0=uniform, 1=full inverse-freq)")
+    ap.add_argument("--occ-cb-cache", default=None, help="cache file for computed class weights")
     ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
     ap.add_argument("--decoder-layers", type=int, default=2)
     ap.add_argument("--decoder-hidden", type=int, default=64)
@@ -181,6 +242,11 @@ def main():
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
                                      lidar_cache=args.lidar_cache)
+    class_w = None
+    if args.occ_class_balance:
+        class_w = compute_class_weights(train_ds.occ, power=args.occ_cb_power,
+                                        cache=args.occ_cb_cache).to(dev)
+        print(f"[lss_occ] class weights (min/max): {class_w.min():.2f}/{class_w.max():.2f}", flush=True)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                           num_workers=args.num_workers, collate_fn=collate, drop_last=True,
                           generator=gen)
@@ -202,7 +268,8 @@ def main():
             with torch.cuda.amp.autocast(enabled=args.amp):
                 occ, depth = model(b["imgs"].to(dev), b["rots"].to(dev),
                                    b["trans"].to(dev), b["intrins"].to(dev))
-                l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev))
+                l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev),
+                                 class_w=class_w, lovasz_w=args.occ_lovasz)
                 depth = depth.float()
                 if args.depth_source == "combined":
                     l_dep = depth_loss(depth, b["depth_gt"].to(dev)) + args.occ_weight * \
