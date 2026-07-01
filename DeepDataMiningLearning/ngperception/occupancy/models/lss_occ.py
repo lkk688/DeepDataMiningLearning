@@ -94,10 +94,8 @@ class CamEncoder(nn.Module):
                                  align_corners=False)
         x = self.depthnet(feat)                # (B*N, D+C, h, w)
         depth = x[:, : self.D].softmax(dim=1)  # categorical depth distribution
-        ctx = x[:, self.D :]
-        # lift: outer product context ⊗ depth -> (B*N, C, D, h, w)
-        feat = depth.unsqueeze(1) * ctx.unsqueeze(2)
-        return feat, depth
+        ctx = x[:, self.D :]                   # context features (not yet lifted)
+        return ctx, depth                      # (B*N,C,h,w), (B*N,D,h,w)
 
 
 class VoxelDecoder(nn.Module):
@@ -126,10 +124,13 @@ class LSSOccupancy(nn.Module):
     def __init__(self, image_hw: Tuple[int, int] = None,
                  downsample: int = None, ctx_channels: int = 64, n_classes: int = 18,
                  backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
-                 feat_upsample: int = 1):
+                 feat_upsample: int = 1, refine_iters: int = 1):
         super().__init__()
         self.backbone = backbone
         self.feat_upsample = feat_upsample
+        # >1 turns on the iterative render-and-refine lift: decode occupancy, sample it back
+        # along each camera ray (first-hit transmittance), sharpen the depth dist, re-lift.
+        self.refine_iters = refine_iters
         _dino = backbone.startswith("dinov2")
         base_ds = 14 if _dino else 16
         # upsampling the features by U makes the effective patch/stride U× finer
@@ -146,6 +147,9 @@ class LSSOccupancy(nn.Module):
         self.encoder = CamEncoder(self.D, ctx_channels, backbone=backbone, upsample=feat_upsample)
         self.decoder = VoxelDecoder(ctx_channels, n_classes,
                                     hidden=decoder_hidden, n_layers=decoder_layers)
+        self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
+        if refine_iters > 1:                             # learnable strength of the feedback prior
+            self.refine_alpha = nn.Parameter(torch.tensor(1.0))
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
         # grid lower-corner and voxel size, for pooling
         self.register_buffer("bx", torch.tensor([XBOUND[0], YBOUND[0], ZBOUND[0]]), persistent=False)
@@ -192,17 +196,53 @@ class LSSOccupancy(nn.Module):
             out[b].index_add_(0, flat[b][k].clamp(0, nx * ny * nz - 1), feat[b][k])
         return out.view(B, nx, ny, nz, C).permute(0, 4, 1, 2, 3).contiguous()  # (B,C,nx,ny,nz)
 
+    def _norm_grid(self, geom):
+        """ego xyz (B,N,D,h,w,3) -> grid_sample coords in [-1,1] for an (nx,ny,nz) volume.
+        grid_sample on a (B,1,nx,ny,nz) input reads the last grid dim as W(=nz)→z, H(=ny)→y,
+        D_in(=nx)→x, so we stack (z,y,x)."""
+        idx = (geom - self.bx.to(geom)) / self.dx.to(geom)          # float voxel index (x,y,z)
+        n = self.nxyz.to(geom).float()
+        norm = idx / (n - 1) * 2 - 1                                # align_corners=True mapping
+        return torch.stack([norm[..., 2], norm[..., 1], norm[..., 0]], dim=-1)
+
+    def _refine_depth(self, occ, depth, geom):
+        """Render the decoded occupancy back along each ray and sharpen the depth dist.
+        occ: (B,ncls,nx,ny,nz); depth: (B,N,D,h,w); geom: (B,N,D,h,w,3) ego. -> new depth."""
+        B, N, D, h, w = depth.shape
+        occupied = (1.0 - occ.softmax(1)[:, self.free_idx]).unsqueeze(1)   # (B,1,nx,ny,nz)
+        vol = occupied.unsqueeze(1).expand(B, N, 1, self.nx, self.ny, self.nz).reshape(B * N, 1, self.nx, self.ny, self.nz)
+        grid = self._norm_grid(geom).reshape(B * N, D, h, w, 3)
+        occ_along = F.grid_sample(vol, grid, align_corners=True, padding_mode="zeros")
+        occ_along = occ_along.view(B, N, D, h, w).clamp(0, 1)              # occupied prob per depth bin
+        # first-hit: prob the ray first meets a surface at bin d  = occ_d * Π_{d'<d}(1-occ_d')
+        one_minus = (1.0 - occ_along).clamp(min=1e-4)
+        trans = torch.cat([torch.ones_like(one_minus[:, :, :1]),
+                           torch.cumprod(one_minus, dim=2)[:, :, :-1]], dim=2)
+        first_hit = occ_along * trans
+        logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
+        return logit.softmax(dim=2)
+
     def forward(self, imgs, rots, trans, intrins):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
-        Returns occ logits (B,n_classes,nx,ny,nz) and depth dist (B,N,D,fH,fW)."""
+        Returns (occ_final, depth_init, aux) where aux={'occ':[...],'depth':[...]} holds every
+        refine iteration's outputs (for deep supervision). refine_iters=1 -> single-shot LSS."""
         B, N = imgs.shape[:2]
-        feat, depth = self.encoder(imgs.flatten(0, 1))      # (B*N,C,D,h,w), (B*N,D,h,w)
-        C, D, h, w = feat.shape[1:]
-        feat = feat.view(B, N, C, D, h, w)
+        ctx, depth = self.encoder(imgs.flatten(0, 1))       # (B*N,C,h,w), (B*N,D,h,w)
+        C, h, w = ctx.shape[1], ctx.shape[2], ctx.shape[3]
+        D = depth.shape[1]
+        ctx = ctx.view(B, N, C, h, w)
+        depth = depth.view(B, N, D, h, w)
         geom = self.get_geometry(rots, trans, intrins)      # (B,N,D,h,w,3)
-        vox = self.voxel_pool(geom, feat)                   # (B,C,nx,ny,nz)
-        occ = self.decoder(vox)                             # (B,n_classes,nx,ny,nz)
-        return occ, depth.view(B, N, D, h, w)
+        occ_all, depth_all = [], []
+        cur = depth
+        for it in range(self.refine_iters):
+            lifted = cur.unsqueeze(2) * ctx.unsqueeze(3)     # ctx ⊗ depth -> (B,N,C,D,h,w)
+            occ = self.decoder(self.voxel_pool(geom, lifted))
+            occ_all.append(occ); depth_all.append(cur)
+            if it < self.refine_iters - 1:
+                cur = self._refine_depth(occ, cur, geom)
+        aux = {"occ": occ_all, "depth": depth_all}
+        return occ_all[-1], depth_all[0], aux
 
 
 # ===========================================================================
@@ -222,7 +262,12 @@ if __name__ == "__main__":
     K = torch.tensor([[500., 0, 352], [0, 500., 128], [0, 0, 1]], device=dev)
     intr = K.view(1, 1, 3, 3).repeat(B, N, 1, 1)
     with torch.no_grad():
-        occ, depth = m(imgs, rots, trans, intr)
+        occ, depth, aux = m(imgs, rots, trans, intr)
     print(f"params={p:.1f}M  occ={tuple(occ.shape)}  depth={tuple(depth.shape)}")
     assert occ.shape == (B, 18, 200, 200, 16), occ.shape
     print("OK: occupancy grid (B,18,200,200,16)")
+    m2 = LSSOccupancy(image_hw=(256, 704), refine_iters=2).to(dev)
+    with torch.no_grad():
+        occ2, d2, aux2 = m2(imgs, rots, trans, intr)
+    assert occ2.shape == (B, 18, 200, 200, 16) and len(aux2["occ"]) == 2
+    print(f"OK: refine_iters=2 -> {len(aux2['occ'])} occ stages, alpha={m2.refine_alpha.item():.2f}")

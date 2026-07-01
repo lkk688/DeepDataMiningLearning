@@ -170,8 +170,8 @@ def evaluate(model, loader, device, max_batches=None):
     ev = OccupancyEvaluator()
     with torch.no_grad():
         for i, b in enumerate(loader):
-            occ, _ = model(b["imgs"].to(device), b["rots"].to(device),
-                           b["trans"].to(device), b["intrins"].to(device))
+            occ = model(b["imgs"].to(device), b["rots"].to(device),
+                        b["trans"].to(device), b["intrins"].to(device))[0]
             pred = occ.argmax(1).cpu().numpy()
             for j in range(pred.shape[0]):
                 ev.add(pred[j], b["semantics"][j].numpy(), b["mask_camera"][j].numpy())
@@ -214,6 +214,10 @@ def main():
     ap.add_argument("--decoder-hidden", type=int, default=64)
     ap.add_argument("--feat-upsample", type=int, default=1,
                     help="upsample backbone features for a finer lift/supervision grid (2 -> 36x100)")
+    ap.add_argument("--refine-iters", type=int, default=1,
+                    help="iterative render-and-refine lift passes (1=single-shot; 2 = one refine)")
+    ap.add_argument("--refine-occ-weight", type=float, default=0.5,
+                    help="deep-supervision weight on intermediate refine stages' occ loss")
     ap.add_argument("--cosine", action="store_true", help="cosine LR schedule")
     ap.add_argument("--amp", action="store_true", help="mixed precision (faster, less memory)")
     ap.add_argument("--num-workers", type=int, default=4)
@@ -233,7 +237,8 @@ def main():
     n = 2 if args.smoke else args.max_samples
     dev = args.device
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
-                         decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample).to(dev)
+                         decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample,
+                         refine_iters=args.refine_iters).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
@@ -266,10 +271,14 @@ def main():
         model.train()
         for it, b in enumerate(train_ld):
             with torch.cuda.amp.autocast(enabled=args.amp):
-                occ, depth = model(b["imgs"].to(dev), b["rots"].to(dev),
-                                   b["trans"].to(dev), b["intrins"].to(dev))
-                l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev),
-                                 class_w=class_w, lovasz_w=args.occ_lovasz)
+                occ, depth, aux = model(b["imgs"].to(dev), b["rots"].to(dev),
+                                        b["trans"].to(dev), b["intrins"].to(dev))
+                sem_d, mask_d = b["semantics"].to(dev), b["mask_camera"].to(dev)
+                l_occ = occ_loss(occ, sem_d, mask_d, class_w=class_w, lovasz_w=args.occ_lovasz)
+                if len(aux["occ"]) > 1:            # deep supervision on the earlier refine stages
+                    for occ_i in aux["occ"][:-1]:
+                        l_occ = l_occ + args.refine_occ_weight * occ_loss(
+                            occ_i, sem_d, mask_d, class_w=class_w, lovasz_w=args.occ_lovasz)
                 depth = depth.float()
                 if args.depth_source == "combined":
                     l_dep = depth_loss(depth, b["depth_gt"].to(dev)) + args.occ_weight * \
