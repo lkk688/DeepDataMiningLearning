@@ -628,6 +628,45 @@ The knobs are opt-in flags (`--occ-lovasz`, `--occ-class-balance`, `--occ-cb-pow
 plain-CE baseline above is still reproducible bit-for-bit. Lesson worth keeping: *before
 scaling the model, check that your loss actually optimizes your metric.*
 
+### 2.8.2 Iterative render-and-refine lift — attacking the single-shot bottleneck
+
+Our own §2.3/§2.7 diagnosis was that **the lift is single-shot**: each camera ray's depth is
+predicted from 2-D features *once*, the features are splatted *once*, and if that depth is
+wrong the features land in the wrong voxels with no chance to recover. The
+[GaussianFormer3D study](../docs/GaussianFormer3D_study.md) confirmed the diagnosis from
+outside — their answer is **iterative refinement** (4 deformable-attention passes). We ported
+the *idea* into pure PyTorch, no CUDA, still camera-only:
+
+1. lift + decode occupancy once (as before);
+2. **render it back**: sample the decoded occupancy along every camera ray (`grid_sample`),
+   and compute a **first-hit transmittance** — the NeRF-style probability that the ray first
+   meets a surface at depth bin *d*, `occ_d · Π_{d'<d}(1−occ_{d'})`;
+3. use that as a log-prior (learnable strength α) to **sharpen the depth distribution**;
+4. **re-lift and re-decode** with a *weight-tied* decoder (true recurrent refinement).
+
+Intermediate stages are deep-supervised. It's the differentiable-rendering feedback loop the
+single-shot lift was missing, and it costs ≈1.7× a forward pass (one extra decode + one
+`grid_sample`). Result (DINOv2-small, 1k, 8ep, **on top of the §2.8.1 loss fix**, 3 seeds):
+
+| lift | mIoU (3-seed) | geo-IoU |
+|---|---|---|
+| single-shot (refine=1) | 0.228 ± 0.004 | 0.625 |
+| **render-and-refine (refine=2)** | **0.242 ± 0.007** | **0.645** |
+
+**A real but modest gain: +0.014 mIoU (~3σ).** It's small next to the loss fix's +0.087, but
+it is *clean* — every refine=2 seed (0.252, 0.235, 0.239) beats every refine=1 seed
+(0.229, 0.222, 0.232); the worst refined run exceeds the best single-shot run (a rank
+separation with p≈0.05 at n=3). And **geo-IoU rose too** (0.625 → 0.645), exactly the
+signature we'd expect if the feedback is fixing *lift geometry* rather than just re-labelling:
+the render-back pulls each ray's mass toward the decoded surface, so features land in the
+right voxels on the second pass. (`--refine-iters`, `--refine-occ-weight`; refine=1 reproduces
+§2.8.1 to ±0.002, confirming the refactor is numerically clean.)
+
+The honest reading: the single-shot lift *was* leaving a little on the table — but only a
+little, because at a 0.4 m voxel output the 3-D decoder already recovers most depth-placement
+error on its own (consistent with §2.7.1's finding that supervision resolution, not lift
+precision, is the ceiling). The loss was the ×6-bigger lever; the lift is a real ×1 top-up.
+
 **Prediction vs ground truth.** Rendering the strongest (mIoU 0.216) model's voxels next to the Occ3D GT
 (both camera-masked, same open3d view) shows it captures the scene's geometry *and*
 semantics — the road, sidewalk, terrain, and vegetation line up; the prediction is just
