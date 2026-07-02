@@ -64,18 +64,37 @@ runs data → train → eval. Two checks:
   0 → 0.324** (ep15 0.125 → ep20 0.261 → ep29 0.324), so it learns a real detector, not just
   memorises.
 
-Both ceilings are **heading quality**: mAP@0.7 stays ~0.036 because M0 uses axis-aligned IoU
-assignment and has no direction classifier (both are M2). This is the expected M1 result — the
-pipeline is correct and generalises; the gap to competitive KITTI numbers is precisely M2 +
-full-schedule training on H100 (ours is 6.7 % of the split, 30 ep, from scratch).
+Both ceilings are **heading quality**: mAP@0.7 stays ~0.036. The gap to competitive KITTI
+numbers is M2 + full-schedule training on H100 (ours is 6.7 % of the split, 30 ep, from scratch).
+
+**M2 — rotated-IoU assignment + direction classifier (opt-in, ablated).** Two standard
+improvements, added behind flags (`--rotated-assign`, `--use-dir`) and A/B'd on the overfit
+(6 frames / 18 cars, 3 seeds):
+
+| config | mAP@0.5 (3-seed) | note |
+|---|---|---|
+| baseline (axis-aligned assign) | 0.225 ± 0.097 | over-assigns (num_pos 276) |
+| **`--rotated-assign`** | **0.323 ± 0.046** | cleaner assign (num_pos 123): higher mean, **½ the variance** |
+| `--rotated-assign --use-dir` | 0.141 (1 seed) | direction classifier **hurt** — see below |
+
+Honest read: **rotated-IoU assignment helps modestly and stabilises training** (+0.098 mean,
+~1.6σ at n=3, but variance halves — the cleaner target set is the mechanism, exactly what the
+per-box diagnosis predicted: axis-aligned assignment gave muddy regression targets on close
+cars). The **direction classifier hurt** here, because our raw angle regression *already*
+resolves heading well (per-box mod-π error 0.02–0.09); the 2-bin inference correction only
+perturbs already-good headings. So `--use-dir` stays **off by default**.
+
+Caveat that gates real use: the rotated assignment uses a numpy Sutherland–Hodgman IoU
+(prefiltered to axis-aligned-IoU>0.1 candidates) — fine for the overfit, **too slow for
+full-split training** (~2× iter time). Vectorising it in torch is **M2b**, and is the
+prerequisite for turning this modest overfit gain into real val-AP on H100.
 
 ## Status & caveats (honest)
 
-- **M0/M1 = correct pipeline, not yet a competitive KITTI number.** The fast IoU path (target
-  assignment + NMS) is **axis-aligned** (exact for yaw≈0, an approximation under rotation), and
-  the head has **no direction classifier** — so orientation is the accuracy ceiling (the
-  overfit tops out at mAP@0.5≈0.45). **M2** = vectorised exact-rotated-IoU assignment +
-  a direction-classifier head; that is what lifts the overfit toward ~1.0 and real val AP up.
+- **M0/M1 = correct pipeline, not yet a competitive KITTI number.** The default fast IoU path
+  (NMS + optional target assignment) is **axis-aligned** (exact for yaw≈0). `--rotated-assign`
+  (M2) improves and stabilises it but is slow (numpy); **M2b** = vectorise the rotated IoU in
+  torch so it is usable for full-split training on H100.
 - **`kitti_eval/` (official metric) needs `numba` + a working CUDA** — its `rotate_iou.py` uses
   `numba.cuda`, which **segfaults under this WSL2 setup**. Use `eval3d.py` locally; run
   `kitti_eval/` on the H100/HPC for official-KITTI parity (**M1**).

@@ -163,3 +163,34 @@ def rotated_iou_bev(boxes_a, boxes_b):
             inter = _poly_area(_poly_clip(pa, pb))
             out[i, j] = inter / (area_a + _poly_area(pb) - inter + 1e-6)
     return out
+
+
+def rotated_iou_bev_paired(boxes_a, boxes_b):
+    """Exact rotated BEV IoU for PAIRED boxes: (P,7),(P,7) -> (P,) IoU(a_i, b_i). torch out."""
+    if boxes_a.shape[0] == 0:
+        return boxes_a.new_zeros(0)
+    ca = boxes_to_corners_bev(boxes_a).detach().cpu().numpy()
+    cb = boxes_to_corners_bev(boxes_b).detach().cpu().numpy()
+    out = np.zeros(len(boxes_a), np.float32)
+    for i in range(len(boxes_a)):
+        pa = [tuple(p) for p in ca[i]]; pb = [tuple(p) for p in cb[i]]
+        inter = _poly_area(_poly_clip(pa, pb))
+        out[i] = inter / (_poly_area(pa) + _poly_area(pb) - inter + 1e-6)
+    return torch.from_numpy(out).to(boxes_a.device)
+
+
+def rotated_iou_assign(anchors, gt_boxes, prefilter=0.1):
+    """(Na,Ng) rotated BEV IoU, computed exactly only on axis-aligned-IoU>prefilter candidates
+    (the vast majority of anchor-GT pairs have zero overlap). Fast enough for target assignment."""
+    iou = anchors.new_zeros(anchors.shape[0], gt_boxes.shape[0])
+    if gt_boxes.shape[0] == 0:
+        return iou
+    ai, gi = (boxes_bev_iou_aligned(anchors, gt_boxes) > prefilter).nonzero(as_tuple=True)
+    if ai.numel():
+        iou[ai, gi] = rotated_iou_bev_paired(anchors[ai], gt_boxes[gi])
+    return iou
+
+
+def limit_period(val, offset=0.5, period=2 * np.pi):
+    """Wrap angle into [-offset*period, (1-offset)*period)  (OpenPCDet convention)."""
+    return val - torch.floor(val / period + offset) * period

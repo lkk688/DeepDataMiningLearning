@@ -24,7 +24,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from .box_utils import ResidualCoder, boxes_bev_iou_aligned, nms_aligned
+from .box_utils import (ResidualCoder, boxes_bev_iou_aligned, nms_aligned,
+                        rotated_iou_assign, limit_period)
 from .losses import SigmoidFocalClassificationLoss, WeightedSmoothL1Loss
 
 
@@ -140,16 +141,22 @@ class AnchorHead(nn.Module):
 
     def __init__(self, in_channels, pc_range, num_classes=1,
                  anchor_sizes=((3.9, 1.6, 1.56),), anchor_rotations=(0, np.pi / 2),
-                 anchor_bottom=-1.78, pos_thresh=0.6, neg_thresh=0.45):
+                 anchor_bottom=-1.78, pos_thresh=0.6, neg_thresh=0.45,
+                 rotated_assign=False, use_dir=False, dir_offset=0.7854, dir_weight=0.2):
         super().__init__()
         self.pcr = list(pc_range)
         self.num_classes = num_classes
         self.sizes, self.rots, self.bottom = list(anchor_sizes), list(anchor_rotations), anchor_bottom
         self.A = len(self.sizes) * len(self.rots)
         self.pos_thresh, self.neg_thresh = pos_thresh, neg_thresh
+        self.rotated_assign = rotated_assign            # M2: rotated-IoU target assignment
+        self.use_dir = use_dir                          # M2: direction classifier (2 bins)
+        self.dir_offset, self.dir_weight = dir_offset, dir_weight
         self.coder = ResidualCoder()
         self.cls_conv = nn.Conv2d(in_channels, self.A * num_classes, 1)
         self.box_conv = nn.Conv2d(in_channels, self.A * 7, 1)
+        if use_dir:
+            self.dir_conv = nn.Conv2d(in_channels, self.A * 2, 1)
         self.focal = SigmoidFocalClassificationLoss()
         self.smooth = WeightedSmoothL1Loss(code_weights=[1.0] * 7)
         nn.init.constant_(self.cls_conv.bias, -np.log((1 - 0.01) / 0.01))   # focal prior
@@ -171,39 +178,55 @@ class AnchorHead(nn.Module):
         B, _, H, W = feat.shape
         cls = self.cls_conv(feat).permute(0, 2, 3, 1).reshape(B, H * W * self.A, self.num_classes)
         box = self.box_conv(feat).permute(0, 2, 3, 1).reshape(B, H * W * self.A, 7)
-        anchors = self.generate_anchors(H, W, feat.device)
-        return {"cls": cls, "box": box, "anchors": anchors}
+        out = {"cls": cls, "box": box, "anchors": self.generate_anchors(H, W, feat.device)}
+        if self.use_dir:
+            out["dir"] = self.dir_conv(feat).permute(0, 2, 3, 1).reshape(B, H * W * self.A, 2)
+        return out
+
+    def _dir_target(self, headings):
+        """2-bin direction target from GT heading (OpenPCDet convention)."""
+        offset_rot = limit_period(headings - self.dir_offset, 0.0, 2 * np.pi)
+        return torch.floor(offset_rot / np.pi).long().clamp(0, 1)
 
     def assign(self, anchors, gt):
-        """anchors (Na,7); gt (Ng,8)[box7, label]. -> cls_t (Na,ncls), reg_t (Na,7), cls_w, reg_w."""
+        """anchors (Na,7); gt (Ng,8)[box7, label]. -> cls_t, reg_t, cls_w, reg_w, dir_t, pos."""
         Na = anchors.shape[0]
         cls_t = anchors.new_zeros(Na, self.num_classes)
         reg_t = anchors.new_zeros(Na, 7)
         reg_w = anchors.new_zeros(Na)
+        dir_t = anchors.new_zeros(Na, dtype=torch.long)
         if gt.shape[0] == 0:
-            return cls_t, reg_t, torch.ones(Na, device=anchors.device), reg_w
-        iou = boxes_bev_iou_aligned(anchors, gt[:, :7])                     # (Na,Ng)
+            return cls_t, reg_t, torch.ones(Na, device=anchors.device), reg_w, dir_t
+        iou = (rotated_iou_assign(anchors, gt[:, :7]) if self.rotated_assign
+               else boxes_bev_iou_aligned(anchors, gt[:, :7]))             # (Na,Ng)
         maxiou, arg = iou.max(dim=1)
         pos, neg = maxiou >= self.pos_thresh, maxiou < self.neg_thresh
-        lbl = gt[:, 7].long()[arg]
-        cls_t[pos, lbl[pos]] = 1.0
-        reg_t[pos] = self.coder.encode(anchors[pos], gt[:, :7][arg][pos])
+        matched = gt[:, :7][arg]
+        cls_t[pos, gt[:, 7].long()[arg][pos]] = 1.0
+        reg_t[pos] = self.coder.encode(anchors[pos], matched[pos])
         reg_w[pos] = 1.0
-        return cls_t, reg_t, (pos | neg).float(), reg_w
+        dir_t[pos] = self._dir_target(matched[pos][:, 6])
+        return cls_t, reg_t, (pos | neg).float(), reg_w, dir_t
 
     def get_loss(self, pred, gt_list):
         anchors = pred["anchors"]
-        cls_t, reg_t, cls_w, reg_w = [], [], [], []
+        cls_t, reg_t, cls_w, reg_w, dir_t = [], [], [], [], []
         for gt in gt_list:
-            ct, rt, cw, rw = self.assign(anchors, gt.to(anchors.device))
-            cls_t.append(ct); reg_t.append(rt); cls_w.append(cw); reg_w.append(rw)
+            ct, rt, cw, rw, dt = self.assign(anchors, gt.to(anchors.device))
+            cls_t.append(ct); reg_t.append(rt); cls_w.append(cw); reg_w.append(rw); dir_t.append(dt)
         cls_t, reg_t = torch.stack(cls_t), torch.stack(reg_t)
-        cls_w, reg_w = torch.stack(cls_w), torch.stack(reg_w)
+        cls_w, reg_w, dir_t = torch.stack(cls_w), torch.stack(reg_w), torch.stack(dir_t)
         num_pos = reg_w.sum().clamp(min=1.0)
         cls_loss = self.focal(pred["cls"], cls_t, cls_w).sum() / num_pos
         reg_loss = self.smooth(pred["box"], reg_t, reg_w).sum() / num_pos
-        return cls_loss + 2.0 * reg_loss, {"cls": cls_loss.item(), "reg": reg_loss.item(),
-                                           "num_pos": int(num_pos.item())}
+        loss = cls_loss + 2.0 * reg_loss
+        stats = {"cls": cls_loss.item(), "reg": reg_loss.item(), "num_pos": int(num_pos.item())}
+        if self.use_dir:
+            dir_loss = (torch.nn.functional.cross_entropy(pred["dir"].flatten(0, 1), dir_t.flatten(),
+                                                          reduction="none").view_as(reg_w) * reg_w).sum() / num_pos
+            loss = loss + self.dir_weight * dir_loss
+            stats["dir"] = dir_loss.item()
+        return loss, stats
 
     @torch.no_grad()
     def predict(self, pred, score_thresh=0.1, nms_thresh=0.01):
@@ -212,6 +235,11 @@ class AnchorHead(nn.Module):
         for b in range(pred["cls"].shape[0]):
             scores, labels = pred["cls"][b].sigmoid().max(dim=1)
             boxes = self.coder.decode(pred["box"][b], anchors)
+            if self.use_dir:                                               # correct 180° flip
+                dir_lbl = pred["dir"][b].argmax(dim=1)
+                period = np.pi
+                r = limit_period(boxes[:, 6] - self.dir_offset, 0.0, period)
+                boxes[:, 6] = r + self.dir_offset + period * dir_lbl.to(boxes.dtype)
             keep = scores > score_thresh
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
             if boxes.shape[0]:
@@ -226,7 +254,8 @@ class PointPillars(nn.Module):
 
     def __init__(self, num_point_features=4, num_classes=1,
                  pc_range=(0, -39.68, -3, 69.12, 39.68, 1), voxel_size=(0.16, 0.16, 4),
-                 max_points=32, max_pillars=30000, vfe_channels=64):
+                 max_points=32, max_pillars=30000, vfe_channels=64,
+                 rotated_assign=False, use_dir=False):
         super().__init__()
         self.pc_range, self.voxel_size = list(pc_range), list(voxel_size)
         self.max_points, self.max_pillars = max_points, max_pillars
@@ -234,7 +263,8 @@ class PointPillars(nn.Module):
         self.ny = int(round((pc_range[4] - pc_range[1]) / voxel_size[1]))
         self.vfe = PillarVFE(num_point_features, voxel_size, pc_range, out_channels=vfe_channels)
         self.backbone = BaseBEVBackbone(vfe_channels)
-        self.head = AnchorHead(self.backbone.num_bev_features, pc_range, num_classes=num_classes)
+        self.head = AnchorHead(self.backbone.num_bev_features, pc_range, num_classes=num_classes,
+                               rotated_assign=rotated_assign, use_dir=use_dir)
 
     def _bev(self, points):
         dev = next(self.parameters()).device
