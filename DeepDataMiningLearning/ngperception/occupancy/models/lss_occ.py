@@ -125,7 +125,8 @@ class LSSOccupancy(nn.Module):
                  downsample: int = None, ctx_channels: int = 64, n_classes: int = 18,
                  backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
                  feat_upsample: int = 1, refine_iters: int = 1,
-                 lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32):
+                 lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
+                 lidar_only: bool = False):
         super().__init__()
         self.backbone = backbone
         self.feat_upsample = feat_upsample
@@ -136,6 +137,8 @@ class LSSOccupancy(nn.Module):
         # embedded features into the camera volume before the decoder (LiDAR as an input, not
         # just depth supervision). Camera-only path is unchanged when False.
         self.lidar_fusion = lidar_fusion
+        # ablation: zero the camera lifted volume so the decoder sees LiDAR only (same params).
+        self.lidar_only = lidar_only
         _dino = backbone.startswith("dinov2")
         base_ds = 14 if _dino else 16
         # upsampling the features by U makes the effective patch/stride U× finer
@@ -253,6 +256,8 @@ class LSSOccupancy(nn.Module):
         for it in range(self.refine_iters):
             lifted = cur.unsqueeze(2) * ctx.unsqueeze(3)     # ctx ⊗ depth -> (B,N,C,D,h,w)
             vox = self.voxel_pool(geom, lifted)              # (B,C,nx,ny,nz)
+            if self.lidar_only:                              # ablation: drop the camera input
+                vox = torch.zeros_like(vox)
             if lid is not None:
                 vox = torch.cat([vox, lid], dim=1)           # fuse LiDAR features
             occ = self.decoder(vox)

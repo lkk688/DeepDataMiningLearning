@@ -219,6 +219,8 @@ def main():
                     help="iterative render-and-refine lift passes (1=single-shot; 2 = one refine)")
     ap.add_argument("--lidar-fusion", action="store_true",
                     help="fuse voxelized LiDAR as an input (train+inference), not just depth sup.")
+    ap.add_argument("--lidar-only", action="store_true",
+                    help="ablation: zero the camera lifted volume -> LiDAR-only (implies fusion)")
     ap.add_argument("--refine-occ-weight", type=float, default=0.5,
                     help="deep-supervision weight on intermediate refine stages' occ loss")
     ap.add_argument("--cosine", action="store_true", help="cosine LR schedule")
@@ -230,6 +232,8 @@ def main():
     args = ap.parse_args()
 
     from nuscenes import NuScenes
+    if args.lidar_only:
+        args.lidar_fusion = True            # LiDAR-only still needs the voxelized LiDAR input
     gen = None
     if args.seed is not None:
         import numpy as _np, random as _rnd
@@ -241,7 +245,8 @@ def main():
     dev = args.device
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
                          decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample,
-                         refine_iters=args.refine_iters, lidar_fusion=args.lidar_fusion).to(dev)
+                         refine_iters=args.refine_iters, lidar_fusion=args.lidar_fusion,
+                         lidar_only=args.lidar_only).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
