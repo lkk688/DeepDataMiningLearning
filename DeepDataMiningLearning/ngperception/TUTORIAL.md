@@ -541,7 +541,9 @@ DINOv2-base run:
 | our LSS occ — **DINOv2-base + deeper dec + Lovász & class-bal. CE** | 0.284 | 0.701 | 3000 samples, 12 ep | ✅ pure PyTorch |
 | our LSS occ — **+ iterative render-and-refine lift** (§2.8.2) | **0.298** | **0.710** | 3000 samples, 12 ep | ✅ pure PyTorch |
 | *(published, for scale)* OccFormer / BEVFormer / CTF-Occ | 21 / 27 / 28.5 | — | full train, mmdet3d | ✗ |
-| supervised SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
+| — camera-only lines end here; below adds LiDAR **at inference** — | | | | |
+| our LSS occ — **+ LiDAR fusion** (§2.8.3, *fusion mode*) | **0.392** | **0.822** | 1000, 8 ep, single sweep | ✅ pure PyTorch |
+| supervised **fusion** SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
 
 Three things this shows:
 
@@ -675,6 +677,43 @@ So the refine top-up is a *constant additive* improvement independent of backbon
 capacity, not something the bigger model subsumes: the render-back supplies information
 (where the surface actually is) that neither more parameters nor more data provide. At
 **0.298 mIoU we are past CTF-Occ (28.5)**, camera-only and pure-PyTorch on ~10 % of the split.
+
+### 2.8.3 Optional LiDAR fusion — crossing from camera-only into fusion
+
+Everything above is **camera-only at inference**: LiDAR appears only as *training* depth
+supervision. GaussianFormer3D is a **LiDAR-camera fusion** net — LiDAR is an *input*, and
+that's where most of its accuracy comes from. So the third port is a flag, `--lidar-fusion`,
+that turns LiDAR into an input on both train and test: voxelize the sweep into the *same*
+200×200×16 grid → 3 per-voxel features `[occupancy, log-density, mean height-residual]`, embed
+with a small 3-D CNN, and **concatenate into the camera lifted volume before the decoder**.
+No new dependency; the camera-only path is byte-identical when the flag is off.
+
+Fair test — camera-only-best (loss fix + refine=2) vs the same + fusion, single sweep, 3 seeds:
+
+| inference input | mIoU (3-seed) | geo-IoU |
+|---|---|---|
+| camera-only | 0.236 ± 0.004 | 0.644 |
+| **camera + LiDAR fusion** | **0.392 ± 0.023** | **0.822** |
+
+**+0.156 mIoU (+66 %)** — the single largest lever in this whole study, and every fusion seed
+(0.411, 0.405, 0.360) crushes every camera-only seed. The tell is **geo-IoU: 0.644 → 0.822.**
+A single LiDAR sweep hands the model the scene's *occupancy geometry* directly — where the
+surfaces are — which the camera has to infer through the fragile depth lift. What's left for
+the network is mostly **semantics** (which class) and **completion** (voxels the sweep never
+hit, occluded or beyond range). Peak runs cross **0.40 mIoU** with nothing more than a concat.
+
+Two honest caveats, so the number isn't over-read:
+1. **This is no longer camera-only.** It's a different problem regime — the fair peer group is
+   now *fusion* nets (FlashOcc/Dr.Occ/EFFOcc at 32–50), not the camera-only OccFormer/BEVFormer.
+   0.40 on ~10 % of the split, pure PyTorch, is a respectable *fusion baseline*, not a SOTA claim.
+2. **The gain is the sensor, not cleverness.** A trivial concat of a raw occupancy volume gets
+   most of it, because LiDAR geometry is that informative. The interesting engineering is what
+   you do *beyond* the concat (GaussianFormer3D's voxel-to-Gaussian init + LiDAR-guided
+   deformable attention) — that's the headroom above this baseline, not the +0.156 itself.
+
+That is exactly why it's an **opt-in flag**: the camera-only line (0.216 → 0.298) is the honest
+"how far does vision alone go" story; fusion is a separate, clearly-labelled mode for when a
+LiDAR is actually on the vehicle at inference.
 
 **Prediction vs ground truth.** Rendering the strongest (mIoU 0.216) model's voxels next to the Occ3D GT
 (both camera-masked, same open3d view) shows it captures the scene's geometry *and*

@@ -86,7 +86,8 @@ Results (Occ3D val, camera-mask mIoU), scaling on a single RTX 3090:
 | DINOv2-small, 1500 / 10 ep, AMP | 0.152 | 0.626 |
 | DINOv2-base + deeper dec + cosine, 3000 / 12 ep | 0.216 | 0.681 |
 | + Lovász + class-balanced CE (`--occ-lovasz --occ-class-balance`) | 0.284 | 0.701 |
-| **+ iterative render-and-refine lift** (`--refine-iters 2`) | **0.298** | **0.710** |
+| + iterative render-and-refine lift (`--refine-iters 2`) | 0.298 | 0.710 |
+| **+ LiDAR fusion** (`--lidar-fusion`, *LiDAR at inference*) | **0.39–0.40** | **0.82** |
 
 **The loss is the biggest lever per unit effort.** Plain occupancy CE over ~85 %-free voxels
 lets dominant classes swamp the rare-class gradient, and mIoU averages over the 17 non-free
@@ -102,7 +103,15 @@ adds a further **+0.014 → 0.298 mIoU / 0.710 geo-IoU** — sampling the decode
 along each ray (first-hit transmittance) to sharpen the depth and re-lift, the pure-PyTorch
 analogue of GaussianFormer3D's iterative deformable refinement. **0.298 mIoU is past CTF-Occ
 (28.5)** and above BEVFormer (27) / OccFormer (~21) — camera-only, on ~10 % of the train
-split, a frozen backbone, pure PyTorch, no mmcv. Visualizations (open3d) in `output/lss_occ/`:
+split, a frozen backbone, pure PyTorch, no mmcv.
+
+**Optional LiDAR fusion** (`--lidar-fusion`, TUTORIAL §2.8.3) turns LiDAR into an *input* at
+inference (voxelized into the occ grid + concatenated pre-decoder), not just depth
+supervision. This crosses from camera-only into **fusion** and jumps mIoU **0.236 → 0.392
+(+66 %)**, geo-IoU **0.644 → 0.822** — a single sweep hands the model the scene's occupancy
+geometry directly. It's a separate, clearly-labelled mode (the peer group becomes fusion nets
+FlashOcc/Dr.Occ/EFFOcc at 32–50); the camera-only line above is the "how far does vision alone
+go" story. Visualizations (open3d) in `output/lss_occ/`:
 `lss_occ_surround_demo.mp4` (6 cams + global occ + ego marker), `lss_occ_camview.mp4`
 (camera-aligned + global), `lss_occ_vs_gt.mp4` (pred vs GT). See TUTORIAL §2.7–2.8.
 
