@@ -908,3 +908,32 @@ complete bird's-eye scene the prediction reconstructs from the surround views:
 
 (`output/lss_occ/lss_occ_surround_demo.mp4`. The magenta drivable surface ahead matches the
 FRONT camera; vegetation/terrain flanks match the side cameras.)
+
+## 3. Future work — scaling to full data on H100
+
+Every number in §2.8 was produced on a **single RTX 3090**, a **frozen** backbone, and
+**~10 % of the nuScenes train split** (3000 / 34149 samples, ≤12 epochs). That was deliberate:
+the 3090 is for **cheap, multi-seed ablation** — deciding *which* idea clears the noise (§2.7.1,
+§2.8.1–2.8.3) before spending real compute. The ideas are now validated; **the remaining ceiling
+is infrastructure, not ideas.** Because the whole stack is **pure PyTorch (no mmcv, no custom
+CUDA)**, moving to an H100 (or a multi-H100 node) is just an environment + data-staging step —
+not the build/version fight every mmlab occupancy repo forces (§2.5). The clear scaling paths:
+
+1. **Full train split + longer schedule (the biggest "free" win).** 10 % → 100 % data, 12 → 24–36
+   epochs, larger batch. The loss/refine/fusion gains should keep compounding with data — this
+   is *infra-bound, not idea-bound*. Needs a small trainer change: **DDP + gradient accumulation
+   + checkpoint/resume** (today it's a single-GPU loop; AMP is already in).
+2. **Bigger backbone / finer voxels.** DINOv2-**large**, and a **0.4 m → 0.2 m** voxel grid.
+   §2.7.1 showed the *output voxel resolution* — not the supervision resolution — is the true
+   ceiling; a finer grid plus its 3-D decoder only fits in H100 memory.
+3. **Multi-sweep + temporal fusion.** Denser LiDAR occupancy volumes (fusion doesn't saturate
+   the way depth supervision did — §2.7.1 coverage analysis), and BEV **temporal aggregation**
+   (ego-motion-warped multi-frame), a known large lever we haven't touched.
+4. **Beyond-concat fusion.** Our 0.493 fusion is a *naive concat* of a raw occupancy volume. The
+   headroom above it is GaussianFormer3D's **voxel-to-Gaussian initialization + LiDAR-guided
+   deformable attention** ([study](docs/GaussianFormer3D_study.md)) — higher engineering and
+   compute cost, i.e. an H100 job.
+
+The division of labor is the point: **prototype and de-risk on the 3090, scale the winners on
+H100.** Keep every change an opt-in flag so the camera-only baseline stays reproducible, and
+keep checking geo-IoU alongside mIoU — that crossover is what told us *what* each lever fixed.

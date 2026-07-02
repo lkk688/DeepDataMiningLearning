@@ -1325,3 +1325,30 @@ Every domain improves (loss 0.87 after 3 epochs, ~17 min). Two honest observatio
 > `forward()` for a plain CE branch before giving up — a model with a location-token
 > vocabulary almost always has one, because that is how it was pretrained. Here that
 > inspection turned a dead end into a reproducible +39%.
+
+## 23. Future work — H100-scale training, unification & distillation
+
+Everything trained above (§16–22) ran on a **single RTX 3090** at small scale — a few thousand
+images, short schedules, LoRA rather than full fine-tunes. That is the right use of a weak GPU:
+**prove the mechanism cheaply** (freeze-vs-unfreeze §18.3, more-data §18.4, open-vocab §19,
+VLM LoRA §21–22) before spending real compute. The mechanisms are established; the next lever is
+scale, which belongs on an **H100** (single or multi-GPU). The concrete directions:
+
+1. **A unified cross-dataset detector.** We have a common taxonomy and four native→unified
+   loaders (§13: COCO, KITTI, Waymo, nuImages). Train **one** detector across all of them at
+   full scale — the generalization heatmap (§5a) shows how far zero-shot models fall off-domain;
+   a jointly-trained model is the direct fix. Needs DDP + a multi-dataset sampler.
+2. **Full fine-tunes, not LoRA.** §21–22 used LoRA because the 3090 couldn't hold the full VLM
+   detectors. On an H100, full-parameter fine-tunes of Grounding DINO (§19) and the VLM
+   detectors (§21–22) over the *full* target splits should widen the already-positive gains, and
+   let us fine-tune at native resolution instead of down-scaled inputs.
+3. **Distillation into a fast student.** §21.4 quantified the VLM latency gap (a general VLM vs
+   LocateAnything's parallel box decoding vs a real-time YOLO). The payoff is **distilling** a
+   strong-but-slow open-vocab / VLM teacher into a fast one-stage student — teacher labels at
+   H100 throughput, student trained to match. Closes the accuracy↔latency gap the tables expose.
+4. **Larger acceleration sweeps.** Re-run the latency benchmark (§11, §15) on H100 with bigger
+   batches and INT8/TensorRT to see how the native-vs-accelerated picture shifts on newer silicon.
+
+Same division of labor as the perception module ([ngperception/TUTORIAL.md](../ngperception/TUTORIAL.md)):
+**prototype and de-risk on the 3090, scale the winners on H100** — and keep every training knob a
+flag so the zero-shot baselines stay reproducible.
