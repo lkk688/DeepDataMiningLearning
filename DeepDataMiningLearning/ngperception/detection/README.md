@@ -21,12 +21,22 @@ share one encoder (PLAN.md M3–M5, giving camera/LiDAR/fusion ablation for free
 
 ```
 detection/
-├── pointpillars.py   # pillarize + PillarVFE + scatter + BEV backbone + anchor head + model
-├── box_utils.py      # ResidualCoder + pure-torch 3D IoU (aligned + exact rotated) + NMS
-├── losses.py         # focal cls loss + smooth-L1 box loss (harvested, device-agnostic)
-├── eval3d.py         # self-contained BEV AP (rotated-IoU, R40) — runs locally, no numba
-└── kitti_eval/       # harvested official KITTI eval (numba) — HPC-only, see caveat below
+├── pointpillars.py     # anchor-based model: pillarize+PillarVFE+scatter+BEV backbone+anchor head
+├── centerpoint.py      # center-based model: same front-end + CenterHead (Gaussian heatmap)
+├── box_utils.py        # ResidualCoder + pure-torch 3D IoU (aligned + vectorised rotated) + NMS
+├── losses.py           # focal cls loss + smooth-L1 box loss (harvested, device-agnostic)
+├── kitti_dataset.py    # KITTI Car loader (+ cam->LiDAR transform, reused by Waymo)
+├── nuscenes_dataset.py # nuScenes loader (devkit; boxes already LiDAR-frame)
+├── waymo_dataset.py    # Waymo (KITTI-export) loader
+├── train_kitti.py      # train+eval loop; --model {pointpillars,centerpoint}, --rotated-assign
+├── eval3d.py           # self-contained BEV AP (rotated-IoU, R40) — runs locally, no numba
+└── kitti_eval/         # harvested official KITTI eval (numba) — HPC-only, see caveat below
 ```
+
+**Two model paradigms** (both pure-torch, sharing the pillar front-end): anchor-based
+**PointPillars** and center-based **CenterPoint**. **Three datasets** in one interface
+(`{points, gt (M,8)}`, LiDAR frame): **KITTI**, **nuScenes**, **Waymo**. See
+[TUTORIAL.md](TUTORIAL.md) §9–10. (SECOND/PV-RCNN/VoxelNeXt need spconv — out of scope.)
 
 ## What's harvested vs written fresh
 

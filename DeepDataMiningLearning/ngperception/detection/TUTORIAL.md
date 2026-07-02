@@ -199,20 +199,76 @@ these numbers are **6.7 % of the KITTI split, 30 epochs, from scratch**, on one 
 KITTI numbers are a full-schedule **H100** job (§10) — the point here is a *correct, readable,
 dependency-free* pipeline you can learn from and extend, not a leaderboard entry.
 
-## 9. Reproduce — exact commands
+## 9. Datasets — KITTI, nuScenes, Waymo (one interface)
+
+Every loader returns the **same dict** — `{"points": (N,C), "gt": (M,8)}` with each box
+`[x, y, z, dx, dy, dz, heading, label]` in the **LiDAR frame** — so any model trains on any
+dataset unchanged. The only per-dataset work is getting boxes into that frame:
+
+| dataset | file | boxes come from | verified |
+|---|---|---|---|
+| **KITTI** | `kitti_dataset.py` | camera-frame labels → `rect_to_lidar` (R0, Tr_velo_to_cam) | Car 4.15×1.73×1.57 m |
+| **nuScenes** | `nuscenes_dataset.py` | devkit `get_sample_data` (already LiDAR-frame) + `wlh`/quaternion | Car 4.25×1.64×1.44 m |
+| **Waymo** (KITTI-export) | `waymo_dataset.py` | reuses KITTI transform w/ front-cam `Tr_velo_to_cam_0` + `label_all` | 31 cars in-bounds, 4.86×2.14×1.77 m |
+
+Each loader has a `--root … ` sanity `__main__` that loads a frame and prints the Car size —
+the one check that confirms calibration, axis order, and the bottom→centre shift are right.
+(Data notes: KITTI + nuScenes are staged in full; only a **1-frame** Waymo sample is local, so
+the Waymo loader is verified to *load* but full Waymo training is an H100/data job.)
+
+## 10. A second model — CenterPoint (center-based vs anchor-based)
+
+PointPillars (§3–6) is **anchor-based**: place boxes everywhere, classify/regress each, match by
+IoU. **CenterPoint** ([`centerpoint.py`](centerpoint.py)) is the other classic paradigm —
+**anchor-free, center-based** — and it drops onto the *same* pillar front-end, only swapping the
+head:
+
+- predict a **per-class BEV Gaussian heatmap** (each object is a peak) + per-cell regression
+  (sub-voxel offset, height, log-size, sin/cos yaw);
+- targets: render a CenterNet Gaussian at each object's BEV centre; loss = penalty-reduced focal
+  on the heatmap + L1 on the regression at centres;
+- **decode is a 3×3 max-pool on the heatmap** ("keep local maxima") — no anchors, no rotated NMS,
+  no spconv. That is why it's such a clean pure-torch fit.
+
+The comparison is itself a lesson. On the same 6-frame KITTI overfit:
+
+| model | paradigm | overfit mAP@0.5 |
+|---|---|---|
+| PointPillars | anchor-based (axis-aligned assign) | 0.45 |
+| **CenterPoint** | center-based | **0.925** |
+
+CenterPoint overfits *far* better — because it **sidesteps the very anchor-assignment ambiguity**
+that §6 was fighting: there is no "which of the two anchor rotations near this car is positive",
+just one centre per object. (This is not a claim that CenterPoint > PointPillars in general —
+full-data numbers depend on tuning — but it cleanly shows *why* the center paradigm became
+dominant.) Both share `PillarVFE` + scatter + `BaseBEVBackbone`, so this is a ~150-line head
+swap — exactly the modularity §3 was built for.
+
+> Out of scope (honestly): **SECOND / CenterPoint-voxel / PV-RCNN / VoxelNeXt** all need **sparse
+> 3-D convolution** (`spconv`, compiled CUDA) — incompatible with the pure-torch constraint. The
+> pillar-based PointPillars and CenterPoint are the two classic paradigms reachable without it.
+
+## 11. Reproduce — exact commands
 
 ```bash
 P=/home/lkk688/miniconda/envs/py312/bin/python
 cd <repo root>
 
 # --- unit / smoke tests (seconds each) ---
-$P -m DeepDataMiningLearning.ngperception.detection.pointpillars    # forward+loss+backward+predict
+$P -m DeepDataMiningLearning.ngperception.detection.pointpillars    # anchor model: fwd+loss+predict
+$P -m DeepDataMiningLearning.ngperception.detection.centerpoint     # center model: fwd+loss+decode
 $P -m DeepDataMiningLearning.ngperception.detection.eval3d          # BEV-AP evaluator self-test
-$P -m DeepDataMiningLearning.ngperception.detection.kitti_dataset --root /mnt/e/Shared/Dataset/Kitti
 
-# --- overfit sanity (pipeline learns; ~a few min) ---
+# --- dataset loader sanity (prints a Car's size in the LiDAR frame) ---
+$P -m DeepDataMiningLearning.ngperception.detection.kitti_dataset    --root /mnt/e/Shared/Dataset/Kitti
+$P -m DeepDataMiningLearning.ngperception.detection.nuscenes_dataset --root /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval
+$P -m DeepDataMiningLearning.ngperception.detection.waymo_dataset    # 1-frame local sample
+
+# --- overfit sanity (pipeline learns; ~a few min). --model {pointpillars,centerpoint} ---
 $P -m DeepDataMiningLearning.ngperception.detection.train_kitti \
     --root /mnt/e/Shared/Dataset/Kitti --overfit --max-frames 12 --epochs 80
+$P -m DeepDataMiningLearning.ngperception.detection.train_kitti --model centerpoint \
+    --root /mnt/e/Shared/Dataset/Kitti --overfit --max-frames 12 --epochs 120   # center head converges slower
 
 # --- short real train (train 500 / val 150; ~30 min on a 3090) -> val mAP@0.5 ~0.32 ---
 $P -m DeepDataMiningLearning.ngperception.detection.train_kitti \
@@ -230,7 +286,7 @@ $P -m DeepDataMiningLearning.ngperception.detection.train_kitti \
 Flags: `--overfit` (train==val, sanity), `--rotated-assign` (M2/M2b rotated IoU assignment),
 `--use-dir` (direction classifier — off by default, it hurt), `--batch-size`, `--lr`, `--epochs`.
 
-## 10. Where this goes (roadmap)
+## 12. Where this goes (roadmap)
 
 - **M3 — shared encoder.** Attach this detection head onto the occupancy module's fused
   camera+LiDAR *voxel* volume (collapse Z → BEV): one front-end, two heads (occ + det).
