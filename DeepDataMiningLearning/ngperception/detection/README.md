@@ -57,11 +57,17 @@ anchors); BEV-AP is 1.0 on perfect predictions and degrades correctly on FPs / m
 
 **M1 verified** (real KITTI Car, `kitti_dataset.py` + `train_kitti.py`): loader confirmed —
 camera→LiDAR box transform gives correct Car boxes (size ~4.15×1.73×1.57 m). Full pipeline
-runs data → train → eval. On a strong **overfit** (6 frames, loss→0.011) the model predicts
-**exactly 18 detections for 18 GT cars** and reaches **mAP@0.5 = 0.45** — localization is
-correct; the ceiling below 1.0 is **heading quality**, because M0 uses axis-aligned IoU
-assignment and has no direction classifier (both are M2). This is the expected M1 result: the
-pipeline is correct, and the gap to real numbers is precisely the M2 work.
+runs data → train → eval. Two checks:
+- **overfit** (6 frames, loss→0.011): predicts **exactly 18 detections for 18 GT cars**,
+  **mAP@0.5 = 0.45** — localization correct.
+- **generalization** (train 500 / **val 150 held-out**, 30 ep): val **mAP@0.5 climbs
+  0 → 0.324** (ep15 0.125 → ep20 0.261 → ep29 0.324), so it learns a real detector, not just
+  memorises.
+
+Both ceilings are **heading quality**: mAP@0.7 stays ~0.036 because M0 uses axis-aligned IoU
+assignment and has no direction classifier (both are M2). This is the expected M1 result — the
+pipeline is correct and generalises; the gap to competitive KITTI numbers is precisely M2 +
+full-schedule training on H100 (ours is 6.7 % of the split, 30 ep, from scratch).
 
 ## Status & caveats (honest)
 
