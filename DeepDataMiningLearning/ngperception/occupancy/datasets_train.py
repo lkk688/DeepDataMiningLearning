@@ -40,7 +40,8 @@ def _depth_to_bins(depth, dlo, dstep, nbins):
 class NuScenesOccTrainDataset(Dataset):
     def __init__(self, gts_root: str, nusc, image_hw=(256, 704), downsample=16,
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
-                 depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None):
+                 depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None,
+                 lidar_fusion: bool = False):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
@@ -55,6 +56,7 @@ class NuScenesOccTrainDataset(Dataset):
         # "lidar_multi" = aggregated multi-sweep LiDAR (+region map, for the loss ablation)
         self.depth_source = depth_source
         self.lidar_sweeps = lidar_sweeps
+        self.lidar_fusion = lidar_fusion             # also emit a voxelized-LiDAR volume (fusion input)
         self.lidar_cache = lidar_cache               # dir to cache aggregated multi-sweep points
         if lidar_cache:
             os.makedirs(lidar_cache, exist_ok=True)
@@ -119,6 +121,32 @@ class NuScenesOccTrainDataset(Dataset):
                     np.save(cf, pts)
         self._lcache_tok, self._lcache_pts = token, pts
         return pts
+
+    def _lidar_voxel(self, token):
+        """Voxelize the LiDAR cloud into the occ grid -> (3,nx,ny,nz) per-voxel features:
+        [occupancy, log(1+count), mean height-residual]. This is the LiDAR *input* for fusion
+        (an occupancy/geometry prior the camera lift lacks), separate from depth supervision."""
+        pts = self._load_lidar_pts(token)                       # LIDAR_TOP frame (M,3)
+        s = self.nusc.get("sample", token)
+        lsd = self.nusc.get("sample_data", s["data"]["LIDAR_TOP"])
+        lcs = self.nusc.get("calibrated_sensor", lsd["calibrated_sensor_token"])
+        Rl = self.Q(lcs["rotation"]).rotation_matrix
+        tl = np.array(lcs["translation"])
+        ego = pts @ Rl.T + tl                                   # lidar -> ego
+        gx, gy, gz = self._gsz.tolist()
+        idx = np.floor((ego - self._vorig) / self._vs).astype(np.int64)
+        m = ((idx[:, 0] >= 0) & (idx[:, 0] < gx) & (idx[:, 1] >= 0) & (idx[:, 1] < gy) &
+             (idx[:, 2] >= 0) & (idx[:, 2] < gz))
+        idx, ez = idx[m], ego[m, 2]
+        count = np.zeros((gx, gy, gz), np.float32)
+        np.add.at(count, (idx[:, 0], idx[:, 1], idx[:, 2]), 1.0)
+        zc = self._vorig[2] + (idx[:, 2] + 0.5) * self._vs      # voxel z-centre
+        zres = np.zeros((gx, gy, gz), np.float32)
+        np.add.at(zres, (idx[:, 0], idx[:, 1], idx[:, 2]), (ez - zc) / self._vs)
+        occ = (count > 0).astype(np.float32)
+        mean_zres = np.where(count > 0, zres / np.maximum(count, 1.0), 0.0)
+        vol = np.stack([occ, np.log1p(count), mean_zres], 0)    # (3,nx,ny,nz)
+        return torch.from_numpy(vol)
 
     def _lidar_depth(self, token, cam_sd_token, K, R_c2e, t_c2e, ow, oh, sx, sy):
         """Project LiDAR into a camera -> depth at the *resized* image size, binned."""
@@ -193,6 +221,8 @@ class NuScenesOccTrainDataset(Dataset):
             out["occ_region"] = torch.stack(occ_regions)           # (N,fH,fW) class (-1 empty)
         if self.depth_source == "lidar_multi":
             out["occ_region"] = torch.stack(occ_regions)           # region for loss weighting
+        if self.lidar_fusion:
+            out["lidar_vox"] = self._lidar_voxel(s.sample_token)   # (3,nx,ny,nz) fusion input
         return out
 
 

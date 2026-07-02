@@ -124,13 +124,18 @@ class LSSOccupancy(nn.Module):
     def __init__(self, image_hw: Tuple[int, int] = None,
                  downsample: int = None, ctx_channels: int = 64, n_classes: int = 18,
                  backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
-                 feat_upsample: int = 1, refine_iters: int = 1):
+                 feat_upsample: int = 1, refine_iters: int = 1,
+                 lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32):
         super().__init__()
         self.backbone = backbone
         self.feat_upsample = feat_upsample
         # >1 turns on the iterative render-and-refine lift: decode occupancy, sample it back
         # along each camera ray (first-hit transmittance), sharpen the depth dist, re-lift.
         self.refine_iters = refine_iters
+        # LiDAR fusion: voxelize the point cloud into the SAME occ grid and concat its
+        # embedded features into the camera volume before the decoder (LiDAR as an input, not
+        # just depth supervision). Camera-only path is unchanged when False.
+        self.lidar_fusion = lidar_fusion
         _dino = backbone.startswith("dinov2")
         base_ds = 14 if _dino else 16
         # upsampling the features by U makes the effective patch/stride U× finer
@@ -145,7 +150,15 @@ class LSSOccupancy(nn.Module):
         self.dlo, self.dhi, self.dstep, self.D = _gridcfg(DBOUND)
 
         self.encoder = CamEncoder(self.D, ctx_channels, backbone=backbone, upsample=feat_upsample)
-        self.decoder = VoxelDecoder(ctx_channels, n_classes,
+        dec_in = ctx_channels
+        if lidar_fusion:                                 # small 3D CNN over voxelized LiDAR
+            self.lidar_branch = nn.Sequential(
+                nn.Conv3d(lidar_raw, lidar_channels, 3, padding=1), nn.BatchNorm3d(lidar_channels),
+                nn.ReLU(inplace=True),
+                nn.Conv3d(lidar_channels, lidar_channels, 3, padding=1), nn.BatchNorm3d(lidar_channels),
+                nn.ReLU(inplace=True))
+            dec_in = ctx_channels + lidar_channels
+        self.decoder = VoxelDecoder(dec_in, n_classes,
                                     hidden=decoder_hidden, n_layers=decoder_layers)
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
@@ -222,8 +235,9 @@ class LSSOccupancy(nn.Module):
         logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
         return logit.softmax(dim=2)
 
-    def forward(self, imgs, rots, trans, intrins):
+    def forward(self, imgs, rots, trans, intrins, lidar_vox=None):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
+        lidar_vox: (B,lidar_raw,nx,ny,nz) voxelized LiDAR (fusion mode) or None.
         Returns (occ_final, depth_init, aux) where aux={'occ':[...],'depth':[...]} holds every
         refine iteration's outputs (for deep supervision). refine_iters=1 -> single-shot LSS."""
         B, N = imgs.shape[:2]
@@ -233,11 +247,15 @@ class LSSOccupancy(nn.Module):
         ctx = ctx.view(B, N, C, h, w)
         depth = depth.view(B, N, D, h, w)
         geom = self.get_geometry(rots, trans, intrins)      # (B,N,D,h,w,3)
+        lid = self.lidar_branch(lidar_vox) if (self.lidar_fusion and lidar_vox is not None) else None
         occ_all, depth_all = [], []
         cur = depth
         for it in range(self.refine_iters):
             lifted = cur.unsqueeze(2) * ctx.unsqueeze(3)     # ctx ⊗ depth -> (B,N,C,D,h,w)
-            occ = self.decoder(self.voxel_pool(geom, lifted))
+            vox = self.voxel_pool(geom, lifted)              # (B,C,nx,ny,nz)
+            if lid is not None:
+                vox = torch.cat([vox, lid], dim=1)           # fuse LiDAR features
+            occ = self.decoder(vox)
             occ_all.append(occ); depth_all.append(cur)
             if it < self.refine_iters - 1:
                 cur = self._refine_depth(occ, cur, geom)

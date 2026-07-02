@@ -170,8 +170,9 @@ def evaluate(model, loader, device, max_batches=None):
     ev = OccupancyEvaluator()
     with torch.no_grad():
         for i, b in enumerate(loader):
+            lv = b["lidar_vox"].to(device) if "lidar_vox" in b else None
             occ = model(b["imgs"].to(device), b["rots"].to(device),
-                        b["trans"].to(device), b["intrins"].to(device))[0]
+                        b["trans"].to(device), b["intrins"].to(device), lidar_vox=lv)[0]
             pred = occ.argmax(1).cpu().numpy()
             for j in range(pred.shape[0]):
                 ev.add(pred[j], b["semantics"][j].numpy(), b["mask_camera"][j].numpy())
@@ -216,6 +217,8 @@ def main():
                     help="upsample backbone features for a finer lift/supervision grid (2 -> 36x100)")
     ap.add_argument("--refine-iters", type=int, default=1,
                     help="iterative render-and-refine lift passes (1=single-shot; 2 = one refine)")
+    ap.add_argument("--lidar-fusion", action="store_true",
+                    help="fuse voxelized LiDAR as an input (train+inference), not just depth sup.")
     ap.add_argument("--refine-occ-weight", type=float, default=0.5,
                     help="deep-supervision weight on intermediate refine stages' occ loss")
     ap.add_argument("--cosine", action="store_true", help="cosine LR schedule")
@@ -238,15 +241,16 @@ def main():
     dev = args.device
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
                          decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample,
-                         refine_iters=args.refine_iters).to(dev)
+                         refine_iters=args.refine_iters, lidar_fusion=args.lidar_fusion).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
-                                       lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache)
+                                       lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache,
+                                       lidar_fusion=args.lidar_fusion)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
-                                     lidar_cache=args.lidar_cache)
+                                     lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion)
     class_w = None
     if args.occ_class_balance:
         class_w = compute_class_weights(train_ds.occ, power=args.occ_cb_power,
@@ -271,8 +275,9 @@ def main():
         model.train()
         for it, b in enumerate(train_ld):
             with torch.cuda.amp.autocast(enabled=args.amp):
+                lv = b["lidar_vox"].to(dev) if "lidar_vox" in b else None
                 occ, depth, aux = model(b["imgs"].to(dev), b["rots"].to(dev),
-                                        b["trans"].to(dev), b["intrins"].to(dev))
+                                        b["trans"].to(dev), b["intrins"].to(dev), lidar_vox=lv)
                 sem_d, mask_d = b["semantics"].to(dev), b["mask_camera"].to(dev)
                 l_occ = occ_loss(occ, sem_d, mask_d, class_w=class_w, lovasz_w=args.occ_lovasz)
                 if len(aux["occ"]) > 1:            # deep supervision on the earlier refine stages
