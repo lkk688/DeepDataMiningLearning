@@ -633,6 +633,50 @@ The knobs are opt-in flags (`--occ-lovasz`, `--occ-class-balance`, `--occ-cb-pow
 plain-CE baseline above is still reproducible bit-for-bit. Lesson worth keeping: *before
 scaling the model, check that your loss actually optimizes your metric.*
 
+**Code** (`occupancy/train_lss.py`) — CE (optionally class-balanced) + Lovász-softmax:
+
+```python
+def lovasz_softmax_flat(probas, labels, ignore=17):      # differentiable per-class-IoU surrogate
+    losses = []
+    for c in range(probas.shape[1]):
+        if c == ignore:                                  # skip the free class
+            continue
+        fg = (labels == c).float()
+        if fg.sum() == 0:                                # class absent in this batch
+            continue
+        errors = (fg - probas[:, c]).abs()
+        errs_sorted, perm = torch.sort(errors, 0, descending=True)
+        losses.append(torch.dot(errs_sorted, lovasz_grad(fg[perm])))   # Lovász extension
+    return torch.stack(losses).mean() if losses else probas.sum() * 0.0
+
+def occ_loss(occ, semantics, mask_camera, class_w=None, lovasz_w=0.0):
+    logit = occ.permute(0, 2, 3, 4, 1).reshape(-1, occ.shape[1])[mask_camera.reshape(-1)]
+    tgt   = semantics.reshape(-1)[mask_camera.reshape(-1)]
+    loss  = F.cross_entropy(logit, tgt, weight=class_w)                # class_w = inverse-freq
+    if lovasz_w > 0:
+        loss = loss + lovasz_w * lovasz_softmax_flat(logit.float().softmax(1), tgt)
+    return loss
+
+# class_w: inverse-frequency over camera-visible GT voxels, tempered + normalized (cached)
+def compute_class_weights(occ_ds, n_classes=18, power=0.25):
+    counts = np.zeros(n_classes)
+    for i in range(len(occ_ds)):
+        s = occ_ds[i]; counts += np.bincount(s.semantics[s.mask_camera].reshape(-1), minlength=n_classes)
+    freq = counts / counts.sum()
+    w = (freq + 1e-6) ** (-power)
+    return np.clip(w / w.mean(), 0.2, 8.0)
+```
+
+**Run** (0.139 → 0.226 mIoU at the cheap setting; add the flags to the strong config for 0.284):
+
+```bash
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts <occ3d_gts> --nusc <nuscenes_root> --backbone dinov2 \
+    --max-samples 1000 --epochs 8 --amp --seed 0 \
+    --occ-lovasz 1.0 --occ-class-balance --occ-cb-power 0.25 \
+    --occ-cb-cache /home/lkk688/Developer/occ3d_data/classw_1000.npy
+```
+
 ### 2.8.2 Iterative render-and-refine lift — attacking the single-shot bottleneck
 
 Our own §2.3/§2.7 diagnosis was that **the lift is single-shot**: each camera ray's depth is
@@ -679,6 +723,38 @@ So the refine top-up is a *constant additive* improvement independent of backbon
 capacity, not something the bigger model subsumes: the render-back supplies information
 (where the surface actually is) that neither more parameters nor more data provide. At
 **0.298 mIoU we are past CTF-Occ (28.5)**, camera-only and pure-PyTorch on ~10 % of the split.
+
+**Code** (`occupancy/models/lss_occ.py`) — the feedback step + the loop that re-lifts:
+
+```python
+def _refine_depth(self, occ, depth, geom):               # render decoded occ back along rays
+    occupied = (1.0 - occ.softmax(1)[:, self.free_idx]).unsqueeze(1)          # (B,1,X,Y,Z)
+    occ_along = F.grid_sample(occupied_expanded, self._norm_grid(geom),       # sample per ray
+                              align_corners=True).view(B, N, D, h, w).clamp(0, 1)
+    one_minus = (1.0 - occ_along).clamp(min=1e-4)
+    trans = torch.cat([torch.ones_like(one_minus[:, :, :1]),                  # transmittance
+                       torch.cumprod(one_minus, dim=2)[:, :, :-1]], dim=2)
+    first_hit = occ_along * trans                          # NeRF-style: prob ray 1st hits at bin d
+    logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
+    return logit.softmax(dim=2)                            # sharpened depth distribution
+
+# forward(): weight-tied decoder, deep-supervise every stage
+cur = depth
+for it in range(self.refine_iters):
+    vox = self.voxel_pool(geom, cur.unsqueeze(2) * ctx.unsqueeze(3))          # lift = ctx ⊗ depth
+    occ = self.decoder(vox); occ_all.append(occ)
+    if it < self.refine_iters - 1:
+        cur = self._refine_depth(occ, cur, geom)          # render → sharpen → re-lift
+```
+
+**Run** (`--refine-iters 2`; +0.014 mIoU on top of the loss fix, at either scale):
+
+```bash
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts <occ3d_gts> --nusc <nuscenes_root> --backbone dinov2 \
+    --max-samples 1000 --epochs 8 --amp --seed 0 --refine-iters 2 \
+    --occ-lovasz 1.0 --occ-class-balance --occ-cb-cache <classw.npy>
+```
 
 ### 2.8.3 Optional LiDAR fusion — crossing from camera-only into fusion
 
@@ -752,7 +828,60 @@ carries geometry, the camera carries semantics, and fusion lets each cover the o
 spot.** The camera is not redundant under fusion — it is doing the labelling a point cloud
 fundamentally cannot. (This is also why GaussianFormer3D fuses rather than going LiDAR-only.)
 
-**Prediction vs ground truth.** Rendering the strongest (mIoU 0.216) model's voxels next to the Occ3D GT
+**Code.** Dataset voxelizes the sweep into the occ grid (`occupancy/datasets_train.py`); the
+model embeds it and concatenates before the decoder (`occupancy/models/lss_occ.py`):
+
+```python
+# datasets_train.py: _lidar_voxel(token) -> (3, X, Y, Z) = [occupancy, log-density, mean z-residual]
+ego = pts @ Rl.T + tl                                     # LiDAR -> ego frame
+idx = np.floor((ego - self._vorig) / self._vs).astype(int)               # voxel index
+count = np.zeros(self._gsz); np.add.at(count, tuple(idx[inb].T), 1.0)     # points per voxel
+vol = np.stack([count > 0, np.log1p(count), mean_z_residual], 0)         # 3 features/voxel
+
+# lss_occ.py: small 3D CNN + concat into the camera volume before the decoder
+lid = self.lidar_branch(lidar_vox)                        # (B, 32, X, Y, Z)
+vox = self.voxel_pool(geom, lifted)                       # camera lifted volume (B, C, X, Y, Z)
+if self.lidar_only:                                       # ablation: drop the camera input
+    vox = torch.zeros_like(vox)
+vox = torch.cat([vox, lid], dim=1)                        # fuse -> decoder
+```
+
+**Run** — fusion, plus the two ablation arms (LiDAR-only zeros the camera volume; camera-only
+just omits `--lidar-fusion`):
+
+```bash
+# camera + LiDAR fusion  (0.392 small / 0.493 strong):
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts <gts> --nusc <root> --backbone dinov2 --max-samples 1000 --epochs 8 --amp \
+    --seed 0 --refine-iters 2 --occ-lovasz 1.0 --occ-class-balance --occ-cb-cache <classw.npy> \
+    --lidar-fusion
+# LiDAR-only ablation (0.204): add   --lidar-only     (implies --lidar-fusion)
+# camera-only baseline    (0.236): drop --lidar-fusion / --lidar-only
+# strong fusion ceiling (0.493): --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 \
+#                                 --cosine --max-samples 3000 --epochs 12 --refine-iters 2 --lidar-fusion
+```
+
+### 2.8.4 The full ladder — every result, flag, and commit in one place
+
+Everything above is one trainer (`train_lss.py`) toggled by flags; each row is one command,
+multi-seed-verified, camera-only baseline byte-identical when the flags are off:
+
+| step | mIoU (small / strong) | geo-IoU | flag(s) added | §/commit |
+|---|---|---|---|---|
+| plain-CE baseline | 0.15 / 0.216 | 0.63 / 0.681 | *(none)* | §2.8 |
+| **#1** loss: Lovász + class-balanced CE | **0.226** / **0.284** | 0.62 / 0.701 | `--occ-lovasz 1.0 --occ-class-balance` | §2.8.1 `4cd2c31` |
+| **#2** iterative render-and-refine lift | **0.242** / **0.298** | 0.65 / 0.710 | `--refine-iters 2` | §2.8.2 `fa25aea` |
+| — ablation: LiDAR-only | 0.204 | 0.726 | `--lidar-only` | §2.8.3 `7f904a6` |
+| — ablation: camera-only | 0.236 | 0.644 | *(fusion off)* | §2.8.3 |
+| **#3** camera + LiDAR fusion | **0.392** / **0.493** | 0.82 / **0.864** | `--lidar-fusion` | §2.8.3 `a9e36e8` |
+
+Small = DINOv2-small / 1000 samples / 8 ep (~15 min); strong = DINOv2-base / 4-layer decoder /
+cosine / 3000 samples / 12 ep (~2.8 h). All three ideas were ported from the
+[GaussianFormer3D study](../docs/GaussianFormer3D_study.md); the loss was the ×6 lever, the
+refine a constant ×1 top-up, and fusion the modality jump (into the supervised-fusion SOTA band).
+
+**Prediction vs ground truth.** Rendering our DINOv2-base (mIoU 0.216, the earlier plain-CE
+strong model this figure was made from) voxels next to the Occ3D GT
 (both camera-masked, same open3d view) shows it captures the scene's geometry *and*
 semantics — the road, sidewalk, terrain, and vegetation line up; the prediction is just
 denser/noisier than the densified GT:
