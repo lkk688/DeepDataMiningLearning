@@ -543,7 +543,8 @@ DINOv2-base run:
 | *(published, for scale)* OccFormer / BEVFormer / CTF-Occ | 21 / 27 / 28.5 | — | full train, mmdet3d | ✗ |
 | — camera-only lines end here; below adds LiDAR **at inference** — | | | | |
 | our LSS occ — **LiDAR-only** (ablation, camera zeroed) | 0.204 | 0.726 | 1000, 8 ep, single sweep | ✅ pure PyTorch |
-| our LSS occ — **+ LiDAR fusion** (§2.8.3, *fusion mode*) | **0.392** | **0.822** | 1000, 8 ep, single sweep | ✅ pure PyTorch |
+| our LSS occ — **+ LiDAR fusion** (§2.8.3, *fusion mode*) | 0.392 | 0.822 | 1000, 8 ep, single sweep | ✅ pure PyTorch |
+| our LSS occ — **+ LiDAR fusion, strong** (DINOv2-base, 3k/12ep) | **0.493** | **0.864** | single sweep | ✅ pure PyTorch |
 | supervised **fusion** SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
 
 Three things this shows:
@@ -702,6 +703,10 @@ A single LiDAR sweep hands the model the scene's *occupancy geometry* directly �
 surfaces are — which the camera has to infer through the fragile depth lift. What's left for
 the network is mostly **semantics** (which class) and **completion** (voxels the sweep never
 hit, occluded or beyond range). Peak runs cross **0.40 mIoU** with nothing more than a concat.
+On the **strong config** (DINOv2-base + 4-layer decoder + cosine, 3000/12ep) fusion reaches
+**0.493 mIoU / 0.864 geo-IoU** — *scaling up widens the fusion gain to +0.195* (vs the
+camera-only 0.298), and lands us **in the supervised-fusion SOTA band** (above Dr.Occ 43.4,
+approaching EFFOcc 50.5) on ~10 % of the split, pure PyTorch.
 
 Two honest caveats, so the number isn't over-read:
 1. **This is no longer camera-only.** It's a different problem regime — the fair peer group is

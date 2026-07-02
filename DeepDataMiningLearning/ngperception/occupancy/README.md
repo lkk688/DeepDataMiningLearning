@@ -87,7 +87,8 @@ Results (Occ3D val, camera-mask mIoU), scaling on a single RTX 3090:
 | DINOv2-base + deeper dec + cosine, 3000 / 12 ep | 0.216 | 0.681 |
 | + Lovász + class-balanced CE (`--occ-lovasz --occ-class-balance`) | 0.284 | 0.701 |
 | + iterative render-and-refine lift (`--refine-iters 2`) | 0.298 | 0.710 |
-| **+ LiDAR fusion** (`--lidar-fusion`, *LiDAR at inference*) | **0.39–0.40** | **0.82** |
+| + LiDAR fusion, DINOv2-small (`--lidar-fusion`, *LiDAR at inference*) | 0.392 | 0.822 |
+| **+ LiDAR fusion, DINOv2-base strong** | **0.493** | **0.864** |
 
 **The loss is the biggest lever per unit effort.** Plain occupancy CE over ~85 %-free voxels
 lets dominant classes swamp the rare-class gradient, and mIoU averages over the 17 non-free
@@ -109,9 +110,15 @@ split, a frozen backbone, pure PyTorch, no mmcv.
 inference (voxelized into the occ grid + concatenated pre-decoder), not just depth
 supervision. This crosses from camera-only into **fusion** and jumps mIoU **0.236 → 0.392
 (+66 %)**, geo-IoU **0.644 → 0.822** — a single sweep hands the model the scene's occupancy
-geometry directly. It's a separate, clearly-labelled mode (the peer group becomes fusion nets
-FlashOcc/Dr.Occ/EFFOcc at 32–50); the camera-only line above is the "how far does vision alone
-go" story. Visualizations (open3d) in `output/lss_occ/`:
+geometry directly; on the strong config it reaches **0.493 mIoU / 0.864 geo-IoU**, in the
+supervised-fusion SOTA band (Dr.Occ 43.4, EFFOcc 50.5), on ~10 % of the split. It's a separate,
+clearly-labelled mode; the camera-only line above is the "how far does vision alone go" story.
+
+A **3-way ablation** (§2.8.3) shows the two sensors are *complementary, not redundant*:
+camera-only 0.236 / geo 0.644, LiDAR-only 0.204 / geo 0.726, fusion 0.392 / geo 0.822.
+Removing the camera from fusion hurts *more* (−0.188) than removing the LiDAR (−0.156) — LiDAR
+carries geometry (higher geo-IoU), the camera carries semantics (higher mIoU), and each covers
+the other's blind spot. Visualizations (open3d) in `output/lss_occ/`:
 `lss_occ_surround_demo.mp4` (6 cams + global occ + ego marker), `lss_occ_camview.mp4`
 (camera-aligned + global), `lss_occ_vs_gt.mp4` (pred vs GT). See TUTORIAL §2.7–2.8.
 
