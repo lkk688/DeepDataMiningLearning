@@ -542,6 +542,7 @@ DINOv2-base run:
 | our LSS occ — **+ iterative render-and-refine lift** (§2.8.2) | **0.298** | **0.710** | 3000 samples, 12 ep | ✅ pure PyTorch |
 | *(published, for scale)* OccFormer / BEVFormer / CTF-Occ | 21 / 27 / 28.5 | — | full train, mmdet3d | ✗ |
 | — camera-only lines end here; below adds LiDAR **at inference** — | | | | |
+| our LSS occ — **LiDAR-only** (ablation, camera zeroed) | 0.204 | 0.726 | 1000, 8 ep, single sweep | ✅ pure PyTorch |
 | our LSS occ — **+ LiDAR fusion** (§2.8.3, *fusion mode*) | **0.392** | **0.822** | 1000, 8 ep, single sweep | ✅ pure PyTorch |
 | supervised **fusion** SOTA (FlashOcc / Dr.Occ / EFFOcc) | 32–50 | — | full train, mmdet3d | ✗ |
 
@@ -714,6 +715,37 @@ Two honest caveats, so the number isn't over-read:
 That is exactly why it's an **opt-in flag**: the camera-only line (0.216 → 0.298) is the honest
 "how far does vision alone go" story; fusion is a separate, clearly-labelled mode for when a
 LiDAR is actually on the vehicle at inference.
+
+**Is the gain all from LiDAR, or does the camera still matter? A 3-way ablation.** The +0.156
+could mean "LiDAR does everything, the camera is now dead weight." To check, we zero the camera
+lifted volume (`--lidar-only`, same params/config) for a **LiDAR-only** number to sit between
+camera-only and fusion (all DINOv2-small, 1k, 8ep + loss + refine=2, 3 seeds):
+
+| input | mIoU | geo-IoU |
+|---|---|---|
+| camera-only | 0.236 ± 0.004 | 0.644 |
+| LiDAR-only | 0.204 ± 0.005 | **0.726** |
+| **camera + LiDAR** | **0.392 ± 0.023** | **0.822** |
+
+The answer is emphatic: **the two modalities are complementary, and by the marginal measure the
+camera contributes *more* than the LiDAR.** Ablating each input from the fusion model:
+
+- remove the **camera** → 0.392 → 0.204 (**−0.188**)
+- remove the **LiDAR** → 0.392 → 0.236 (**−0.156**)
+
+So dropping the camera hurts *more* than dropping the LiDAR — the gain is emphatically **not**
+all from LiDAR. And the mechanism is written in the **crossover** between the two metrics:
+
+- **geometry** (geo-IoU): camera 0.644 **<** LiDAR 0.726 **<** fusion 0.822 — LiDAR knows *where*
+  surfaces are, better than the camera's fragile depth lift;
+- **semantics** (mIoU): LiDAR 0.204 **<** camera 0.236 **<** fusion 0.392 — but LiDAR-only,
+  despite *better geometry*, scores *lower* mIoU, because sparse geometry can't tell a car from
+  a truck from a pedestrian, or road from sidewalk. Class identity needs appearance.
+
+LiDAR-only having the *higher geo-IoU but the lower mIoU* is the whole story in one line: **LiDAR
+carries geometry, the camera carries semantics, and fusion lets each cover the other's blind
+spot.** The camera is not redundant under fusion — it is doing the labelling a point cloud
+fundamentally cannot. (This is also why GaussianFormer3D fuses rather than going LiDAR-only.)
 
 **Prediction vs ground truth.** Rendering the strongest (mIoU 0.216) model's voxels next to the Occ3D GT
 (both camera-masked, same open3d view) shows it captures the scene's geometry *and*
