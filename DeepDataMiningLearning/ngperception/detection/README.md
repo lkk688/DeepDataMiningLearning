@@ -1,5 +1,8 @@
 # ngperception/detection — pure-PyTorch 3D object detection (PointPillars)
 
+> **Teaching walkthrough: [TUTORIAL.md](TUTORIAL.md)** — how the pure-PyTorch PointPillars works
+> component by component, the results/ablations, and copy-paste reproduction commands.
+
 A LiDAR 3D detector with **no spconv, no mmcv, no compiled CUDA ops** — the same
 "runs-in-the-main-torch-env" philosophy as [`occupancy/`](../occupancy/). The algorithm is
 **harvested from [`2D3DFusion/mydetector3d`](/home/lkk688/Developer/2D3DFusion/mydetector3d)**

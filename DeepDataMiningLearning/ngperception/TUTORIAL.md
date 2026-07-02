@@ -937,3 +937,13 @@ not the build/version fight every mmlab occupancy repo forces (§2.5). The clear
 The division of labor is the point: **prototype and de-risk on the 3090, scale the winners on
 H100.** Keep every change an opt-in flag so the camera-only baseline stays reproducible, and
 keep checking geo-IoU alongside mIoU — that crossover is what told us *what* each lever fixed.
+
+## 4. 3D object detection (`detection/`) — the sibling task
+
+Occupancy answers *"what is where, densely"*; **3D object detection** answers *"where are the
+objects, as boxes"*. It's the same shape of problem — encode the scene, attach a head — so it
+lives beside occupancy as a second head on (eventually) the same encoder. We built a
+**pure-PyTorch PointPillars** (no spconv/mmcv/compiled ops), harvested from OpenPCDet, verified
+end-to-end on **KITTI Car** (overfit: 18 dets for 18 GT; held-out val mAP@0.5 = 0.324), with a
+from-scratch **vectorised rotated-IoU** replacing the usual CUDA op. Full teaching walkthrough,
+results, and reproduction commands: **[detection/TUTORIAL.md](detection/TUTORIAL.md)**.
