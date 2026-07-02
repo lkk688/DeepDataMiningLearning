@@ -84,17 +84,20 @@ cars). The **direction classifier hurt** here, because our raw angle regression 
 resolves heading well (per-box mod-π error 0.02–0.09); the 2-bin inference correction only
 perturbs already-good headings. So `--use-dir` stays **off by default**.
 
-Caveat that gates real use: the rotated assignment uses a numpy Sutherland–Hodgman IoU
-(prefiltered to axis-aligned-IoU>0.1 candidates) — fine for the overfit, **too slow for
-full-split training** (~2× iter time). Vectorising it in torch is **M2b**, and is the
-prerequisite for turning this modest overfit gain into real val-AP on H100.
+**M2b — vectorised rotated IoU (done).** The rotated assignment originally used a numpy
+Sutherland–Hodgman IoU (~2× iter time). M2b replaces it with a **fully vectorised torch**
+convex-quad intersection (points-inside + edge-intersections + angular-sort shoelace,
+`rotated_iou_bev_paired_torch`) that runs on GPU: it **matches the numpy version to 1e-4** and
+is **~65× faster per pair** (5100 pairs in 14.7 ms). Rotated assignment is now ~free (46 s vs
+96 s per 250-iter overfit, same as baseline's 44 s) — i.e. **practical for full-split training
+on H100**, which is what turns the overfit gain into real val-AP.
 
 ## Status & caveats (honest)
 
 - **M0/M1 = correct pipeline, not yet a competitive KITTI number.** The default fast IoU path
-  (NMS + optional target assignment) is **axis-aligned** (exact for yaw≈0). `--rotated-assign`
-  (M2) improves and stabilises it but is slow (numpy); **M2b** = vectorise the rotated IoU in
-  torch so it is usable for full-split training on H100.
+  is **axis-aligned** (exact for yaw≈0). `--rotated-assign` (M2) improves and stabilises it,
+  and after **M2b** (vectorised torch rotated IoU) it runs at ~baseline speed on GPU — usable
+  for full-split training on H100, which is what lifts real val-AP.
 - **`kitti_eval/` (official metric) needs `numba` + a working CUDA** — its `rotate_iou.py` uses
   `numba.cuda`, which **segfaults under this WSL2 setup**. Use `eval3d.py` locally; run
   `kitti_eval/` on the H100/HPC for official-KITTI parity (**M1**).

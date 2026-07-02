@@ -179,15 +179,72 @@ def rotated_iou_bev_paired(boxes_a, boxes_b):
     return torch.from_numpy(out).to(boxes_a.device)
 
 
+# --------------------------------------------------------------------------- #
+# M2b: fully **vectorised** rotated BEV IoU in torch (GPU) — convex-quad intersection
+# via points-inside + edge-intersections + angular-sort shoelace. Replaces the numpy
+# Sutherland-Hodgman in the training path (target assignment) with an all-tensor op.
+# --------------------------------------------------------------------------- #
+def _quad_area(c):
+    """c (...,4,2) CCW -> (...) area."""
+    x, y = c[..., 0], c[..., 1]
+    return 0.5 * torch.abs((x * torch.roll(y, -1, dims=-1) - torch.roll(x, -1, dims=-1) * y).sum(-1))
+
+
+def _pts_in_quad(pts, quad):
+    """pts (P,N,2), quad (P,4,2) CCW -> (P,N) bool: point left-of-all-edges."""
+    a = quad; b = torch.roll(quad, -1, dims=1)                       # (P,4,2)
+    ex = (b[..., 0] - a[..., 0])[:, None, :]                         # (P,1,4)
+    ey = (b[..., 1] - a[..., 1])[:, None, :]
+    cross = ex * (pts[..., 1:2] - a[..., 1][:, None, :]) - ey * (pts[..., 0:1] - a[..., 0][:, None, :])
+    return (cross >= -1e-6).all(dim=2)                              # (P,N)
+
+
+def _edge_intersections(A, B):
+    """A,B (P,4,2) -> intersection pts (P,16,2), valid (P,16) for all 4×4 edge pairs."""
+    a1 = A[:, :, None, :]; a2 = torch.roll(A, -1, dims=1)[:, :, None, :]   # (P,4,1,2)
+    b1 = B[:, None, :, :]; b2 = torch.roll(B, -1, dims=1)[:, None, :, :]   # (P,1,4,2)
+    r = a2 - a1; s = b2 - b1
+    denom = r[..., 0] * s[..., 1] - r[..., 1] * s[..., 0]            # (P,4,4)
+    qp = b1 - a1
+    t = (qp[..., 0] * s[..., 1] - qp[..., 1] * s[..., 0]) / (denom + 1e-9)
+    u = (qp[..., 0] * r[..., 1] - qp[..., 1] * r[..., 0]) / (denom + 1e-9)
+    inter = a1 + t[..., None] * r                                    # (P,4,4,2)
+    valid = (denom.abs() > 1e-9) & (t >= 0) & (t <= 1) & (u >= 0) & (u <= 1)
+    P = A.shape[0]
+    return inter.reshape(P, 16, 2), valid.reshape(P, 16)
+
+
+def rotated_iou_bev_paired_torch(boxes_a, boxes_b):
+    """Vectorised exact rotated BEV IoU for PAIRED boxes: (P,7),(P,7) -> (P,). All torch."""
+    if boxes_a.shape[0] == 0:
+        return boxes_a.new_zeros(0)
+    ca, cb = boxes_to_corners_bev(boxes_a), boxes_to_corners_bev(boxes_b)     # (P,4,2) CCW
+    ipts, imask = _edge_intersections(ca, cb)
+    pts = torch.cat([ca, cb, ipts], dim=1)                                    # (P,24,2)
+    mask = torch.cat([_pts_in_quad(ca, cb), _pts_in_quad(cb, ca), imask], dim=1)   # (P,24)
+    cnt = mask.sum(1, keepdim=True).clamp(min=1)
+    c = (pts * mask.unsqueeze(-1)).sum(1) / cnt                              # centroid (P,2)
+    ang = torch.atan2(pts[..., 1] - c[:, 1:2], pts[..., 0] - c[:, 0:1])
+    ang = torch.where(mask, ang, torch.full_like(ang, 1e9))                 # invalid sort last
+    order = ang.argsort(dim=1)
+    sp = torch.gather(pts, 1, order[..., None].expand(-1, -1, 2))
+    sm = torch.gather(mask, 1, order)
+    sp = torch.where(sm.unsqueeze(-1), sp, sp[:, 0:1, :])                    # invalid -> first pt
+    inter = _quad_area(sp)                                                   # shoelace over the 24-gon
+    inter = torch.where(mask.sum(1) >= 3, inter, torch.zeros_like(inter))
+    area_a, area_b = _quad_area(ca), _quad_area(cb)
+    return inter / (area_a + area_b - inter + 1e-6)
+
+
 def rotated_iou_assign(anchors, gt_boxes, prefilter=0.1):
-    """(Na,Ng) rotated BEV IoU, computed exactly only on axis-aligned-IoU>prefilter candidates
-    (the vast majority of anchor-GT pairs have zero overlap). Fast enough for target assignment."""
+    """(Na,Ng) rotated BEV IoU, exact only on axis-aligned-IoU>prefilter candidates (most
+    anchor-GT pairs don't overlap). Vectorised torch IoU on the candidates — GPU, no numpy."""
     iou = anchors.new_zeros(anchors.shape[0], gt_boxes.shape[0])
     if gt_boxes.shape[0] == 0:
         return iou
     ai, gi = (boxes_bev_iou_aligned(anchors, gt_boxes) > prefilter).nonzero(as_tuple=True)
     if ai.numel():
-        iou[ai, gi] = rotated_iou_bev_paired(anchors[ai], gt_boxes[gi])
+        iou[ai, gi] = rotated_iou_bev_paired_torch(anchors[ai], gt_boxes[gi])
     return iou
 
 
