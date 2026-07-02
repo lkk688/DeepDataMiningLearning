@@ -21,6 +21,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .pointpillars import PointPillars
+from .centerpoint import CenterPoint
 from .kitti_dataset import KittiCarDataset, collate
 from .eval3d import eval_map
 
@@ -46,6 +47,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=20)
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--lr", type=float, default=3e-3)
+    ap.add_argument("--model", choices=["pointpillars", "centerpoint"], default="pointpillars")
     ap.add_argument("--overfit", action="store_true", help="train & eval on the SAME frames (sanity)")
     ap.add_argument("--rotated-assign", action="store_true", help="M2: rotated-IoU target assignment")
     ap.add_argument("--use-dir", action="store_true", help="M2: direction-classifier head")
@@ -59,8 +61,11 @@ def main():
                           collate_fn=collate, num_workers=4)
     val_ld = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=collate, num_workers=4)
 
-    model = PointPillars(num_point_features=4, num_classes=1,
-                         rotated_assign=args.rotated_assign, use_dir=args.use_dir).to(dev)
+    if args.model == "centerpoint":
+        model = CenterPoint(num_point_features=4, num_classes=1).to(dev)
+    else:
+        model = PointPillars(num_point_features=4, num_classes=1,
+                             rotated_assign=args.rotated_assign, use_dir=args.use_dir).to(dev)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs * max(1, len(train_ld)))
     print(f"[pp-kitti] {len(train_ds)} train / {len(val_ds)} val | "
