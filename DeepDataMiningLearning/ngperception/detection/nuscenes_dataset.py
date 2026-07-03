@@ -32,10 +32,10 @@ def quaternion_yaw(q):
 class NuScenesCarDataset(Dataset):
     def __init__(self, dataroot="/mnt/e/Shared/Dataset/NuScenes/v1.0-trainval",
                  version="v1.0-trainval", split="train",
-                 pc_range=(-50, -50, -5, 50, 50, 3), class_map=None, max_frames=None):
+                 pc_range=(-50, -50, -5, 50, 50, 3), class_map=None, max_frames=None, nusc=None):
         from nuscenes import NuScenes
         from nuscenes.utils.splits import create_splits_scenes
-        self.nusc = NuScenes(version=version, dataroot=dataroot, verbose=False)
+        self.nusc = nusc or NuScenes(version=version, dataroot=dataroot, verbose=False)   # reuse devkit
         self.class_map = class_map or NUSC_CLASSES
         self.pcr = np.array(pc_range, np.float32)
         want = set(create_splits_scenes()[split])

@@ -310,7 +310,8 @@ class PointPillars(nn.Module):
     def __init__(self, num_point_features=4, num_classes=1,
                  pc_range=(0, -39.68, -3, 69.12, 39.68, 1), voxel_size=(0.16, 0.16, 4),
                  max_points=32, max_pillars=30000, vfe_channels=64,
-                 rotated_assign=False, use_dir=False, backbone="base"):
+                 rotated_assign=False, use_dir=False, backbone="base",
+                 anchor_sizes=None, anchor_bottom=None):
         super().__init__()
         self.pc_range, self.voxel_size = list(pc_range), list(voxel_size)
         self.max_points, self.max_pillars = max_points, max_pillars
@@ -318,8 +319,13 @@ class PointPillars(nn.Module):
         self.ny = int(round((pc_range[4] - pc_range[1]) / voxel_size[1]))
         self.vfe = PillarVFE(num_point_features, voxel_size, pc_range, out_channels=vfe_channels)
         self.backbone = make_bev_backbone(backbone, vfe_channels)
+        akw = {}
+        if anchor_sizes is not None:
+            akw["anchor_sizes"] = anchor_sizes
+        if anchor_bottom is not None:
+            akw["anchor_bottom"] = anchor_bottom
         self.head = AnchorHead(self.backbone.num_bev_features, pc_range, num_classes=num_classes,
-                               rotated_assign=rotated_assign, use_dir=use_dir)
+                               rotated_assign=rotated_assign, use_dir=use_dir, **akw)
 
     def _bev(self, points):
         dev = next(self.parameters()).device
