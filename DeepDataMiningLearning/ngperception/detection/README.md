@@ -37,10 +37,12 @@ detection/
 **Three model paradigms** (all pure-torch, sharing the pillar front-end): anchor-based
 **PointPillars**, center-based **CenterPoint**, attention/DETR **BEV-transformer** — **× two
 backbones** (`base` SSD-style, `res` PillarNeXt-style ResNet+FPN) **× three datasets** in one
-interface (KITTI / nuScenes / Waymo). Key finding: the **res backbone is a large win** (overfit
-mAP@0.5: PointPillars 0.17→0.63, CenterPoint 0.93→1.00); the BEV-transformer *trains* but shows
-the classic vanilla-DETR slow convergence. See [TUTORIAL.md](TUTORIAL.md) §9–10. (SECOND/PV-RCNN/
-VoxelNeXt need spconv — out of scope.)
+interface (KITTI / nuScenes / Waymo). Key findings (overfit mAP@0.5): the **res backbone is a
+large win** (PointPillars 0.17→0.63, CenterPoint 0.93→1.00); the BEV-transformer needs
+**deformable attention** to converge — vanilla full-attention is stuck at 0.00, and
+deformable-attn + iterative refinement + aux losses (all pure-torch, `grid_sample`) reaches
+**0.925**. See [TUTORIAL.md](TUTORIAL.md) §9–10. (SECOND/PV-RCNN/VoxelNeXt need spconv — out of
+scope.)
 
 ## What's harvested vs written fresh
 

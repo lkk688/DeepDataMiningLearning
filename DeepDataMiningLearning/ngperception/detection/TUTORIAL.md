@@ -246,18 +246,40 @@ dominant.) Both share `PillarVFE` + scatter + backbone, so this is a ~150-line h
 ### 10.1 A third paradigm — the BEV transformer (DETR)
 
 [`bev_transformer.py`](bev_transformer.py) adds the **attention/set-prediction** paradigm — the
-one that fits pure-torch *because attention needs no spconv*. Object **queries cross-attend** to
-the flattened BEV tokens (`nn.TransformerDecoder`); each emits a class + box; training matches
-queries to GT **1-to-1 with the Hungarian algorithm** (no anchors, no NMS). It's a DETR3D-lite.
+one that fits pure-torch *because attention needs no spconv*. Object **queries** emit a class +
+box; training matches queries to GT **1-to-1 with the Hungarian algorithm** (no anchors, no NMS).
 
-Honest result: it **trains** (loss falls monotonically, matching + reference-point decoding all
-verified) but **does not reach competitive AP on the overfit** even at 1–2 k iterations. That is
-the famous **vanilla-DETR slow-convergence** problem, reproduced: a plain transformer decoder
-needs the modern machinery — **deformable attention, per-layer auxiliary losses, query denoising
-(Deformable-DETR / DINO)** — to converge fast. Adding those is the documented next step; the
-skeleton here is meant to *show the paradigm end-to-end* and *why those tricks were invented*, not
-to win a benchmark. (A good teaching artifact includes an honest "here's where the simple version
-struggles.")
+This section is a two-act teaching story about **why modern DETRs look the way they do**:
+
+**Act 1 — the vanilla version fails.** A plain decoder where every query attends to *all* ~13 k
+BEV tokens (`nn.TransformerDecoder`) **trains but never localises**: on the 6-frame overfit it
+sits at **mAP@0.5 = 0.000** even after 2 000 iterations (the loss falls, but boxes stay too
+coarse for IoU 0.5). This is the famous **vanilla-DETR slow-convergence** problem, reproduced.
+
+**Act 2 — the modern recipe fixes it.** We add the three ingredients shared by every modern
+DETR (Deformable-DETR / DINO / RT-DETR / BEVFormer), all **pure torch**:
+
+- **deformable attention** (`DeformableAttention`): each query samples only `n_points=4`
+  locations *around its reference point* via `F.grid_sample` — not all 13 k tokens. Sparse,
+  fast, no CUDA op.
+- **iterative refinement**: each decoder layer updates its reference point from its predicted
+  box centre, so deeper layers attend right at the object.
+- **auxiliary losses**: every layer is Hungarian-matched and supervised.
+
+The same overfit now **converges to mAP@0.5 = 0.925** (0.00 → 0.09 @500it → 0.43 @750 → 0.88
+@1000 → 0.925) — matching CenterPoint and far above the anchor PointPillars overfit (0.45).
+
+| BEV transformer | overfit mAP@0.5 |
+|---|---|
+| vanilla full-attention | 0.000 (stuck) |
+| **+ deformable attn + iterative refinement + aux loss** | **0.925** |
+
+That jump *is* the lesson: **deformable attention (sampling around a reference), not a fancier
+backbone or more compute, is what makes DETR-family detectors converge.** It's also the reason
+adopting RT-DETR wholesale would be the wrong move for a LiDAR-BEV task — RT-DETR is a *2-D image*
+detector; the part worth taking is exactly this decoder, which is what we built. (One caveat kept
+honest: training shows a transient dip around it1250 before recovering — the head is a bit
+lr-sensitive; a cosine schedule smooths it.)
 
 ### 10.2 A stronger backbone — PillarNeXt-style ResBEV (the lever that clearly helped)
 
