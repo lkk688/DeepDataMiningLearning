@@ -23,6 +23,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .box_utils import (ResidualCoder, boxes_bev_iou_aligned, nms_aligned,
                         rotated_iou_assign, limit_period)
@@ -134,6 +135,60 @@ class BaseBEVBackbone(nn.Module):
             x = blk(x)
             ups.append(deb(x))
         return torch.cat(ups, dim=1) if len(ups) > 1 else ups[0]            # (B, sum_up, H, W)
+
+
+class BasicBlock2d(nn.Module):
+    """ResNet basic residual block (2-D)."""
+
+    def __init__(self, cin, cout, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(cin, cout, 3, stride, 1, bias=False)
+        self.bn1 = nn.BatchNorm2d(cout, eps=1e-3, momentum=0.01)
+        self.conv2 = nn.Conv2d(cout, cout, 3, 1, 1, bias=False)
+        self.bn2 = nn.BatchNorm2d(cout, eps=1e-3, momentum=0.01)
+        self.down = None
+        if stride != 1 or cin != cout:
+            self.down = nn.Sequential(nn.Conv2d(cin, cout, 1, stride, bias=False),
+                                      nn.BatchNorm2d(cout, eps=1e-3, momentum=0.01))
+
+    def forward(self, x):
+        idt = x if self.down is None else self.down(x)
+        x = torch.relu(self.bn1(self.conv1(x)))
+        return torch.relu(self.bn2(self.conv2(x)) + idt)
+
+
+class ResBEVBackbone(nn.Module):
+    """PillarNeXt-style BEV backbone: a ResNet encoder + FPN neck, pure 2-D conv (no spconv).
+    Stronger than BaseBEVBackbone (residual blocks + multi-scale fusion); same output stride (/2)
+    so the detection heads plug in unchanged."""
+
+    def __init__(self, in_channels, out_channels=384, blocks=(2, 2, 2), channels=(64, 128, 256)):
+        super().__init__()
+        self.stem = nn.Sequential(nn.Conv2d(in_channels, channels[0], 3, 1, 1, bias=False),
+                                  nn.BatchNorm2d(channels[0], eps=1e-3, momentum=0.01), nn.ReLU(inplace=True))
+        self.stages = nn.ModuleList()
+        cin = channels[0]
+        for n, cout in zip(blocks, channels):
+            layers = [BasicBlock2d(cin, cout, stride=2)] + [BasicBlock2d(cout, cout) for _ in range(n - 1)]
+            self.stages.append(nn.Sequential(*layers)); cin = cout
+        fdim = out_channels // len(channels)
+        self.lat = nn.ModuleList([nn.Conv2d(c, fdim, 1) for c in channels])   # FPN laterals
+        self.num_bev_features = fdim * len(channels)
+
+    def forward(self, x):
+        x = self.stem(x)
+        feats = []
+        for st in self.stages:
+            x = st(x); feats.append(x)                              # /2, /4, /8
+        target = feats[0].shape[-2:]
+        outs = [self.lat[i](f) for i, f in enumerate(feats)]
+        outs = [o if o.shape[-2:] == target else
+                F.interpolate(o, size=target, mode="bilinear", align_corners=False) for o in outs]
+        return torch.cat(outs, dim=1)                               # (B, fdim*3, H/2, W/2)
+
+
+def make_bev_backbone(kind, in_channels):
+    return ResBEVBackbone(in_channels) if kind == "res" else BaseBEVBackbone(in_channels)
 
 
 class AnchorHead(nn.Module):
@@ -255,14 +310,14 @@ class PointPillars(nn.Module):
     def __init__(self, num_point_features=4, num_classes=1,
                  pc_range=(0, -39.68, -3, 69.12, 39.68, 1), voxel_size=(0.16, 0.16, 4),
                  max_points=32, max_pillars=30000, vfe_channels=64,
-                 rotated_assign=False, use_dir=False):
+                 rotated_assign=False, use_dir=False, backbone="base"):
         super().__init__()
         self.pc_range, self.voxel_size = list(pc_range), list(voxel_size)
         self.max_points, self.max_pillars = max_points, max_pillars
         self.nx = int(round((pc_range[3] - pc_range[0]) / voxel_size[0]))
         self.ny = int(round((pc_range[4] - pc_range[1]) / voxel_size[1]))
         self.vfe = PillarVFE(num_point_features, voxel_size, pc_range, out_channels=vfe_channels)
-        self.backbone = BaseBEVBackbone(vfe_channels)
+        self.backbone = make_bev_backbone(backbone, vfe_channels)
         self.head = AnchorHead(self.backbone.num_bev_features, pc_range, num_classes=num_classes,
                                rotated_assign=rotated_assign, use_dir=use_dir)
 

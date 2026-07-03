@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .pointpillars import PillarVFE, scatter_bev, BaseBEVBackbone, pillarize
+from .pointpillars import PillarVFE, scatter_bev, make_bev_backbone, pillarize
 
 
 # --------------------------------------------------------------------------- #
@@ -140,14 +140,14 @@ class CenterHead(nn.Module):
 class CenterPoint(nn.Module):
     def __init__(self, num_point_features=4, num_classes=1,
                  pc_range=(0, -39.68, -3, 69.12, 39.68, 1), voxel_size=(0.16, 0.16, 4),
-                 max_points=32, max_pillars=30000, vfe_channels=64):
+                 max_points=32, max_pillars=30000, vfe_channels=64, backbone="base"):
         super().__init__()
         self.pc_range, self.voxel_size = list(pc_range), list(voxel_size)
         self.max_points, self.max_pillars = max_points, max_pillars
         self.nx = int(round((pc_range[3] - pc_range[0]) / voxel_size[0]))
         self.ny = int(round((pc_range[4] - pc_range[1]) / voxel_size[1]))
         self.vfe = PillarVFE(num_point_features, voxel_size, pc_range, out_channels=vfe_channels)
-        self.backbone = BaseBEVBackbone(vfe_channels)
+        self.backbone = make_bev_backbone(backbone, vfe_channels)
         self.head = CenterHead(self.backbone.num_bev_features, num_classes,
                                pc_range, voxel_size, self.nx, self.ny)
 
