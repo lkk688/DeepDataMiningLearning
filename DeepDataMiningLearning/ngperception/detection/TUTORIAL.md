@@ -277,9 +277,26 @@ The same overfit now **converges to mAP@0.5 = 0.925** (0.00 → 0.09 @500it → 
 That jump *is* the lesson: **deformable attention (sampling around a reference), not a fancier
 backbone or more compute, is what makes DETR-family detectors converge.** It's also the reason
 adopting RT-DETR wholesale would be the wrong move for a LiDAR-BEV task — RT-DETR is a *2-D image*
-detector; the part worth taking is exactly this decoder, which is what we built. (One caveat kept
-honest: training shows a transient dip around it1250 before recovering — the head is a bit
-lr-sensitive; a cosine schedule smooths it.)
+detector; the part worth taking is exactly this decoder, which is what we built.
+
+**Act 3 — but convergence ≠ generalization (DETR is data-hungry).** Fixing the overfit is not the
+same as winning on real data. Trained on a real KITTI split (800 train / **200 held-out val**,
+60 epochs), the deformable transformer stays at **val mAP@0.5 = 0.00** — its *train* loss barely
+moves (3.0 → 1.96, vs the overfit's ~0.2), i.e. it **underfits 800 frames** even after 60 epochs.
+On the *same* split a CNN (**PointPillars-res**) reaches **val mAP@0.5 ≈ 0.41** in 40 epochs.
+
+| KITTI 800/200-val, real | val mAP@0.5 |
+|---|---|
+| **PointPillars-res** (CNN) | **0.41** |
+| deformable transformer | 0.00 (underfit) |
+
+This is the famous **DETR data-hunger**: transformer detectors need *far* more data and *far*
+longer schedules than a CNN to generalise (the original DETR trains 300–500 epochs on full COCO;
+LiDAR DETRs likewise want the full split + long schedules). Deformable attention buys you
+*convergence*, not *data efficiency*. So the honest engineering takeaway: **on limited data /
+one 3090, the CNN heads (PointPillars-res, CenterPoint) are the practical choice; the transformer
+is an H100-scale-data model** — worth having in the module to teach the paradigm and its trade-off,
+not to run on 800 frames.
 
 ### 10.2 A stronger backbone — PillarNeXt-style ResBEV (the lever that clearly helped)
 
@@ -296,9 +313,11 @@ same 6-frame overfit (seed 0):
 | CenterPoint | **res** | **1.00** (lr 2e-3) |
 
 The residual+FPN backbone is a **large, clean win** (+0.46 for PointPillars) — the biggest lever
-among these additions, and it's pure 2-D conv. One training note worth keeping: CenterPoint-res
-**diverged at lr 3e-3 but hit 1.00 at lr 2e-3** — the heatmap head + deeper backbone is
-lr-sensitive, a reminder to sweep lr when you change the backbone.
+among these additions, and it's pure 2-D conv. **And it generalises**: on the real KITTI 800/200
+split, PointPillars-**res** reaches **val mAP@0.5 ≈ 0.41**, up from **0.324** for the base backbone
+(the §M1 500/30 run) — the win is not just an overfit artifact. One training note worth keeping:
+CenterPoint-res **diverged at lr 3e-3 but hit 1.00 at lr 2e-3** — the heatmap head + deeper
+backbone is lr-sensitive, a reminder to sweep lr when you change the backbone.
 
 > Out of scope (honestly): **SECOND / CenterPoint-voxel / PV-RCNN / VoxelNeXt** all need **sparse
 > 3-D convolution** (`spconv`, compiled CUDA). The three paradigms here — anchor (PointPillars),
