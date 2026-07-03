@@ -241,12 +241,47 @@ CenterPoint overfits *far* better — because it **sidesteps the very anchor-ass
 that §6 was fighting: there is no "which of the two anchor rotations near this car is positive",
 just one centre per object. (This is not a claim that CenterPoint > PointPillars in general —
 full-data numbers depend on tuning — but it cleanly shows *why* the center paradigm became
-dominant.) Both share `PillarVFE` + scatter + `BaseBEVBackbone`, so this is a ~150-line head
-swap — exactly the modularity §3 was built for.
+dominant.) Both share `PillarVFE` + scatter + backbone, so this is a ~150-line head swap.
+
+### 10.1 A third paradigm — the BEV transformer (DETR)
+
+[`bev_transformer.py`](bev_transformer.py) adds the **attention/set-prediction** paradigm — the
+one that fits pure-torch *because attention needs no spconv*. Object **queries cross-attend** to
+the flattened BEV tokens (`nn.TransformerDecoder`); each emits a class + box; training matches
+queries to GT **1-to-1 with the Hungarian algorithm** (no anchors, no NMS). It's a DETR3D-lite.
+
+Honest result: it **trains** (loss falls monotonically, matching + reference-point decoding all
+verified) but **does not reach competitive AP on the overfit** even at 1–2 k iterations. That is
+the famous **vanilla-DETR slow-convergence** problem, reproduced: a plain transformer decoder
+needs the modern machinery — **deformable attention, per-layer auxiliary losses, query denoising
+(Deformable-DETR / DINO)** — to converge fast. Adding those is the documented next step; the
+skeleton here is meant to *show the paradigm end-to-end* and *why those tricks were invented*, not
+to win a benchmark. (A good teaching artifact includes an honest "here's where the simple version
+struggles.")
+
+### 10.2 A stronger backbone — PillarNeXt-style ResBEV (the lever that clearly helped)
+
+Both CNN heads take a `backbone=` switch: `base` (the plain SSD-style `BaseBEVBackbone`) or
+`res` — a **ResNet basic-block encoder + FPN neck** ([`ResBEVBackbone`](pointpillars.py)), the
+PillarNeXt insight that a *well-structured* pillar backbone rivals voxel/spconv methods. On the
+same 6-frame overfit (seed 0):
+
+| model | backbone | overfit mAP@0.5 |
+|---|---|---|
+| PointPillars | base (SSD) | 0.17 |
+| PointPillars | **res (PillarNeXt-style)** | **0.63** |
+| CenterPoint | base | 0.93 |
+| CenterPoint | **res** | **1.00** (lr 2e-3) |
+
+The residual+FPN backbone is a **large, clean win** (+0.46 for PointPillars) — the biggest lever
+among these additions, and it's pure 2-D conv. One training note worth keeping: CenterPoint-res
+**diverged at lr 3e-3 but hit 1.00 at lr 2e-3** — the heatmap head + deeper backbone is
+lr-sensitive, a reminder to sweep lr when you change the backbone.
 
 > Out of scope (honestly): **SECOND / CenterPoint-voxel / PV-RCNN / VoxelNeXt** all need **sparse
-> 3-D convolution** (`spconv`, compiled CUDA) — incompatible with the pure-torch constraint. The
-> pillar-based PointPillars and CenterPoint are the two classic paradigms reachable without it.
+> 3-D convolution** (`spconv`, compiled CUDA). The three paradigms here — anchor (PointPillars),
+> center (CenterPoint), attention (BEV-transformer) — are all reachable *without* it, on the
+> pillar/BEV/attention route that modern spconv-free work (PillarNeXt, DSVT, FlatFormer) follows.
 
 ## 11. Reproduce — exact commands
 
@@ -264,11 +299,13 @@ $P -m DeepDataMiningLearning.ngperception.detection.kitti_dataset    --root /mnt
 $P -m DeepDataMiningLearning.ngperception.detection.nuscenes_dataset --root /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval
 $P -m DeepDataMiningLearning.ngperception.detection.waymo_dataset    # 1-frame local sample
 
-# --- overfit sanity (pipeline learns; ~a few min). --model {pointpillars,centerpoint} ---
+# --- overfit sanity. --model {pointpillars,centerpoint,bev_transformer}, --backbone {base,res} ---
 $P -m DeepDataMiningLearning.ngperception.detection.train_kitti \
     --root /mnt/e/Shared/Dataset/Kitti --overfit --max-frames 12 --epochs 80
-$P -m DeepDataMiningLearning.ngperception.detection.train_kitti --model centerpoint \
-    --root /mnt/e/Shared/Dataset/Kitti --overfit --max-frames 12 --epochs 120   # center head converges slower
+$P -m DeepDataMiningLearning.ngperception.detection.train_kitti --backbone res \
+    --root /mnt/e/Shared/Dataset/Kitti --overfit --max-frames 12 --epochs 80   # PillarNeXt-style (stronger)
+$P -m DeepDataMiningLearning.ngperception.detection.train_kitti --model centerpoint --backbone res \
+    --root /mnt/e/Shared/Dataset/Kitti --overfit --max-frames 12 --epochs 120 --lr 2e-3
 
 # --- short real train (train 500 / val 150; ~30 min on a 3090) -> val mAP@0.5 ~0.32 ---
 $P -m DeepDataMiningLearning.ngperception.detection.train_kitti \

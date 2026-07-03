@@ -60,10 +60,12 @@ class BEVTransformerHead(nn.Module):
         self.input_proj = nn.Conv2d(in_channels, dim, 1)
         self.pos_mlp = nn.Linear(2, dim)                           # positional from normalised cell (x,y)
         self.query = nn.Embedding(num_queries, dim)
+        self.ref = nn.Embedding(num_queries, 2)                    # learned reference point (logit)
+        nn.init.uniform_(self.ref.weight, -2.0, 2.0)              # spread refs across the BEV
         layer = nn.TransformerDecoderLayer(dim, nheads, dim * 4, batch_first=True)
         self.decoder = nn.TransformerDecoder(layer, layers)
         self.cls_head = nn.Linear(dim, num_classes + 1)            # +1 = no-object
-        self.box_head = MLP(dim, dim, 8)                           # xn,yn,z,logdx,logdy,logdz,sin,cos
+        self.box_head = MLP(dim, dim, 8)                           # dxn,dyn,z,logdx,logdy,logdz,sin,cos
 
     def _pos(self, H, W, device):
         ys, xs = torch.meshgrid(torch.linspace(0, 1, H, device=device),
@@ -78,9 +80,12 @@ class BEVTransformerHead(nn.Module):
         return {"cls": self.cls_head(hs), "box": self.box_head(hs)}
 
     def decode_boxes(self, box):
-        """(...,8) -> (...,7) world [x,y,z,dx,dy,dz,heading]."""
-        x = self.pcr[0] + box[..., 0].sigmoid() * (self.pcr[3] - self.pcr[0])
-        y = self.pcr[1] + box[..., 1].sigmoid() * (self.pcr[4] - self.pcr[1])
+        """(...,8) -> (...,7) world. Centre = learned **reference point** + predicted offset
+        (DETR reference-point trick: regress a small offset, not an absolute sigmoid over the
+        whole scene — the key to fast convergence)."""
+        ref = self.ref.weight                                     # (Nq,2) broadcasts over batch
+        x = self.pcr[0] + (ref[:, 0] + box[..., 0]).sigmoid() * (self.pcr[3] - self.pcr[0])
+        y = self.pcr[1] + (ref[:, 1] + box[..., 1]).sigmoid() * (self.pcr[4] - self.pcr[1])
         dxyz = box[..., 3:6].clamp(-4, 4).exp()
         yaw = torch.atan2(box[..., 6], box[..., 7])
         return torch.stack([x, y, box[..., 2], dxyz[..., 0], dxyz[..., 1], dxyz[..., 2], yaw], -1)
