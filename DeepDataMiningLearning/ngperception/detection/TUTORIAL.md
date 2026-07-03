@@ -216,6 +216,16 @@ the one check that confirms calibration, axis order, and the bottom→centre shi
 (Data notes: KITTI + nuScenes are staged in full; only a **1-frame** Waymo sample is local, so
 the Waymo loader is verified to *load* but full Waymo training is an H100/data job.)
 
+**Training on nuScenes (a cautionary result).** `train_nuscenes.py` runs PointPillars on a
+nuScenes config (360° range, 0.2 m / 512×512 pillars, car anchor 4.63×1.97×1.74). It **trains**
+end-to-end — train loss converges (5.3 → 0.74 on 300 frames) — but **val mAP@0.5 stays 0.00**,
+and even a 16-frame *overfit* tops out at 0.068. The reason is **single-sweep sparsity**: our
+loader takes one LiDAR sweep, so distant cars have too few points to localise to IoU 0.5,
+whereas standard nuScenes detectors **aggregate 10 sweeps**. This is the same "nuScenes rewards
+LiDAR density" lesson as the occupancy fusion (§2.8.3). So: nuScenes *runs* here, but
+**competitive nuScenes AP needs multi-sweep aggregation** (`from_file_multisweep`, as we already
+use for the occupancy depth study) + more data — a clear, documented next step, best on H100.
+
 ## 10. A second model — CenterPoint (center-based vs anchor-based)
 
 PointPillars (§3–6) is **anchor-based**: place boxes everywhere, classify/regress each, match by
