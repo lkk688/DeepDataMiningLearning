@@ -317,7 +317,8 @@ class PointPillars(nn.Module):
                  pc_range=(0, -39.68, -3, 69.12, 39.68, 1), voxel_size=(0.16, 0.16, 4),
                  max_points=32, max_pillars=30000, vfe_channels=64,
                  rotated_assign=False, use_dir=False, backbone="base",
-                 anchor_sizes=None, anchor_bottom=None, pos_thresh=None, neg_thresh=None):
+                 anchor_sizes=None, anchor_bottom=None, pos_thresh=None, neg_thresh=None,
+                 anchor_rotations=None):
         super().__init__()
         self.pc_range, self.voxel_size = list(pc_range), list(voxel_size)
         self.max_points, self.max_pillars = max_points, max_pillars
@@ -334,6 +335,8 @@ class PointPillars(nn.Module):
             akw["pos_thresh"] = pos_thresh
         if neg_thresh is not None:
             akw["neg_thresh"] = neg_thresh
+        if anchor_rotations is not None:
+            akw["anchor_rotations"] = anchor_rotations
         self.head = AnchorHead(self.backbone.num_bev_features, pc_range, num_classes=num_classes,
                                rotated_assign=rotated_assign, use_dir=use_dir, **akw)
 
