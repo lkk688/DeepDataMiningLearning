@@ -126,7 +126,7 @@ class LSSOccupancy(nn.Module):
                  backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
                  feat_upsample: int = 1, refine_iters: int = 1,
                  lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
-                 lidar_only: bool = False):
+                 lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None):
         super().__init__()
         self.backbone = backbone
         self.feat_upsample = feat_upsample
@@ -163,6 +163,13 @@ class LSSOccupancy(nn.Module):
             dec_in = ctx_channels + lidar_channels
         self.decoder = VoxelDecoder(dec_in, n_classes,
                                     hidden=decoder_hidden, n_layers=decoder_layers)
+        # M3: optional detection head on the SAME fused voxel volume (one encoder, two heads).
+        self.det_head = None
+        if det_classes > 0:
+            from ..det_head import VoxelDetHead
+            det_pcr = [XBOUND[0], YBOUND[0], ZBOUND[0], XBOUND[1], YBOUND[1], ZBOUND[1]]
+            self.det_head = VoxelDetHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
+                                         anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),))
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
             self.refine_alpha = nn.Parameter(torch.tensor(1.0))
@@ -265,6 +272,8 @@ class LSSOccupancy(nn.Module):
             if it < self.refine_iters - 1:
                 cur = self._refine_depth(occ, cur, geom)
         aux = {"occ": occ_all, "depth": depth_all}
+        if self.det_head is not None:                    # M3: detection off the shared fused vox
+            aux["det"] = self.det_head(vox)
         return occ_all[-1], depth_all[0], aux
 
 
