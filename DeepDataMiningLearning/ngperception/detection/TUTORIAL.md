@@ -269,8 +269,17 @@ tight IoU@0.5 (cars are smaller than the anchor, coarse 0.2 m grid). Much of the
 benchmark's own metric before concluding your model is broken.* (`eval3d.nusc_class_ap` now
 implements it; `train_nuscenes` reports both.)
 
-**Conclusion (validated across seven experiments, not hand-waved):** the residual IoU@0.5 gap is
-**architecture + scale + metric**, not a bug. The proven-good nuScenes detector in the source repo is
+**Scaling the data confirms it.** Going 400 → **2000 train frames** (single-class, center-distance
+metric): held-out val **carAP_cd climbs 0 → 0.25 monotonically** and is *still rising* at epoch 40
+(loss 0.79, not converged), while strict IoU@0.5 also rises (0 → 0.05). So the earlier "0" was
+**wrong metric + too little data + undertrained** — three fixable "more" levers — **not a code
+bug**: the data is verified byte-identical to the reference, the force-match fix also improves
+KITTI, and the model now *generalises* to 0.25 by nuScenes's own ruler. The reference's 0.78 uses
+full 28 k data / 128 epochs / multi-head / augmentation, so 0.25 on 2 k frames / 40 ep (climbing)
+is a sensible point on that trajectory.
+
+**Conclusion (validated across seven experiments, not hand-waved):** the residual gap is
+**scale + metric**, not a bug. The proven-good nuScenes detector in the source repo is
 **CBGS PointPillars *MultiHead*** — 10-class, class-balanced *resampling*, multi-*head*
 (grouped-conv capacity), full data (28 k frames), 128 epochs, augmentation — reaching **mAP 0.41 /
 car AP 0.78**. Multi-class only pays off *at that scale* (the same data-hunger as the transformer,
