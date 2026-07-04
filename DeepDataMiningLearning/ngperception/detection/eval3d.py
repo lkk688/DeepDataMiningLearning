@@ -67,6 +67,40 @@ def eval_map(preds, gts, num_classes=1, iou_thresh=0.5):
     return {"mAP": float(np.mean(aps)), "AP": [float(a) for a in aps]}
 
 
+def center_distance_ap(preds, gts, cls, dist_thresh=2.0):
+    """AP with nuScenes-style **center-distance** matching (BEV centre within `dist_thresh` m),
+    not IoU. This is the actual nuScenes detection ruler — far more lenient than IoU@0.5."""
+    entries, n_gt, gt_boxes_per_frame, gt_used = [], 0, [], []
+    for f, (pd, gt) in enumerate(zip(preds, gts)):
+        gm = (gt["labels"] == cls)
+        gb = gt["boxes"][gm]
+        gt_boxes_per_frame.append(gb); gt_used.append(np.zeros(len(gb), bool)); n_gt += len(gb)
+        pm = (pd["labels"] == cls)
+        for i in np.where(pm.numpy() if torch.is_tensor(pm) else pm)[0]:
+            entries.append((float(pd["scores"][i]), f, int(i)))
+    entries.sort(key=lambda e: -e[0])
+    tp, fp = np.zeros(len(entries)), np.zeros(len(entries))
+    for k, (sc, f, i) in enumerate(entries):
+        gb = gt_boxes_per_frame[f]
+        if len(gb) == 0:
+            fp[k] = 1; continue
+        d = torch.norm(gb[:, :2] - preds[f]["boxes"][i, :2], dim=1)     # BEV centre distance
+        j = int(d.argmin())
+        if float(d[j]) < dist_thresh and not gt_used[f][j]:
+            tp[k] = 1; gt_used[f][j] = True
+        else:
+            fp[k] = 1
+    tp_c, fp_c = np.cumsum(tp), np.cumsum(fp)
+    rec = tp_c / max(n_gt, 1)
+    prec = tp_c / np.maximum(tp_c + fp_c, 1e-9)
+    return average_precision_r40(rec, prec)
+
+
+def nusc_class_ap(preds, gts, cls, dists=(0.5, 1.0, 2.0, 4.0)):
+    """nuScenes per-class AP = mean of center-distance AP over the 4 distance thresholds."""
+    return float(np.mean([center_distance_ap(preds, gts, cls, d) for d in dists]))
+
+
 # =========================================================================== #
 # self-test:  python -m ...detection.eval3d
 # =========================================================================== #

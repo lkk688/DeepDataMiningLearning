@@ -20,7 +20,7 @@ from .pointpillars import PointPillars
 from .centerpoint import CenterPoint
 from .nuscenes_dataset import NuScenesCarDataset, NUSC_10CLASS
 from .kitti_dataset import collate
-from .eval3d import eval_map
+from .eval3d import eval_map, nusc_class_ap
 
 # nuScenes config: 360° range, 0.2 m pillars. Per-class anchor sizes (OpenPCDet nuScenes).
 NUSC_PCR = (-51.2, -51.2, -5.0, 51.2, 51.2, 3.0)
@@ -45,7 +45,8 @@ def evaluate(model, loader, dev, ncls=1, iou_thresh=0.5):
         for g in b["gt"]:
             gts.append({"boxes": g[:, :7], "labels": g[:, 7].long()})
     r = eval_map(preds, gts, ncls, iou_thresh=iou_thresh)
-    return {"mAP@0.5": r["mAP"], "car_AP": r["AP"][0]}     # class 0 = car
+    # nuScenes uses center-distance matching (0.5/1/2/4 m), far more lenient than IoU@0.5
+    return {"IoU@.5": r["AP"][0], "carAP_cd": nusc_class_ap(preds, gts, 0)}   # class 0 = car
 
 
 def main():
