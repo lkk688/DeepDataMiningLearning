@@ -32,12 +32,18 @@ def quaternion_yaw(q):
 class NuScenesCarDataset(Dataset):
     def __init__(self, dataroot="/mnt/e/Shared/Dataset/NuScenes/v1.0-trainval",
                  version="v1.0-trainval", split="train",
-                 pc_range=(-50, -50, -5, 50, 50, 3), class_map=None, max_frames=None, nusc=None):
+                 pc_range=(-50, -50, -5, 50, 50, 3), class_map=None, max_frames=None, nusc=None,
+                 sweeps=1, lidar_cache=None):
+        import os
         from nuscenes import NuScenes
         from nuscenes.utils.splits import create_splits_scenes
         self.nusc = nusc or NuScenes(version=version, dataroot=dataroot, verbose=False)   # reuse devkit
         self.class_map = class_map or NUSC_CLASSES
         self.pcr = np.array(pc_range, np.float32)
+        self.sweeps = sweeps                        # 10-sweep aggregation = standard nuScenes density
+        self.lidar_cache = lidar_cache
+        if lidar_cache:
+            os.makedirs(lidar_cache, exist_ok=True)
         want = set(create_splits_scenes()[split])
         toks = []
         for s in self.nusc.sample:
@@ -55,11 +61,28 @@ class NuScenesCarDataset(Dataset):
                 return idx
         return None
 
+    def _load_points(self, token, sample):
+        """Single sweep, or `sweeps` motion-compensated sweeps aggregated (LIDAR_TOP frame).
+        Multi-sweep is cached per token (aggregation is slow) — denser = distant cars keep points."""
+        import os
+        if self.sweeps <= 1:
+            path = self.nusc.get_sample_data_path(sample["data"]["LIDAR_TOP"])
+            return np.fromfile(path, np.float32).reshape(-1, 5)[:, :4]
+        cf = os.path.join(self.lidar_cache, f"{token}_sw{self.sweeps}.npy") if self.lidar_cache else None
+        if cf and os.path.exists(cf):
+            return np.load(cf)
+        from nuscenes.utils.data_classes import LidarPointCloud
+        pc, _ = LidarPointCloud.from_file_multisweep(self.nusc, sample, "LIDAR_TOP", "LIDAR_TOP",
+                                                     nsweeps=self.sweeps)
+        pts = pc.points[:4].T.astype(np.float32)                            # (M,4) x,y,z,intensity
+        if cf:
+            np.save(cf, pts)
+        return pts
+
     def __getitem__(self, i):
         sample = self.nusc.get("sample", self.tokens[i])
-        lidar_tok = sample["data"]["LIDAR_TOP"]
-        path, boxes, _ = self.nusc.get_sample_data(lidar_tok)               # boxes in LiDAR frame
-        pts = np.fromfile(path, np.float32).reshape(-1, 5)[:, :4]           # x,y,z,intensity
+        _, boxes, _ = self.nusc.get_sample_data(sample["data"]["LIDAR_TOP"])   # boxes in LiDAR frame
+        pts = self._load_points(self.tokens[i], sample)                    # (M,4) x,y,z,intensity
         m = np.all((pts[:, :3] >= self.pcr[:3]) & (pts[:, :3] < self.pcr[3:]), axis=1)
         pts = pts[m]
         gt = []

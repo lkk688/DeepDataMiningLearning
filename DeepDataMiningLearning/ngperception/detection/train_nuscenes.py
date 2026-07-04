@@ -52,6 +52,8 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-3)
     ap.add_argument("--model", choices=["pointpillars", "centerpoint"], default="pointpillars")
     ap.add_argument("--backbone", choices=["base", "res"], default="res")
+    ap.add_argument("--sweeps", type=int, default=1, help="LiDAR sweeps to aggregate (10 = standard)")
+    ap.add_argument("--lidar-cache", default=None, help="dir to cache aggregated multi-sweep points")
     ap.add_argument("--overfit", action="store_true")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
@@ -59,13 +61,15 @@ def main():
 
     from nuscenes import NuScenes
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.root, verbose=False)   # built once, shared
-    train_ds = NuScenesCarDataset(split="train", pc_range=NUSC_PCR, max_frames=args.max_frames, nusc=nusc)
+    dkw = dict(pc_range=NUSC_PCR, nusc=nusc, sweeps=args.sweeps, lidar_cache=args.lidar_cache)
+    train_ds = NuScenesCarDataset(split="train", max_frames=args.max_frames, **dkw)
     val_ds = train_ds if args.overfit else \
-        NuScenesCarDataset(split="val", pc_range=NUSC_PCR, max_frames=args.val_frames, nusc=nusc)
+        NuScenesCarDataset(split="val", max_frames=args.val_frames, **dkw)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=0)
     val_ld = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=collate, num_workers=0)
 
-    cfg = dict(num_point_features=4, num_classes=1, pc_range=NUSC_PCR, voxel_size=NUSC_VOXEL, backbone=args.backbone)
+    cfg = dict(num_point_features=4, num_classes=1, pc_range=NUSC_PCR, voxel_size=NUSC_VOXEL,
+               backbone=args.backbone, max_pillars=60000)      # 10-sweep = far more points
     if args.model == "centerpoint":
         model = CenterPoint(**cfg).to(dev)
     else:
