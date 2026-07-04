@@ -216,15 +216,46 @@ the one check that confirms calibration, axis order, and the bottom→centre shi
 (Data notes: KITTI + nuScenes are staged in full; only a **1-frame** Waymo sample is local, so
 the Waymo loader is verified to *load* but full Waymo training is an H100/data job.)
 
-**Training on nuScenes (a cautionary result).** `train_nuscenes.py` runs PointPillars on a
-nuScenes config (360° range, 0.2 m / 512×512 pillars, car anchor 4.63×1.97×1.74). It **trains**
-end-to-end — train loss converges (5.3 → 0.74 on 300 frames) — but **val mAP@0.5 stays 0.00**,
-and even a 16-frame *overfit* tops out at 0.068. The reason is **single-sweep sparsity**: our
-loader takes one LiDAR sweep, so distant cars have too few points to localise to IoU 0.5,
-whereas standard nuScenes detectors **aggregate 10 sweeps**. This is the same "nuScenes rewards
-LiDAR density" lesson as the occupancy fusion (§2.8.3). So: nuScenes *runs* here, but
-**competitive nuScenes AP needs multi-sweep aggregation** (`from_file_multisweep`, as we already
-use for the occupancy depth study) + more data — a clear, documented next step, best on H100.
+### 9.1 Debugging nuScenes — a case study (guess, refute, instrument, fix, verify)
+
+`train_nuscenes.py` runs PointPillars on a nuScenes config (360° range, 0.2 m / 512×512
+pillars). Getting a real number out of it turned into the module's best debugging story — worth
+keeping because *most of the "obvious" fixes were wrong*, and the discipline is the lesson.
+
+**Symptom:** train loss converges but **val mAP@0.5 = 0.00**, and even a 16-frame overfit tops at
+0.068 (KITTI overfits to 0.45+). The tempting explanations, tried and **refuted** in order:
+
+1. **Single-sweep sparsity?** Added 10-sweep aggregation (`--sweeps`, 23k→231k pts/frame). **No
+   change.** Density was not the bottleneck.
+2. **Assignment heading (the KITTI M2 fix)?** Rotated-IoU assignment helped a little (0.056→0.150)
+   but didn't crack it.
+3. A **single-car overfit** then exposed the real bug: **loss = 0.0000 (perfect fit) but best
+   inference IoU = 0.08, all scores = 0.00** — impossible if the model actually learned.
+
+**Instrumenting the loss broke it open:** the max anchor↔car rotated-IoU was **0.596**, *just under*
+`pos_thresh = 0.6` → **zero positive anchors** → the classification head trained on all-background,
+never learned to fire (score stuck at its init 0.01), and the loss collapsed to 0 with nothing to
+penalise. **nuScenes-specific** because its cars point in *every* direction while the anchors have
+only 2 rotations, so rotated IoU tops out below 0.6; KITTI's axis-aligned cars clear it.
+
+**Fix:** `AnchorHead.assign` now **force-matches each GT to its best anchor** (OpenPCDet-standard,
+guarantees ≥1 positive per GT). It lifts the nuScenes overfit **0.05 → 0.18** (cls now fires,
+score 0.01→0.97) and — importantly — **improves KITTI too** (overfit 0.63→0.76, a no-op became a
+win). That is a genuine, general bug fix, born of the nuScenes debugging.
+
+**But the val AP is still ~0**, and further tweaks (multi-sweep, rotated-assign, 4 anchor
+rotations) don't cross IoU 0.5 on nuScenes's diverse fleet. So we asked the honest question — *is
+our code even correct?* — and **verified it against the reference**: our loader's car boxes match
+the mmdet3d `nuscenes_infos_val.pkl` GT **to the decimal** (0.00 m centre error, identical size &
+yaw, all 25 cars in a frame). Our data is provably right.
+
+**Conclusion (validated, not hand-waved):** the residual gap is **architecture, not a bug**. The
+proven-good nuScenes detector in the source repo is **CBGS PointPillars *MultiHead*** — 10-class,
+class-balanced sampling, multi-head — reaching **mAP 0.41 / car AP 0.78**. Our single-class,
+single-anchor-size PointPillars is the wrong tool for nuScenes's multi-class 360° scenes.
+Competitive nuScenes AP needs that fuller detector (multi-class/multi-size anchors, CBGS, full
+data), an H100/mmdet3d-scale job — *not* the single-sweep or heading tweaks the symptoms first
+suggested. The KITTI line stays the local, working detector (PointPillars-res val mAP@0.5 ≈ 0.41).
 
 ## 10. A second model — CenterPoint (center-based vs anchor-based)
 
