@@ -256,6 +256,12 @@ class AnchorHead(nn.Module):
                else boxes_bev_iou_aligned(anchors, gt[:, :7]))             # (Na,Ng)
         maxiou, arg = iou.max(dim=1)
         pos, neg = maxiou >= self.pos_thresh, maxiou < self.neg_thresh
+        # force-match: each GT's best anchor is positive even if below pos_thresh (OpenPCDet
+        # style) — guarantees ≥1 positive per GT (critical when anchors match poorly, e.g.
+        # nuScenes cars at arbitrary headings where max IoU can sit just under 0.6).
+        best = iou.argmax(dim=0)                                           # (Ng,) best anchor per GT
+        pos[best] = True; neg[best] = False
+        arg[best] = torch.arange(gt.shape[0], device=anchors.device)       # ensure right GT match
         matched = gt[:, :7][arg]
         cls_t[pos, gt[:, 7].long()[arg][pos]] = 1.0
         reg_t[pos] = self.coder.encode(anchors[pos], matched[pos])
@@ -311,7 +317,7 @@ class PointPillars(nn.Module):
                  pc_range=(0, -39.68, -3, 69.12, 39.68, 1), voxel_size=(0.16, 0.16, 4),
                  max_points=32, max_pillars=30000, vfe_channels=64,
                  rotated_assign=False, use_dir=False, backbone="base",
-                 anchor_sizes=None, anchor_bottom=None):
+                 anchor_sizes=None, anchor_bottom=None, pos_thresh=None, neg_thresh=None):
         super().__init__()
         self.pc_range, self.voxel_size = list(pc_range), list(voxel_size)
         self.max_points, self.max_pillars = max_points, max_pillars
@@ -324,6 +330,10 @@ class PointPillars(nn.Module):
             akw["anchor_sizes"] = anchor_sizes
         if anchor_bottom is not None:
             akw["anchor_bottom"] = anchor_bottom
+        if pos_thresh is not None:
+            akw["pos_thresh"] = pos_thresh
+        if neg_thresh is not None:
+            akw["neg_thresh"] = neg_thresh
         self.head = AnchorHead(self.backbone.num_bev_features, pc_range, num_classes=num_classes,
                                rotated_assign=rotated_assign, use_dir=use_dir, **akw)
 
