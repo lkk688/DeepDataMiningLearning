@@ -201,8 +201,14 @@ class AnchorHead(nn.Module):
         super().__init__()
         self.pcr = list(pc_range)
         self.num_classes = num_classes
-        self.sizes, self.rots, self.bottom = list(anchor_sizes), list(anchor_rotations), anchor_bottom
+        self.sizes, self.rots = list(anchor_sizes), list(anchor_rotations)
+        # per-class bottom z (list) or one scalar broadcast to all classes
+        self.bottoms = (list(anchor_bottom) if isinstance(anchor_bottom, (list, tuple))
+                        else [anchor_bottom] * len(self.sizes))
         self.A = len(self.sizes) * len(self.rots)
+        # each of the A anchors per location belongs to a class = its size index (multi-class:
+        # one size per class). For single-class this is all 0 (a no-op).
+        self.anchor_cls_per_loc = [ci for ci in range(len(self.sizes)) for _ in self.rots]
         self.pos_thresh, self.neg_thresh = pos_thresh, neg_thresh
         self.rotated_assign = rotated_assign            # M2: rotated-IoU target assignment
         self.use_dir = use_dir                          # M2: direction classifier (2 bins)
@@ -221,19 +227,22 @@ class AnchorHead(nn.Module):
         ys = torch.linspace(self.pcr[1], self.pcr[4], H, device=device)
         yy, xx = torch.meshgrid(ys, xs, indexing="ij")                      # (H,W)
         out = []
-        for s in self.sizes:
+        for ci, s in enumerate(self.sizes):
             for r in self.rots:
-                z = torch.full_like(xx, self.bottom + s[2] / 2)
+                z = torch.full_like(xx, self.bottoms[ci] + s[2] / 2)
                 out.append(torch.stack([xx, yy, z, torch.full_like(xx, s[0]),
                                         torch.full_like(xx, s[1]), torch.full_like(xx, s[2]),
                                         torch.full_like(xx, r)], dim=-1))    # (H,W,7)
-        return torch.stack(out, dim=2).reshape(-1, 7)                       # (H*W*A, 7)
+        anchors = torch.stack(out, dim=2).reshape(-1, 7)                    # (H*W*A, 7)
+        anchor_class = torch.tensor(self.anchor_cls_per_loc, device=device).repeat(H * W)
+        return anchors, anchor_class
 
     def forward(self, feat):
         B, _, H, W = feat.shape
         cls = self.cls_conv(feat).permute(0, 2, 3, 1).reshape(B, H * W * self.A, self.num_classes)
         box = self.box_conv(feat).permute(0, 2, 3, 1).reshape(B, H * W * self.A, 7)
-        out = {"cls": cls, "box": box, "anchors": self.generate_anchors(H, W, feat.device)}
+        anchors, anchor_class = self.generate_anchors(H, W, feat.device)
+        out = {"cls": cls, "box": box, "anchors": anchors, "anchor_class": anchor_class}
         if self.use_dir:
             out["dir"] = self.dir_conv(feat).permute(0, 2, 3, 1).reshape(B, H * W * self.A, 2)
         return out
@@ -243,8 +252,9 @@ class AnchorHead(nn.Module):
         offset_rot = limit_period(headings - self.dir_offset, 0.0, 2 * np.pi)
         return torch.floor(offset_rot / np.pi).long().clamp(0, 1)
 
-    def assign(self, anchors, gt):
-        """anchors (Na,7); gt (Ng,8)[box7, label]. -> cls_t, reg_t, cls_w, reg_w, dir_t, pos."""
+    def assign(self, anchors, anchor_class, gt):
+        """anchors (Na,7); anchor_class (Na,); gt (Ng,8)[box7, label]. Class-aware: an anchor of
+        class c only matches GTs of class c. -> cls_t, reg_t, cls_w, reg_w, dir_t."""
         Na = anchors.shape[0]
         cls_t = anchors.new_zeros(Na, self.num_classes)
         reg_t = anchors.new_zeros(Na, 7)
@@ -254,14 +264,15 @@ class AnchorHead(nn.Module):
             return cls_t, reg_t, torch.ones(Na, device=anchors.device), reg_w, dir_t
         iou = (rotated_iou_assign(anchors, gt[:, :7]) if self.rotated_assign
                else boxes_bev_iou_aligned(anchors, gt[:, :7]))             # (Na,Ng)
+        same = (anchor_class[:, None] == gt[:, 7].long()[None, :]).float()  # class match mask
+        iou = iou * same                                                   # cross-class IoU -> 0
         maxiou, arg = iou.max(dim=1)
         pos, neg = maxiou >= self.pos_thresh, maxiou < self.neg_thresh
-        # force-match: each GT's best anchor is positive even if below pos_thresh (OpenPCDet
-        # style) — guarantees ≥1 positive per GT (critical when anchors match poorly, e.g.
-        # nuScenes cars at arbitrary headings where max IoU can sit just under 0.6).
+        # force-match each GT to its best *same-class* anchor (only GTs that have one overlapping)
         best = iou.argmax(dim=0)                                           # (Ng,) best anchor per GT
-        pos[best] = True; neg[best] = False
-        arg[best] = torch.arange(gt.shape[0], device=anchors.device)       # ensure right GT match
+        has = iou.max(dim=0).values > 0
+        gi = torch.arange(gt.shape[0], device=anchors.device)
+        pos[best[has]] = True; neg[best[has]] = False; arg[best[has]] = gi[has]
         matched = gt[:, :7][arg]
         cls_t[pos, gt[:, 7].long()[arg][pos]] = 1.0
         reg_t[pos] = self.coder.encode(anchors[pos], matched[pos])
@@ -270,10 +281,10 @@ class AnchorHead(nn.Module):
         return cls_t, reg_t, (pos | neg).float(), reg_w, dir_t
 
     def get_loss(self, pred, gt_list):
-        anchors = pred["anchors"]
+        anchors, anchor_class = pred["anchors"], pred["anchor_class"]
         cls_t, reg_t, cls_w, reg_w, dir_t = [], [], [], [], []
         for gt in gt_list:
-            ct, rt, cw, rw, dt = self.assign(anchors, gt.to(anchors.device))
+            ct, rt, cw, rw, dt = self.assign(anchors, anchor_class, gt.to(anchors.device))
             cls_t.append(ct); reg_t.append(rt); cls_w.append(cw); reg_w.append(rw); dir_t.append(dt)
         cls_t, reg_t = torch.stack(cls_t), torch.stack(reg_t)
         cls_w, reg_w, dir_t = torch.stack(cls_w), torch.stack(reg_w), torch.stack(dir_t)
@@ -304,8 +315,16 @@ class AnchorHead(nn.Module):
             keep = scores > score_thresh
             boxes, scores, labels = boxes[keep], scores[keep], labels[keep]
             if boxes.shape[0]:
-                sel = nms_aligned(boxes, scores, nms_thresh)
-                boxes, scores, labels = boxes[sel], scores[sel], labels[sel]
+                if self.num_classes > 1:                                   # per-class NMS
+                    kb, ks, kl = [], [], []
+                    for c in labels.unique():
+                        m = labels == c
+                        sel = nms_aligned(boxes[m], scores[m], nms_thresh)
+                        kb.append(boxes[m][sel]); ks.append(scores[m][sel]); kl.append(labels[m][sel])
+                    boxes, scores, labels = torch.cat(kb), torch.cat(ks), torch.cat(kl)
+                else:
+                    sel = nms_aligned(boxes, scores, nms_thresh)
+                    boxes, scores, labels = boxes[sel], scores[sel], labels[sel]
             outs.append({"boxes": boxes, "scores": scores, "labels": labels})
         return outs
 

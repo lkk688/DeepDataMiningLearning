@@ -18,8 +18,14 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-# nuScenes category prefix -> our class index (extend as needed). "basic" = car only.
-NUSC_CLASSES = {"vehicle.car": 0}
+# nuScenes category prefix -> detection class index (the standard 10-class detection set).
+# Prefix match, so e.g. "vehicle.bus.rigid" -> bus, "human.pedestrian.adult" -> pedestrian.
+NUSC_10CLASS = {
+    "vehicle.car": 0, "vehicle.truck": 1, "vehicle.construction": 2, "vehicle.bus": 3,
+    "vehicle.trailer": 4, "movable_object.barrier": 5, "vehicle.motorcycle": 6,
+    "vehicle.bicycle": 7, "human.pedestrian": 8, "movable_object.trafficcone": 9,
+}
+NUSC_CLASSES = {"vehicle.car": 0}                       # default: car-only (back-compat)
 
 
 def quaternion_yaw(q):
