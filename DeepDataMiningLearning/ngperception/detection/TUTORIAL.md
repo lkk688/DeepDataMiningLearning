@@ -249,13 +249,26 @@ our code even correct?* — and **verified it against the reference**: our loade
 the mmdet3d `nuscenes_infos_val.pkl` GT **to the decimal** (0.00 m centre error, identical size &
 yaw, all 25 cars in a frame). Our data is provably right.
 
-**Conclusion (validated, not hand-waved):** the residual gap is **architecture, not a bug**. The
-proven-good nuScenes detector in the source repo is **CBGS PointPillars *MultiHead*** — 10-class,
-class-balanced sampling, multi-head — reaching **mAP 0.41 / car AP 0.78**. Our single-class,
-single-anchor-size PointPillars is the wrong tool for nuScenes's multi-class 360° scenes.
-Competitive nuScenes AP needs that fuller detector (multi-class/multi-size anchors, CBGS, full
-data), an H100/mmdet3d-scale job — *not* the single-sweep or heading tweaks the symptoms first
-suggested. The KITTI line stays the local, working detector (PointPillars-res val mAP@0.5 ≈ 0.41).
+**We then verified our data too:** our loader's car boxes match the mmdet3d `nuscenes_infos_val.pkl`
+GT **to the decimal** (0.00 m centre, identical size & yaw, all 25 cars in a frame). Data is right.
+
+**We even built the multi-class detector** (`--multiclass`, class-aware anchors + per-class NMS —
+the doc's paradigm) to test whether car-only was the problem. **It didn't help on our scale** —
+overfit car AP *dropped* (0.18 → 0.04), because 10 classes means 1.3 M anchors and the car logit
+now competes with 9 others under focal loss, so on 400 frames / 40 ep the added complexity
+dilutes more than the cleaner supervision helps.
+
+**Conclusion (validated across six experiments, not hand-waved):** the residual gap is
+**architecture + scale, not a bug**. The proven-good nuScenes detector in the source repo is
+**CBGS PointPillars *MultiHead*** — 10-class, class-balanced *resampling*, multi-*head*
+(grouped-conv capacity), full data (28 k frames), 128 epochs, augmentation — reaching **mAP 0.41 /
+car AP 0.78**. Multi-class only pays off *at that scale* (the same data-hunger as the transformer,
+§10.1). Our pure-torch simplification on ~400 local frames can't reach it, and the honest levers
+are all "more" — data, head capacity, CBGS, schedule — an H100/mmdet3d-scale job, *not* the
+single-sweep / heading / rotation tweaks the symptoms first suggested. The KITTI line stays the
+local, working detector (PointPillars-res val mAP@0.5 ≈ 0.41). **What we banked from the hunt:**
+the `force-match` fix (a real bug, and it *improves* KITTI 0.63→0.76), verified-correct nuScenes
+data, and a working multi-class path — all ready for whoever does the full nuScenes run on H100.
 
 ## 10. A second model — CenterPoint (center-based vs anchor-based)
 
