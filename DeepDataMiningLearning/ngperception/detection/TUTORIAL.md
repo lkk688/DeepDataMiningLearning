@@ -258,8 +258,19 @@ overfit car AP *dropped* (0.18 → 0.04), because 10 classes means 1.3 M anchors
 now competes with 9 others under focal loss, so on 400 frames / 40 ep the added complexity
 dilutes more than the cleaner supervision helps.
 
-**Conclusion (validated across six experiments, not hand-waved):** the residual gap is
-**architecture + scale, not a bug**. The proven-good nuScenes detector in the source repo is
+**A late, important correction — we were using the wrong ruler.** All of the "AP ≈ 0" above is
+**rotated-IoU@0.5**. But nuScenes's *actual* detection metric is **center-distance** (a prediction
+matches a GT if its BEV centre is within 0.5/1/2/4 m, averaged) — far more lenient than IoU@0.5,
+and what the doc's "car AP 0.78" is measured with. Re-scoring the *same* nuScenes overfit with the
+correct metric: **IoU@0.5 = 0.008 but center-distance carAP = 0.27** (still climbing). So the
+model *does* detect cars — it localises centres to within a metre or two — it just doesn't hit
+tight IoU@0.5 (cars are smaller than the anchor, coarse 0.2 m grid). Much of the apparent
+"nuScenes failure" was **a metric mismatch**, not the model. Lesson: *evaluate with the
+benchmark's own metric before concluding your model is broken.* (`eval3d.nusc_class_ap` now
+implements it; `train_nuscenes` reports both.)
+
+**Conclusion (validated across seven experiments, not hand-waved):** the residual IoU@0.5 gap is
+**architecture + scale + metric**, not a bug. The proven-good nuScenes detector in the source repo is
 **CBGS PointPillars *MultiHead*** — 10-class, class-balanced *resampling*, multi-*head*
 (grouped-conv capacity), full data (28 k frames), 128 epochs, augmentation — reaching **mAP 0.41 /
 car AP 0.78**. Multi-class only pays off *at that scale* (the same data-hunger as the transformer,
