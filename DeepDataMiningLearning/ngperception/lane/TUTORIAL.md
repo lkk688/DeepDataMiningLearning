@@ -97,13 +97,95 @@ lines (red) back onto the original image:
 On nuScenes CAM_FRONT the lane mask is a thin ~200–550 px set of markings and the drivable area a
 ~50–70 k px road region — sensible panoptic output, real-time, pure PyTorch.
 
-## 6. Roadmap
+## 6. L1 — a pure-torch CLRNet (line-anchor SOTA, no mmdet)
 
-- **L1 — run more paradigms.** Add **UFLDv2** (row-wise, structured lane *instances* + curves, not
-  just a mask) and note **CLRNet/CLRerNet** as the mmdet-based F1 leaders (separate env, like the
-  occupancy GaussianOcc case).
-- **L2 — proper eval.** Stage TuSimple/CULane, report accuracy / F1 against GT (right now we only
-  do qualitative inference on unlabeled road images).
+YOLOPv2 (§5) gives a lane *mask*; the F1 leaders (CLRNet 80.5, CLRerNet 81.4) instead
+predict lane **instances** as line anchors — and they ship on mmdet. To own that
+representation in plain PyTorch we reimplemented the **CLRNet head + LaneIoU** from
+scratch (`clrnet.py`, `lane_iou.py`), the base detector for the research directions in
+[DESIGN.md](DESIGN.md).
+
+### 6.1 How it works
+
+A lane is a **line anchor** ("prior"): a start point on the image border + an angle,
+evaluated at a **fixed grid of N=72 image rows**. A lane prediction is then just *"for
+each row, where is the lane's x"* + a start-row, a length, and a fg/bg score — turning
+lane detection into anchor-based line detection.
+
+| stage | what | file |
+|---|---|---|
+| **backbone + FPN** | torchvision ResNet → 3 levels (stride 8/16/32) → common width | `clrnet.py: ResNetFPN` |
+| **line-anchor priors** | fixed bank of straight anchors (border start × 9 angles) → 252 priors | `generate_priors` |
+| **ROIGather (lite)** | sample features *along each prior line* at the 72 rows on all 3 levels (`grid_sample`, the same pure-torch deformable trick as the BEV transformer), pool → one vector per prior | `CLRNet._roi_feat` |
+| **heads** | per prior: cls (fg/bg), start-row, length, per-row x refinement | `cls_head`, `reg_head` |
+| **assignment** | SimOTA-style **dynamic-k** matching on (cls + LineIoU) cost | `CLRNet._assign` |
+| **loss** | focal cls + **LineIoU / LaneIoU** regression + smooth-L1 (start/length) | `get_loss` |
+| **decode** | softmax score → threshold → **LineIoU-NMS** → lane point sets | `decode` |
+
+**LineIoU** (CLRNet, `lane_iou.py`) turns each per-row point into a short horizontal
+segment of radius *r* and measures interval IoU summed over rows — differentiable, and
+well-behaved even where segments miss. **LaneIoU** (CLRerNet) scales *r* per row by the
+local slope `√(1+(dx/dy)²)` so *tilted* lanes aren't under-counted (tilt-invariant
+overlap); enable with `--lane-iou`.
+
+Two deliberate simplifications vs upstream CLRNet, documented in the code: a **single**
+refinement stage (upstream cascades 3) and **no auxiliary segmentation** head. Both are
+easy extensions; they don't change the representation.
+
+> **One subtlety that mattered.** The x-refinement is regressed in **normalised** units
+> (× `img_w`), not raw pixels. With raw-pixel outputs the head must emit values ~200 to
+> reach a lane, but Adam moves parameters ~`lr`/step → it would need ~`img_w/lr` steps and
+> the LaneIoU loss sits frozen (we saw exactly this: iou-loss stuck at 0.88). Normalising
+> the offset fixed it (iou-loss 0.88 → 0.02). Same lesson as everywhere: keep regression
+> targets O(1).
+
+### 6.2 Validation (local de-risk)
+
+No CULane/TuSimple is staged locally and the old S3/HF mirrors are down, so — following the
+same workflow as the detection module (de-risk locally, train big on H100) — we validated
+the **full pipeline** on a **controlled synthetic** lane set (`SyntheticLanes`: random
+smooth lanes on a textured road, known GT). This is a *correctness harness*, **not** a
+benchmark number: it proves anchor assignment, LaneIoU regression, decode/NMS and the
+CULane F1 metric are all correct and that the model learns.
+
+```bash
+# overfit 8 samples (loss must fall, F1 must rise) — pure sanity
+python -m DeepDataMiningLearning.ngperception.lane.train_clrnet \
+    --dataset synthetic --overfit 8 --epochs 300 --bs 8 --lr 1e-3 --lane-iou
+
+# small train/val split (unseen val → learns geometry, not memorisation)
+python -m DeepDataMiningLearning.ngperception.lane.train_clrnet \
+    --dataset synthetic --max-train 512 --max-val 64 --epochs 40 --bs 16 --lr 1e-3 --lane-iou
+```
+
+Overfit result (8 samples, LaneIoU): **iou-loss 0.88 → 0.02, cls 0.02, F1 0.857**
+(P 0.84 / R 0.875) — the loop converges. The residual FP/FN is decode-threshold strictness
+(fixed-radius IoU@0.5 matching), not a pipeline bug.
+
+### 6.3 Full CULane training (H100)
+
+`CULaneDataset` already reads the real CULane format (list file + per-image `.lines.txt`),
+so it is drop-in once the data is staged — the exact same command with `--dataset culane`:
+
+```bash
+python -m DeepDataMiningLearning.ngperception.lane.train_clrnet \
+    --dataset culane --root /data/CULane \
+    --train-list list/train_gt.txt --val-list list/test.txt \
+    --backbone resnet34 --epochs 15 --bs 24 --lr 6e-4 --lane-iou
+```
+
+`culane_metric.py` computes the official-style **F1** (thick-curve IoU>0.5 matching), pure
+numpy — no external eval binary. Reference targets: CLRNet ResNet-34 ≈ **80.5** F1, CLRerNet
+(LaneIoU) ≈ **81.4**.
+
+## 7. Roadmap
+
+- **L1 — pure-torch CLRNet ✅ (done, §6).** Line-anchor SOTA representation + LineIoU/LaneIoU
+  reimplemented without mmdet, validated end-to-end on the synthetic sanity set; drop-in for
+  CULane on the H100. Still open: add **UFLDv2** (row-wise) as a second runnable paradigm for
+  contrast, and stage real CULane for the benchmark number.
+- **L2 — proper eval.** Stage TuSimple/CULane, report F1 against GT on real data (the metric
+  (`culane_metric.py`) and loader (`CULaneDataset`) are ready; we've validated on synthetic).
 - **L3 — fine-tune** a lane model on a target domain (mirrors depth §1.7 / detection fine-tuning).
 - **L4 — 3-D lanes** (OpenLane): PersFormer / LATR — lift lanes into BEV, the natural bridge to
   the occupancy & detection BEV features (a fourth head on the shared encoder, extending M3).

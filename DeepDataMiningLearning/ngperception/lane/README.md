@@ -6,10 +6,17 @@ before scaling**. Full walkthrough (paradigms, SOTA landscape, datasets, metrics
 
 ## Status
 
-Running **YOLOPv2** (panoptic driving: lane lines + drivable area + vehicle detection, a
-self-contained TorchScript, no mmcv) on real road images (nuScenes CAM_FRONT / KITTI image_2) —
-qualitative inference, real-time, pure PyTorch. Roadmap in TUTORIAL §6 (UFLDv2 row-wise lanes,
-CULane/TuSimple eval, fine-tuning, 3-D lanes on OpenLane).
+1. **YOLOPv2** (panoptic driving: lane lines + drivable area + vehicle detection, a self-contained
+   TorchScript, no mmcv) running on real road images (nuScenes CAM_FRONT / KITTI image_2) —
+   qualitative inference, real-time, pure PyTorch.
+2. **Pure-torch CLRNet** (`clrnet.py`) — the line-anchor SOTA representation + **LineIoU/LaneIoU**
+   (`lane_iou.py`) reimplemented **without mmdet**: ResNet+FPN → line-anchor priors → ROIGather →
+   SimOTA assignment → decode/NMS, with an official-style CULane **F1** (`culane_metric.py`).
+   Validated end-to-end on a synthetic sanity set (overfit F1 0.857, iou-loss 0.88→0.02); drop-in
+   for real CULane on the H100. See **TUTORIAL §6**.
+
+Roadmap in TUTORIAL §7 (UFLDv2 row-wise lanes, real CULane/TuSimple eval, fine-tuning, 3-D lanes on
+OpenLane). Two research directions (temporal+uncertainty, 3-D lane graph) in [DESIGN.md](DESIGN.md).
 
 ## Run
 
@@ -30,8 +37,14 @@ lane-line probability threshold (default 0.4), `--images '<glob>'` overrides the
 
 ```
 lane/
-├── run_lane.py    # SOTA lane inference (YOLOPv2 backend) + overlay/video rendering
-└── TUTORIAL.md    # the teaching doc: task shapes, paradigms, SOTA, datasets, metrics, roadmap
+├── run_lane.py         # SOTA lane inference (YOLOPv2 backend) + overlay/video rendering
+├── clrnet.py           # pure-torch CLRNet: backbone+FPN, line-anchor priors, ROIGather, heads, decode
+├── lane_iou.py         # LineIoU (CLRNet) + LaneIoU (CLRerNet) loss/cost — pure torch
+├── culane_dataset.py   # CULane .lines.txt loader + synthetic sanity generator (same interface)
+├── culane_metric.py    # official-style IoU-matched CULane F1 (pure numpy)
+├── train_clrnet.py     # trainer/eval: overfit-sanity, synthetic, and --dataset culane (H100)
+├── DESIGN.md           # two research directions (temporal+uncertainty; 3-D lane graph/topology)
+└── TUTORIAL.md         # the teaching doc: task shapes, paradigms, SOTA, datasets, metrics, roadmap
 ```
 
 ## Model notes

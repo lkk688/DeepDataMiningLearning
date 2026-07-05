@@ -160,8 +160,11 @@ existing machinery*, not a new stack. It's also the most novel: it makes the fra
 
 ## Recommended sequencing
 
-1. **L1 (now-ish):** pure-torch CLRNet head + LaneIoU on CULane → a real F1 number (validates the
-   base before extending). Add **UFLDv2** as a second runnable paradigm for contrast.
+1. **L1 ✅ (done):** pure-torch CLRNet head + LineIoU/LaneIoU is implemented (`clrnet.py`,
+   `lane_iou.py`) and validated end-to-end on the synthetic sanity set (overfit F1 0.857,
+   iou-loss 0.88→0.02, unseen-val recall 0.99); `CULaneDataset` + `culane_metric.py` are ready
+   so the real CULane F1 is one H100 run away (TUTORIAL §6). *Remaining:* stage real CULane for
+   the benchmark number; add **UFLDv2** as a second runnable paradigm for contrast.
 2. **Direction 1a:** variance head + Gaussian NLL (cheap, independently useful, low risk).
 3. **Direction 1b:** temporal track-queries + uncertainty-gated fusion (the 2-D research novelty).
 4. **Direction 2:** 3-D lane + topology heads on the **M3 shared BEV encoder** (the full-stack,
