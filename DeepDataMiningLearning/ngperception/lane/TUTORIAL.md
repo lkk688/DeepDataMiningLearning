@@ -109,4 +109,11 @@ On nuScenes CAM_FRONT the lane mask is a thin ~200–550 px set of markings and 
   the occupancy & detection BEV features (a fourth head on the shared encoder, extending M3).
 - **L5 — prediction/topology**: lane graph + trajectory prediction, toward planning.
 
+Two research directions are designed in detail in **[DESIGN.md](DESIGN.md)**:
+1. **Temporal + uncertainty-aware CLRerNet** — a per-point variance head (Gaussian NLL) + lane
+   **track-queries** across video frames, with *uncertainty-gated temporal fusion* (2-D front cam).
+2. **OpenLane-V2 / 3-D lane graph / topology** — 3-D BEV lane centerlines + a topology head,
+   built as a **fourth head on the M3 shared BEV encoder** (reusing the deformable BEV transformer
+   + Hungarian matcher from detection), completing the unified-BEV vision.
+
 See [README.md](README.md) for the module layout.
