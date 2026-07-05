@@ -245,10 +245,21 @@ from two causes we could name exactly:
    (CLRNet leans on random affine/flip/HSV). Our trainer had none.
 
 Fix (2) is now in the code: `--augment` adds horizontal-flip (x → W−1−x, lanes stay valid) +
-photometric jitter to the **train** split. Fix (1) means training on **all six drivers** with
-the full schedule — i.e. the H100 run in §6.4 (add `--augment`). This is the same honest
-"de-risk locally, scale on the cluster" story as the detection module: local runs prove the
-machinery and *diagnose* what scaling must fix, they don't chase the benchmark number.
+photometric jitter to the **train** split. We ran it as a **controlled ablation** — identical
+2-driver / 8-epoch / resnet18 setup, only augmentation toggled:
+
+| setup | train-driver F1 | test-driver F1 (unseen) | generalisation gap |
+|---|---|---|---|
+| baseline (no aug) | 0.889 | 0.097 | 0.792 |
+| **+ augmentation** | 0.695 | **0.227** | 0.468 |
+
+Augmentation **more than doubled** unseen-driver F1 (+134 %) and cut the overfit gap ~41 %,
+with the textbook regularisation signature: **train F1 falls** (less memorisation) as **test
+F1 rises**. It still plateaus at 0.227 — far from the 0.80 reference — because cause (1),
+scene diversity, is untouched: augmentation can't manufacture new drivers. Closing the rest
+needs **all six drivers + the full schedule** — the H100 run in §6.4 (with `--augment`). Same
+honest "de-risk locally, scale on the cluster" story as the detection module: local runs
+prove the machinery and *quantify* what scaling must fix, they don't chase the benchmark.
 
 ## 7. Roadmap
 
