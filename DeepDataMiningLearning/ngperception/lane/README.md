@@ -42,6 +42,7 @@ lane/
 ├── lane_iou.py         # LineIoU (CLRNet) + LaneIoU (CLRerNet) loss/cost — pure torch
 ├── culane_dataset.py   # CULane .lines.txt loader + synthetic sanity generator (same interface)
 ├── culane_metric.py    # official-style IoU-matched CULane F1 (pure numpy)
+├── prepare_culane.sh   # download (gdown) + extract CULane into the expected layout
 ├── train_clrnet.py     # trainer/eval: overfit-sanity, synthetic, and --dataset culane (H100)
 ├── DESIGN.md           # two research directions (temporal+uncertainty; 3-D lane graph/topology)
 └── TUTORIAL.md         # the teaching doc: task shapes, paradigms, SOTA, datasets, metrics, roadmap

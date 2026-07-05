@@ -162,21 +162,54 @@ Overfit result (8 samples, LaneIoU): **iou-loss 0.88 → 0.02, cls 0.02, F1 0.85
 (P 0.84 / R 0.875) — the loop converges. The residual FP/FN is decode-threshold strictness
 (fixed-radius IoU@0.5 matching), not a pipeline bug.
 
-### 6.3 Full CULane training (H100)
+### 6.3 Getting the CULane data
 
-`CULaneDataset` already reads the real CULane format (list file + per-image `.lines.txt`),
-so it is drop-in once the data is staged — the exact same command with `--dataset culane`:
+CULane ships as tarballs on [Google Drive](https://drive.google.com/drive/folders/1mSLgwVTiaUMAb4AVOWwlCD5JcWdrwpvu).
+The helper `prepare_culane.sh` downloads (via `gdown`) and extracts them into the layout
+the loader expects, under `/mnt/e/Shared/Dataset/CULane`:
+
+```bash
+pip install gdown
+bash DeepDataMiningLearning/ngperception/lane/prepare_culane.sh all   # download → extract → verify
+# or step-by-step:  … prepare_culane.sh download   /   extract   /   verify
+```
+
+We only need the **6 `driver_*_*frame.tar.gz`** (the `.jpg` images **and** the
+`.lines.txt` lane annotations live together in these, ~30 GB) plus **`list.tar.gz`** (the
+split lists). The Drive folder also holds `laneseg_label_w16*` (per-pixel seg labels, only
+for segmentation methods / an aux-seg head) and `annotations_new`/`video_example` — not
+needed for our line-anchor CLRNet. Resulting layout:
+
+```
+/mnt/e/Shared/Dataset/CULane/
+├── driver_23_30frame/…/*.jpg + *.lines.txt      (+ 5 more driver_* dirs)
+└── list/{train,val,test}.txt  {train,val}_gt.txt  test_split/*.txt
+```
+
+Each `train_gt.txt` line is `img_path  seg_path  e1 e2 e3 e4` (the four lane-existence
+flags); `CULaneDataset` takes the image path (`split()[0]`) and reads the sibling
+`.lines.txt` (each line one lane, `x1 y1 x2 y2 …` in original 1640×590 pixels).
+
+### 6.4 Full CULane training (H100)
+
+`CULaneDataset` reads that format directly, so it's the **same command** as the synthetic
+run with `--dataset culane` + the real root:
 
 ```bash
 python -m DeepDataMiningLearning.ngperception.lane.train_clrnet \
-    --dataset culane --root /data/CULane \
+    --dataset culane --root /mnt/e/Shared/Dataset/CULane \
     --train-list list/train_gt.txt --val-list list/test.txt \
     --backbone resnet34 --epochs 15 --bs 24 --lr 6e-4 --lane-iou
 ```
 
 `culane_metric.py` computes the official-style **F1** (thick-curve IoU>0.5 matching), pure
 numpy — no external eval binary. Reference targets: CLRNet ResNet-34 ≈ **80.5** F1, CLRerNet
-(LaneIoU) ≈ **81.4**.
+(LaneIoU) ≈ **81.4**. (The official protocol also reports F1 per scenario via
+`list/test_split/*.txt` — a straightforward extension of the single overall F1 we compute.)
+
+> **Eval-only** (once a checkpoint exists): add `--resume clrnet.pt --epochs 0` to run just
+> the test F1, e.g. `--val-list list/test.txt` for the full test set or
+> `--val-list list/test_split/test0_normal.txt` for a fast per-category check.
 
 ## 7. Roadmap
 

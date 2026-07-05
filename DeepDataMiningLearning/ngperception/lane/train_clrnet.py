@@ -80,6 +80,7 @@ def main():
     ap.add_argument("--eval-every", type=int, default=5)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--no-pretrained", action="store_true")
+    ap.add_argument("--resume", default=None, help="load a checkpoint before train/eval")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", default="DeepDataMiningLearning/ngperception/output/lane/clrnet.pt")
     args = ap.parse_args()
@@ -94,9 +95,19 @@ def main():
     model = CLRNet(args.img_w, args.img_h, backbone=args.backbone,
                    pretrained=not args.no_pretrained, iou_r=args.iou_r,
                    lane_iou_tilt=args.lane_iou).to(dev)
+    if args.resume:
+        ck = torch.load(args.resume, map_location=dev, weights_only=False)
+        model.load_state_dict(ck["model"])
+        print(f"[clrnet] resumed {args.resume}", flush=True)
     print(f"[clrnet] {args.backbone} | {model.P} priors | {model.N} rows "
           f"| {'LaneIoU' if args.lane_iou else 'LineIoU'} | dataset={args.dataset} "
           f"| train={len(train_ds)} val={len(val_ds)}", flush=True)
+
+    if args.epochs == 0:                                 # eval-only
+        m = evaluate(model, val_loader, dev, args.score_thresh, args.nms_iou)
+        print(f"[clrnet] EVAL F1={m['f1']:.4f} P={m['precision']:.4f} R={m['recall']:.4f} "
+              f"tp/fp/fn={m['tp']}/{m['fp']}/{m['fn']}", flush=True)
+        return
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
