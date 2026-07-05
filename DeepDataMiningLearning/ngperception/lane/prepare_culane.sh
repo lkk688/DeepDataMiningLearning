@@ -49,6 +49,12 @@ extract() {
   if [ -f "$ROOT/list.tar.gz" ] && [ ! -d "$ROOT/list" ]; then
     echo "[culane] extracting list.tar.gz …"; tar -xzf "$ROOT/list.tar.gz" -C "$ROOT"
   fi
+  # annotations_new: improved .lines.txt for the train/val drivers (23/161/182). Overlaying
+  # it upgrades the training labels; test-driver labels stay in the driver tars. Optional.
+  if [ -f "$ROOT/annotations_new.tar.gz" ]; then
+    echo "[culane] overlaying annotations_new (improved train/val labels) …"
+    tar -xzf "$ROOT/annotations_new.tar.gz" -C "$ROOT"
+  fi
   echo "[culane] extract done"
 }
 

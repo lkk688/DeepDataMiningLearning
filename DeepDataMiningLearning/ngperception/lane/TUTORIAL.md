@@ -188,7 +188,17 @@ needed for our line-anchor CLRNet. Resulting layout:
 
 Each `train_gt.txt` line is `img_path  seg_path  e1 e2 e3 e4` (the four lane-existence
 flags); `CULaneDataset` takes the image path (`split()[0]`) and reads the sibling
-`.lines.txt` (each line one lane, `x1 y1 x2 y2 …` in original 1640×590 pixels).
+`.lines.txt` (each line one lane, `x1 y1 x2 y2 …` in original 1640×590 pixels). The driver
+tars carry a `.lines.txt` for every split; `annotations_new.tar.gz` is an **improved
+re-annotation of the train/val drivers** (23/161/182) that `prepare_culane.sh` overlays on
+top — the test-driver labels stay as shipped.
+
+> **Verified on real data.** After the first driver tar landed we ran a smoke on genuinely
+> annotated `driver_100` frames: annotations parse correctly (e.g. *2 lanes, 28 pts each*,
+> mapped to resized coords), and the model trains on them (loss 19 → 1.0, positives
+> assigned) — the real-data path is confirmed end-to-end, not just the synthetic sanity set.
+> (Many frames are legitimately empty — the `cross`/no-line scenarios — so filter by
+> non-empty `.lines.txt` if you sample by hand.)
 
 ### 6.4 Full CULane training (H100)
 
