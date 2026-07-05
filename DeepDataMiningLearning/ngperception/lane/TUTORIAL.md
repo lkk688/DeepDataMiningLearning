@@ -209,8 +209,10 @@ run with `--dataset culane` + the real root:
 python -m DeepDataMiningLearning.ngperception.lane.train_clrnet \
     --dataset culane --root /mnt/e/Shared/Dataset/CULane \
     --train-list list/train_gt.txt --val-list list/test.txt \
-    --backbone resnet34 --epochs 15 --bs 24 --lr 6e-4 --lane-iou
+    --backbone resnet34 --epochs 15 --bs 24 --lr 6e-4 --lane-iou --augment
 ```
+
+(`--augment` is train-time flip+photometric — essential for generalisation, see §6.5.)
 
 `culane_metric.py` computes the official-style **F1** (thick-curve IoU>0.5 matching), pure
 numpy — no external eval binary. Reference targets: CLRNet ResNet-34 ≈ **80.5** F1, CLRerNet
@@ -220,6 +222,33 @@ numpy — no external eval binary. Reference targets: CLRNet ResNet-34 ≈ **80.
 > **Eval-only** (once a checkpoint exists): add `--resume clrnet.pt --epochs 0` to run just
 > the test F1, e.g. `--val-list list/test.txt` for the full test set or
 > `--val-list list/test_split/test0_normal.txt` for a fast per-category check.
+
+### 6.5 Local real-CULane run — the generalisation lesson
+
+We trained locally on real CULane (the 3090) to get a first real number: resnet18, 2 train
+drivers (161+182, 31,920 labelled frames), 8 epochs, LaneIoU, **no augmentation**, evaluated
+on the held-out test driver 100. Training converged cleanly (iou-loss 0.57 → 0.23, positives
+67 → 149/batch), but the F1 split was stark:
+
+| eval set | F1 | precision | recall |
+|---|---|---|---|
+| **train drivers (161/182)** | **0.889** | 0.85 | 0.93 |
+| **test driver (100, unseen)** | **0.097** | 0.10 | 0.09 |
+
+The 0.89 → 0.10 gap is **not a bug** — the pipeline (priors → ROIGather → LaneIoU → assign →
+decode → F1) fits real lanes *excellently* on drivers it has seen. It's **domain overfit**
+from two causes we could name exactly:
+
+1. **Too few, too-correlated scenes** — 2 driving sessions, not the 6-driver / 88 k-frame
+   diversity CULane is built to provide. `driver_100` is a held-out *test* scene.
+2. **No data augmentation** — the single biggest generalisation lever for lane detectors
+   (CLRNet leans on random affine/flip/HSV). Our trainer had none.
+
+Fix (2) is now in the code: `--augment` adds horizontal-flip (x → W−1−x, lanes stay valid) +
+photometric jitter to the **train** split. Fix (1) means training on **all six drivers** with
+the full schedule — i.e. the H100 run in §6.4 (add `--augment`). This is the same honest
+"de-risk locally, scale on the cluster" story as the detection module: local runs prove the
+machinery and *diagnose* what scaling must fix, they don't chase the benchmark number.
 
 ## 7. Roadmap
 

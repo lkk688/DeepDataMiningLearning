@@ -36,7 +36,8 @@ def build_data(args):
         train = SyntheticLanes(args.max_train or 512, args.img_h, args.img_w, seed=0)
         val = SyntheticLanes(args.max_val or 64, args.img_h, args.img_w, seed=777)
     else:
-        train = CULaneDataset(args.root, args.train_list, args.img_h, args.img_w, args.max_train)
+        train = CULaneDataset(args.root, args.train_list, args.img_h, args.img_w,
+                              args.max_train, augment=args.augment)
         val = CULaneDataset(args.root, args.val_list, args.img_h, args.img_w, args.max_val)
     if args.overfit:
         train = Subset(train, list(range(args.overfit)))
@@ -70,6 +71,7 @@ def main():
     ap.add_argument("--bs", type=int, default=8)
     ap.add_argument("--lr", type=float, default=6e-4)
     ap.add_argument("--wd", type=float, default=1e-4)
+    ap.add_argument("--augment", action="store_true", help="train-time flip+photometric aug (generalisation)")
     ap.add_argument("--lane-iou", action="store_true", help="LaneIoU (tilt) instead of LineIoU")
     ap.add_argument("--iou-r", type=float, default=7.5)
     ap.add_argument("--overfit", type=int, default=0, help="overfit first N samples (sanity)")

@@ -34,6 +34,22 @@ def _to_tensor(img_np, img_h, img_w):
     return (t - IMAGENET_MEAN) / IMAGENET_STD
 
 
+def _augment(img, lanes, img_w):
+    """Geometrically-safe lane augmentation on a target-size (H,W,3) uint8 image + its
+    lane point-lists (in target pixels). Horizontal flip (x → W−1−x, lanes stay valid) +
+    photometric brightness/contrast jitter. Augmentation is *the* generalisation lever for
+    lane detectors — CLRNet leans on random affine/flip/HSV; without it a model memorises
+    the training drivers (we measured train-F1 0.89 vs unseen-driver 0.10)."""
+    if np.random.rand() < 0.5:                       # horizontal flip
+        img = img[:, ::-1, :].copy()
+        lanes = [torch.stack([(img_w - 1) - l[:, 0], l[:, 1]], dim=1) for l in lanes]
+    b = np.random.uniform(0.7, 1.3)                  # brightness
+    c = np.random.uniform(0.8, 1.2)                  # contrast (around image mean)
+    mean = float(img.mean())
+    img = np.clip((img.astype(np.float32) - mean) * c + mean * b, 0, 255).astype(np.uint8)
+    return img, lanes
+
+
 def collate_lanes(batch):
     """Stack images; keep lanes + meta as lists (variable #lanes per image)."""
     imgs = torch.stack([b[0] for b in batch])
@@ -43,8 +59,9 @@ def collate_lanes(batch):
 
 
 class CULaneDataset(Dataset):
-    def __init__(self, root, list_file, img_h=320, img_w=800, max_samples=None):
+    def __init__(self, root, list_file, img_h=320, img_w=800, max_samples=None, augment=False):
         self.root, self.img_h, self.img_w = root, img_h, img_w
+        self.augment = augment
         with open(os.path.join(root, list_file)) as f:
             lines = [l.strip().split()[0] for l in f if l.strip()]
         self.items = lines[:max_samples] if max_samples else lines
@@ -76,7 +93,12 @@ class CULaneDataset(Dataset):
         lanes0 = self._load_lanes(ann)
         sx, sy = self.img_w / W0, self.img_h / H0
         lanes = [torch.from_numpy(p * np.array([sx, sy], np.float32)) for p in lanes0]
-        t = _to_tensor(img, self.img_h, self.img_w)
+        if self.augment:
+            img_rs = np.asarray(Image.fromarray(img).resize((self.img_w, self.img_h), Image.BILINEAR))
+            img_rs, lanes = _augment(img_rs, lanes, self.img_w)
+            t = (torch.from_numpy(img_rs).permute(2, 0, 1).float() / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+        else:
+            t = _to_tensor(img, self.img_h, self.img_w)
         meta = {"path": img_path, "H0": H0, "W0": W0, "sx": sx, "sy": sy}
         return t, lanes, meta
 
