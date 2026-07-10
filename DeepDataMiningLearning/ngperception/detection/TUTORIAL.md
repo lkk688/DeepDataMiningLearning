@@ -290,6 +290,24 @@ local, working detector (PointPillars-res val mAP@0.5 ≈ 0.41). **What we banke
 the `force-match` fix (a real bug, and it *improves* KITTI 0.63→0.76), verified-correct nuScenes
 data, and a working multi-class path — all ready for whoever does the full nuScenes run on H100.
 
+**Full nuScenes run, done (H100).** We then ran exactly that job — full train split (28130
+frames), PointPillars-**res**, 10-class **CBGS multiclass**, 10-sweep, 40 epochs — on a single
+H100 NVL, concurrently with the occupancy full-data runs ([../TUTORIAL.md §3](../TUTORIAL.md)).
+Held-out val (2000 frames) reaches **car center-distance AP 0.467 / IoU@0.5 0.157**, climbing
+monotonically over the 40 epochs (0.271 → 0.395 → 0.429 → 0.461 → 0.467, loss 3.93 → 0.79, *not
+converged*). This confirms the conclusion above quantitatively: on the metric's own ruler the
+gap to the reference **0.78** is **scale + schedule** (28 k/128 ep/multihead/augmentation), not a
+code bug — 0.467 on 40 epochs pure-PyTorch is a sensible point on that trajectory, and it is
+*still rising*. IoU@0.5 stays low (0.157) as documented: cars are smaller than the anchor at the
+coarse 0.2 m grid.
+
+```bash
+python -m DeepDataMiningLearning.ngperception.detection.train_nuscenes \
+    --root <nuscenes> --model pointpillars --backbone res --multiclass \
+    --max-frames 28130 --val-frames 2000 --epochs 40 \
+    --batch-size 8 --lr 3e-3 --sweeps 10 --lidar-cache output/nusc_det_lidar_cache
+```
+
 ## 10. A second model — CenterPoint (center-based vs anchor-based)
 
 PointPillars (§3–6) is **anchor-based**: place boxes everywhere, classify/regress each, match by

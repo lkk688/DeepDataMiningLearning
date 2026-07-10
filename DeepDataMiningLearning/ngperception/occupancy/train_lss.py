@@ -78,13 +78,24 @@ def compute_class_weights(occ_ds, n_classes=18, power=0.25, cache=None):
     (what the CE scores). `power` tempers it (0=uniform, 1=full inverse-freq); normalized to
     mean 1 and clamped so the loss scale is unchanged. Cached (only GT npz loads, no images)."""
     import numpy as _np
+    import gc
     if cache and os.path.exists(cache):
         return torch.tensor(_np.load(cache), dtype=torch.float32)
     counts = _np.zeros(n_classes, _np.float64)
-    for i in range(len(occ_ds)):
-        s = occ_ds[i]
-        sem = s.semantics[s.mask_camera].reshape(-1)
-        counts += _np.bincount(sem, minlength=n_classes)[:n_classes]
+    # This loop allocates an NpzFile + arrays every iteration. With the full nuScenes trainval
+    # graph (~10M objects) resident, Python's gen-0 cyclic GC would fire on those allocations
+    # and rescan the whole graph each time -> a ~250x slowdown (44s -> >1h over 34k files).
+    # Disabling GC for the loop keeps it O(files): the per-iter garbage is refcount-freed anyway.
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for i in range(len(occ_ds)):
+            s = occ_ds[i]
+            sem = s.semantics[s.mask_camera].reshape(-1)
+            counts += _np.bincount(sem, minlength=n_classes)[:n_classes]
+    finally:
+        if gc_was_enabled:
+            gc.enable()
     freq = counts / max(counts.sum(), 1.0)
     w = (freq + 1e-6) ** (-power)
     w = _np.clip(w / w.mean(), 0.2, 8.0).astype(_np.float32)
@@ -301,7 +312,10 @@ def main():
                 else:
                     l_dep = depth_loss(depth, b["depth_gt"].to(dev))
                 loss = l_occ + args.depth_weight * l_dep
-            opt.zero_grad(); scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
+            opt.zero_grad(); scaler.scale(loss).backward()
+            scaler.unscale_(opt)                                       # unscale before clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)   # guard vs fusion divergence -> NaN
+            scaler.step(opt); scaler.update()
             if sched is not None:
                 sched.step()
             if it % 20 == 0:
