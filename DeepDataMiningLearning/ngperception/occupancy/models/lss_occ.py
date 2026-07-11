@@ -126,7 +126,8 @@ class LSSOccupancy(nn.Module):
                  backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
                  feat_upsample: int = 1, refine_iters: int = 1,
                  lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
-                 lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None):
+                 lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None,
+                 det_anchor_bottom=None):
         super().__init__()
         self.backbone = backbone
         self.feat_upsample = feat_upsample
@@ -169,7 +170,9 @@ class LSSOccupancy(nn.Module):
             from ..det_head import VoxelDetHead
             det_pcr = [XBOUND[0], YBOUND[0], ZBOUND[0], XBOUND[1], YBOUND[1], ZBOUND[1]]
             self.det_head = VoxelDetHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
-                                         anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),))
+                                         anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),),
+                                         anchor_bottom=(det_anchor_bottom if det_anchor_bottom is not None
+                                                        else -1.0))
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
             self.refine_alpha = nn.Parameter(torch.tensor(1.0))

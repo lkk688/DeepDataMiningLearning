@@ -147,10 +147,72 @@ unchanged.
 | `output/lss_occ_full.log`, `..._fusion.log`, `nusc_det.log` | per-epoch training logs |
 | `output/*.collapsed.log` | archived logs of the failed fusion attempt |
 
+## Official val evaluation + per-class IoU (⚠️ leakage caveat)
+
+Ran the trained occupancy checkpoints over the **full official Occ3D-nuScenes val split**
+(150 official val scenes, 6019 frames; `occupancy/eval_val.py`, filtered via
+`nuscenes.utils.splits.val`).
+
+> **⚠️ These numbers are optimistically biased — the checkpoints were trained on the val
+> frames.** The Occ3D `gts` dir is the full trainval (850 scenes = 700 train + 150 val =
+> 34149 frames = 28130 + 6019). Training used `--max-samples 34149` with **no scene filter**,
+> so all 6019 official-val frames were in the training set. Not a clean held-out measure — treat
+> mIoU as an upper bound and the per-class breakdown as diagnostic (which classes the model
+> represents), not as a SOTA-comparable result.
+
+| class | camera-only | fusion |    | class | camera-only | fusion |
+|---|---|---|---|---|---|---|
+| others | 0.105 | 0.230 | | trailer | 0.308 | 0.665 |
+| barrier | 0.294 | 0.669 | | truck | 0.347 | 0.602 |
+| bicycle | 0.105 | 0.600 | | driveable_surface | 0.788 | 0.816 |
+| bus | 0.469 | 0.731 | | other_flat | 0.480 | 0.515 |
+| car | 0.429 | 0.612 | | sidewalk | 0.487 | 0.525 |
+| construction_veh | 0.131 | 0.591 | | terrain | 0.548 | 0.584 |
+| motorcycle | 0.118 | 0.624 | | manmade | 0.398 | 0.684 |
+| pedestrian | 0.133 | 0.570 | | vegetation | 0.365 | 0.666 |
+| traffic_cone | 0.076 | 0.446 | | **mIoU / geo-IoU** | **0.328 / 0.678** | **0.596 / 0.851** |
+
+**Reading it:** camera-only is **bimodal** — large static surfaces strong (driveable 0.79,
+terrain 0.55) but small/dynamic/rare classes collapse (traffic_cone 0.08, bicycle/pedestrian/
+motorcycle 0.10–0.13). Fusion **lifts exactly those weak classes** most (bicycle 0.10→0.60,
+motorcycle 0.12→0.62, construction_veh 0.13→0.59) and is uniform (0.44–0.82) — LiDAR geometry
+gives the shape of small objects the camera lift can't resolve. The §2.8.3 modality story,
+per-class.
+
+### Clean-retrain plan (future — deferred, ~1–2 days H100)
+
+To get legitimate held-out numbers (deferred; full re-train too slow to block on):
+
+1. **Add scene filtering to `train_lss.py`** (`--split {train,val,all}`): the dataset already
+   supports it (`Occ3DNuScenesDataset(scenes=...)`); pass `nuscenes.utils.splits.train`
+   (700 scenes / 28130 frames).
+2. **Retrain both occupancy models on train-scenes only** — same configs as Run 1/2 + `--split train`.
+3. **Eval on val-scenes only** with `eval_val.py` (already correct). The gap vs the leaked
+   0.328 / 0.596 above quantifies the leakage.
+4. Recompute `classw_full.npy` over train-only frames (the current one used all 34149 — minor
+   loss-weight contamination).
+
+Expect honest camera-only mIoU somewhat below 0.328 and fusion below 0.596; the *relative*
+fusion-vs-camera and per-class story should hold.
+
+## Detection — checkpoint was not saved (must retrain to eval)
+
+`detection/train_nuscenes.py` has **no `torch.save`**, so the carAP_cd-0.467 run's weights were
+**not persisted** and the process has exited — the detection model must be **retrained** to run
+the official metric. It used the official `split="train"`/`"val"` datasets, so unlike occupancy
+it has **no leakage** — a clean retrain (with saving + the official `nuscenes.eval.detection`
+DetectionEval for NDS/mAP/TP-errors) gives publishable numbers. Retrain is cheap now: PointPillars
+is small and the 10-sweep LiDAR cache (`output/nusc_det_lidar_cache/`) is already built.
+
 ## Open items
 
-- **Patch the two code issues** for reproducibility: the `compute_class_weights` GC stall,
-  and keep the grad-clip as a committed improvement (grad-clip already applied in the working
-  tree; GC patch still pending).
-- Further headroom (TUTORIAL §3): DINOv2-large, 0.2 m voxels, temporal fusion,
-  beyond-concat LiDAR fusion — all H100 jobs on the same pure-PyTorch stack.
+- **Add checkpoint saving + official-metric eval to `train_nuscenes.py`**, retrain, and report
+  NDS / mAP / per-class AP / mATE·mASE·mAOE·mAVE·mAAE on the full val split (in progress).
+- **Ablation: reuse the occupancy backbone for detection.** Attach a detection head onto the
+  trained fused-voxel occupancy encoder (§5/M3 `det_head.py VoxelDetHead`) and improve the head
+  — measure vs the standalone PointPillars baseline.
+- **Occupancy clean-retrain** (train-only) for leakage-free mIoU — plan above.
+- **Patch the two code issues** for reproducibility: the `compute_class_weights` GC stall + the
+  grad-clip (both applied in the working tree / committed on `fulldata-h100-runs`).
+- Further headroom (TUTORIAL §3): DINOv2-large, 0.2 m voxels, temporal fusion, beyond-concat
+  LiDAR fusion — all H100 jobs on the same pure-PyTorch stack.
