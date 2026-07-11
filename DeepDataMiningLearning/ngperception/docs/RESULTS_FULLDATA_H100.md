@@ -204,6 +204,44 @@ it has **no leakage** — a clean retrain (with saving + the official `nuscenes.
 DetectionEval for NDS/mAP/TP-errors) gives publishable numbers. Retrain is cheap now: PointPillars
 is small and the 10-sweep LiDAR cache (`output/nusc_det_lidar_cache/`) is already built.
 
+## Backbone-reuse detection ablation — does the occupancy encoder help 3D detection?
+
+Attaching a 10-class `VoxelDetHead` onto the **trained fused-voxel occupancy encoder**
+(`train_det_ablation.py`) and comparing reuse strategies. Fast comparative sweep: 8000-frame
+train subset, 12 epochs, official nuScenes val (6019 frames, `eval_det_ablation_official.py`,
+ego→global). `car_AP@0.5` is the in-training proxy; **official mAP/NDS** is the headline.
+
+| arm | car_AP@0.5 | official mAP | NDS | car | truck | pedestrian | occ_mIoU |
+|---|---|---|---|---|---|---|---|
+| **finetune-fusion** (occ-reg) | **0.127** | **0.205** | 0.173 | 0.445 | 0.157 | **0.439** | 0.277 |
+| frozen-fusion (head-only) | 0.111 | 0.161 | 0.149 | 0.406 | 0.114 | 0.362 | 0.521 |
+| scratch-fusion (no pretrain) | 0.090 | 0.065 | 0.101 | 0.355 | 0.064 | 0.094 | 0.001 |
+| lidar-only-frozen | 0.058 | — | — | — | — | — | 0.139 |
+
+**Findings:**
+1. **Reusing the occ backbone is a large win.** finetune mAP 0.205 vs from-scratch 0.065 =
+   **3.15×**; even a **frozen** encoder + trained head beats scratch **2.5×** (0.161 vs 0.065).
+2. **The gain concentrates on small/rare classes.** pedestrian AP **0.094 (scratch) → 0.362
+   (frozen) → 0.439 (finetune)**: from-scratch barely detects pedestrians, but the occ encoder
+   — which learned dense pedestrian *voxels* — transfers that geometry to detection. Occupancy
+   pretraining is the right prior exactly where detection-from-scratch is weakest. (car, an easy
+   class, gains less: 0.355→0.406→0.445.)
+3. **Finetune > frozen (+27% mAP)**, and the occ-regularizer (`--occ-weight 0.1`) keeps it
+   genuinely multi-task (occ_mIoU 0.277 retained vs the det-only finetune's collapse to 0.001,
+   which also diverged to NaN without it).
+4. **Camera matters:** frozen fusion car_AP 0.111 ≈ 2× lidar-only 0.058.
+5. **Data efficiency:** finetune-fusion reaches **car AP 0.445 on 8k/12ep**, ~matching standalone
+   PointPillars-res's **carAP_cd 0.467 on 28k/40ep** — but multi-class (mAP 0.205) *and*
+   multi-task. The occ pretraining buys a large data/schedule saving.
+
+(NDS is dragged by mAVE/mAAE — no velocity/attribute predicted; mAP is the clean headline.
+Standalone PointPillars baseline retrain is CPU-bound on numpy pillarization — its epoch-0
+official checkpoint gives mAP 0.024 as a validated lower bound; full baseline is a separate run.)
+
+**Trainers/evaluators** (all pure-PyTorch, committed): `train_det_ablation.py` (freeze/finetune/
+modality + occ-reg), `eval_det_ablation_official.py` (occ-backbone, ego→global),
+`detection/eval_nuscenes_official.py` (standalone, LiDAR→global).
+
 ## Open items
 
 - **Add checkpoint saving + official-metric eval to `train_nuscenes.py`**, retrain, and report
