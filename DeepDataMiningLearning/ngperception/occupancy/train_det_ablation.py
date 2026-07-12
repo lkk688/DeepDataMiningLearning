@@ -103,6 +103,7 @@ def main():
                     lidar_fusion=args.lidar_fusion, lidar_only=args.lidar_only,
                     det_anchor_sizes=NUSC_10_SIZES, det_anchor_bottom=NUSC_10_BOTTOMS_EGO,
                     det_head_type=args.det_head)
+    best_car = -1.0
     for ep in range(epochs):
         if args.freeze_encoder:                      # frozen encoder in eval (no BN-stat drift); head trains
             model.eval(); model.det_head.train()
@@ -129,9 +130,12 @@ def main():
                 break
         mIoU, geo, car = evaluate(model, val_ld, dev)
         print(f"[det-abl] epoch {ep}: car_AP@0.5={car:.3f}  (occ_mIoU={mIoU:.3f})", flush=True)
-        torch.save({"state_dict": model.state_dict(), "cfg": ckpt_cfg},
-                   os.path.join(args.out_dir, "det_abl.pth"))
-    print(f"[det-abl] saved -> {args.out_dir}/det_abl.pth", flush=True)
+        if car > best_car:                           # keep the peak (a late BN/fp16 collapse can't erase it)
+            best_car = car
+            torch.save({"state_dict": model.state_dict(), "cfg": ckpt_cfg},
+                       os.path.join(args.out_dir, "det_abl.pth"))
+            print(f"[det-abl]   saved best (car_AP={car:.3f})", flush=True)
+    print(f"[det-abl] done (best car_AP={best_car:.3f}) -> {args.out_dir}/det_abl.pth", flush=True)
 
 
 if __name__ == "__main__":

@@ -238,6 +238,31 @@ ego→global). `car_AP@0.5` is the in-training proxy; **official mAP/NDS** is th
 Standalone PointPillars baseline retrain is CPU-bound on numpy pillarization — its epoch-0
 official checkpoint gives mAP 0.024 as a validated lower bound; full baseline is a separate run.)
 
+### Arm D — the detection head is the bigger lever (anchor vs center, 2×2)
+
+Swapping the anchor head for an anchor-free **CenterPoint center head** (`VoxelCenterHead`,
+`--det-head center`) on the *same* occ backbone. Official nuScenes mAP, 8k/12ep:
+
+| head ↓ / encoder → | frozen | finetuned |
+|---|---|---|
+| anchor | 0.161 | 0.205 |
+| **center** | **0.370** | **0.391** |
+
+- center + finetune: **mAP 0.391 / NDS 0.309**, car **0.637**, pedestrian 0.519 (occ 0.33 retained)
+- center + frozen:   mAP 0.370 / NDS 0.303, car 0.637, pedestrian 0.478 (occ 0.52)
+
+**Findings:** (1) the **head is the dominant lever** — anchor→center ~2×'d mAP (0.205→0.391),
+bigger than any backbone-side change, exactly as detection/TUTORIAL §10 predicted (CenterPoint
+sidesteps anchor-assignment ambiguity). (2) **Frozen reuse + center head ≈ finetuned** (0.370 vs
+0.391) — a good head + the *frozen* occ backbone gets ~95%; finetuning adds only +0.021. (3) car AP
+**0.637** (center-distance) on 8k/12ep approaches the CBGS-MultiHead reference 0.78 (28k/128ep),
+riding the occupancy pretraining. **Best config = occ-backbone (frozen or finetuned) + center head.**
+
+**Stability note:** the center head + AMP diverged via **fp16-corrupted BatchNorm running stats**
+(train loss stays healthy, eval collapses to 0 and never recovers). Fix: run the center-head arm
+in **fp32** (`train_det_ablation.py` drops `--amp`) + **best-checkpoint saving** (a late collapse
+can't erase the peak). `VoxelCenterHead` + `--det-head {anchor,center}` are committed.
+
 **Trainers/evaluators** (all pure-PyTorch, committed): `train_det_ablation.py` (freeze/finetune/
 modality + occ-reg), `eval_det_ablation_official.py` (occ-backbone, ego→global),
 `detection/eval_nuscenes_official.py` (standalone, LiDAR→global).
