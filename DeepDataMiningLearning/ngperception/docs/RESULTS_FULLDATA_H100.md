@@ -267,6 +267,37 @@ can't erase the peak). `VoxelCenterHead` + `--det-head {anchor,center}` are comm
 modality + occ-reg), `eval_det_ablation_official.py` (occ-backbone, ego→global),
 `detection/eval_nuscenes_official.py` (standalone, LiDAR→global).
 
+## Multi-task fusion plan — resolving the occ-head vs det-head conflict
+
+The ablation **quantified a real multi-task conflict** on the shared fused-voxel encoder
+(all center-head, 8k/12ep, official val):
+
+| shared-encoder strategy | occ mIoU | det mAP | verdict |
+|---|---|---|---|
+| **frozen trunk** | **0.521** | 0.370 | no conflict; occ at full quality |
+| finetune (occ-reg 0.1) | 0.277 | 0.391 | conflict: det +0.021 for occ **−0.244** |
+| finetune (det-only) | 0.001 | ~0.39 | catastrophic forgetting + NaN divergence |
+
+So **detection-finetuning the shared trunk trades −0.244 occ mIoU for only +0.021 det mAP** — a
+bad deal for a two-task model. The frozen trunk is the current sweet spot (occ 0.521 **and** det
+0.370 = 95% of the finetuned det). Plan to get a *good* fused architecture:
+
+**Warm-start from our trained weights** (no from-scratch): shared trunk + occ head from
+`lss_occ_full_fusion/lss_occ.pth`; center det head from `abl_dcenter_frozen_sub/det_abl.pth`.
+
+Then compare three joint recipes on the 8k subset (`train_multitask_joint.py`, center head, fp32,
+best-saving), reporting **both** occ mIoU and det car_AP each epoch:
+1. **frozen trunk + two heads** (baseline) — expect occ ≈0.52, det ≈0.37 with zero conflict.
+2. **naive joint finetune** (sum occ+det losses) — expected to show the conflict (occ drops).
+3. **PCGrad joint finetune** (gradient surgery: project conflicting per-task grads on the shared
+   trunk before the step) — target: occ **≥0.52 AND** det **≥0.39**, i.e. beat the trade-off so
+   finetuning helps *both* instead of trading one for the other.
+
+Architecture note: only the encoder+LiDAR-branch is truly *shared* (produces `vox`); the occ 3-D
+decoder and the det center head are task-specific necks — so the conflict lives in the shared
+trunk's gradients, which is exactly what PCGrad targets. If PCGrad doesn't cleanly win, the
+fallback is **frozen trunk + task adapters** (train small det-specific layers, trunk stays occ).
+
 ## Open items
 
 - **Add checkpoint saving + official-metric eval to `train_nuscenes.py`**, retrain, and report
