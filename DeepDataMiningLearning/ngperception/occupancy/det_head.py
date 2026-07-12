@@ -16,6 +16,34 @@ import torch
 import torch.nn as nn
 
 from ..detection.pointpillars import AnchorHead, make_bev_backbone
+from ..detection.centerpoint import CenterHead
+
+
+class VoxelCenterHead(nn.Module):
+    """(B,C,X,Y,Z) fused voxel volume -> 3-D boxes via an anchor-free **CenterPoint** head
+    (BEV centre heatmap + regression; 3x3 max-pool decode). Same Z-collapse + BEV backbone as
+    VoxelDetHead, only the head differs — so it drops in as arm D of the detection ablation."""
+
+    def __init__(self, in_channels, nz, pc_range, num_classes=1, det_channels=64,
+                 backbone="res", voxel_size=(0.4, 0.4), nx=200, ny=200, **head_kw):
+        super().__init__()
+        self.z_collapse = nn.Sequential(
+            nn.Conv2d(in_channels * nz, det_channels, 3, padding=1),
+            nn.BatchNorm2d(det_channels), nn.ReLU(inplace=True))
+        self.backbone = make_bev_backbone(backbone, det_channels)
+        self.head = CenterHead(self.backbone.num_bev_features, num_classes, pc_range,
+                               voxel_size, nx, ny)
+
+    def forward(self, vox):
+        B, C, X, Y, Z = vox.shape
+        bev = vox.permute(0, 1, 4, 3, 2).reshape(B, C * Z, Y, X)
+        return self.head(self.backbone(self.z_collapse(bev)))
+
+    def get_loss(self, pred, gt_list):
+        return self.head.get_loss(pred, gt_list)
+
+    def predict(self, pred, **kw):
+        return self.head.predict(pred, **kw)
 
 
 class VoxelDetHead(nn.Module):

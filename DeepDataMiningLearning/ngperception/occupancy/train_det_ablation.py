@@ -41,6 +41,8 @@ def main():
     ap.add_argument("--decoder-layers", type=int, default=4); ap.add_argument("--decoder-hidden", type=int, default=96)
     ap.add_argument("--refine-iters", type=int, default=2)
     ap.add_argument("--lidar-fusion", action="store_true"); ap.add_argument("--lidar-only", action="store_true")
+    ap.add_argument("--det-head", choices=["anchor", "center"], default="anchor",
+                    help="arm D: center = anchor-free CenterPoint head on the shared backbone")
     ap.add_argument("--occ-weight", type=float, default=0.0, help=">0 keeps an occ regularizer when finetuning")
     ap.add_argument("--max-samples", type=int, default=28130); ap.add_argument("--val-samples", type=int, default=400)
     ap.add_argument("--epochs", type=int, default=12); ap.add_argument("--batch-size", type=int, default=8)
@@ -59,7 +61,8 @@ def main():
                          decoder_layers=args.decoder_layers, refine_iters=args.refine_iters,
                          lidar_fusion=args.lidar_fusion, lidar_only=args.lidar_only,
                          det_classes=10, det_anchor_sizes=NUSC_10_SIZES,
-                         det_anchor_bottom=NUSC_10_BOTTOMS_EGO).to(dev)
+                         det_anchor_bottom=NUSC_10_BOTTOMS_EGO,
+                         det_head_type=args.det_head).to(dev)
 
     if args.pretrained:                              # reuse the trained occ encoder (det head stays random)
         sd = torch.load(args.pretrained, map_location=dev)
@@ -98,7 +101,8 @@ def main():
     ckpt_cfg = dict(backbone=args.backbone, decoder_layers=args.decoder_layers,
                     decoder_hidden=args.decoder_hidden, refine_iters=args.refine_iters,
                     lidar_fusion=args.lidar_fusion, lidar_only=args.lidar_only,
-                    det_anchor_sizes=NUSC_10_SIZES, det_anchor_bottom=NUSC_10_BOTTOMS_EGO)
+                    det_anchor_sizes=NUSC_10_SIZES, det_anchor_bottom=NUSC_10_BOTTOMS_EGO,
+                    det_head_type=args.det_head)
     for ep in range(epochs):
         if args.freeze_encoder:                      # frozen encoder in eval (no BN-stat drift); head trains
             model.eval(); model.det_head.train()

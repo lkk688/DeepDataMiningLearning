@@ -127,7 +127,7 @@ class LSSOccupancy(nn.Module):
                  feat_upsample: int = 1, refine_iters: int = 1,
                  lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
                  lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None,
-                 det_anchor_bottom=None):
+                 det_anchor_bottom=None, det_head_type: str = "anchor"):
         super().__init__()
         self.backbone = backbone
         self.feat_upsample = feat_upsample
@@ -167,12 +167,18 @@ class LSSOccupancy(nn.Module):
         # M3: optional detection head on the SAME fused voxel volume (one encoder, two heads).
         self.det_head = None
         if det_classes > 0:
-            from ..det_head import VoxelDetHead
             det_pcr = [XBOUND[0], YBOUND[0], ZBOUND[0], XBOUND[1], YBOUND[1], ZBOUND[1]]
-            self.det_head = VoxelDetHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
-                                         anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),),
-                                         anchor_bottom=(det_anchor_bottom if det_anchor_bottom is not None
-                                                        else -1.0))
+            if det_head_type == "center":            # arm D: anchor-free CenterPoint head
+                from ..det_head import VoxelCenterHead
+                self.det_head = VoxelCenterHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
+                                                voxel_size=(XBOUND[2], YBOUND[2]),
+                                                nx=self.nx, ny=self.ny)
+            else:
+                from ..det_head import VoxelDetHead
+                self.det_head = VoxelDetHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
+                                             anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),),
+                                             anchor_bottom=(det_anchor_bottom if det_anchor_bottom is not None
+                                                            else -1.0))
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
             self.refine_alpha = nn.Parameter(torch.tensor(1.0))

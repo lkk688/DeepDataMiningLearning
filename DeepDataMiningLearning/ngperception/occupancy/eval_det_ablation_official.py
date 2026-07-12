@@ -64,7 +64,8 @@ def main():
                          decoder_layers=cfg["decoder_layers"], refine_iters=cfg["refine_iters"],
                          lidar_fusion=cfg["lidar_fusion"], lidar_only=cfg["lidar_only"],
                          det_classes=10, det_anchor_sizes=cfg["det_anchor_sizes"],
-                         det_anchor_bottom=cfg["det_anchor_bottom"]).to(dev)
+                         det_anchor_bottom=cfg["det_anchor_bottom"],
+                         det_head_type=cfg.get("det_head_type", "anchor")).to(dev)
     model.load_state_dict(ck["state_dict"]); model.eval()
     print(f"[abl-eval] {args.ckpt} | fusion={cfg['lidar_fusion']} lidar_only={cfg['lidar_only']}")
 
