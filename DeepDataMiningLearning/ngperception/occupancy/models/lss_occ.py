@@ -254,11 +254,13 @@ class LSSOccupancy(nn.Module):
         logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
         return logit.softmax(dim=2)
 
-    def forward(self, imgs, rots, trans, intrins, lidar_vox=None):
+    def forward(self, imgs, rots, trans, intrins, lidar_vox=None, drop_camera=False, drop_lidar=False):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
         lidar_vox: (B,lidar_raw,nx,ny,nz) voxelized LiDAR (fusion mode) or None.
-        Returns (occ_final, depth_init, aux) where aux={'occ':[...],'depth':[...]} holds every
-        refine iteration's outputs (for deep supervision). refine_iters=1 -> single-shot LSS."""
+        drop_camera/drop_lidar: per-call **modality dropout** — zero that branch's volume while
+        keeping the decoder's channel layout, so ONE fusion model handles camera-only / LiDAR-only
+        / fusion (modality-robust training + inference).
+        Returns (occ_final, depth_init, aux) with aux={'occ':[...],'depth':[...]} for deep supervision."""
         B, N = imgs.shape[:2]
         ctx, depth = self.encoder(imgs.flatten(0, 1))       # (B*N,C,h,w), (B*N,D,h,w)
         C, h, w = ctx.shape[1], ctx.shape[2], ctx.shape[3]
@@ -267,12 +269,14 @@ class LSSOccupancy(nn.Module):
         depth = depth.view(B, N, D, h, w)
         geom = self.get_geometry(rots, trans, intrins)      # (B,N,D,h,w,3)
         lid = self.lidar_branch(lidar_vox) if (self.lidar_fusion and lidar_vox is not None) else None
+        if lid is not None and drop_lidar:                  # modality dropout: hide LiDAR
+            lid = torch.zeros_like(lid)
         occ_all, depth_all = [], []
         cur = depth
         for it in range(self.refine_iters):
             lifted = cur.unsqueeze(2) * ctx.unsqueeze(3)     # ctx ⊗ depth -> (B,N,C,D,h,w)
             vox = self.voxel_pool(geom, lifted)              # (B,C,nx,ny,nz)
-            if self.lidar_only:                              # ablation: drop the camera input
+            if self.lidar_only or drop_camera:               # hide the camera input
                 vox = torch.zeros_like(vox)
             if lid is not None:
                 vox = torch.cat([vox, lid], dim=1)           # fuse LiDAR features
