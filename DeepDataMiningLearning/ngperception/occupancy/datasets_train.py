@@ -259,7 +259,8 @@ class NuScenesOccTrainDataset(Dataset):
         if self.lidar_fusion:
             out["lidar_vox"] = self._lidar_voxel(s.sample_token)   # (3,nx,ny,nz) fusion input
         if self.det_boxes:
-            out["det_gt"] = self._det_boxes(s.sample_token)        # (M,8) ego-frame car boxes
+            out["det_gt"] = self._det_boxes(s.sample_token)        # (M,8) ego-frame boxes
+        out["sample_idx"] = torch.tensor(i)                        # -> ds.occ.items[i] for token lookup
         return out
 
 
