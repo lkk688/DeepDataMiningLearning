@@ -21,6 +21,7 @@ import os
 import random
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from .models.lss_occ import LSSOccupancy
@@ -35,6 +36,17 @@ from ..detection.eval3d import eval_map
 NUSC_10_BOTTOMS_EGO = [-1.0] * 10
 # (drop_camera, drop_lidar) per modality
 MODALITIES = {"fusion": (False, False), "camera": (False, True), "lidar": (True, False)}
+
+
+def distill_to_fusion(occ_s, det_s, occ_t, det_t, mask):
+    """Student (single-modality) mimics the fusion teacher (detached): occ KL + det heatmap MSE."""
+    C = occ_s.shape[1]
+    m = mask.reshape(-1)
+    s = occ_s.permute(0, 2, 3, 4, 1).reshape(-1, C)[m]
+    t = occ_t.detach().permute(0, 2, 3, 4, 1).reshape(-1, C)[m]
+    d_occ = F.kl_div(F.log_softmax(s, 1), F.softmax(t, 1), reduction="batchmean")
+    d_det = F.mse_loss(det_s["hm"].sigmoid(), det_t["hm"].sigmoid().detach())
+    return d_occ + d_det
 
 
 @torch.no_grad()
@@ -68,6 +80,11 @@ def main():
     ap.add_argument("--refine-iters", type=int, default=2)
     ap.add_argument("--occ-weight", type=float, default=1.0); ap.add_argument("--det-weight", type=float, default=1.0)
     ap.add_argument("--mod-probs", default="0.34,0.33,0.33", help="P(fusion),P(camera),P(lidar) per batch")
+    ap.add_argument("--mode", choices=["dropout", "anchored"], default="anchored",
+                    help="dropout=replace each batch by 1 modality (degrades fusion); "
+                         "anchored=train fusion EVERY batch + 1 random single-modality (keeps fusion strong)")
+    ap.add_argument("--distill-weight", type=float, default=1.0,
+                    help="anchored: distill single-modality occ+det toward the fusion output (detached)")
     ap.add_argument("--max-samples", type=int, default=8000); ap.add_argument("--val-samples", type=int, default=300)
     ap.add_argument("--epochs", type=int, default=12); ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=5e-4); ap.add_argument("--num-workers", type=int, default=6)
@@ -117,19 +134,37 @@ def main():
     for ep in range(epochs):
         model.train()
         for it, b in enumerate(train_ld):
-            mod = random.choices(mod_names, weights=probs, k=1)[0]      # per-batch modality dropout
-            dc, dl = MODALITIES[mod]
-            lv = b["lidar_vox"].to(dev)
-            occ, _, aux = model(b["imgs"].to(dev), b["rots"].to(dev), b["trans"].to(dev),
-                                b["intrins"].to(dev), lidar_vox=lv, drop_camera=dc, drop_lidar=dl)
-            l_occ = occ_loss(occ, b["semantics"].to(dev), b["mask_camera"].to(dev))
-            l_det, _ = model.det_head.get_loss(aux["det"], b["det_gt"])
-            loss = args.occ_weight * l_occ + args.det_weight * l_det
+            imgs, rots = b["imgs"].to(dev), b["rots"].to(dev)
+            trans, intr, lv = b["trans"].to(dev), b["intrins"].to(dev), b["lidar_vox"].to(dev)
+            sem, mc, dgt = b["semantics"].to(dev), b["mask_camera"].to(dev), b["det_gt"]
+
+            def fwd(dc, dl):
+                occ, _, aux = model(imgs, rots, trans, intr, lidar_vox=lv, drop_camera=dc, drop_lidar=dl)
+                lo = occ_loss(occ, sem, mc)
+                ld, _ = model.det_head.get_loss(aux["det"], dgt)
+                return occ, aux, lo, ld
+
+            if args.mode == "anchored":
+                occ_f, aux_f, lo_f, ld_f = fwd(False, False)               # fusion anchor — trained EVERY batch
+                loss = args.occ_weight * lo_f + args.det_weight * ld_f
+                mod = random.choices(["camera", "lidar"], weights=[probs[1], probs[2]], k=1)[0]
+                dc, dl = MODALITIES[mod]
+                occ_m, aux_m, lo_m, ld_m = fwd(dc, dl)                     # one single-modality — lifted
+                loss = loss + args.occ_weight * lo_m + args.det_weight * ld_m
+                if args.distill_weight > 0:                                # single-modality mimics fusion teacher
+                    loss = loss + args.distill_weight * distill_to_fusion(occ_m, aux_m["det"], occ_f, aux_f["det"], mc)
+                l_occ, l_det, tag = lo_f, ld_f, f"anchor+{mod}"
+            else:
+                mod = random.choices(mod_names, weights=probs, k=1)[0]      # naive dropout (degrades fusion)
+                dc, dl = MODALITIES[mod]
+                _, _, l_occ, l_det = fwd(dc, dl)
+                loss = args.occ_weight * l_occ + args.det_weight * l_det
+                tag = mod
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             opt.step()
             if it % 50 == 0:
-                print(f"  ep{ep} it{it} [{mod}]: occ={l_occ.item():.3f} det={l_det.item():.3f}", flush=True)
+                print(f"  ep{ep} it{it} [{tag}]: occ={l_occ.item():.3f} det={l_det.item():.3f}", flush=True)
             if args.smoke and it >= 2:
                 break
         if sched is not None:
