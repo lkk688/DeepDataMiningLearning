@@ -63,12 +63,13 @@ def build_model(ckpt, args, lidar_fusion, dev):
 
 
 @torch.no_grad()
-def infer(model, ds, i, dev):
+def infer(model, ds, i, dev, drop_camera=False, drop_lidar=False):
     from torch.utils.data import default_collate
     b = default_collate([ds[i]])
     lv = b["lidar_vox"].to(dev) if "lidar_vox" in b else None
     occ = model(b["imgs"].to(dev), b["rots"].to(dev), b["trans"].to(dev),
-                b["intrins"].to(dev), lidar_vox=lv)[0]
+                b["intrins"].to(dev), lidar_vox=lv,
+                drop_camera=drop_camera, drop_lidar=drop_lidar)[0]
     return occ.argmax(1)[0].cpu().numpy()
 
 
@@ -78,6 +79,8 @@ def main():
     ap.add_argument("--ckpt", default=None); ap.add_argument("--lidar-fusion", action="store_true")
     ap.add_argument("--compare", nargs="+", default=None,
                     help="name:ckpt entries; fusion ckpts auto-detected by name containing 'fusion'/'lidar'")
+    ap.add_argument("--modality-compare", action="store_true",
+                    help="render ONE --ckpt (a modality-robust/fusion model) under fusion/camera/lidar")
     ap.add_argument("--backbone", default="dinov2_base")
     ap.add_argument("--decoder-layers", type=int, default=4); ap.add_argument("--decoder-hidden", type=int, default=96)
     ap.add_argument("--refine-iters", type=int, default=2)
@@ -91,17 +94,24 @@ def main():
     from .datasets_train import NuScenesOccTrainDataset
 
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
-    entries = ([("prediction", args.ckpt, args.lidar_fusion)] if not args.compare else
-               [(e.split(":", 1)[0], e.split(":", 1)[1],
-                 "fusion" in e.lower() or "lidar" in e.lower()) for e in args.compare])
-    # a fusion-capable dataset (lidar_vox always provided) so any modality checkpoint runs
-    m0 = build_model(entries[0][1], args, entries[0][2], dev)
-    ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=m0.image_hw, downsample=m0.downsample,
-                                 max_samples=args.sample_idx + 1, lidar_fusion=True)
-    panels = []
-    for name, ckpt, fus in entries:
-        m = m0 if ckpt == entries[0][1] else build_model(ckpt, args, fus, dev)
-        panels.append((name, infer(m, ds, args.sample_idx, dev)))
+    # a fusion-capable dataset (lidar_vox always provided) so any modality checkpoint / drop runs
+    if args.modality_compare:                          # ONE fusion model under 3 modalities
+        m0 = build_model(args.ckpt, args, True, dev)
+        ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=m0.image_hw, downsample=m0.downsample,
+                                     max_samples=args.sample_idx + 1, lidar_fusion=True)
+        mods = [("fusion", False, False), ("camera-only", False, True), ("lidar-only", True, False)]
+        panels = [(name, infer(m0, ds, args.sample_idx, dev, dc, dl)) for name, dc, dl in mods]
+    else:
+        entries = ([("prediction", args.ckpt, args.lidar_fusion)] if not args.compare else
+                   [(e.split(":", 1)[0], e.split(":", 1)[1],
+                     "fusion" in e.lower() or "lidar" in e.lower()) for e in args.compare])
+        m0 = build_model(entries[0][1], args, entries[0][2], dev)
+        ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=m0.image_hw, downsample=m0.downsample,
+                                     max_samples=args.sample_idx + 1, lidar_fusion=True)
+        panels = []
+        for name, ckpt, fus in entries:
+            m = m0 if ckpt == entries[0][1] else build_model(ckpt, args, fus, dev)
+            panels.append((name, infer(m, ds, args.sample_idx, dev)))
     panels.append(("Occ3D GT", ds.occ[args.sample_idx].semantics))
 
     fig, axes = plt.subplots(1, len(panels), figsize=(4 * len(panels), 4.4))

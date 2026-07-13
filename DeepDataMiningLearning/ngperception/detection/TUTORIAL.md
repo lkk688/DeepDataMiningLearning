@@ -509,6 +509,14 @@ python -m DeepDataMiningLearning.ngperception.occupancy.eval_det_ablation_offici
     --gts $GTS --nusc $NUSC --ckpt $OUT/abl_frozen_fusion/det_abl.pth --out-dir $OUT/eval_frozen
 ```
 
+![backbone reuse: scratch vs frozen vs finetune](../docs/det_reuse_compare.png)
+
+*From-scratch (mAP 0.065) vs frozen (0.161) vs finetuned (0.205) occ backbone, one BEV frame.*
+The 2.5–3.15× win is a **dataset-level** effect that concentrates on hard/occluded cases and small
+classes (pedestrian AP 0.094→0.362→0.439) — a single easy frame shows all three catching the near
+cars/trucks, so read the mAP for the real signal. Generate it with the same `visualize_det.py`
+`--compare` command (three `name:ckpt` entries).
+
 ### 13.2 The head is the bigger lever — anchor vs CenterPoint head (2×2)
 
 Swapping the anchor head for an anchor-free **CenterPoint center head** (`VoxelCenterHead`,
@@ -576,6 +584,12 @@ Because detection hangs off the shared occ encoder, **M4 (modality ablation)** a
   fusion-anchored + distillation keeps fusion det strong and makes LiDAR-only a positive gain, but
   **camera-only detection is the hard limit (~0.07)** — a BEV lift-splat camera cannot localize 3-D
   boxes well. That motivates §15.
+
+![detection under camera / lidar / fusion](../docs/det_modality_compare.png)
+
+*One modality-robust model, sample 5.* **fusion** and **LiDAR-only** put clean truck boxes on the
+GT (dashed); **camera-only** boxes are scattered and mis-oriented — the same weak spot the
+occupancy view shows. Reproduce with `visualize_det.py --modality-compare --ckpt $OUT/mod_robust/mod_robust.pth`.
 
 ## 15. Toward SOTA — PETR (camera-only, mmdet3d) + the honest gap
 

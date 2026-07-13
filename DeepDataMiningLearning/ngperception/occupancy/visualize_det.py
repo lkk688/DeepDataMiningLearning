@@ -52,12 +52,13 @@ def build_model(ck, dev):
 
 
 @torch.no_grad()
-def infer_boxes(model, ds, i, dev, score_thresh=0.3):
+def infer_boxes(model, ds, i, dev, score_thresh=0.3, drop_camera=False, drop_lidar=False):
     from torch.utils.data import default_collate
     b = default_collate([ds[i]])
     lv = b["lidar_vox"].to(dev)
     _, _, aux = model(b["imgs"].to(dev), b["rots"].to(dev), b["trans"].to(dev),
-                      b["intrins"].to(dev), lidar_vox=lv)
+                      b["intrins"].to(dev), lidar_vox=lv,
+                      drop_camera=drop_camera, drop_lidar=drop_lidar)
     d = model.det_head.predict(aux["det"], score_thresh=score_thresh, nms_thresh=0.2)[0]
     return (d["boxes"].cpu().numpy(), d["scores"].cpu().numpy(), d["labels"].cpu().numpy(),
             b["lidar_vox"][0].numpy())
@@ -84,6 +85,8 @@ def main():
     ap.add_argument("--gts", required=True); ap.add_argument("--nusc", required=True)
     ap.add_argument("--ckpt", default=None)
     ap.add_argument("--compare", nargs="+", default=None, help="name:ckpt entries (2 for side-by-side)")
+    ap.add_argument("--modality-compare", action="store_true",
+                    help="render ONE --ckpt under fusion/camera-only/lidar-only (modality-robust model)")
     ap.add_argument("--sample-idx", type=int, default=0); ap.add_argument("--score-thresh", type=float, default=0.3)
     ap.add_argument("--out", required=True); ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
@@ -104,11 +107,22 @@ def main():
                                  det_boxes=True, det_class_map=NUSC_10CLASS)
     gt = ds[args.sample_idx]["det_gt"].numpy()
 
-    fig, axes = plt.subplots(1, len(entries), figsize=(5 * len(entries), 5))
+    if args.modality_compare:                          # ONE model under 3 modalities
+        mods = [("fusion", False, False), ("camera-only", False, True), ("lidar-only", True, False)]
+        renders = []
+        for name, dc, dl in mods:
+            boxes, _, labels, lv = infer_boxes(m0, ds, args.sample_idx, dev, args.score_thresh, dc, dl)
+            renders.append((name, boxes, labels, lv))
+    else:
+        renders = []
+        for name, ckpt in entries:
+            m = m0 if ckpt == entries[0][1] else build_model(torch.load(ckpt, map_location=dev), dev)
+            boxes, _, labels, lv = infer_boxes(m, ds, args.sample_idx, dev, args.score_thresh)
+            renders.append((name, boxes, labels, lv))
+
+    fig, axes = plt.subplots(1, len(renders), figsize=(5 * len(renders), 5))
     axes = np.atleast_1d(axes)
-    for ax, (name, ckpt) in zip(axes, entries):
-        m = m0 if ckpt == entries[0][1] else build_model(torch.load(ckpt, map_location=dev), dev)
-        boxes, scores, labels, lv = infer_boxes(m, ds, args.sample_idx, dev, args.score_thresh)
+    for ax, (name, boxes, labels, lv) in zip(axes, renders):
         draw(ax, boxes, labels, gt, lv, name)
     fig.legend([mp.Patch(color=DET_COLORS[c]) for c in range(10)] + [plt.Line2D([], [], ls="--", c="k")],
                DET_NAMES + ["GT"], loc="lower center", ncol=6, fontsize=7, frameon=False)

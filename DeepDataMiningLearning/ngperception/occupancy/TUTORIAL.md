@@ -200,6 +200,23 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_modality_robust \
 # --mode dropout reproduces the naive (failing) baseline
 ```
 
+**What one model under three modalities looks like** (`visualize.py --modality-compare` runs the
+*same* checkpoint with the camera/LiDAR branch dropped):
+
+![occupancy under camera / lidar / fusion](../docs/occ_modality_compare.png)
+
+*One modality-robust model, sample 5.* **fusion** is rich and matches GT; **LiDAR-only** is nearly
+as good (geometry carries it); **camera-only largely collapses** (mostly vegetation/terrain) — the
+honest weak spot. So occupancy is a positive gain under fusion and LiDAR-only, but camera-only
+occupancy from a BEV lift-splat is the documented limitation.
+
+```bash
+python -m DeepDataMiningLearning.ngperception.occupancy.visualize \
+    --gts $GTS --nusc $NUSC --sample-idx 5 --modality-compare --ckpt $OUT/mod_robust/mod_robust.pth \
+    --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 --refine-iters 2 \
+    --out $OUT/viz/occ_modality.png
+```
+
 ---
 
 ## 5. Summary of levers (occupancy)
