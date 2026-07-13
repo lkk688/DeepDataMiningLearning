@@ -58,6 +58,39 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
 
 ---
 
+### 1.1 What the predictions look like — inference & visualization (`visualize.py`)
+
+`visualize.py` runs a checkpoint on one val sample and renders the predicted 200×200×16 voxel
+grid as a **top-down BEV semantic map** (matplotlib — robust, no open3d/EGL), optionally comparing
+several checkpoints against the Occ3D GT:
+
+![occ camera vs fusion vs GT](../docs/occ_pred_compare.png)
+
+*Camera-only vs fusion vs GT (sample 5).* Read left→right: **camera-only** is dense but noisy with
+the tell-tale **radial "fan"** of the single-shot depth lift; **fusion** is much cleaner — sidewalk
+rows (dark purple), the drivable lane (magenta), parked cars (blue) all sharpen because LiDAR pins
+the geometry; **GT** is the densified reference. This is the camera→fusion story of §1/§2 made
+visible.
+
+```bash
+# camera-only vs fusion vs GT  (the figure above)
+python -m DeepDataMiningLearning.ngperception.occupancy.visualize \
+    --gts $GTS --nusc $NUSC --sample-idx 5 \
+    --compare "camera-only:$OUT/lss_occ_full/lss_occ.pth" \
+              "fusion:$OUT/lss_occ_full_fusion/lss_occ.pth" \
+    --out $OUT/viz/occ_compare.png
+
+# single checkpoint vs GT (2 panels) — pass --ckpt and the head config
+python -m DeepDataMiningLearning.ngperception.occupancy.visualize \
+    --gts $GTS --nusc $NUSC --sample-idx 5 --ckpt $OUT/lss_occ_full_fusion/lss_occ.pth \
+    --lidar-fusion --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 --refine-iters 2 \
+    --out $OUT/viz/occ_fusion.png
+```
+
+For **3-D** (not top-down) renders — voxels in an oblique/camera view, and full surround-video demos
+— see the open3d figures in the main [../TUTORIAL.md](../TUTORIAL.md) §2.8.4
+(`docs/lss_occ_vs_gt_frame.png`, `docs/lss_occ_surround_demo_frame.png`).
+
 ## 2. Official val evaluation + per-class IoU (`eval_val.py`)
 
 `eval_val.py` filters to the **150 official Occ3D-nuScenes val scenes** (6019 frames, via

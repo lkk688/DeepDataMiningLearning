@@ -536,6 +536,26 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_det_ablation \
 # erase the peak.
 ```
 
+**What it looks like — inference & visualization** (`occupancy/visualize_det.py`, BEV boxes over
+the LiDAR occupancy, predictions colored by class, GT as black dashes):
+
+![anchor vs center head](../docs/det_head_compare.png)
+
+*Anchor head (mAP 0.205) vs center head (mAP 0.391), sample 5.* The **anchor head fires 18 boxes
+for 8 GT** — the classic over-prediction from anchor-assignment ambiguity (duplicate/spurious boxes
+around the pedestrian cluster). The **center head fires 8 for 8**, cleanly aligned to the GT
+(cyan trucks, blue car sit right on the dashed GT). That is the ~2× mAP lever, made visible.
+
+```bash
+# comparison figure above (any two checkpoints; head/modality read from each ckpt's cfg)
+python -m DeepDataMiningLearning.ngperception.occupancy.visualize_det \
+    --gts $GTS --nusc $NUSC --sample-idx 5 --score-thresh 0.25 \
+    --compare "anchor head (mAP 0.205):$OUT/abl_finetune_fusion_sub/det_abl.pth" \
+              "center head (mAP 0.391):$OUT/abl_dcenter_fusion/det_abl.pth" \
+    --out $OUT/viz/det_compare.png
+# single checkpoint (1 panel): pass --ckpt instead of --compare
+```
+
 > **Standalone PointPillars baseline note.** `detection/train_nuscenes.py` (pure-PyTorch
 > PointPillars, §9.1) reaches car center-distance AP **0.467** (full 28k/40ep) — but it never
 > saved a checkpoint (fixed: `--out-dir`), and its numpy pillarize is CPU-bound (slow to retrain).
