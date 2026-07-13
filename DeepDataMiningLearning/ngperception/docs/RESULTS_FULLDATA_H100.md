@@ -295,8 +295,27 @@ best-saving), reporting **both** occ mIoU and det car_AP each epoch:
 
 Architecture note: only the encoder+LiDAR-branch is truly *shared* (produces `vox`); the occ 3-D
 decoder and the det center head are task-specific necks — so the conflict lives in the shared
-trunk's gradients, which is exactly what PCGrad targets. If PCGrad doesn't cleanly win, the
-fallback is **frozen trunk + task adapters** (train small det-specific layers, trunk stays occ).
+trunk's gradients, which is exactly what PCGrad targets.
+
+### Results — the headers coexist; frozen trunk is the good architecture (8k/12ep, best occ+det)
+
+| mode | occ mIoU | det car_AP | Pareto |
+|---|---|---|---|
+| **frozen trunk** | **0.521** | 0.513 | ✅ frontier (max occ) |
+| naive joint | 0.496 | 0.510 | ❌ dominated |
+| **PCGrad** | 0.502 | **0.522** | ✅ frontier (max det) |
+
+1. **They coexist** — all modes keep both tasks strong (occ ~0.50–0.52, det ~0.51–0.52). The
+   earlier catastrophic conflict (occ→0.001) was an occ-weight-0.1 artifact; at **occ-weight 1.0
+   the conflict is mild** (occ drops only ~0.02 under finetuning).
+2. **PCGrad works** — it **Pareto-dominates naive** (0.502/0.522 beats 0.496/0.510 on both axes),
+   so the gradient surgery genuinely resolves the shared-trunk conflict better than loss-summing,
+   and it wins the best detection (0.522).
+3. **Frozen trunk is the best practical architecture** — occ **0.521 (full, no degradation)** +
+   det 0.513: ~same detection as PCGrad (−0.009) for **+0.019 occ**, and cheapest (only the det
+   head trains, no dual-backward). **Good fusion architecture = one shared occ-trained trunk
+   (frozen) + two task-specific heads (occ 3-D decoder + center det head).** Use PCGrad only if
+   the trunk *must* be finetuned; the task-adapter fallback is then unnecessary.
 
 ## Open items
 
