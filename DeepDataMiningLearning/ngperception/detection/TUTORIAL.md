@@ -467,3 +467,129 @@ Flags: `--overfit` (train==val, sanity), `--rotated-assign` (M2/M2b rotated IoU 
 
 See [../PLAN.md](../PLAN.md) for the internal roadmap and [README.md](README.md) for the module
 map, and [../TUTORIAL.md](../TUTORIAL.md) for the depth + occupancy tutorials this extends.
+
+---
+
+## 13. Occupancy-backbone detection (M3 realized) — reuse the trained encoder
+
+The roadmap's **M3** — hang a detection head on the occupancy module's fused camera+LiDAR *voxel*
+volume (the encoder that reached occ mIoU 0.558). `VoxelDetHead` (Z-collapse → BEV backbone →
+head) does this; the trainer/evaluator live in the occupancy module (they need the DINOv2 lift):
+
+- `occupancy/train_det_ablation.py` — 10-class detection on the occ backbone (freeze/finetune/
+  modality flags, `--det-head {anchor,center}`).
+- `occupancy/eval_det_ablation_official.py` — **official nuScenes `DetectionEval`** (ego→global).
+
+Paths: `GTS=…/nuscenes/gts`, `NUSC=…/v1.0-trainval`, `OUT=…/ngperception/output`,
+`FUS=$OUT/lss_occ_full_fusion/lss_occ.pth` (the trained fusion occ encoder).
+
+### 13.1 Does reusing the occ backbone help? (official nuScenes mAP, 8k/12ep)
+
+| arm | mAP | car | pedestrian | note |
+|---|---|---|---|---|
+| **scratch-fusion** (no pretrain) | 0.065 | 0.355 | 0.094 | random encoder |
+| **frozen-fusion** (head-only) | 0.161 | 0.406 | 0.362 | occ-pretrained, frozen |
+| **finetune-fusion** | 0.205 | 0.445 | 0.439 | occ-pretrained, finetuned |
+
+**Reusing the occ backbone is a 2.5–3.15× mAP win** (finetune 0.205 vs scratch 0.065; frozen 0.161
+already 2.5× scratch). The gain concentrates on **small/rare classes** — pedestrian AP
+0.094→0.362→0.439: the occ encoder learned dense pedestrian *voxels* that transfer to detection,
+exactly where from-scratch is weakest.
+
+```bash
+# frozen reuse (anchor head)      -> mAP 0.161
+python -m DeepDataMiningLearning.ngperception.occupancy.train_det_ablation \
+    --gts $GTS --nusc $NUSC --pretrained $FUS --freeze-encoder --lidar-fusion \
+    --cosine --amp --max-samples 8000 --epochs 12 --batch-size 8 --lr 2e-3 \
+    --out-dir $OUT/abl_frozen_fusion
+# finetune reuse -> mAP 0.205 : drop --freeze-encoder, add --lr 1e-3 --occ-weight 0.1
+# from-scratch control -> mAP 0.065 : drop --pretrained
+# official eval:
+python -m DeepDataMiningLearning.ngperception.occupancy.eval_det_ablation_official \
+    --gts $GTS --nusc $NUSC --ckpt $OUT/abl_frozen_fusion/det_abl.pth --out-dir $OUT/eval_frozen
+```
+
+### 13.2 The head is the bigger lever — anchor vs CenterPoint head (2×2)
+
+Swapping the anchor head for an anchor-free **CenterPoint center head** (`VoxelCenterHead`,
+`--det-head center`) on the *same* backbone — official mAP:
+
+| head ↓ / encoder → | frozen | finetuned |
+|---|---|---|
+| anchor | 0.161 | 0.205 |
+| **center** | **0.370** | **0.391** |
+
+**The detection head is the dominant lever** — anchor→center **~2×'d mAP** (0.205→0.391), bigger
+than any backbone-side change (the center head sidesteps the anchor-assignment ambiguity §6/§10).
+Best config **occ-backbone + center head**: mAP 0.391, **car AP 0.637**, pedestrian 0.519 — on
+8k/12ep, approaching the CBGS-MultiHead reference (0.41 @ 28k/128ep). And **frozen ≈ finetuned**
+(0.370 vs 0.391): a good head + the frozen occ backbone gets ~95 %.
+
+```bash
+# center head on the winning finetune-fusion recipe -> mAP 0.391 (car 0.637)
+python -m DeepDataMiningLearning.ngperception.occupancy.train_det_ablation \
+    --gts $GTS --nusc $NUSC --pretrained $FUS --lidar-fusion --det-head center \
+    --cosine --max-samples 8000 --epochs 12 --batch-size 4 --lr 5e-4 --occ-weight 0.1 \
+    --out-dir $OUT/abl_dcenter_fusion
+# NB: the center head needs fp32 (drop --amp) — fp16 corrupts BatchNorm running stats and eval
+# collapses to 0 while train loss stays healthy. The trainer best-saves so a late wobble can't
+# erase the peak.
+```
+
+> **Standalone PointPillars baseline note.** `detection/train_nuscenes.py` (pure-PyTorch
+> PointPillars, §9.1) reaches car center-distance AP **0.467** (full 28k/40ep) — but it never
+> saved a checkpoint (fixed: `--out-dir`), and its numpy pillarize is CPU-bound (slow to retrain).
+> Its epoch-0 official mAP (0.024) is a validated harness lower-bound. Official-metric evaluator:
+> `detection/eval_nuscenes_official.py` (LiDAR→global). The occ-backbone center-head detector
+> (mAP 0.391 on 8k) is the stronger pure-PyTorch line.
+
+## 14. Multi-task & modality-robust detection (M4/M5 realized)
+
+Because detection hangs off the shared occ encoder, **M4 (modality ablation)** and **M5
+(multitask)** come for free. Full write-ups (they are occupancy-centric) are in
+[../occupancy/TUTORIAL.md](../occupancy/TUTORIAL.md) §3–4; the detection-relevant conclusions:
+
+- **Multitask conflict is mild & resolvable.** Frozen trunk gives occ 0.521 **+** det car_AP 0.513
+  with zero conflict; PCGrad gradient-surgery joint-finetune Pareto-dominates naive summing. Good
+  fusion = **one occ-trained trunk (frozen) + two task-specific heads**.
+- **Modality-robust detection** (one model, camera/LiDAR/fusion via per-batch modality dropout):
+  fusion-anchored + distillation keeps fusion det strong and makes LiDAR-only a positive gain, but
+  **camera-only detection is the hard limit (~0.07)** — a BEV lift-splat camera cannot localize 3-D
+  boxes well. That motivates §15.
+
+## 15. Toward SOTA — PETR (camera-only, mmdet3d) + the honest gap
+
+Our best pure-PyTorch detector (occ-backbone + center head, mAP 0.391) vs published nuScenes SOTA:
+
+| method | mAP | type | notes |
+|---|---|---|---|
+| **ours (occ-backbone + center)** | **0.391** | fusion, pure-PyTorch, 8k/12ep | this repo |
+| CBGS-PointPillars-MultiHead | 0.41 | LiDAR, full | repo reference |
+| BEVFormer | ~0.42 | camera | |
+| **PETR** (`petr_vovnet_gridmask_p4_800x320`) | **0.38 / NDS 0.39** | **camera-only** | mmdet3d, this repo |
+| StreamPETR | ~0.48 | camera, temporal | |
+| CenterPoint (voxel/spconv) | ~0.56 | LiDAR | |
+| **BEVFusion / CMT** | **0.68–0.70** | fusion | true SOTA |
+
+**Honest gap:** true SOTA (0.68) needs spconv fine-grid voxel backbones — a different architecture
+than our 0.4 m BEV. Our pure-PyTorch line is competitive with the camera-only / weaker-fusion band,
+not BEVFusion. **Camera-only** specifically is where we are weakest (~0.07) — BEV lift-splat is the
+wrong tool (see occupancy tutorial). The fix is to bring in a strong query-based camera detector:
+
+**PETR runs natively in `py310`** (mmdet3d 1.4.0 + mmcv 2.1.0 already installed). Checkpoint at
+`mmdetection3d/modelzoo_mmdetection3d/petr_vovnet_gridmask_p4_800x320.pth`:
+
+```bash
+cd /data/rnd-liu/MyRepo/mmdetection3d
+python tools/test.py \
+    projects/PETR/configs/petr_vovnet_gridmask_p4_800x320.py \
+    modelzoo_mmdetection3d/petr_vovnet_gridmask_p4_800x320.pth \
+    --work-dir work_dirs/petr_eval          # -> camera-only mAP ~0.383 / NDS ~0.391
+```
+
+**Integration plan (camera-only fix), two routes:**
+1. **Distill PETR → our camera path** (keeps one model): PETR boxes as camera-path targets. Capped
+   by the BEV lift architecture (~0.15–0.25) — quantifies the single-model ceiling.
+2. **Multi-expert routing** (`worldmodel_drive/scripts/run_pipeline.py`): camera→PETR (0.383),
+   LiDAR/fusion→ours or BEVFusion, occ→ours. Camera-only gets the full 0.383; the trade is it is a
+   modality-routed expert set, not a single forward.
