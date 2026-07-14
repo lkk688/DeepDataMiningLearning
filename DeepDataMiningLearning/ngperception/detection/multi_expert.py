@@ -7,9 +7,10 @@ det TUTORIAL §15) proved you cannot fix camera-only detection inside our BEV mo
 **routes each modality to its best-available expert** — every modality a *strong* detector:
 
     camera-only  -> PETR            (mmdet3d, camera,        mAP 0.383 / NDS 0.391)
-    lidar-only   -> BEVFusion-L     (mmdet3d, LiDAR,         mAP 0.650 / NDS 0.690)
-    cam+lidar    -> BEVFusion-LC    (mmdet3d, fusion,        mAP 0.683 / NDS 0.712)
+    lidar-only   -> BEVFusion-L     (mmdet3d, LiDAR,         mAP 0.643 / NDS 0.691)
+    cam+lidar    -> BEVFusion-LC    (mmdet3d, fusion,        mAP 0.684 / NDS 0.712)
     occupancy    -> ours (LSSOccupancy, any modality; occ mIoU 0.302 cam / 0.558 fusion)
+    (all three detection experts reproduced on the full nuScenes val split, py310 + spconv 2.3.6)
 
 Each mmdet3d expert (PETR / BEVFusion) registers conflicting modules, so they run in **isolated
 subprocesses** (this dispatcher shells to `tools/test.py`). The occupancy expert is ours, native.
