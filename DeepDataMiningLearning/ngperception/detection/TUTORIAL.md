@@ -637,4 +637,44 @@ python tools/test.py \
 2. **Multi-expert routing** (`worldmodel_drive/scripts/run_pipeline.py`): camera→PETR (0.383),
    LiDAR/fusion→ours or BEVFusion, occ→ours. Camera-only gets the full 0.383; the trade is it is a
    modality-routed expert set, not a single forward. **This is the route that actually fixes
-   camera-only** — the distillation negative result (route 1) is *why*.
+   camera-only** — the distillation negative result (route 1) is *why*, and it's §16.
+
+## 16. Path B — modality-routed multi-expert (the camera fix that works)
+
+Since a single BEV model can't be strong in every modality (§14–15), **route each modality to its
+best-available expert** — every modality a *strong* detector, plus our occupancy on top
+(`detection/multi_expert.py`). All experts verified runnable in **py310** (mmdet3d 1.4.0, mmcv
+2.1.0, spconv 2.3.6); the mmdet3d experts register conflicting modules so they run in **isolated
+subprocesses**, our occupancy is native.
+
+| modality in | detection expert | det mAP | NDS | occupancy (ours) |
+|---|---|---|---|---|
+| **camera-only** | **PETR** (mmdet3d) | **0.383** | 0.391 | mIoU 0.302 |
+| **LiDAR-only** | **BEVFusion-L** (mmdet3d, spconv) | **0.650** | 0.690 | mIoU 0.558 |
+| **camera+LiDAR** | **BEVFusion-LC** (mmdet3d, spconv) | **0.683** | 0.712 | mIoU 0.558 |
+
+(PETR reproduced here at **mAP 0.3830 / NDS 0.3912**; BEVFusion checkpoints load + run under spconv
+2.3.6.) Every modality now has a *strong* detector — the multi-expert answer to modality-robustness.
+
+**The contrast that justifies this route:** camera-only detection is **0.008** with the single-model
+distillation (Path A, §15) vs **0.383** by routing to PETR — a **~48×** difference. The BEV
+lift-splat camera architecture caps the single model; routing sidesteps it. Our pure-PyTorch
+occ-backbone + center head (fused **mAP 0.391**, §13.2) remains the strongest *native* line and the
+occupancy provider across all modalities; BEVFusion is the spconv SOTA detection expert.
+
+```bash
+# print the routing policy + combined table:
+python -m DeepDataMiningLearning.ngperception.detection.multi_expert --table
+
+# run the routed expert for a modality on nuScenes val (shells to mmdet3d in a subprocess):
+python -m DeepDataMiningLearning.ngperception.detection.multi_expert --modality camera --eval  # PETR -> 0.383
+python -m DeepDataMiningLearning.ngperception.detection.multi_expert --modality lidar  --eval  # BEVFusion-L -> 0.650
+python -m DeepDataMiningLearning.ngperception.detection.multi_expert --modality fused  --eval  # BEVFusion-LC -> 0.683
+# --indices N  for a quick N-frame check
+```
+
+For **late fusion** of the experts (weighted-box-fusion with per-expert reliability priors), see
+`worldmodel_drive/scripts/run_pipeline.py`. The full modality-robust perception stack is then:
+**detection** = the routed expert per modality (0.383 / 0.650 / 0.683), **occupancy** = our
+LSSOccupancy (0.302 camera / 0.558 fusion, any modality) — one perception system, every modality a
+positive, strong result.
