@@ -106,24 +106,59 @@ python -m DeepDataMiningLearning.ngperception.occupancy.vggt_lift_eval \
     --vggt-path /data/rnd-liu/Others/VGGT-Det-CVPR2026
 ```
 
-## 5. Ablation #2 — trained VGGT backbone (next)
+## 5. Ablation #2 — trained VGGT-depth lift (DONE — negative result)
 
-The geometry probe justifies the heavier build: wrap VGGT as a **frozen `--backbone vggt`** encoder
-in `occupancy/models/lss_occ.py` (parallel to the DINOv2 `CamEncoder`) and A/B it on **camera-only
-occupancy mIoU** (the weakest, highest-headroom path):
+The probe justified a trained test. We wrapped frozen VGGT depth as a **metric-depth prior** in the
+LSS lift (`cache_vggt_depth.py` precomputes VGGT-1B depth → (6,18,50) per token;
+`lss_occ.forward(vggt_depth=…)` soft-bins it over the 112 lift bins and log-blends it into the
+learned depth; a learned scalar recovers VGGT's ~18.8× scale). Clean A/B — **identical DINOv2
+context, identical everything except the VGGT depth prior** — so it isolates *learned depth vs
+frozen-VGGT depth geometry*. 2000 train / 300 val frames, 15 epochs, camera-only, LiDAR depth
+supervision (`--depth-source lidar`):
 
-| arm | camera encoder | expect |
-|---|---|---|
-| baseline | frozen DINOv2 + LSS depth lift | camera-only occ ~0.30 (our current) |
-| **VGGT-frozen** | frozen VGGT features + its depth → lift to voxels | ↑ camera-only occ (3-D-aware) |
-| VGGT + our loss/refine | VGGT + Lovász/class-bal + refine + metric-scale head | best camera-only |
+| arm | best val mIoU | final (ep14) | best geo-IoU |
+|---|---|---|---|
+| baseline (DINOv2 + learned depth) | **0.293** | **0.293** | 0.677 |
+| DINOv2 + frozen-VGGT depth prior | 0.287 | 0.268 | 0.651 |
 
-Implementation notes from the probe: (a) VGGT ingests any H,W divisible by 14 (we lifted at
-518×294, ~16:9) and runs 6 cameras in **3.8 s / 9 GB** frozen — cache its features/depth once to
-keep training fast; (b) the trained head must **solve scale** (metric depth head or extrinsic
-baselines), since raw VGGT depth is up-to-scale. Success = camera-only occ mIoU clearly above the
-DINOv2 baseline (toward the 40s SOTA band), then carry the winner into the label-efficient
-occupancy→detection transfer that is our actual contribution (§3).
+**The VGGT depth prior did not help — it tracked slightly *below* the baseline the whole run.** Not
+a bug: the VGGT arm's depth loss fell 10→2.4 (the scale/blend *did* reconcile with LiDAR), yet occ
+mIoU never beat baseline. **Why the training-free win (§4, 0.140 geo-IoU = 84 % of LiDAR) does not
+transfer:**
+1. The trained lift with **LiDAR depth supervision already learns better depth** than frozen VGGT
+   (learned geo-IoU 0.677 ≫ VGGT training-free 0.140). VGGT's prior competes with an already-strong
+   signal and, being scale-ambiguous, adds placement noise rather than information.
+2. **Global scale can't fix per-frame scale drift** (16–19× across frames) — one learned scalar
+   mis-scales most frames.
+3. Occ3D GT + LiDAR depth already teach the decoder geometry, so **camera depth is not the
+   bottleneck** in this regime — exactly where §4 (a *no-training, no-LiDAR* probe) made VGGT look
+   essential.
+
+**Honest takeaway:** frozen-VGGT depth is a great *label-free* geometry source (§4) but is **redundant
+once LiDAR supervision is present** (§5). The naive "inject VGGT depth prior" integration is a dead
+end for the LiDAR-supervised setting.
+
+## 6. Where VGGT could still win (next levers, not yet run)
+
+The §5 null result rules out one integration, not the direction. Two settings target VGGT's actual
+edge — dense geometry *where LiDAR is absent*:
+
+- **Camera-only *without* LiDAR depth supervision** (`--depth-source occ`, or none). Here VGGT's
+  dense prior is the *only* geometry signal; the baseline learned-depth has no LiDAR crutch. This is
+  the regime §4 actually measured, and the fair home for VGGT. **Highest-value next run.**
+- **VGGT *features* as the backbone** (the original `--backbone vggt`), not just its depth — a
+  2048-d 3-D-aware context replacing DINOv2, with a learned depth head. Heavier (cache 2048-d feats
+  ≈ 22 MB/frame, or in-loop 3.8 s/6-cam) but tests a different VGGT contribution.
+- **Per-frame metric scale** (feed known extrinsic baselines / a learned per-image scale head) —
+  removes the §5 failure mode #2 before re-testing the prior.
+
+Whichever wins, the actual contribution remains the **label-efficient occupancy→detection transfer**
+(§3), not the occupancy leaderboard. Reproduce §5:
+```bash
+python -m ...occupancy.cache_vggt_depth --gts <gts> --nusc <nuscenes> --out <cache> --cap 2100
+# baseline:  ...occupancy.train_lss --backbone dinov2_base --depth-source lidar --max-samples 2000 --val-samples 300 --epochs 15 --batch-size 4 --occ-lovasz 0.1 --amp
+# vggt arm:  (same) + --vggt-depth-cache <cache>
+```
 
 ## Sources
 Occ3D (tsinghua-mars-lab.github.io/Occ3D); Occ3D-nuScenes benchmark (emergentmind); GaussRender
