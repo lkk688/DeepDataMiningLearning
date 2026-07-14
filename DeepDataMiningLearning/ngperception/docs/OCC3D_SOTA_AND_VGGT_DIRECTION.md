@@ -244,6 +244,20 @@ CUDA_HOME=<py311> PYTHONPATH=/data/rnd-liu/Others/GaussianOcc/_stubs \
 `runner.py` calls `init_process_group`, so it needs `torchrun` (1 GPU → `local_rank 0`). Full recipe
 also in the `gaussianocc-repro` memory.
 
+### 8.3 Visualization
+
+`run_vis.py` dumps per-frame surround RGB, self-supervised predicted depth, and the occupancy
+probability grid `(1,18,200,200,16)`. It uses `datasets.NuscDatasetVis`, which needs
+`data/nuscenes/nuscenes_infos_vis_occnerf.pkl` (a `{'frames':[{scene_name, frame_idx,
+CAM_*:{filename, cam2ego, intrinsics}}]}` list) — **not shipped; we regenerate it from the devkit**
+for any val scenes. Run it with the same env/stubs/torchrun as §8.2 (`run_vis.py`), then compose:
+
+![GaussianOcc reproduced](gaussianocc_repro_combined.png)
+
+The BEV occupancy shows the expected structure — magenta *driveable* road ahead, green
+*terrain/vegetation* flanks, blue *car* blobs — plus the self-supervised depth, all from a model
+trained with **no occupancy labels and no GT poses**. (The radial fade is camera-visibility.)
+
 ## Sources
 Occ3D (tsinghua-mars-lab.github.io/Occ3D); Occ3D-nuScenes benchmark (emergentmind); GaussRender
 (ICCV'25); EFFOcc (arXiv 2406.07042); DAOcc (arXiv 2409.19972); FusionOcc (ACM MM'24); VGGT-Det
