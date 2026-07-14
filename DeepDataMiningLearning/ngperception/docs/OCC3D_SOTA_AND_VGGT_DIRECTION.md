@@ -179,6 +179,71 @@ python -m ...occupancy.cache_vggt_depth --gts <gts> --nusc <nuscenes> --out <cac
 # #3: swap --depth-source lidar -> occ (no-LiDAR regime)
 ```
 
+## 8. GaussianOcc — a reproduced *label-free* baseline (ICCV 2025)
+
+To anchor the label-free end of the spectrum we reproduced **GaussianOcc** (Gan et al., ICCV 2025):
+*fully self-supervised* 3D occupancy via Gaussian splatting — **no occupancy labels and no GT poses**
+at training. It is the natural lower-anchor for our label-free direction.
+
+**Result — Occ3D-nuScenes val (6019 frames), released weights, reproduced exactly:**
+
+| metric | ours (reproduced) | paper |
+|---|---|---|
+| **mIoU (w/o "others")** | **11.26** | **≈11.26 ✓** |
+| mIoU (all 17) | 9.94 | — |
+| mIoU (w/o empty) | 12.33 | — |
+
+Per-class (IoU): driveable_surface **44.6**, sidewalk 20.1, terrain 17.6, bus 14.6, car 13.6,
+vegetation 10.3, truck 9.6, traffic_cone 9.8, pedestrian 8.0, manmade 8.6, bicycle 5.8,
+motorcycle 2.8, barrier 1.8, construction_vehicle 1.3, trailer 0.6, others/other_flat 0.0.
+
+**Where it sits:** label-free **11.26** vs our label-*supervised* LSS camera occ **~30** vs camera
+SOTA **~44.5**. The ~19-point label-free→supervised gap (flat/large structure already decent;
+rare/thin classes near zero) is the quantity a label-free method must close.
+
+### 8.1 Environment (the non-obvious part)
+
+The repo targets **py3.8 / torch 1.9.1 / CUDA 11.3 — which cannot run on an H100 (sm_90)**. So we
+rebuilt the stack on a modern matched toolchain:
+
+- **Env `py311`** (torch 2.9.1+cu128, nvcc 12.8, full conda CUDA toolkit).
+- **Build the 3 custom CUDA extensions** — in each `submodule/{simple-knn,
+  diff-gaussian-rasterization-confidence, diff-gaussian-rasterization-confidence-semantic}`:
+  ```bash
+  export CUDA_HOME=/home/010796032/miniconda3/envs/py311 TORCH_CUDA_ARCH_LIST=9.0
+  <py311>/pip install . --no-build-isolation
+  ```
+  Fix: add `#include <float.h>` to `simple-knn/simple_knn.cu` (`FLT_MAX undefined` on new CUDA).
+  (`-confidence` installs under the import name `diff_gaussian_rasterization`.)
+- **pip deps** (py311, pin torch+numpy, `--only-binary` for matplotlib/skimage): `nuscenes-devkit
+  configargparse torch_efficient_distloss matplotlib scikit-image pyquaternion open3d pytz`.
+- **Stub 3 heavy deps** (used only in *train-only* loss / optional paths — not eval) on a `_stubs/`
+  PYTHONPATH: `mmdet` (`build_loss`→CrossEntropyLoss, `LOSSES`, `weight_reduce_loss`), `mmcv`
+  (`ops.sigmoid_focal_loss`, `runner.BaseModule/force_fp32`), `pytorch3d`
+  (`transforms.rotation_conversions.matrix_to_axis_angle`, pure-torch). Also wrap the `build_loss`
+  import in `networks/occupancy_decoder.py` with try/except.
+- **Two source patches:** `networks/resnet_encoder.py` — `models.resnet.model_urls` was removed in
+  torchvision ≥0.13 → hardcode the resnet18/34/50 URLs (overwritten by the ckpt anyway);
+  `configs/nusc-sem-gs.txt` — set `rayiou = no` (RayIoU spawns a `python ray_metrics.py` subprocess
+  needing mmcv).
+
+### 8.2 Data + run
+
+```bash
+cd /data/rnd-liu/Others/GaussianOcc
+ln -s <nuscenes_root> data/nuscenes           # has samples/ sweeps/ v1.0-trainval/ gts/
+ln -s Gaussianocc_ckpts_nusc-sem-gs ckpts/nusc-sem-gs
+# GT depth maps for val (loader requires data/nuscenes/depth_full/…). Patch the tool for the
+# mmdet3d pkl format: pickle['infos'] -> pickle['data_list'] (item['token'] still present), val-only:
+<py311>/python tools/export_gt_depth_nusc.py            # -> 36114 val npy
+
+CUDA_HOME=<py311> PYTHONPATH=/data/rnd-liu/Others/GaussianOcc/_stubs \
+<py311>/torchrun --nproc_per_node=1 --master_port=29521 run.py \
+    --config configs/nusc-sem-gs.txt --load_weights_folder ckpts/nusc-sem-gs --eval_only
+```
+`runner.py` calls `init_process_group`, so it needs `torchrun` (1 GPU → `local_rank 0`). Full recipe
+also in the `gaussianocc-repro` memory.
+
 ## Sources
 Occ3D (tsinghua-mars-lab.github.io/Occ3D); Occ3D-nuScenes benchmark (emergentmind); GaussRender
 (ICCV'25); EFFOcc (arXiv 2406.07042); DAOcc (arXiv 2409.19972); FusionOcc (ACM MM'24); VGGT-Det
