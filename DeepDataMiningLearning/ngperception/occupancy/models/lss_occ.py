@@ -71,6 +71,8 @@ class CamEncoder(nn.Module):
             for p in self.dino.parameters():
                 p.requires_grad = False
             feat_dim = 768 if backbone == "dinov2_base" else 384
+        elif backbone == "vggt":
+            feat_dim = 2048        # frozen VGGT patch tokens, fed from cache (no in-module backbone)
         else:
             raise ValueError(backbone)
         self.depthnet = nn.Sequential(
@@ -88,7 +90,11 @@ class CamEncoder(nn.Module):
         return tok.transpose(1, 2).reshape(b, -1, h, w)         # (B*N,384,h,w)
 
     def forward(self, x):
-        feat = self._features(x)
+        return self.forward_feat(self._features(x))
+
+    def forward_feat(self, feat):
+        """DepthNet head on precomputed backbone features (B*N, feat_dim, h, w) -> (ctx, depth).
+        Used by the `vggt` backbone, whose 2048-d patch tokens come from a cache (not run in-loop)."""
         if self.upsample > 1:                  # finer feature/supervision resolution
             feat = F.interpolate(feat, scale_factor=self.upsample, mode="bilinear",
                                  align_corners=False)
@@ -144,7 +150,7 @@ class LSSOccupancy(nn.Module):
         self.lidar_fusion = lidar_fusion
         # ablation: zero the camera lifted volume so the decoder sees LiDAR only (same params).
         self.lidar_only = lidar_only
-        _dino = backbone.startswith("dinov2")
+        _dino = backbone.startswith("dinov2") or backbone == "vggt"  # patch-14 grids at 252x700
         base_ds = 14 if _dino else 16
         # upsampling the features by U makes the effective patch/stride U× finer
         self.downsample = downsample or (base_ds // feat_upsample)
@@ -263,7 +269,7 @@ class LSSOccupancy(nn.Module):
         return logit.softmax(dim=2)
 
     def forward(self, imgs, rots, trans, intrins, lidar_vox=None, drop_camera=False, drop_lidar=False,
-                vggt_depth=None):
+                vggt_depth=None, vggt_feat=None):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
         lidar_vox: (B,lidar_raw,nx,ny,nz) voxelized LiDAR (fusion mode) or None.
         drop_camera/drop_lidar: per-call **modality dropout** — zero that branch's volume while
@@ -271,7 +277,10 @@ class LSSOccupancy(nn.Module):
         / fusion (modality-robust training + inference).
         Returns (occ_final, depth_init, aux) with aux={'occ':[...],'depth':[...]} for deep supervision."""
         B, N = imgs.shape[:2]
-        ctx, depth = self.encoder(imgs.flatten(0, 1))       # (B*N,C,h,w), (B*N,D,h,w)
+        if self.backbone == "vggt" and vggt_feat is not None:   # cached frozen-VGGT patch features
+            ctx, depth = self.encoder.forward_feat(vggt_feat.flatten(0, 1).float())
+        else:
+            ctx, depth = self.encoder(imgs.flatten(0, 1))   # (B*N,C,h,w), (B*N,D,h,w)
         C, h, w = ctx.shape[1], ctx.shape[2], ctx.shape[3]
         D = depth.shape[1]
         ctx = ctx.view(B, N, C, h, w)
