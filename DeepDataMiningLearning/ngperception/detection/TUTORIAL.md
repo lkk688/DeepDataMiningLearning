@@ -621,9 +621,20 @@ python tools/test.py \
     --work-dir work_dirs/petr_eval          # -> camera-only mAP ~0.383 / NDS ~0.391
 ```
 
-**Integration plan (camera-only fix), two routes:**
-1. **Distill PETR → our camera path** (keeps one model): PETR boxes as camera-path targets. Capped
-   by the BEV lift architecture (~0.15–0.25) — quantifies the single-model ceiling.
+**Integration — two routes, and what we found:**
+
+1. **Distill PETR → our camera path** (single model, `occupancy/train_distill_petr.py`): response
+   /pseudo-label KD — PETR's boxes (global→ego, `petr_boxes_ego`) as camera-path targets, fusion
+   anchored on GT. **Result: it does NOT work — a clean negative result.** The PETR→ego conversion
+   is verified correct (boxes align with GT within 0.3–2 m, classes match), but training the
+   **shared** center head on the weak camera path (a) never lifts camera det above noise
+   (car_AP@0.5 ~0.008, vs ~0.07 baseline) and (b) at full KD weight *collapses* the head (fusion
+   0.44→0.01); even at KD-weight 0.3 + lr 1e-4, fusion det slowly degrades (0.31→0.18) with no
+   camera gain. **The bottleneck is the BEV-lift-splat camera architecture, not the teacher signal**
+   — you cannot distill a query-based camera teacher into a BEV student's shared head to fix
+   camera-only 3-D detection. (Confirms the main-repo "camera-primary pivot": BEV lift-splat camera
+   is a dead end for camera-only.)
 2. **Multi-expert routing** (`worldmodel_drive/scripts/run_pipeline.py`): camera→PETR (0.383),
    LiDAR/fusion→ours or BEVFusion, occ→ours. Camera-only gets the full 0.383; the trade is it is a
-   modality-routed expert set, not a single forward.
+   modality-routed expert set, not a single forward. **This is the route that actually fixes
+   camera-only** — the distillation negative result (route 1) is *why*.
