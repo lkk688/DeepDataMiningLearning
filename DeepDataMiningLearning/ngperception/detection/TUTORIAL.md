@@ -675,6 +675,19 @@ python -m DeepDataMiningLearning.ngperception.detection.multi_expert --modality 
 # --indices N  for a quick N-frame check
 ```
 
+**Sample results — the same scene by each expert** (`detection/visualize_multiexpert.py`, BEV,
+predictions colored by class, GT dashed):
+
+![multi-expert BEV comparison](../docs/multiexpert_compare.png)
+
+*One nuScenes scene, three routed experts.* **PETR (camera)** detects the most objects incl. distant
+cars and a motorcycle but is noisier (some spurious/loose boxes); **BEVFusion-L (LiDAR)** puts tight,
+well-aligned boxes on the car clusters (precise geometry, fewer far detections); **BEVFusion-LC
+(fusion)** is the cleanest, combining both. All three are *strong* — the contrast with the
+single-model camera path (Path A, ~0 boxes on GT) is the whole point of routing. Reproduce: dump
+each expert with `tools/test.py ... --cfg-options test_evaluator.jsonfile_prefix=<dir>
+test_evaluator.format_only=True test_dataloader.dataset.indices=40`, then run `visualize_multiexpert`.
+
 For **late fusion** of the experts (weighted-box-fusion with per-expert reliability priors), see
 `worldmodel_drive/scripts/run_pipeline.py`. The full modality-robust perception stack is then:
 **detection** = the routed expert per modality (0.383 / 0.650 / 0.683), **occupancy** = our
