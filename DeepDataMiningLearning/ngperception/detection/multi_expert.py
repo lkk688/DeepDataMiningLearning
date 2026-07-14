@@ -32,10 +32,10 @@ EXPERTS = {
     "camera": dict(name="PETR", mAP=0.383, NDS=0.391,
                    config="projects/PETR/configs/petr_vovnet_gridmask_p4_800x320.py",
                    ckpt="modelzoo_mmdetection3d/petr_vovnet_gridmask_p4_800x320.pth"),
-    "lidar": dict(name="BEVFusion-L", mAP=0.650, NDS=0.690,
+    "lidar": dict(name="BEVFusion-L", mAP=0.643, NDS=0.691,   # reproduced here on nuScenes val
                   config="projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py",
                   ckpt="modelzoo_mmdetection3d/bevfusion_lidar_spconv236.pth"),
-    "fused": dict(name="BEVFusion-LC", mAP=0.683, NDS=0.712,
+    "fused": dict(name="BEVFusion-LC", mAP=0.684, NDS=0.712,  # reproduced here on nuScenes val
                   config="projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py",
                   ckpt="modelzoo_mmdetection3d/bevfusion_lidarcam_spconv236.pth"),
 }

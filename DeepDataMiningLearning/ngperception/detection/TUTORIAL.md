@@ -650,11 +650,13 @@ subprocesses**, our occupancy is native.
 | modality in | detection expert | det mAP | NDS | occupancy (ours) |
 |---|---|---|---|---|
 | **camera-only** | **PETR** (mmdet3d) | **0.383** | 0.391 | mIoU 0.302 |
-| **LiDAR-only** | **BEVFusion-L** (mmdet3d, spconv) | **0.650** | 0.690 | mIoU 0.558 |
-| **camera+LiDAR** | **BEVFusion-LC** (mmdet3d, spconv) | **0.683** | 0.712 | mIoU 0.558 |
+| **LiDAR-only** | **BEVFusion-L** (mmdet3d, spconv) | **0.643** | 0.691 | mIoU 0.558 |
+| **camera+LiDAR** | **BEVFusion-LC** (mmdet3d, spconv) | **0.684** | 0.712 | mIoU 0.558 |
 
-(PETR reproduced here at **mAP 0.3830 / NDS 0.3912**; BEVFusion checkpoints load + run under spconv
-2.3.6.) Every modality now has a *strong* detector — the multi-expert answer to modality-robustness.
+(**All three reproduced here on the full nuScenes val split**: PETR **mAP 0.3830 / NDS 0.3912**,
+BEVFusion-L **0.6432 / 0.6913**, BEVFusion-LC **0.6842 / 0.7117** — not cited, run in `py310` with
+spconv 2.3.6.) Every modality now has a *strong* detector — the multi-expert answer to
+modality-robustness.
 
 **The contrast that justifies this route:** camera-only detection is **0.008** with the single-model
 distillation (Path A, §15) vs **0.383** by routing to PETR — a **~48×** difference. The BEV
