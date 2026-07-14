@@ -138,26 +138,45 @@ transfer:**
 once LiDAR supervision is present** (§5). The naive "inject VGGT depth prior" integration is a dead
 end for the LiDAR-supervised setting.
 
-## 6. Where VGGT could still win (next levers, not yet run)
+## 6. Ablation #3 — VGGT depth prior WITHOUT LiDAR supervision (DONE — also null)
 
-The §5 null result rules out one integration, not the direction. Two settings target VGGT's actual
-edge — dense geometry *where LiDAR is absent*:
+§5 might have failed only because LiDAR depth supervision made VGGT redundant. So we removed the
+LiDAR crutch: same A/B but `--depth-source occ` (depth supervised by occ-rendered geometry, no
+LiDAR) — the regime §4 actually measured and VGGT's supposed fair home. 2000/300, 15 epochs:
 
-- **Camera-only *without* LiDAR depth supervision** (`--depth-source occ`, or none). Here VGGT's
-  dense prior is the *only* geometry signal; the baseline learned-depth has no LiDAR crutch. This is
-  the regime §4 actually measured, and the fair home for VGGT. **Highest-value next run.**
-- **VGGT *features* as the backbone** (the original `--backbone vggt`), not just its depth — a
-  2048-d 3-D-aware context replacing DINOv2, with a learned depth head. Heavier (cache 2048-d feats
-  ≈ 22 MB/frame, or in-loop 3.8 s/6-cam) but tests a different VGGT contribution.
-- **Per-frame metric scale** (feed known extrinsic baselines / a learned per-image scale head) —
-  removes the §5 failure mode #2 before re-testing the prior.
+| arm | best val mIoU | final (ep14) |
+|---|---|---|
+| baseline (no LiDAR, occ-depth sup) | 0.262 | 0.262 |
+| + frozen-VGGT depth prior | **0.263** | 0.244 |
 
-Whichever wins, the actual contribution remains the **label-efficient occupancy→detection transfer**
-(§3), not the occupancy leaderboard. Reproduce §5:
+**Still a wash.** Best is tied within noise (0.263 vs 0.262); the two arms tracked each other the
+entire run; final VGGT is worse. Removing LiDAR *did* lower the baseline (0.293→0.262) — but the
+VGGT prior did **not** fill that gap. So the depth-prior mechanism adds nothing **in either
+supervision regime**.
+
+**Combined verdict (ablations #2 + #3):** the frozen-VGGT *depth prior* is a confirmed dead end for
+trained occupancy — the training-free §4 geometry win (0.140 geo-IoU) does not translate, because
+occ-rendered / LiDAR depth supervision + a DINOv2 learned-depth head already give geometry the
+scale-ambiguous VGGT prior can't improve. Root causes: (a) per-frame scale drift (16–19×) a single
+scalar can't fix; (b) block-min downsample to 18×50 discards VGGT's fine structure; (c) dense-occ
+supervision makes camera depth not the bottleneck.
+
+## 7. What's left (untested — different VGGT contribution)
+
+The depth-*prior* is closed; these test *different* VGGT signals and were not run:
+- **VGGT *features* as the backbone** (`--backbone vggt`) — 2048-d 3-D-aware context replacing
+  DINOv2, with a learned depth head. Tests VGGT representation, not its depth. Heavier (cache
+  2048-d feats ≈ 22 MB/frame, or in-loop 3.8 s/6-cam).
+- **Per-frame metric scale** (known extrinsic baselines / learned per-image scale) — removes root
+  cause (a) before any re-test.
+
+Regardless, the actual contribution remains the **label-efficient occupancy→detection transfer**
+(§3), not the occupancy leaderboard. Reproduce #2/#3:
 ```bash
 python -m ...occupancy.cache_vggt_depth --gts <gts> --nusc <nuscenes> --out <cache> --cap 2100
-# baseline:  ...occupancy.train_lss --backbone dinov2_base --depth-source lidar --max-samples 2000 --val-samples 300 --epochs 15 --batch-size 4 --occ-lovasz 0.1 --amp
-# vggt arm:  (same) + --vggt-depth-cache <cache>
+# baseline #2:  ...train_lss --backbone dinov2_base --depth-source lidar --max-samples 2000 --val-samples 300 --epochs 15 --batch-size 4 --occ-lovasz 0.1 --amp --num-workers 16
+# vggt #2:      (same) + --vggt-depth-cache <cache>
+# #3: swap --depth-source lidar -> occ (no-LiDAR regime)
 ```
 
 ## Sources
