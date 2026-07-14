@@ -182,8 +182,9 @@ def evaluate(model, loader, device, max_batches=None):
     with torch.no_grad():
         for i, b in enumerate(loader):
             lv = b["lidar_vox"].to(device) if "lidar_vox" in b else None
+            vd = b["vggt_depth"].to(device) if "vggt_depth" in b else None
             occ = model(b["imgs"].to(device), b["rots"].to(device),
-                        b["trans"].to(device), b["intrins"].to(device), lidar_vox=lv)[0]
+                        b["trans"].to(device), b["intrins"].to(device), lidar_vox=lv, vggt_depth=vd)[0]
             pred = occ.argmax(1).cpu().numpy()
             for j in range(pred.shape[0]):
                 ev.add(pred[j], b["semantics"][j].numpy(), b["mask_camera"][j].numpy())
@@ -222,6 +223,9 @@ def main():
                     help="tempering exponent for class weights (0=uniform, 1=full inverse-freq)")
     ap.add_argument("--occ-cb-cache", default=None, help="cache file for computed class weights")
     ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
+    ap.add_argument("--vggt-depth-cache", default=None,
+                    help="dir of <token>.npy frozen-VGGT depth (N,fH,fW); enables the VGGT-depth "
+                         "lift prior (ablation #2). Build with cache_vggt_depth.py.")
     ap.add_argument("--decoder-layers", type=int, default=2)
     ap.add_argument("--decoder-hidden", type=int, default=64)
     ap.add_argument("--feat-upsample", type=int, default=1,
@@ -257,16 +261,19 @@ def main():
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
                          decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample,
                          refine_iters=args.refine_iters, lidar_fusion=args.lidar_fusion,
-                         lidar_only=args.lidar_only).to(dev)
+                         lidar_only=args.lidar_only,
+                         vggt_depth=bool(args.vggt_depth_cache)).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
                                        lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache,
-                                       lidar_fusion=args.lidar_fusion)
+                                       lidar_fusion=args.lidar_fusion,
+                                       vggt_depth_cache=args.vggt_depth_cache)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
-                                     lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion)
+                                     lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion,
+                                     vggt_depth_cache=args.vggt_depth_cache)
     class_w = None
     if args.occ_class_balance:
         class_w = compute_class_weights(train_ds.occ, power=args.occ_cb_power,
@@ -292,8 +299,10 @@ def main():
         for it, b in enumerate(train_ld):
             with torch.cuda.amp.autocast(enabled=args.amp):
                 lv = b["lidar_vox"].to(dev) if "lidar_vox" in b else None
+                vd = b["vggt_depth"].to(dev) if "vggt_depth" in b else None
                 occ, depth, aux = model(b["imgs"].to(dev), b["rots"].to(dev),
-                                        b["trans"].to(dev), b["intrins"].to(dev), lidar_vox=lv)
+                                        b["trans"].to(dev), b["intrins"].to(dev), lidar_vox=lv,
+                                        vggt_depth=vd)
                 sem_d, mask_d = b["semantics"].to(dev), b["mask_camera"].to(dev)
                 l_occ = occ_loss(occ, sem_d, mask_d, class_w=class_w, lovasz_w=args.occ_lovasz)
                 if len(aux["occ"]) > 1:            # deep supervision on the earlier refine stages

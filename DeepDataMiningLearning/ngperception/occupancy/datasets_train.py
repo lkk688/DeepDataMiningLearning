@@ -41,7 +41,8 @@ class NuScenesOccTrainDataset(Dataset):
     def __init__(self, gts_root: str, nusc, image_hw=(256, 704), downsample=16,
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
                  depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None,
-                 lidar_fusion: bool = False, det_boxes: bool = False, det_class_map=None):
+                 lidar_fusion: bool = False, det_boxes: bool = False, det_class_map=None,
+                 vggt_depth_cache: str = None):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
@@ -59,6 +60,7 @@ class NuScenesOccTrainDataset(Dataset):
         # "lidar_multi" = aggregated multi-sweep LiDAR (+region map, for the loss ablation)
         self.depth_source = depth_source
         self.lidar_sweeps = lidar_sweeps
+        self.vggt_depth_cache = vggt_depth_cache     # dir of <token>.npy (N,fH,fW) frozen-VGGT depth
         self.lidar_fusion = lidar_fusion             # also emit a voxelized-LiDAR volume (fusion input)
         self.lidar_cache = lidar_cache               # dir to cache aggregated multi-sweep points
         if lidar_cache:
@@ -260,6 +262,9 @@ class NuScenesOccTrainDataset(Dataset):
             out["lidar_vox"] = self._lidar_voxel(s.sample_token)   # (3,nx,ny,nz) fusion input
         if self.det_boxes:
             out["det_gt"] = self._det_boxes(s.sample_token)        # (M,8) ego-frame boxes
+        if self.vggt_depth_cache:                                  # frozen-VGGT depth prior (N,fH,fW)
+            vp = os.path.join(self.vggt_depth_cache, s.sample_token + ".npy")
+            out["vggt_depth"] = torch.from_numpy(np.load(vp).astype(np.float32))
         out["sample_idx"] = torch.tensor(i)                        # -> ds.occ.items[i] for token lookup
         return out
 

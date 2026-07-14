@@ -127,9 +127,13 @@ class LSSOccupancy(nn.Module):
                  feat_upsample: int = 1, refine_iters: int = 1,
                  lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
                  lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None,
-                 det_anchor_bottom=None, det_head_type: str = "anchor"):
+                 det_anchor_bottom=None, det_head_type: str = "anchor",
+                 vggt_depth: bool = False):
         super().__init__()
         self.backbone = backbone
+        # VGGT-depth lift (ablation #2): blend a frozen-VGGT metric-depth prior into the learned
+        # depth distribution. VGGT depth is up-to-scale, so a learned scalar recovers metric scale.
+        self.vggt_depth = vggt_depth
         self.feat_upsample = feat_upsample
         # >1 turns on the iterative render-and-refine lift: decode occupancy, sample it back
         # along each camera ray (first-hit transmittance), sharpen the depth dist, re-lift.
@@ -182,6 +186,10 @@ class LSSOccupancy(nn.Module):
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
             self.refine_alpha = nn.Parameter(torch.tensor(1.0))
+        if vggt_depth:                                   # ablation #2: VGGT metric-depth prior
+            import math
+            self.vggt_log_scale = nn.Parameter(torch.tensor(math.log(18.8)))  # up-to-scale -> metric
+            self.vggt_blend = nn.Parameter(torch.tensor(2.0))                 # prior strength (log blend)
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
         # grid lower-corner and voxel size, for pooling
         self.register_buffer("bx", torch.tensor([XBOUND[0], YBOUND[0], ZBOUND[0]]), persistent=False)
@@ -254,7 +262,8 @@ class LSSOccupancy(nn.Module):
         logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
         return logit.softmax(dim=2)
 
-    def forward(self, imgs, rots, trans, intrins, lidar_vox=None, drop_camera=False, drop_lidar=False):
+    def forward(self, imgs, rots, trans, intrins, lidar_vox=None, drop_camera=False, drop_lidar=False,
+                vggt_depth=None):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
         lidar_vox: (B,lidar_raw,nx,ny,nz) voxelized LiDAR (fusion mode) or None.
         drop_camera/drop_lidar: per-call **modality dropout** — zero that branch's volume while
@@ -267,6 +276,14 @@ class LSSOccupancy(nn.Module):
         D = depth.shape[1]
         ctx = ctx.view(B, N, C, h, w)
         depth = depth.view(B, N, D, h, w)
+        if self.vggt_depth and vggt_depth is not None:      # blend frozen-VGGT metric-depth prior
+            scale = torch.exp(self.vggt_log_scale)
+            dm = (vggt_depth.to(depth) * scale).clamp(self.dlo, self.dhi - 1e-3)   # (B,N,h,w) metric
+            centers = (torch.arange(D, device=depth.device) * self.dstep + self.dlo).view(1, 1, D, 1, 1)
+            prior = torch.exp(-((dm.unsqueeze(2) - centers) / (2.0 * self.dstep)) ** 2)  # (B,N,D,h,w)
+            prior = prior / prior.sum(2, keepdim=True).clamp_min(1e-6)
+            depth = (depth.clamp_min(1e-6).log()
+                     + self.vggt_blend * prior.clamp_min(1e-6).log()).softmax(2)
         geom = self.get_geometry(rots, trans, intrins)      # (B,N,D,h,w,3)
         lid = self.lidar_branch(lidar_vox) if (self.lidar_fusion and lidar_vox is not None) else None
         if lid is not None and drop_lidar:                  # modality dropout: hide LiDAR
