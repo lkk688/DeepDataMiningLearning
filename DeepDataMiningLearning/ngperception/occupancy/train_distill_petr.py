@@ -79,6 +79,8 @@ def main():
     ap.add_argument("--decoder-layers", type=int, default=4); ap.add_argument("--decoder-hidden", type=int, default=96)
     ap.add_argument("--refine-iters", type=int, default=2)
     ap.add_argument("--occ-weight", type=float, default=1.0); ap.add_argument("--det-weight", type=float, default=1.0)
+    ap.add_argument("--distill-weight", type=float, default=0.3,
+                    help="weight on the camera-path PETR-KD loss (small: nudge, don't corrupt the shared head)")
     ap.add_argument("--max-samples", type=int, default=8000); ap.add_argument("--val-samples", type=int, default=300)
     ap.add_argument("--epochs", type=int, default=12); ap.add_argument("--batch-size", type=int, default=3)
     ap.add_argument("--lr", type=float, default=5e-4); ap.add_argument("--num-workers", type=int, default=6)
@@ -138,7 +140,9 @@ def main():
             occ_c, _, aux_c = model(imgs, rots, trans, intr, lidar_vox=lv, drop_lidar=True)  # camera path
             l_occ_c = occ_loss(occ_c, sem, mc)
             l_det_c, _ = model.det_head.get_loss(aux_c["det"], petr_gt)             # <-- distill from PETR
-            loss = args.occ_weight * (l_occ + l_occ_c) + args.det_weight * (l_det_f + l_det_c)
+            # fusion det on GT is the anchor (full det_weight); the camera-PETR term is scaled DOWN
+            # so it nudges the camera path without corrupting the shared head (fusion collapsed at 1.0).
+            loss = args.occ_weight * (l_occ + l_occ_c) + args.det_weight * l_det_f + args.distill_weight * l_det_c
 
             opt.zero_grad(); loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0); opt.step()
