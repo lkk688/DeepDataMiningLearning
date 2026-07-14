@@ -74,21 +74,56 @@ with our contribution:** *label-efficient occupancy pretraining that transfers t
 fuses a frontier backbone with a claim the VGGT-occ papers don't make, and fixes the camera
 bottleneck at the same time.
 
-## 4. Planned ablation (this repo)
+## 4. Ablation #1 — frozen VGGT geometry, training-free (DONE)
 
-Reuse the **local VGGT** as a **frozen** camera backbone and A/B it against our DINOv2 lift on the
-camera-only occupancy path (the weakest, highest-headroom setting):
+Before any trained integration we ran the cheapest, most decisive probe: **is VGGT's camera
+*geometry* actually better than our current camera geometry?** We run frozen `facebook/VGGT-1B`
+on the 6 surround cameras, take its dense per-camera depth, back-project with the **known**
+nuScenes intrinsics/extrinsics into the ego voxel grid, and score class-agnostic **geometric IoU**
+(occupied-vs-free) against the Occ3D GT — **no training, no semantics**. This isolates geometry so
+it is directly comparable to the other geometry-only baselines we already had.
+Script: `occupancy/vggt_lift_eval.py`. Measured on 50 official-val frames:
+
+| geometry-only method (training-free) | geo-IoU | vs prior camera |
+|---|---|---|
+| Depth-Anything mono depth-lift (our previous camera geometry) | 0.093 | — |
+| **frozen VGGT depth-lift (scale-aligned)** | **0.140** | **+51 %** |
+| LiDAR single-sweep oracle | 0.167 | VGGT reaches **84 %** of LiDAR |
+| DINOv2 LSS, **trained** (leaked, + learned semantics) — upper bound | 0.669 | trained ceiling |
+
+**Read:** a *frozen, untrained* camera model reaches **84 % of a LiDAR sweep's** occupancy geometry
+and beats our prior camera geometry by half — strong confirmation that VGGT is the right camera-path
+backbone. **The one caveat is scale:** VGGT is calibration-free, so its depth is **not metric**
+(raw geo-IoU ≈ 0.000; a single global scale ≈ **18.8×** recovers the 0.140). A metric mechanism is
+therefore required for a real system — either feed VGGT the known camera baselines/extrinsics, or
+learn a small scale head. This matches the VGGT-driving literature (DriveVGGT is explicitly
+"calibration-constrained" for exactly this reason).
+
+**Command:**
+```bash
+python -m DeepDataMiningLearning.ngperception.occupancy.vggt_lift_eval \
+    --gts <gts> --nusc <nuscenes> --n 50 \
+    --vggt-path /data/rnd-liu/Others/VGGT-Det-CVPR2026
+```
+
+## 5. Ablation #2 — trained VGGT backbone (next)
+
+The geometry probe justifies the heavier build: wrap VGGT as a **frozen `--backbone vggt`** encoder
+in `occupancy/models/lss_occ.py` (parallel to the DINOv2 `CamEncoder`) and A/B it on **camera-only
+occupancy mIoU** (the weakest, highest-headroom path):
 
 | arm | camera encoder | expect |
 |---|---|---|
 | baseline | frozen DINOv2 + LSS depth lift | camera-only occ ~0.30 (our current) |
-| **VGGT-frozen** | frozen VGGT features/geometry → lift to voxels | ↑ camera-only occ (3-D-aware) |
-| VGGT + our loss/refine | VGGT + Lovász/class-bal + refine | best camera-only |
+| **VGGT-frozen** | frozen VGGT features + its depth → lift to voxels | ↑ camera-only occ (3-D-aware) |
+| VGGT + our loss/refine | VGGT + Lovász/class-bal + refine + metric-scale head | best camera-only |
 
-Success = camera-only occ mIoU clearly above the DINOv2 baseline (toward the 40s SOTA band), which
-would validate VGGT as the camera-path fix before any full-scale / detection-transfer work.
-Implementation wraps VGGT (`/data/rnd-liu/Others/VGGT-Det-CVPR2026/vggt`) as a drop-in encoder in
-`occupancy/models/lss_occ.py` (a `--backbone vggt` option).
+Implementation notes from the probe: (a) VGGT ingests any H,W divisible by 14 (we lifted at
+518×294, ~16:9) and runs 6 cameras in **3.8 s / 9 GB** frozen — cache its features/depth once to
+keep training fast; (b) the trained head must **solve scale** (metric depth head or extrinsic
+baselines), since raw VGGT depth is up-to-scale. Success = camera-only occ mIoU clearly above the
+DINOv2 baseline (toward the 40s SOTA band), then carry the winner into the label-efficient
+occupancy→detection transfer that is our actual contribution (§3).
 
 ## Sources
 Occ3D (tsinghua-mars-lab.github.io/Occ3D); Occ3D-nuScenes benchmark (emergentmind); GaussRender
