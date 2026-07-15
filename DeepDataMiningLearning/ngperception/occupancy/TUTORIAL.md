@@ -233,3 +233,37 @@ python -m DeepDataMiningLearning.ngperception.occupancy.visualize \
 
 Remaining: clean train-only retrain (leakage-free numbers), DINOv2-large / 0.2 m voxels, temporal
 fusion, and strong camera-only via PETR (detection tutorial).
+
+## 6. Where this occupancy work is heading — geometry FMs, label-free, and label efficiency
+
+Three research threads built on top of the occupancy net above. Full write-ups live in `../docs/`;
+this is the map.
+
+**6.1 Geometry foundation models (VGGT) — a characterized negative.**
+Can a camera *geometry* foundation model (VGGT, CVPR'25) fix our weak camera path? We ran four
+ablations ([../docs/OCC3D_SOTA_AND_VGGT_DIRECTION.md](../docs/OCC3D_SOTA_AND_VGGT_DIRECTION.md)):
+
+| test | result |
+|---|---|
+| training-free VGGT depth-lift geo-IoU | **0.140 = 84 % of a LiDAR sweep** (+51 % over Depth-Anything) — geometry is genuinely strong |
+| VGGT depth **prior**, trained, +LiDAR sup | 0.293 vs 0.287 — no gain |
+| VGGT depth **prior**, trained, −LiDAR sup | 0.262 vs 0.263 — tied |
+| VGGT **features** backbone | 0.196 vs DINOv2 0.293 — **−33 %** |
+
+**Finding:** VGGT's label-free geometry does **not** transfer to *trained* occupancy — the depth is
+redundant once you have depth supervision, and its features are geometry-specialized (wrong bias for
+the semantic head). A geometry FM helps only where geometry is the bottleneck: the label-free regime.
+Reuse: `cache_vggt_depth.py` / `cache_vggt_feat.py` + `train_lss.py --vggt-depth-cache / --backbone vggt`.
+
+**6.2 Label-free occupancy (GaussianOcc) — the ceiling.**
+We reproduced **GaussianOcc** (ICCV'25, fully self-supervised, no labels / no GT poses) exactly:
+**mIoU 11.26** on Occ3D-nuScenes val. That anchors the label-free ceiling (11 label-free vs ~30
+supervised here vs ~44.5 SOTA). Env/build/run recipe + visualization:
+[../docs/OCC3D_SOTA_AND_VGGT_DIRECTION.md §8](../docs/OCC3D_SOTA_AND_VGGT_DIRECTION.md).
+
+**6.3 The positive direction — occupancy pretraining is label-efficient for detection.**
+The occupancy encoder transfers to 3-D detection with a large low-label advantage (frozen/finetune
+**2.5–3.15×** over from-scratch at 8k labels, concentrated on rare classes). Turning this into a
+data-efficiency curve is the paper's positive headline — see
+[../docs/PUBLICATION_DIRECTION.md](../docs/PUBLICATION_DIRECTION.md) for the plan, the two findings,
+and how the VGGT/GaussianOcc negatives serve as motivation.
