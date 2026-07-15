@@ -41,11 +41,14 @@ class NuScenesOccTrainDataset(Dataset):
     def __init__(self, gts_root: str, nusc, image_hw=(256, 704), downsample=16,
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
                  depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None,
-                 lidar_fusion: bool = False, det_boxes: bool = False):
+                 lidar_fusion: bool = False, det_boxes: bool = False, det_class_map=None,
+                 vggt_depth_cache: str = None, vggt_feat_cache: str = None):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
-        self.det_boxes = det_boxes                   # M3: also emit 3D car boxes (ego frame) for detection
+        self.det_boxes = det_boxes                   # M3: also emit 3D boxes (ego frame) for detection
+        # None -> car-only (label 0, back-compat). A {category_prefix: idx} map -> multi-class.
+        self.det_class_map = det_class_map
         self.occ = Occ3DNuScenesDataset(gts_root, scenes=scenes,
                                         max_samples=max_samples, stride=stride)
         self.nusc = nusc
@@ -57,6 +60,8 @@ class NuScenesOccTrainDataset(Dataset):
         # "lidar_multi" = aggregated multi-sweep LiDAR (+region map, for the loss ablation)
         self.depth_source = depth_source
         self.lidar_sweeps = lidar_sweeps
+        self.vggt_depth_cache = vggt_depth_cache     # dir of <token>.npy (N,fH,fW) frozen-VGGT depth
+        self.vggt_feat_cache = vggt_feat_cache       # dir of <token>.npy (N,2048,fH,fW) VGGT features
         self.lidar_fusion = lidar_fusion             # also emit a voxelized-LiDAR volume (fusion input)
         self.lidar_cache = lidar_cache               # dir to cache aggregated multi-sweep points
         if lidar_cache:
@@ -149,9 +154,19 @@ class NuScenesOccTrainDataset(Dataset):
         vol = np.stack([occ, np.log1p(count), mean_zres], 0)    # (3,nx,ny,nz)
         return torch.from_numpy(vol)
 
+    def _det_class_of(self, name):
+        """label idx for a box category name; None to skip. Car-only unless det_class_map is set."""
+        if self.det_class_map is None:
+            return 0 if name.startswith("vehicle.car") else None
+        for pref, idx in self.det_class_map.items():
+            if name.startswith(pref):
+                return idx
+        return None
+
     def _det_boxes(self, token):
-        """Car 3D boxes for a sample, transformed LiDAR->**EGO** (the occ voxel-grid frame).
-        Returns (M,8) [x,y,z,dx,dy,dz,heading,label=0], filtered to the grid's x,y range."""
+        """3D boxes for a sample, transformed LiDAR->**EGO** (the occ voxel-grid frame).
+        Returns (M,8) [x,y,z,dx,dy,dz,heading,label], filtered to the grid's x,y range.
+        Car-only (label 0) by default; multi-class if `det_class_map` was given."""
         s = self.nusc.get("sample", token)
         lsd = self.nusc.get("sample_data", s["data"]["LIDAR_TOP"])
         _, boxes, _ = self.nusc.get_sample_data(lsd["token"])   # boxes in LIDAR frame
@@ -160,14 +175,15 @@ class NuScenesOccTrainDataset(Dataset):
         lo = self._vorig; hi = lo + self._gsz.astype(np.float32) * self._vs   # ego grid bounds
         out = []
         for b in boxes:
-            if not b.name.startswith("vehicle.car"):
+            cls = self._det_class_of(b.name)
+            if cls is None:
                 continue
             b.rotate(Rl); b.translate(tl)                       # LiDAR -> ego (devkit Box methods)
             x, y, z = b.center; w, l, h = b.wlh
             if not (lo[0] <= x < hi[0] and lo[1] <= y < hi[1]):
                 continue
             v = b.orientation.rotation_matrix[:, 0]
-            out.append([x, y, z, l, w, h, float(np.arctan2(v[1], v[0])), 0.0])
+            out.append([x, y, z, l, w, h, float(np.arctan2(v[1], v[0])), float(cls)])
         return torch.from_numpy(np.array(out, np.float32).reshape(-1, 8))
 
     def _lidar_depth(self, token, cam_sd_token, K, R_c2e, t_c2e, ow, oh, sx, sy):
@@ -246,7 +262,14 @@ class NuScenesOccTrainDataset(Dataset):
         if self.lidar_fusion:
             out["lidar_vox"] = self._lidar_voxel(s.sample_token)   # (3,nx,ny,nz) fusion input
         if self.det_boxes:
-            out["det_gt"] = self._det_boxes(s.sample_token)        # (M,8) ego-frame car boxes
+            out["det_gt"] = self._det_boxes(s.sample_token)        # (M,8) ego-frame boxes
+        if self.vggt_depth_cache:                                  # frozen-VGGT depth prior (N,fH,fW)
+            vp = os.path.join(self.vggt_depth_cache, s.sample_token + ".npy")
+            out["vggt_depth"] = torch.from_numpy(np.load(vp).astype(np.float32))
+        if self.vggt_feat_cache:                                   # frozen-VGGT features (N,2048,fH,fW)
+            fp = os.path.join(self.vggt_feat_cache, s.sample_token + ".npy")
+            out["vggt_feat"] = torch.from_numpy(np.load(fp).astype(np.float32))
+        out["sample_idx"] = torch.tensor(i)                        # -> ds.occ.items[i] for token lookup
         return out
 
 

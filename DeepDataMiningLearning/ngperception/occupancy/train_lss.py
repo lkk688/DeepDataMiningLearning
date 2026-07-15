@@ -78,13 +78,24 @@ def compute_class_weights(occ_ds, n_classes=18, power=0.25, cache=None):
     (what the CE scores). `power` tempers it (0=uniform, 1=full inverse-freq); normalized to
     mean 1 and clamped so the loss scale is unchanged. Cached (only GT npz loads, no images)."""
     import numpy as _np
+    import gc
     if cache and os.path.exists(cache):
         return torch.tensor(_np.load(cache), dtype=torch.float32)
     counts = _np.zeros(n_classes, _np.float64)
-    for i in range(len(occ_ds)):
-        s = occ_ds[i]
-        sem = s.semantics[s.mask_camera].reshape(-1)
-        counts += _np.bincount(sem, minlength=n_classes)[:n_classes]
+    # This loop allocates an NpzFile + arrays every iteration. With the full nuScenes trainval
+    # graph (~10M objects) resident, Python's gen-0 cyclic GC would fire on those allocations
+    # and rescan the whole graph each time -> a ~250x slowdown (44s -> >1h over 34k files).
+    # Disabling GC for the loop keeps it O(files): the per-iter garbage is refcount-freed anyway.
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for i in range(len(occ_ds)):
+            s = occ_ds[i]
+            sem = s.semantics[s.mask_camera].reshape(-1)
+            counts += _np.bincount(sem, minlength=n_classes)[:n_classes]
+    finally:
+        if gc_was_enabled:
+            gc.enable()
     freq = counts / max(counts.sum(), 1.0)
     w = (freq + 1e-6) ** (-power)
     w = _np.clip(w / w.mean(), 0.2, 8.0).astype(_np.float32)
@@ -171,8 +182,11 @@ def evaluate(model, loader, device, max_batches=None):
     with torch.no_grad():
         for i, b in enumerate(loader):
             lv = b["lidar_vox"].to(device) if "lidar_vox" in b else None
+            vd = b["vggt_depth"].to(device) if "vggt_depth" in b else None
+            vf = b["vggt_feat"].to(device) if "vggt_feat" in b else None
             occ = model(b["imgs"].to(device), b["rots"].to(device),
-                        b["trans"].to(device), b["intrins"].to(device), lidar_vox=lv)[0]
+                        b["trans"].to(device), b["intrins"].to(device), lidar_vox=lv,
+                        vggt_depth=vd, vggt_feat=vf)[0]
             pred = occ.argmax(1).cpu().numpy()
             for j in range(pred.shape[0]):
                 ev.add(pred[j], b["semantics"][j].numpy(), b["mask_camera"][j].numpy())
@@ -210,7 +224,14 @@ def main():
     ap.add_argument("--occ-cb-power", type=float, default=0.25,
                     help="tempering exponent for class weights (0=uniform, 1=full inverse-freq)")
     ap.add_argument("--occ-cb-cache", default=None, help="cache file for computed class weights")
-    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base"], default="resnet18")
+    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base", "vggt"], default="resnet18")
+    ap.add_argument("--vggt-depth-cache", default=None,
+                    help="dir of <token>.npy frozen-VGGT depth (N,fH,fW); enables the VGGT-depth "
+                         "lift prior (ablation #2). Build with cache_vggt_depth.py.")
+    ap.add_argument("--vggt-feat-cache", default=None,
+                    help="dir of <token>.npy frozen-VGGT features (N,2048,fH,fW); use with "
+                         "--backbone vggt to feed VGGT patch tokens to the DepthNet (features lever, "
+                         "doc §7). Build with cache_vggt_feat.py.")
     ap.add_argument("--decoder-layers", type=int, default=2)
     ap.add_argument("--decoder-hidden", type=int, default=64)
     ap.add_argument("--feat-upsample", type=int, default=1,
@@ -246,16 +267,21 @@ def main():
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
                          decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample,
                          refine_iters=args.refine_iters, lidar_fusion=args.lidar_fusion,
-                         lidar_only=args.lidar_only).to(dev)
+                         lidar_only=args.lidar_only,
+                         vggt_depth=bool(args.vggt_depth_cache)).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
                                        lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache,
-                                       lidar_fusion=args.lidar_fusion)
+                                       lidar_fusion=args.lidar_fusion,
+                                       vggt_depth_cache=args.vggt_depth_cache,
+                                       vggt_feat_cache=args.vggt_feat_cache)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
-                                     lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion)
+                                     lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion,
+                                     vggt_depth_cache=args.vggt_depth_cache,
+                                     vggt_feat_cache=args.vggt_feat_cache)
     class_w = None
     if args.occ_class_balance:
         class_w = compute_class_weights(train_ds.occ, power=args.occ_cb_power,
@@ -281,8 +307,11 @@ def main():
         for it, b in enumerate(train_ld):
             with torch.cuda.amp.autocast(enabled=args.amp):
                 lv = b["lidar_vox"].to(dev) if "lidar_vox" in b else None
+                vd = b["vggt_depth"].to(dev) if "vggt_depth" in b else None
+                vf = b["vggt_feat"].to(dev) if "vggt_feat" in b else None
                 occ, depth, aux = model(b["imgs"].to(dev), b["rots"].to(dev),
-                                        b["trans"].to(dev), b["intrins"].to(dev), lidar_vox=lv)
+                                        b["trans"].to(dev), b["intrins"].to(dev), lidar_vox=lv,
+                                        vggt_depth=vd, vggt_feat=vf)
                 sem_d, mask_d = b["semantics"].to(dev), b["mask_camera"].to(dev)
                 l_occ = occ_loss(occ, sem_d, mask_d, class_w=class_w, lovasz_w=args.occ_lovasz)
                 if len(aux["occ"]) > 1:            # deep supervision on the earlier refine stages
@@ -301,7 +330,10 @@ def main():
                 else:
                     l_dep = depth_loss(depth, b["depth_gt"].to(dev))
                 loss = l_occ + args.depth_weight * l_dep
-            opt.zero_grad(); scaler.scale(loss).backward(); scaler.step(opt); scaler.update()
+            opt.zero_grad(); scaler.scale(loss).backward()
+            scaler.unscale_(opt)                                       # unscale before clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)   # guard vs fusion divergence -> NaN
+            scaler.step(opt); scaler.update()
             if sched is not None:
                 sched.step()
             if it % 20 == 0:

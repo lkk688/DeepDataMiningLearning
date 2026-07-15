@@ -71,6 +71,8 @@ class CamEncoder(nn.Module):
             for p in self.dino.parameters():
                 p.requires_grad = False
             feat_dim = 768 if backbone == "dinov2_base" else 384
+        elif backbone == "vggt":
+            feat_dim = 2048        # frozen VGGT patch tokens, fed from cache (no in-module backbone)
         else:
             raise ValueError(backbone)
         self.depthnet = nn.Sequential(
@@ -88,7 +90,11 @@ class CamEncoder(nn.Module):
         return tok.transpose(1, 2).reshape(b, -1, h, w)         # (B*N,384,h,w)
 
     def forward(self, x):
-        feat = self._features(x)
+        return self.forward_feat(self._features(x))
+
+    def forward_feat(self, feat):
+        """DepthNet head on precomputed backbone features (B*N, feat_dim, h, w) -> (ctx, depth).
+        Used by the `vggt` backbone, whose 2048-d patch tokens come from a cache (not run in-loop)."""
         if self.upsample > 1:                  # finer feature/supervision resolution
             feat = F.interpolate(feat, scale_factor=self.upsample, mode="bilinear",
                                  align_corners=False)
@@ -126,9 +132,14 @@ class LSSOccupancy(nn.Module):
                  backbone: str = "resnet18", decoder_hidden: int = 64, decoder_layers: int = 2,
                  feat_upsample: int = 1, refine_iters: int = 1,
                  lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
-                 lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None):
+                 lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None,
+                 det_anchor_bottom=None, det_head_type: str = "anchor",
+                 vggt_depth: bool = False):
         super().__init__()
         self.backbone = backbone
+        # VGGT-depth lift (ablation #2): blend a frozen-VGGT metric-depth prior into the learned
+        # depth distribution. VGGT depth is up-to-scale, so a learned scalar recovers metric scale.
+        self.vggt_depth = vggt_depth
         self.feat_upsample = feat_upsample
         # >1 turns on the iterative render-and-refine lift: decode occupancy, sample it back
         # along each camera ray (first-hit transmittance), sharpen the depth dist, re-lift.
@@ -139,7 +150,7 @@ class LSSOccupancy(nn.Module):
         self.lidar_fusion = lidar_fusion
         # ablation: zero the camera lifted volume so the decoder sees LiDAR only (same params).
         self.lidar_only = lidar_only
-        _dino = backbone.startswith("dinov2")
+        _dino = backbone.startswith("dinov2") or backbone == "vggt"  # patch-14 grids at 252x700
         base_ds = 14 if _dino else 16
         # upsampling the features by U makes the effective patch/stride U× finer
         self.downsample = downsample or (base_ds // feat_upsample)
@@ -166,13 +177,25 @@ class LSSOccupancy(nn.Module):
         # M3: optional detection head on the SAME fused voxel volume (one encoder, two heads).
         self.det_head = None
         if det_classes > 0:
-            from ..det_head import VoxelDetHead
             det_pcr = [XBOUND[0], YBOUND[0], ZBOUND[0], XBOUND[1], YBOUND[1], ZBOUND[1]]
-            self.det_head = VoxelDetHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
-                                         anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),))
+            if det_head_type == "center":            # arm D: anchor-free CenterPoint head
+                from ..det_head import VoxelCenterHead
+                self.det_head = VoxelCenterHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
+                                                voxel_size=(XBOUND[2], YBOUND[2]),
+                                                nx=self.nx, ny=self.ny)
+            else:
+                from ..det_head import VoxelDetHead
+                self.det_head = VoxelDetHead(dec_in, self.nz, det_pcr, num_classes=det_classes,
+                                             anchor_sizes=det_anchor_sizes or ((4.6, 1.97, 1.74),),
+                                             anchor_bottom=(det_anchor_bottom if det_anchor_bottom is not None
+                                                            else -1.0))
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
             self.refine_alpha = nn.Parameter(torch.tensor(1.0))
+        if vggt_depth:                                   # ablation #2: VGGT metric-depth prior
+            import math
+            self.vggt_log_scale = nn.Parameter(torch.tensor(math.log(18.8)))  # up-to-scale -> metric
+            self.vggt_blend = nn.Parameter(torch.tensor(2.0))                 # prior strength (log blend)
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
         # grid lower-corner and voxel size, for pooling
         self.register_buffer("bx", torch.tensor([XBOUND[0], YBOUND[0], ZBOUND[0]]), persistent=False)
@@ -245,25 +268,41 @@ class LSSOccupancy(nn.Module):
         logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
         return logit.softmax(dim=2)
 
-    def forward(self, imgs, rots, trans, intrins, lidar_vox=None):
+    def forward(self, imgs, rots, trans, intrins, lidar_vox=None, drop_camera=False, drop_lidar=False,
+                vggt_depth=None, vggt_feat=None):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
         lidar_vox: (B,lidar_raw,nx,ny,nz) voxelized LiDAR (fusion mode) or None.
-        Returns (occ_final, depth_init, aux) where aux={'occ':[...],'depth':[...]} holds every
-        refine iteration's outputs (for deep supervision). refine_iters=1 -> single-shot LSS."""
+        drop_camera/drop_lidar: per-call **modality dropout** — zero that branch's volume while
+        keeping the decoder's channel layout, so ONE fusion model handles camera-only / LiDAR-only
+        / fusion (modality-robust training + inference).
+        Returns (occ_final, depth_init, aux) with aux={'occ':[...],'depth':[...]} for deep supervision."""
         B, N = imgs.shape[:2]
-        ctx, depth = self.encoder(imgs.flatten(0, 1))       # (B*N,C,h,w), (B*N,D,h,w)
+        if self.backbone == "vggt" and vggt_feat is not None:   # cached frozen-VGGT patch features
+            ctx, depth = self.encoder.forward_feat(vggt_feat.flatten(0, 1).float())
+        else:
+            ctx, depth = self.encoder(imgs.flatten(0, 1))   # (B*N,C,h,w), (B*N,D,h,w)
         C, h, w = ctx.shape[1], ctx.shape[2], ctx.shape[3]
         D = depth.shape[1]
         ctx = ctx.view(B, N, C, h, w)
         depth = depth.view(B, N, D, h, w)
+        if self.vggt_depth and vggt_depth is not None:      # blend frozen-VGGT metric-depth prior
+            scale = torch.exp(self.vggt_log_scale)
+            dm = (vggt_depth.to(depth) * scale).clamp(self.dlo, self.dhi - 1e-3)   # (B,N,h,w) metric
+            centers = (torch.arange(D, device=depth.device) * self.dstep + self.dlo).view(1, 1, D, 1, 1)
+            prior = torch.exp(-((dm.unsqueeze(2) - centers) / (2.0 * self.dstep)) ** 2)  # (B,N,D,h,w)
+            prior = prior / prior.sum(2, keepdim=True).clamp_min(1e-6)
+            depth = (depth.clamp_min(1e-6).log()
+                     + self.vggt_blend * prior.clamp_min(1e-6).log()).softmax(2)
         geom = self.get_geometry(rots, trans, intrins)      # (B,N,D,h,w,3)
         lid = self.lidar_branch(lidar_vox) if (self.lidar_fusion and lidar_vox is not None) else None
+        if lid is not None and drop_lidar:                  # modality dropout: hide LiDAR
+            lid = torch.zeros_like(lid)
         occ_all, depth_all = [], []
         cur = depth
         for it in range(self.refine_iters):
             lifted = cur.unsqueeze(2) * ctx.unsqueeze(3)     # ctx ⊗ depth -> (B,N,C,D,h,w)
             vox = self.voxel_pool(geom, lifted)              # (B,C,nx,ny,nz)
-            if self.lidar_only:                              # ablation: drop the camera input
+            if self.lidar_only or drop_camera:               # hide the camera input
                 vox = torch.zeros_like(vox)
             if lid is not None:
                 vox = torch.cat([vox, lid], dim=1)           # fuse LiDAR features

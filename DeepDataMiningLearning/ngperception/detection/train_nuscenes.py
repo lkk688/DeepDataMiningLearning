@@ -13,6 +13,7 @@ single-sweep LiDAR, slightly larger cars — so the model gets a nuScenes config
 """
 from __future__ import annotations
 import argparse
+import os
 import torch
 from torch.utils.data import DataLoader
 
@@ -65,6 +66,9 @@ def main():
     ap.add_argument("--pos-thresh", type=float, default=0.5)
     ap.add_argument("--neg-thresh", type=float, default=0.35)
     ap.add_argument("--overfit", action="store_true")
+    ap.add_argument("--out-dir", default=None, help="dir to save best/final checkpoints")
+    ap.add_argument("--num-workers", type=int, default=8,
+                    help="DataLoader workers (dataset is now fork-safe: each rebuilds its own devkit)")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     dev = args.device if torch.cuda.is_available() else "cpu"
@@ -77,8 +81,11 @@ def main():
     train_ds = NuScenesCarDataset(split="train", max_frames=args.max_frames, **dkw)
     val_ds = train_ds if args.overfit else \
         NuScenesCarDataset(split="val", max_frames=args.val_frames, **dkw)
-    train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=0)
-    val_ld = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=collate, num_workers=0)
+    nw = args.num_workers
+    train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate,
+                          num_workers=nw, persistent_workers=nw > 0)     # persistent: build devkit once/worker
+    val_ld = DataLoader(val_ds, batch_size=args.batch_size, collate_fn=collate,
+                        num_workers=min(4, nw))                          # transient: freed after each eval
 
     cfg = dict(num_point_features=4, num_classes=ncls, pc_range=NUSC_PCR, voxel_size=NUSC_VOXEL,
                backbone=args.backbone, max_pillars=60000)      # 10-sweep = far more points
@@ -95,6 +102,22 @@ def main():
     print(f"[nusc-det] {len(train_ds)} train / {len(val_ds)} val | {args.model}/{args.backbone} | "
           f"{sum(p.numel() for p in model.parameters())/1e6:.1f}M | grid {model.nx}x{model.ny}", flush=True)
 
+    # config needed to rebuild the model at eval time (kept alongside the weights)
+    ckpt_cfg = dict(model=args.model, backbone=args.backbone, num_classes=ncls,
+                    multiclass=args.multiclass, sweeps=args.sweeps,
+                    pc_range=NUSC_PCR, voxel_size=NUSC_VOXEL, max_pillars=60000,
+                    anchor_sizes=(NUSC_10_SIZES if args.multiclass else list(NUSC_ANCHOR)),
+                    anchor_bottom=(NUSC_10_BOTTOMS if args.multiclass else NUSC_BOTTOM))
+
+    def _save(tag):
+        if not args.out_dir:
+            return
+        os.makedirs(args.out_dir, exist_ok=True)
+        path = os.path.join(args.out_dir, f"nusc_det_{tag}.pth")
+        torch.save({"state_dict": model.state_dict(), "cfg": ckpt_cfg}, path)
+        print(f"[nusc-det] saved -> {path}", flush=True)
+
+    best = -1.0
     for ep in range(args.epochs):
         model.train()
         tot = n = 0
@@ -107,6 +130,9 @@ def main():
             m = evaluate(model, val_ld, dev, ncls=ncls)
             print(f"[nusc-det] epoch {ep}: loss={tot/max(n,1):.3f}  "
                   + "  ".join(f"{k}={v:.3f}" for k, v in m.items()), flush=True)
+            if m.get("carAP_cd", 0.0) > best:      # save best-by-carAP_cd
+                best = m["carAP_cd"]; _save("best")
+    _save("final")
     print("[nusc-det] done", flush=True)
 
 

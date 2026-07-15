@@ -44,6 +44,13 @@ class NuScenesCarDataset(Dataset):
         from nuscenes import NuScenes
         from nuscenes.utils.splits import create_splits_scenes
         self.nusc = nusc or NuScenes(version=version, dataroot=dataroot, verbose=False)   # reuse devkit
+        # worker-safety: the devkit isn't fork-safe, so each DataLoader worker rebuilds its own
+        # (lazy, keyed on pid). Enables num_workers>0. Sweeps are read from lidar_cache, so a
+        # worker only needs nusc for the box GT / ego-pose lookups. Derive root/version from the
+        # built devkit (not the args) so a *passed-in* nusc's real path is used in workers too.
+        self._dataroot = self.nusc.dataroot
+        self._version = self.nusc.version
+        self._nusc_pid = os.getpid()
         self.class_map = class_map or NUSC_CLASSES
         self.pcr = np.array(pc_range, np.float32)
         self.sweeps = sweeps                        # 10-sweep aggregation = standard nuScenes density
@@ -61,6 +68,16 @@ class NuScenesCarDataset(Dataset):
     def __len__(self):
         return len(self.tokens)
 
+    def _get_nusc(self):
+        """Per-process devkit: rebuild in a forked worker (the inherited one isn't fork-safe)."""
+        import os
+        pid = os.getpid()
+        if getattr(self, "_nusc_pid", None) != pid or self.nusc is None:
+            from nuscenes import NuScenes
+            self.nusc = NuScenes(version=self._version, dataroot=self._dataroot, verbose=False)
+            self._nusc_pid = pid
+        return self.nusc
+
     def _class_of(self, name):
         for pref, idx in self.class_map.items():
             if name.startswith(pref):
@@ -72,13 +89,13 @@ class NuScenesCarDataset(Dataset):
         Multi-sweep is cached per token (aggregation is slow) — denser = distant cars keep points."""
         import os
         if self.sweeps <= 1:
-            path = self.nusc.get_sample_data_path(sample["data"]["LIDAR_TOP"])
+            path = self._get_nusc().get_sample_data_path(sample["data"]["LIDAR_TOP"])
             return np.fromfile(path, np.float32).reshape(-1, 5)[:, :4]
         cf = os.path.join(self.lidar_cache, f"{token}_sw{self.sweeps}.npy") if self.lidar_cache else None
         if cf and os.path.exists(cf):
             return np.load(cf)
         from nuscenes.utils.data_classes import LidarPointCloud
-        pc, _ = LidarPointCloud.from_file_multisweep(self.nusc, sample, "LIDAR_TOP", "LIDAR_TOP",
+        pc, _ = LidarPointCloud.from_file_multisweep(self._get_nusc(), sample, "LIDAR_TOP", "LIDAR_TOP",
                                                      nsweeps=self.sweeps)
         pts = pc.points[:4].T.astype(np.float32)                            # (M,4) x,y,z,intensity
         if cf:
@@ -86,8 +103,9 @@ class NuScenesCarDataset(Dataset):
         return pts
 
     def __getitem__(self, i):
-        sample = self.nusc.get("sample", self.tokens[i])
-        _, boxes, _ = self.nusc.get_sample_data(sample["data"]["LIDAR_TOP"])   # boxes in LiDAR frame
+        nusc = self._get_nusc()
+        sample = nusc.get("sample", self.tokens[i])
+        _, boxes, _ = nusc.get_sample_data(sample["data"]["LIDAR_TOP"])        # boxes in LiDAR frame
         pts = self._load_points(self.tokens[i], sample)                    # (M,4) x,y,z,intensity
         m = np.all((pts[:, :3] >= self.pcr[:3]) & (pts[:, :3] < self.pcr[3:]), axis=1)
         pts = pts[m]

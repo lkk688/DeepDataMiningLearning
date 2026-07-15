@@ -909,34 +909,112 @@ complete bird's-eye scene the prediction reconstructs from the surround views:
 (`output/lss_occ/lss_occ_surround_demo.mp4`. The magenta drivable surface ahead matches the
 FRONT camera; vegetation/terrain flanks match the side cameras.)
 
-## 3. Future work — scaling to full data on H100
+## 3. Scaling to full data on H100 — realized
 
 Every number in §2.8 was produced on a **single RTX 3090**, a **frozen** backbone, and
 **~10 % of the nuScenes train split** (3000 / 34149 samples, ≤12 epochs). That was deliberate:
 the 3090 is for **cheap, multi-seed ablation** — deciding *which* idea clears the noise (§2.7.1,
-§2.8.1–2.8.3) before spending real compute. The ideas are now validated; **the remaining ceiling
-is infrastructure, not ideas.** Because the whole stack is **pure PyTorch (no mmcv, no custom
-CUDA)**, moving to an H100 (or a multi-H100 node) is just an environment + data-staging step —
-not the build/version fight every mmlab occupancy repo forces (§2.5). The clear scaling paths:
+§2.8.1–2.8.3) before spending real compute. The ideas being validated, we then ran the winning
+configs at **full scale on a single H100 NVL (95 GB)**: the **entire 34149-frame train split**,
+**24 epochs**, DINOv2-base + 4-layer decoder + cosine + AMP + refine-2 + Lovász/class-balanced CE.
+Because the whole stack is **pure PyTorch (no mmcv, no custom CUDA)**, this was an environment +
+data-staging step, not the build/version fight every mmlab occupancy repo forces (§2.5).
 
-1. **Full train split + longer schedule (the biggest "free" win).** 10 % → 100 % data, 12 → 24–36
-   epochs, larger batch. The loss/refine/fusion gains should keep compounding with data — this
-   is *infra-bound, not idea-bound*. Needs a small trainer change: **DDP + gradient accumulation
-   + checkpoint/resume** (today it's a single-GPU loop; AMP is already in).
-2. **Bigger backbone / finer voxels.** DINOv2-**large**, and a **0.4 m → 0.2 m** voxel grid.
+### 3.1 Results — full split vs the 3090 ablation ceiling
+
+| config | 3090 ref (3k/12ep) | **full data (34k/24ep, H100)** | Δ |
+|---|---|---|---|
+| camera-only (loss + refine) | 0.298 | **mIoU 0.302 / geo-IoU 0.669** | +0.004 |
+| **camera + LiDAR fusion** | 0.493 | **mIoU 0.558 / geo-IoU 0.838** | **+0.065** |
+
+The camera-only line barely moves (0.298 → 0.302) — at ~10 % data it was **already near its
+capacity ceiling** for this backbone/decoder, exactly as §2.8's "epoch-0 matches ResNet's final"
+foreshadowed; more *data* can't buy what the frozen-DINOv2 + 2.8 M-param head can't represent.
+**Fusion, by contrast, gains a full +0.065** (0.493 → 0.558) — the LiDAR-geometry input has real
+headroom to exploit more data, and it lands us **firmly in the supervised-fusion SOTA band**
+(above Dr.Occ 43.4, approaching EFFOcc 50.5), pure PyTorch. The mIoU trajectory is a clean climb —
+camera-only ep0 0.222 → ep23 0.302; fusion ep0 0.385 → ep7 0.495 (crossing the old 0.493 ceiling)
+→ ep23 0.558 — and the modality crossover from §2.8.3 holds at scale: fusion geo-IoU 0.838 vs
+camera-only 0.669 (LiDAR carries geometry, the camera carries semantics).
+
+The sibling **3D detection** task was trained on the **same H100 at the same time** (full nuScenes,
+PointPillars-res, 10-class CBGS, 40 ep) → **car center-distance AP 0.467** — see
+[detection/TUTORIAL.md §9.1](detection/TUTORIAL.md). Two occupancy runs + one detection run shared
+the one GPU (≤49 GB combined) with no contention beyond wall-clock.
+
+**Commands** (the exact full-data invocations; the camera-only baseline is byte-identical with
+`--lidar-fusion` dropped):
+
+```bash
+# camera-only  ->  mIoU 0.302 / geo-IoU 0.669
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    --gts <gts> --nusc <nuscenes> \
+    --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 \
+    --cosine --amp --refine-iters 2 --occ-lovasz 1.0 --occ-class-balance \
+    --occ-cb-cache output/classw_full.npy \
+    --max-samples 34149 --val-samples 300 --epochs 24 --batch-size 8 \
+    --lr 2e-3 --depth-weight 1.0 --num-workers 8 --seed 0 \
+    --out-dir output/lss_occ_full
+
+# camera + LiDAR fusion  ->  mIoU 0.558 / geo-IoU 0.838   (add the two --lidar-* flags)
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
+    ... (identical) ... \
+    --lidar-fusion --lidar-cache output/lidar_cache \
+    --out-dir output/lss_occ_full_fusion
+```
+
+### 3.2 Two engineering fixes the full-data scale forced
+
+Neither showed up at 3090/3k-sample scale; both are now fixed in `train_lss.py` (the camera-only
+path is unchanged by either):
+
+1. **Class-weight precompute — a Python GC pathology.** `compute_class_weights` iterates all
+   34149 GT files once to build the inverse-frequency weights. At full scale this stalled for
+   **>1 hour** — yet a fresh process does the same pass in **44 s**. Cause: the loop allocates an
+   `NpzFile` + arrays per iteration, triggering gen-0 cyclic GC, and because the process holds the
+   full nuScenes-trainval object graph resident (~10 M objects, 14 GB RSS), **every GC pass
+   rescans that whole graph** → a ~250× slowdown. Fix: `gc.disable()` around the loop (the
+   per-iteration garbage is refcount-freed anyway) — O(files) again. Lesson: an allocation-heavy
+   loop next to a large resident object graph is a latent quadratic; disable GC or don't allocate.
+
+2. **Fusion divergence → NaN — gradient clipping.** The fusion run trained well for 2 epochs
+   (mIoU 0.398 → 0.409) then the loss climbed (4.13 → 4.32 → 4.49) and **blew up to NaN at
+   ep3**, collapsing val mIoU to 0.000 thereafter. It diverged *early* because the cosine LR is
+   near its 2e-3 peak in the first epochs, and the heavier fusion model (extra LiDAR branch +
+   concatenated volume) is less stable than camera-only — which survived the same LR. The trainer
+   had no gradient clipping. Fix: `clip_grad_norm_(model.parameters(), 5.0)` with the correct
+   `GradScaler.unscale_` ordering; `max_norm=5.0` only bites on the pathological spikes. The
+   restart then ran **NaN-free end-to-end** to 0.558. Lesson: AMP's loss-scaler catches *overflow*
+   in grads, not *divergence* from a too-hot LR — clip for the latter.
+
+```python
+# train_lss.py — grad clipping in the AMP step (unscale -> clip -> step)
+opt.zero_grad(); scaler.scale(loss).backward()
+scaler.unscale_(opt)
+torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)   # guard vs fusion divergence -> NaN
+scaler.step(opt); scaler.update()
+```
+
+### 3.3 Remaining scaling paths (still open)
+
+Full-data + longer-schedule (path 1) is now **done**; the levers above it are untouched:
+
+1. **Bigger backbone / finer voxels.** DINOv2-**large**, and a **0.4 m → 0.2 m** voxel grid.
    §2.7.1 showed the *output voxel resolution* — not the supervision resolution — is the true
-   ceiling; a finer grid plus its 3-D decoder only fits in H100 memory.
-3. **Multi-sweep + temporal fusion.** Denser LiDAR occupancy volumes (fusion doesn't saturate
-   the way depth supervision did — §2.7.1 coverage analysis), and BEV **temporal aggregation**
-   (ego-motion-warped multi-frame), a known large lever we haven't touched.
-4. **Beyond-concat fusion.** Our 0.493 fusion is a *naive concat* of a raw occupancy volume. The
-   headroom above it is GaussianFormer3D's **voxel-to-Gaussian initialization + LiDAR-guided
-   deformable attention** ([study](docs/GaussianFormer3D_study.md)) — higher engineering and
-   compute cost, i.e. an H100 job.
+   ceiling (and it caps the camera-only 0.302 plateau above); a finer grid + its 3-D decoder only
+   fits in H100 memory.
+2. **Multi-sweep + temporal fusion.** Denser LiDAR occupancy volumes (fusion doesn't saturate the
+   way depth supervision did — §2.7.1), and BEV **temporal aggregation** (ego-motion-warped
+   multi-frame), a known large lever we haven't touched.
+3. **Beyond-concat fusion.** The 0.558 fusion is still a *naive concat* of a raw occupancy volume.
+   The headroom above it is GaussianFormer3D's **voxel-to-Gaussian init + LiDAR-guided deformable
+   attention** ([study](docs/GaussianFormer3D_study.md)).
+4. **DDP + checkpoint/resume.** Today it's a single-GPU loop (AMP in); multi-GPU + resume is the
+   prerequisite for the larger-backbone/finer-voxel jobs above.
 
-The division of labor is the point: **prototype and de-risk on the 3090, scale the winners on
-H100.** Keep every change an opt-in flag so the camera-only baseline stays reproducible, and
-keep checking geo-IoU alongside mIoU — that crossover is what told us *what* each lever fixed.
+The division of labor held up: **prototype and de-risk on the 3090, scale the winners on H100** —
+and the two bugs above are the reminder that "just run it bigger" still surfaces real engineering.
+A full per-epoch log of these runs is in [docs/RESULTS_FULLDATA_H100.md](docs/RESULTS_FULLDATA_H100.md).
 
 ## 4. 3D object detection (`detection/`) — the sibling task
 
