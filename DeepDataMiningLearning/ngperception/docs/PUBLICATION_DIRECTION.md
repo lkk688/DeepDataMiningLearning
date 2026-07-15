@@ -32,7 +32,7 @@ unless noted; ⚠️ = trained-on-val leakage in the full-data numbers):
 |---|---|---|---|---|---|
 | #2 | depth **prior** | with LiDAR sup | 0.293 | 0.287 | no gain |
 | #3 | depth **prior** | no LiDAR sup (occ-dep) | 0.262 | 0.263 | tied (noise) |
-| #4 | **features** backbone | with LiDAR sup | 0.293 | _PENDING_ | _PENDING_ |
+| #4 | **features** backbone | with LiDAR sup | 0.293 | 0.196 | **−33% (worse)** |
 
 **Detection (from earlier work, [RESULTS_FULLDATA_H100.md]):** occupancy-pretrained backbone →
 detection transfer gives **2.5–3.15× carAP over from-scratch**; PETR/BEVFusion multi-expert pipeline
@@ -42,12 +42,14 @@ built and evaluated on official nuScenes metrics.
 
 **Finding A — a geometry foundation model's label-free geometry does NOT transfer to trained
 occupancy.** VGGT (CVPR'25) gives genuinely strong *label-free* geometry — a frozen, untrained
-depth-lift reaches **84% of a LiDAR sweep** and +51% over the prior camera lift. Yet injecting that
-same VGGT signal into a *trained* occupancy net yields **no gain across 3–4 integration ablations**
-(depth prior with/without LiDAR; features backbone). Root cause: once the lift has depth supervision
-(LiDAR or occ-rendered) + a learned depth head, it *already* captures the geometry VGGT offers, and
-VGGT's scale-ambiguous signal is redundant. **This is a clean, non-obvious negative result** —
-"strong zero-shot geometry ≠ useful trained prior" — with a mechanism, not just a null.
+depth-lift reaches **84% of a LiDAR sweep** and +51% over the prior camera lift. Yet plugged into a
+*trained* occupancy net it helps in **none of 4 integration ablations**: the **depth prior** is a
+wash with *and* without LiDAR supervision (#2/#3 — redundant once a learned depth head + depth
+supervision are present), and its **features backbone is 33% *worse* than DINOv2** (#4 — VGGT's
+tokens are geometry-specialized, the wrong bias for a *semantic* occupancy head). Mechanism, not
+just a null: **a geometry FM helps only where geometry is the bottleneck (the label-free /
+no-supervision regime, i.e. GaussianOcc-style self-sup), not the supervised regime where semantics
+and supervision dominate.** "Strong zero-shot geometry ≠ useful trained prior."
 
 **Finding B — the label-free occupancy ceiling is ~11 mIoU.** We reproduced GaussianOcc
 (ICCV'25, fully self-supervised, no labels/poses) *exactly* (11.26) and visualized it. That fixes a
@@ -74,7 +76,7 @@ and why"* is a contribution those papers don't make.
 
 ## 4. What's needed to get to submission
 
-- [ ] Finish ablation #4 (VGGT features backbone) — closes Finding A.
+- [x] Ablation #4 (VGGT features backbone) — done, −33%; Finding A closed across 4 ablations.
 - [ ] **Clean train-only retrain** (leakage-free occ numbers) — required for any headline occ claim.
 - [ ] **Data-efficiency curve** for occ→detection transfer (10/25/50/100% labels) — the Option-B
       positive headline.

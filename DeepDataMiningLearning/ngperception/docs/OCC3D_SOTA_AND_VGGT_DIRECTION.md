@@ -161,22 +161,43 @@ scale-ambiguous VGGT prior can't improve. Root causes: (a) per-frame scale drift
 scalar can't fix; (b) block-min downsample to 18×50 discards VGGT's fine structure; (c) dense-occ
 supervision makes camera depth not the bottleneck.
 
-## 7. What's left (untested — different VGGT contribution)
+## 7. Ablation #4 — VGGT *features* as the backbone (DONE — negative)
 
-The depth-*prior* is closed; these test *different* VGGT signals and were not run:
-- **VGGT *features* as the backbone** (`--backbone vggt`) — 2048-d 3-D-aware context replacing
-  DINOv2, with a learned depth head. Tests VGGT representation, not its depth. Heavier (cache
-  2048-d feats ≈ 22 MB/frame, or in-loop 3.8 s/6-cam).
-- **Per-frame metric scale** (known extrinsic baselines / learned per-image scale) — removes root
-  cause (a) before any re-test.
+The depth prior tests VGGT's geometry; this tests VGGT's *representation* — its 2048-d patch tokens
+as a drop-in backbone (`--backbone vggt`, cached feats → DepthNet), replacing DINOv2, learned depth
+head, same lift, LiDAR depth sup, 2000/300/15ep:
 
-Regardless, the actual contribution remains the **label-efficient occupancy→detection transfer**
-(§3), not the occupancy leaderboard. Reproduce #2/#3:
+| arm | best val mIoU | final |
+|---|---|---|
+| DINOv2 baseline | **0.293** | 0.293 |
+| VGGT features backbone | 0.196 | 0.192 |
+
+**VGGT features are ~33 % *worse* than DINOv2.** Reason: VGGT is trained for *geometry* (depth /
+points / pose), so its tokens are geometry-specialized; occupancy's per-voxel *semantic*
+classification needs a *semantic* SSL backbone (DINOv2 self-supervised on diverse images). VGGT's
+representation is the wrong inductive bias for the semantic head.
+
+### Combined VGGT verdict (ablations #1–#4)
+
+VGGT's label-free **geometry** is genuinely strong (§4: 84 % of a LiDAR sweep, training-free). But
+plugged into a *trained* occupancy net it helps in **no** integration:
+- **depth prior** → redundant once depth supervision (LiDAR or occ-rendered) + a learned depth head
+  are present (#2, #3: null in both regimes);
+- **features backbone** → geometry-specialized tokens are worse than a semantic backbone (#4: −33 %).
+
+**Takeaway (a clean negative with a mechanism):** *a geometry foundation model helps occupancy only
+where geometry is the bottleneck — the label-free / no-supervision regime (i.e. GaussianOcc-style
+self-supervision, §8) — not the supervised regime, where semantics and supervision dominate.* One
+confound left before calling the depth prior fully dead: per-frame metric scale (a learned
+per-image scale head) — but it would only re-test the already-redundant prior.
+
+Reproduce #2–#4:
 ```bash
-python -m ...occupancy.cache_vggt_depth --gts <gts> --nusc <nuscenes> --out <cache> --cap 2100
-# baseline #2:  ...train_lss --backbone dinov2_base --depth-source lidar --max-samples 2000 --val-samples 300 --epochs 15 --batch-size 4 --occ-lovasz 0.1 --amp --num-workers 16
-# vggt #2:      (same) + --vggt-depth-cache <cache>
-# #3: swap --depth-source lidar -> occ (no-LiDAR regime)
+python -m ...occupancy.cache_vggt_depth --gts <gts> --nusc <nuscenes> --out <dcache> --cap 2100
+python -m ...occupancy.cache_vggt_feat  --gts <gts> --nusc <nuscenes> --out <fcache> --cap 2100
+# baseline:  ...train_lss --backbone dinov2_base --depth-source lidar --max-samples 2000 --val-samples 300 --epochs 15 --batch-size 4 --occ-lovasz 0.1 --amp --num-workers 16
+# #2 depth:  (baseline) + --vggt-depth-cache <dcache>          # #3: --depth-source occ (no-LiDAR)
+# #4 feats:  (baseline) --backbone vggt --vggt-feat-cache <fcache>
 ```
 
 ## 8. GaussianOcc — a reproduced *label-free* baseline (ICCV 2025)
