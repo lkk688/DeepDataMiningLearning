@@ -1352,3 +1352,266 @@ scale, which belongs on an **H100** (single or multi-GPU). The concrete directio
 Same division of labor as the perception module ([ngperception/TUTORIAL.md](../ngperception/TUTORIAL.md)):
 **prototype and de-risk on the 3090, scale the winners on H100** — and keep every training knob a
 flag so the zero-shot baselines stay reproducible.
+
+---
+
+## 24. Dense auto-labeling — open-vocab semantic + segment-level metric depth (`ngdet/labelgen/`)
+
+Everything above produces **boxes**. This section adds a **per-pixel** capability: a *training-free*
+label engine that turns raw images (+ optional LiDAR) into a **semantic map** and a **metric depth
+map**, using only frozen foundation models. It is the auto-labeler behind self-supervised /
+label-free downstream tasks (3-D occupancy, BEV segmentation, monocular-depth distillation), and a
+compact teaching example of **composing** four models so each does what it is best at.
+
+### 24.1 The idea — each model to its strength
+
+```
+ image ─┬─ SegFormer (Cityscapes) ──────────────► STUFF: road/sidewalk/vegetation/building/sky
+        │                                          (amorphous regions a box cannot frame)
+        ├─ Grounding-DINO (open-vocab boxes) ─┐
+        │                                     ├─► THINGS: car/pedestrian/truck/… (SAM masks,
+        ├─ SAM (box-prompted masks) ──────────┘    crisp + in-domain — where a Cityscapes
+        │                                           segmenter mislabels out of domain)
+        └─ DepthAnything (dense relative) ─┬─► + LiDAR (projected) ─► SEGMENT-LEVEL METRIC DEPTH
+                                           └─►   global affine = scale; per-SAM-segment shift = pin
+```
+
+Two design choices matter and are worth teaching:
+
+- **Semantic = SegFormer-stuff ∪ Grounded-SAM-things.** SegFormer is strong on *stuff* but its
+  Cityscapes domain wrecks *things* on nuScenes (cars/pedestrians). Grounding-DINO + SAM segments
+  those *in-domain* and precisely. Use each where it wins. (We drop `construction vehicle`/`trailer`
+  from the DINO prompt — rare classes that DINO grounds ordinary cars to, polluting the car label.)
+- **Depth = a segment-level metric PRIOR, not sparse-point L1.** Projecting LiDAR gives ~2.5k
+  noisy points/camera; regressing depth to them pixel-wise is unstable. Instead: DepthAnything gives
+  dense *relative* shape; a **global affine** to the LiDAR sets metric scale; a **per-SAM-segment
+  shift to that segment's LiDAR median** snaps each object to its measured depth (1 DOF → it cannot
+  sign-flip, unlike a per-segment affine). Result: dense, object-consistent, metric — LiDAR sets
+  scale, DepthAnything fills shape, SAM enforces per-object consistency. Without LiDAR you still get
+  clean *relative* depth.
+
+### 24.2 Quickstart
+
+```bash
+# nuScenes: 6 surround cameras + LiDAR metric depth, 20 keyframes, best-shape depth + videos
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source nuscenes \
+    --dataroot /data/rnd-liu/Datasets/nuScenes/v1.0-trainval --start 1000 --num 20 \
+    --depth-ckpt depth-anything/Depth-Anything-V2-Large-hf \
+    --out ngdet/output/labelgen_nusc --video
+
+# any image folder: semantic + RELATIVE depth (no LiDAR), one panel per image
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source folder --folder path/to/imgs \
+    --out ngdet/output/labelgen_folder --video
+
+# cache labels for downstream training (one <key>.npz per sample: sem[C,H,W] uint8, depth[C,H,W] fp16)
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source nuscenes --dataroot … \
+    --num 0 --save-npz --out ngdet/output/labels_cache          # --num 0 = all keyframes
+```
+
+### 24.3 Outputs & visualization
+
+Per run, in `--out`:
+- `sem_###.png` — camera image with the semantic overlay (sky untinted); 2×3 tiled for nuScenes.
+- `dep_###.png` — completed depth as a TURBO colormap; **projected LiDAR returns overlaid as white
+  dots** so you can eyeball metric alignment (dots should land on the coloured surfaces).
+- `semantic.mp4`, `depth.mp4` — with `--video`. *The PNGs are lossless; the H.264 MP4 mildly bands
+  the flat mask colours (chroma subsampling) — use PNGs for figures, MP4 for quick scrubbing.*
+- `<key>.npz` — with `--save-npz`, the raw label arrays for training.
+
+Human-eval reading: on `dep`, white LiDAR dots should sit on same-coloured regions (good scale); on
+`sem`, every car/pedestrian should be a crisp mask of the right colour, not a Cityscapes smear.
+
+### 24.4 Getting GOOD results — the knobs
+
+| knob | flag | guidance |
+|---|---|---|
+| **depth backbone** | `--depth-ckpt` | **offline labels → `…-Depth-Anything-V2-Large-hf`** (best shape). `…-Small-hf` for speed / on-device. Both are affine-invariant; the LiDAR alignment is model-agnostic. |
+| **open-vocab model** | `--dino-ckpt` | `grounding-dino-tiny` (fast) or `-base` (better recall). |
+| **box confidence** | `--box-thresh` | raise (0.35–0.4) if you get spurious object masks; lower (0.2) to catch small/distant objects. |
+| **phrase confidence** | `--text-thresh` | how strongly a box must match its class word. |
+| **classes / taxonomy** | (code) | edit `NUSC_TAXONOMY` in `labeler.py`: `dino_things` (prompt terms → id, matched by substring) and `cs_to_id` (Cityscapes-19 → your ids). Add a preset for a new dataset. |
+| **resolution** | `--image-h/-w` | labels are generated at this size; match your downstream consumer. |
+
+Failure modes to watch: (a) a *thing* class DINO doesn't know → missing masks (add a synonym term);
+(b) too-low `box-thresh` → cars grounded to rare terms (we already dropped those); (c) sparse LiDAR
+in a segment (<10 returns) → that object keeps the global scale (still fine, just not per-object).
+
+### 24.5 Python API
+
+```python
+from DeepDataMiningLearning.ngdet.labelgen import GroundedLabeler, NuScenesSource
+lab = GroundedLabeler(device="cuda", depth_ckpt="depth-anything/Depth-Anything-V2-Large-hf")
+for key, cams in NuScenesSource("/data/…/v1.0-trainval", num=10):
+    for cam_name, pil, lidar_uv_z in cams:            # lidar_uv_z: [P,3]=(u,v,z_metres) or None
+        out = lab.label(pil, lidar_uv_z)              # {"sem":[H,W], "depth":[H,W], "masks":[(mask,cls)]}
+```
+`GroundedLabeler.semantic(pil)` and `.depth(pil, lidar_uv_z, seg_masks)` are also exposed separately.
+
+### 24.6 Where it fits / limitations
+
+- **Complements** ngdet's box detectors (§14): those benchmark open-vocab *detection*; this turns the
+  same open-vocab boxes (+ SAM + depth) into *dense pixel labels* for auto-labeling. The Grounding-DINO
+  stage is the shared primitive.
+- **Frozen, training-free** — quality is bounded by the foundation models. Object semantics are strong;
+  *stuff* leans on SegFormer's Cityscapes domain (fine for road/veg/building/sky). Depth is only as
+  metric as the LiDAR coverage in each segment.
+- **Speed:** offline it's model-bound (~1.7 s/frame with Small depth, ~2.5 s with Large); heavy imports
+  are lazy so `import ngdet` stays cheap. For a *real-time on-device* labeler, distill a small student
+  from these labels (e.g. ZipDepth-style for depth) — exactly the teacher→student setup §23.3 advocates.
+
+### 24.7 Extending to more datasets — one `Source` per dataset
+
+The labeler is **dataset-agnostic** — it only needs `(camera_image, lidar_uv_z)`. So a new dataset =
+one small **Source** in `ngdet/labelgen/sources.py` that yields, per sample, a list of
+`(cam_name, PIL.Image, lidar_uv_z)`, where `lidar_uv_z` is `[P,3]=(u, v, z_metres)` — the LiDAR
+points projected into that camera. Everything else (semantic + depth completion + video) is shared.
+
+**The whole job reduces to: put the LiDAR into a z-forward camera frame, then project.** Two shared
+primitives do the projection:
+- `project_pinhole(pts_cam, K, orig_wh, out_hw)` — standard pinhole (KITTI, Waymo, nuScenes).
+- `project_ftheta(pts_cam, cx, cy, fw_poly, orig_wh, out_hw)` — polynomial fisheye (PhysicalAI).
+
+So each Source only supplies (a) the camera image, (b) the LiDAR points, (c) the `lidar→camera`
+transform + intrinsics. Status of the built-in sources:
+
+| dataset | Source | calib / LiDAR path | status |
+|---|---|---|---|
+| **nuScenes** | `NuScenesSource` | nuscenes-devkit transform chain (lidar→ego→global→ego_cam→cam), pinhole `camera_intrinsic` | ✅ **verified** |
+| **Waymo** | `WaymoSource` | pre-extracted npz (`.../waymo_v1_extracted`): vehicle-frame `lidar`, pinhole `intrinsic` + `cam2vehicle`; camera is x-forward → swap `(x,y,z)→(-y,-z,x)` | ✅ **verified** (5 cams) |
+| **KITTI** | `KittiSource` | canonical `P2 · R0_rect · Tr_velo_to_cam`, `velodyne/*.bin`, `image_2/*.png` | ✅ **verified** (`/data/cmpe249-fa25/kitti`, single front cam) |
+| **PhysicalAI-AV** | `PhysicalAISource` | f-theta `fw_poly`+`cx,cy` intrinsics + quaternion `sensor_extrinsics`; Draco LiDAR + mp4 frames | ✅ **verified** (5 cams: 3×120°fov + 2×70°fov) — LiDAR dots track the fisheye curvature |
+| **Argoverse2** | `AV2Source` | `av2` devkit motion-compensated `project_ego_to_img` (LiDAR & cam timestamps differ → warp via city frame) | ✅ **verified** (`/data/cmpe249-fa23/Argoverse2/sensor`, 6 ring cams) |
+
+**Reference — how little a Source is** (Waymo, the whole thing after loading the npz):
+```python
+K = calib["intrinsic"][:3,:3]; veh2cam = np.linalg.inv(calib["cam2vehicle"])
+pc  = (veh2cam @ _homog(lidar_vehicle).T).T[:,:3]      # -> camera frame (Waymo x-forward)
+pin = np.stack([-pc[:,1], -pc[:,2], pc[:,0]], 1)       # -> z-forward pinhole
+lidar_uv_z = project_pinhole(pin, K, (W,H), out_hw)    # done
+```
+
+**Verify every new Source by eye** (this is the whole point of the `dep_*.png` output): the white
+LiDAR dots must land *on* the coloured surfaces of the depth map. If they float above/below the
+ground or are mirrored, the `lidar→camera` transform or an axis convention is wrong — fix it before
+trusting the labels. (nuScenes and Waymo above were validated exactly this way.)
+
+**PhysicalAI-AV** (`ngdet/labelgen/physicalai.py`, done): the f-theta pipeline — `load_calib`
+(per-camera `fw_poly`/`cx`/`cy` + quaternion `sensor_extrinsics`), `decode_lidar` (Draco via
+`DracoPy`), `lidar_to_cam` (compose lidar→ego→camera SE3), and `ftheta_project` (angle-from-axis →
+pixel radius) — is copied from our validated autolabel pipeline
+(`PhysicalAI-Drive/physicalai_autolabel/scripts/annotate_clip.py`) and generalized to multi-camera.
+`PhysicalAISource` decodes the mp4 with `cv2.VideoCapture` (no PyAV) and time-syncs each camera +
+LiDAR spin to the reference-camera clock. The 7 cameras are fisheye/tele with different FOVs
+(120/70/30) — each has its own `fw_poly`; the default set is the 3×120° front + 2×70° rear. Note the
+front-wide fisheye sees the ego hood (labeled `car` at the bottom) — mask a fixed bottom band if it
+matters for your labels.
+
+**Argoverse2** (`ngdet/labelgen/av2.py`, done): `AV2Source` uses the official `av2` devkit
+(`AV2SensorDataLoader`) — `get_ordered_log_lidar_timestamps`, `get_lidar_fpath` + `read_lidar_sweep`
+(ego-frame points), `get_closest_img_fpath` (nearest camera frame), and
+**`project_ego_to_img_motion_compensated`** (the important part: AV2's LiDAR and camera timestamps
+differ, so points are warped ego→city→ego across the two times before projecting). The devkit isn't
+pip-installed — set `--root` to a `sensor/<split>` dir and it adds `/data/rnd-liu/Develop/av2-api/src`
+to the path (override via `AV2_API_SRC`). Deps: `pip install universal_pathlib`. Set `--root` to a `sensor/<split>` dir with camera-bearing logs, e.g.
+`/data/cmpe249-fa23/Argoverse2/sensor/test` (verified there, 6 ring cameras).
+
+### 24.8 Outputs for manual inspection (`ngdet/output/`)
+
+Per-dataset visualizations are written under `ngdet/output/labelgen_<dataset>/` — open the PNGs (or
+`semantic.mp4`/`depth.mp4`) to human-check each dataset:
+- `labelgen_nuscenes/` — 6 surround cams, metric depth.
+- `labelgen_waymo/` — 5 cams, metric depth (verified: LiDAR dots on surfaces).
+- `labelgen_physicalai/` — 5 cams, **f-theta fisheye** metric depth (verified: dots track fisheye curvature).
+- `labelgen_kitti/` — single front cam, verified on `/data/cmpe249-fa25/kitti`.
+- `labelgen_av2/` — 6 ring cams, motion-compensated projection, verified on `/data/cmpe249-fa23/Argoverse2/sensor`.
+Regenerate any of them with, e.g., `python -m …ngdet.labelgen.run --source waymo --root
+/data/rnd-liu/Datasets/waymo_v1_extracted --num 20 --image-h 384 --image-w 640
+--out ngdet/output/labelgen_waymo --video`.
+
+### 24.9 Depth visualization & Small-vs-Large comparison
+
+**Depth-coloured LiDAR points.** In every `dep_*.png`, the projected LiDAR points are drawn coloured
+by *their own* measured depth (same TURBO scale as the dense map) as 2×2 dots, over a dimmed dense
+background. So you read the LiDAR depth directly and compare it against the completion: a dot that
+blends into its surroundings = accurate; a dot that pops in a different colour = the dense depth is
+off there. Much clearer than the old white dots for judging metric alignment.
+
+**Small vs Large depth backbone** (`compare_depth.py`): renders `[image | Small metric | Large
+metric]` side by side for one camera per sample, so you can see whether DepthAnything-V2-Large is
+worth the extra compute:
+```bash
+python -m DeepDataMiningLearning.ngdet.labelgen.compare_depth --source waymo \
+    --root /data/rnd-liu/Datasets/waymo_v1_extracted --num 6 --cam-name FRONT \
+    --out ngdet/output/depth_cmp_waymo
+```
+Finding (nuScenes + Waymo): **Large gives a smoother, more scene-consistent depth** (cleaner ground
+gradient, better far-structure, less blocking) — so for OFFLINE label generation prefer
+`--depth-ckpt …-Large-hf`; keep Small for speed / on-device. Both share the identical LiDAR
+scale-alignment, so the pipeline is otherwise unchanged. Outputs `depth_cmp_nusc/`, `depth_cmp_waymo/`.
+
+### 24.10 Verified results — datasets, paths, and exact commands
+
+The label generator is **verified end-to-end on 5 driving datasets** (LiDAR dots land on the
+coloured surfaces in every `dep_*.png`), spanning **four projection models**: pinhole
+(nuScenes/Waymo/KITTI), f-theta fisheye (PhysicalAI), and city-frame motion-compensated (AV2).
+
+| dataset | local data path | cams | projection |
+|---|---|---|---|
+| nuScenes | `/data/rnd-liu/Datasets/nuScenes/v1.0-trainval` | 6 surround | pinhole (devkit chain) |
+| Waymo | `/data/rnd-liu/Datasets/waymo_v1_extracted` | 5 | pinhole (+x-forward swap) |
+| KITTI | `/data/cmpe249-fa25/kitti` | 1 front | pinhole (`P2·R0·Tr_velo_to_cam`) |
+| PhysicalAI-AV | `/data/rnd-liu/Datasets/PhysicalAI-AV` | 5 (120°/70°) | **f-theta fisheye** |
+| Argoverse2 | `/data/cmpe249-fa23/Argoverse2/sensor/test` | 6 ring | **motion-compensated** (devkit) |
+
+**Exact commands** (each writes `sem_*.png` / `dep_*.png` + `semantic.mp4` / `depth.mp4` to
+`ngdet/output/labelgen_<dataset>/`). Use `--depth-ckpt depth-anything/Depth-Anything-V2-Large-hf`
+for best-quality offline labels; add `--save-npz` to cache the label arrays for training.
+
+```bash
+# nuScenes (6 surround cams)
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source nuscenes \
+    --dataroot /data/rnd-liu/Datasets/nuScenes/v1.0-trainval --start 3000 --num 10 --stride 2 \
+    --out ngdet/output/labelgen_nuscenes --video
+
+# Waymo (5 cams; extracted-npz layout)
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source waymo \
+    --root /data/rnd-liu/Datasets/waymo_v1_extracted --num 25 --image-h 384 --image-w 640 \
+    --out ngdet/output/labelgen_waymo --video
+
+# KITTI (front cam + Velodyne)
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source kitti \
+    --root /data/cmpe249-fa25/kitti --num 4 --stride 50 --image-h 384 --image-w 1280 \
+    --out ngdet/output/labelgen_kitti --video
+
+# PhysicalAI-AV (5 fisheye/tele cams; Draco LiDAR + mp4)
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source physicalai \
+    --root /data/rnd-liu/Datasets/PhysicalAI-AV --num 6 --stride 20 --image-h 384 --image-w 640 \
+    --out ngdet/output/labelgen_physicalai --video
+
+# Argoverse2 (6 ring cams; motion-compensated projection via the av2 devkit)
+python -m DeepDataMiningLearning.ngdet.labelgen.run --source av2 \
+    --root /data/cmpe249-fa23/Argoverse2/sensor/test --num 3 --stride 15 --image-h 400 --image-w 640 \
+    --out ngdet/output/labelgen_av2 --video
+
+# Small-vs-Large depth comparison (any --source), one camera per frame
+python -m DeepDataMiningLearning.ngdet.labelgen.compare_depth --source waymo \
+    --root /data/rnd-liu/Datasets/waymo_v1_extracted --num 6 --cam-name FRONT \
+    --out ngdet/output/depth_cmp_waymo
+```
+
+**Example — Argoverse2 semantic** (Grounded-SAM things ∪ SegFormer stuff, 6 ring cameras): cars in
+blue, road magenta, palms/grass green, buildings lavender, a pedestrian in red, a construction fence
+in orange — the in-domain object fidelity a Cityscapes-only segmenter lacks.
+
+![AV2 semantic labels — 6 ring cameras](docs/labelgen/av2_semantic.jpg)
+
+**Example — PhysicalAI f-theta metric depth** (LiDAR points coloured by their own depth over the
+dimmed dense completion): the dots track the fisheye curvature, near ground blue → far green,
+close trees/cars warm — confirming the fisheye projection is correct.
+
+![PhysicalAI fisheye metric depth](docs/labelgen/physicalai_depth.jpg)
+
+**Example — DepthAnything-V2 Small vs Large** (`[image | Small | Large]`, Waymo): Large gives a
+smoother, more scene-consistent depth — prefer it for offline label generation.
+
+![Depth Small vs Large](docs/labelgen/depth_small_vs_large.jpg)
