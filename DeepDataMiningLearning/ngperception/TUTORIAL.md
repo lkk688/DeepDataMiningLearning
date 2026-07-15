@@ -1068,3 +1068,16 @@ occupancy **and** detection, pure PyTorch, no spconv/mmcv — is in place.
 python -m DeepDataMiningLearning.ngperception.occupancy.train_multitask \
     --gts <occ3d_gts> --nusc <nuscenes> --lidar-fusion --max-samples 400 --epochs 8   # occ + car det
 ```
+
+## 6. Lane detection & prediction (`lane/`) — the road layout
+
+Depth (§1) gives geometry, occupancy (§2) gives dense what-is-where, detection (§4) gives objects
+as boxes — **lanes** give the *road structure*: where can I drive, which lane am I in, where do the
+markings go. The `lane/` module starts by **running SOTA lane models** on the road images we
+already have (nuScenes/KITTI front cameras), pure PyTorch. First backend: **YOLOPv2** — a
+self-contained TorchScript that does **lane lines + drivable area + vehicle detection in one
+forward**, no mmcv. Full walkthrough — the five lane-detection paradigms (segmentation, row-wise,
+keypoint, curve, anchor-line), the CULane/OpenLane SOTA landscape, datasets, metrics, and the
+roadmap to 3-D lanes — is in **[lane/TUTORIAL.md](lane/TUTORIAL.md)**.
+
+![lane demo](docs/lane_demo_frame.png)
