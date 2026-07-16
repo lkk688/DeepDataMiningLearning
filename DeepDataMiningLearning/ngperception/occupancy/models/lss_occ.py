@@ -268,6 +268,33 @@ class LSSOccupancy(nn.Module):
         logit = torch.log(depth + 1e-6) + self.refine_alpha * torch.log(first_hit + 1e-6)
         return logit.softmax(dim=2)
 
+    def render_2d(self, occ, geom):
+        """Volume-render the voxel semantics + occupancy back along camera rays -> per-camera 2D
+        semantic probs + expected depth. This is the label-FREE pretraining signal: supervise the
+        rendered 2D against cheap 2D pseudo-labels (frozen-FM semantics + metric depth) instead of
+        3D occupancy GT (OccNeRF/GaussianOcc-style, but with our labelgen pseudo-labels).
+        occ: (B,ncls,nx,ny,nz) decoder logits; geom: (B,N,D,h,w,3) ego.
+        -> rendered_sem (B,N,ncls,h,w) prob, rendered_depth (B,N,h,w)."""
+        B, N, D, h, w = geom.shape[0], geom.shape[1], geom.shape[2], geom.shape[3], geom.shape[4]
+        C = occ.shape[1]
+        prob = occ.softmax(1)                                             # (B,ncls,nx,ny,nz)
+        occupied = (1.0 - prob[:, self.free_idx]).unsqueeze(1)            # (B,1,nx,ny,nz)
+        grid = self._norm_grid(geom).reshape(B * N, D, h, w, 3)
+        volo = occupied.unsqueeze(1).expand(B, N, 1, self.nx, self.ny, self.nz).reshape(B * N, 1, self.nx, self.ny, self.nz)
+        occ_along = F.grid_sample(volo, grid, align_corners=True, padding_mode="zeros").view(B, N, D, h, w).clamp(0, 1)
+        one_minus = (1.0 - occ_along).clamp(min=1e-4)
+        first_hit = occ_along * torch.cat([torch.ones_like(one_minus[:, :, :1]),
+                                           torch.cumprod(one_minus, dim=2)[:, :, :-1]], dim=2)  # (B,N,D,h,w)
+        wsum = first_hit.sum(2, keepdim=True).clamp_min(1e-4)             # (B,N,1,h,w) total ray weight
+        # semantics along the ray, composited by first-hit weight
+        vols = prob.unsqueeze(1).expand(B, N, C, self.nx, self.ny, self.nz).reshape(B * N, C, self.nx, self.ny, self.nz)
+        sem_along = F.grid_sample(vols, grid, align_corners=True, padding_mode="zeros").view(B, N, C, D, h, w)
+        rendered_sem = (first_hit.unsqueeze(2) * sem_along).sum(3) / wsum  # (B,N,C,h,w)
+        # expected depth = Σ_d first_hit_d * depth_d  (depth bin centres from the frustum)
+        dvals = self.frustum.to(occ.device)[:, 0, 0, 2].view(1, 1, D, 1, 1)  # (1,1,D,1,1)
+        rendered_depth = (first_hit * dvals).sum(2) / wsum.squeeze(2)      # (B,N,h,w)
+        return rendered_sem, rendered_depth
+
     def forward(self, imgs, rots, trans, intrins, lidar_vox=None, drop_camera=False, drop_lidar=False,
                 vggt_depth=None, vggt_feat=None):
         """imgs: (B,N,3,H,W); rots,trans: (B,N,3,3),(B,N,3) cam->ego; intrins: (B,N,3,3).
