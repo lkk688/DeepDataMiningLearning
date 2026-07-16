@@ -163,8 +163,8 @@ def main():
                 # LiDAR-voxel geometric occ BCE
                 lv = b["lidar_vox"].to(dev)                          # (B,3,nx,ny,nz)
                 locc = (lv.abs().sum(1) > 0).float()                 # any lidar point -> occupied
-                pocc = 1.0 - occ.softmax(1)[:, FREE]                 # predicted occupied
-                l_occ = F.binary_cross_entropy(pocc.clamp(1e-4, 1 - 1e-4), locc)
+                pocc = (1.0 - occ.softmax(1)[:, FREE]).clamp(1e-4, 1 - 1e-4)   # predicted occupied
+                l_occ = -(locc * pocc.log() + (1 - locc) * (1 - pocc).log()).mean()  # autocast-safe BCE
                 loss = args.sem_weight * l_sem + args.depth_weight * l_dep + args.occ_weight * l_occ
             opt.zero_grad(); scaler.scale(loss).backward()
             scaler.unscale_(opt); torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)

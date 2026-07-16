@@ -37,6 +37,7 @@ def main():
     ap.add_argument("--out", default="ngdet/output/labelgen")
     ap.add_argument("--save-npz", action="store_true", help="also cache sem+depth per sample (.npz)")
     ap.add_argument("--video", action="store_true"); ap.add_argument("--fps", type=int, default=2)
+    ap.add_argument("--no-viz", action="store_true", help="skip the sem/dep PNG panels (bulk npz caching)")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
@@ -63,15 +64,17 @@ def main():
         for name, pil, uvz in cams:
             raw = np.asarray(pil)
             out = lab.label(pil, uvz)
-            sem_panels.append(sem_overlay(raw, out["sem"], tax.colors, tax.sky_id))
-            dep_panels.append(depth_colormap(out["depth"], uvz, lab.max_depth))
+            if not args.no_viz:
+                sem_panels.append(sem_overlay(raw, out["sem"], tax.colors, tax.sky_id))
+                dep_panels.append(depth_colormap(out["depth"], uvz, lab.max_depth))
             names.append(name); sems.append(out["sem"].astype(np.uint8)); deps.append(out["depth"].astype(np.float16))
-        if not sem_panels:                                     # e.g. a LiDAR-only log (no cameras)
+        if not names:                                          # e.g. a LiDAR-only log (no cameras)
             print(f"[labelgen] {i+1} {key}: no camera frames, skipped", flush=True); continue
-        sem_t = tile(sem_panels, names, cols); dep_t = tile(dep_panels, names, cols)
-        imageio.imwrite(os.path.join(args.out, f"sem_{i:03d}.png"), sem_t)
-        imageio.imwrite(os.path.join(args.out, f"dep_{i:03d}.png"), dep_t)
-        sem_frames.append(sem_t); dep_frames.append(dep_t)
+        if not args.no_viz:
+            sem_t = tile(sem_panels, names, cols); dep_t = tile(dep_panels, names, cols)
+            imageio.imwrite(os.path.join(args.out, f"sem_{i:03d}.png"), sem_t)
+            imageio.imwrite(os.path.join(args.out, f"dep_{i:03d}.png"), dep_t)
+            sem_frames.append(sem_t); dep_frames.append(dep_t)
         if args.save_npz:
             np.savez_compressed(os.path.join(args.out, f"{key}.npz"),
                                 sem=np.stack(sems), depth=np.stack(deps))
