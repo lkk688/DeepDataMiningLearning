@@ -14,11 +14,15 @@ from __future__ import annotations
 import argparse
 
 # budget -> {arm: (mAP, pedestrian_AP)} — official nuScenes val (center-distance)
+# occ3d = Occ3D-GT-pretrained (expensive labels); render2d = label-free pretext; scratch = floor
 POINTS = {
-    2000: {"finetune": (0.0637, 0.263), "scratch": (0.0409, 0.129)},
-    4000: {"finetune": (0.0994, 0.268), "scratch": (0.0475, 0.084)},
-    8000: {"finetune": (0.1590, 0.371), "scratch": (0.1142, 0.299)},
+    2000: {"occ3d": (0.0637, 0.263), "render2d": (0.0403, 0.142), "scratch": (0.0409, 0.129)},
+    4000: {"occ3d": (0.0994, 0.268), "render2d": (0.0651, 0.181), "scratch": (0.0475, 0.084)},
+    8000: {"occ3d": (0.1590, 0.371), "render2d": (0.1150, 0.305), "scratch": (0.1142, 0.299)},
 }
+ARMS = [("occ3d", "occ pretrain (Occ3D-GT, expensive)", "#1f77b4", "o-"),
+        ("render2d", "occ pretrain (render2d, LABEL-FREE)", "#2ca02c", "^-"),
+        ("scratch", "from-scratch", "#d62728", "s--")]
 
 
 def main():
@@ -29,30 +33,18 @@ def main():
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    budgets = sorted(b for b in POINTS if POINTS[b]["finetune"][0] is not None)
-    ft_map = [POINTS[b]["finetune"][0] for b in budgets]
-    sc_map = [POINTS[b]["scratch"][0] for b in budgets]
-    ft_ped = [POINTS[b]["finetune"][1] for b in budgets]
-    sc_ped = [POINTS[b]["scratch"][1] for b in budgets]
-
+    budgets = sorted(POINTS)
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(12, 5))
-    a1.plot(budgets, ft_map, "o-", color="#1f77b4", lw=2, label="occ-pretrained (finetune)")
-    a1.plot(budgets, sc_map, "s--", color="#d62728", lw=2, label="from-scratch")
-    for b in budgets:
-        r = POINTS[b]["finetune"][0] / max(POINTS[b]["scratch"][0], 1e-6)
-        a1.annotate(f"{r:.1f}x", (b, POINTS[b]["finetune"][0]), textcoords="offset points",
-                    xytext=(0, 8), ha="center", fontsize=9, color="#1f77b4")
+    for key, label, color, style in ARMS:
+        a1.plot(budgets, [POINTS[b][key][0] for b in budgets], style, color=color, lw=2, label=label)
+        a2.plot(budgets, [POINTS[b][key][1] for b in budgets], style, color=color, lw=2, label=label)
     a1.set_xlabel("detection label budget (frames)"); a1.set_ylabel("official nuScenes mAP")
-    a1.set_title("Label efficiency: occupancy pretraining vs from-scratch")
-    a1.legend(); a1.grid(alpha=0.3)
-
-    a2.plot(budgets, ft_ped, "o-", color="#1f77b4", lw=2, label="occ-pretrained")
-    a2.plot(budgets, sc_ped, "s--", color="#d62728", lw=2, label="from-scratch")
+    a1.set_title("Label efficiency: expensive vs LABEL-FREE occ pretraining vs scratch")
+    a1.legend(fontsize=8); a1.grid(alpha=0.3)
     a2.set_xlabel("detection label budget (frames)"); a2.set_ylabel("pedestrian AP")
-    a2.set_title("The gain is rare-object transfer (pedestrian)")
-    a2.legend(); a2.grid(alpha=0.3)
-
-    fig.suptitle("Occupancy->detection transfer is label-efficient (occ pretraining, nuScenes)",
+    a2.set_title("Rare-object transfer (pedestrian)")
+    a2.legend(fontsize=8); a2.grid(alpha=0.3)
+    fig.suptitle("Occupancy->detection transfer: does a LABEL-FREE pretext keep the benefit? (nuScenes)",
                  fontsize=13)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(args.out, dpi=130, bbox_inches="tight")
