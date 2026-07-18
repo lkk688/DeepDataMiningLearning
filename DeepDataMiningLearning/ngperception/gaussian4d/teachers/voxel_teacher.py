@@ -13,29 +13,34 @@ from __future__ import annotations
 import numpy as np
 
 from .base import TeacherTarget, voxel_indices, FREE, NUM_CLASSES
-from .semantics import lidar_points_and_labels
+from .semantics import lidar_scene
+from .raycast import free_space_mask
 from ...occupancy.geom import GRID_SIZE
 
 
 class VoxelTeacher:
-    def __init__(self, nusc, labelgen_cache, sweeps=1):
-        self.nusc, self.cache, self.sweeps = nusc, labelgen_cache, sweeps
+    def __init__(self, nusc, labelgen_cache, sweeps=1, free_w=0.02):
+        self.nusc, self.cache, self.sweeps, self.free_w = nusc, labelgen_cache, sweeps, free_w
 
     def __call__(self, token) -> TeacherTarget:
-        pts, lab = lidar_points_and_labels(self.nusc, token, self.cache, self.sweeps)
+        pts, lab, origin = lidar_scene(self.nusc, token, self.cache, self.sweeps)
         sem = np.full(tuple(GRID_SIZE), FREE, np.uint8)
         weight = np.zeros(tuple(GRID_SIZE), np.float32)
         if len(pts) == 0:
             return TeacherTarget(sem, weight)
-        idx, m = voxel_indices(pts)
-        idx, lab = idx[m], lab[m]
-        # majority class per voxel: accumulate per-(voxel,class) counts, then argmax
-        flat = (idx[:, 0] * GRID_SIZE[1] + idx[:, 1]) * GRID_SIZE[2] + idx[:, 2]
-        counts = np.zeros((int(GRID_SIZE.prod()), NUM_CLASSES - 1), np.int32)   # classes 0..16
-        np.add.at(counts, (flat, lab), 1)
-        occ = counts.sum(1) > 0
-        best = counts.argmax(1)
-        sem_flat = sem.reshape(-1); w_flat = weight.reshape(-1)
-        sem_flat[occ] = best[occ].astype(np.uint8)
-        w_flat[occ] = 1.0                                       # hard: fully certain where occupied
-        return TeacherTarget(sem_flat.reshape(GRID_SIZE), w_flat.reshape(GRID_SIZE))
+        # --- occupied: majority labelled-class per voxel ---
+        keep = (lab >= 0) & (lab != FREE)
+        opts, olab = pts[keep], lab[keep]
+        if len(opts):
+            idx, m = voxel_indices(opts)
+            idx, olab = idx[m], olab[m]
+            flat = (idx[:, 0] * GRID_SIZE[1] + idx[:, 1]) * GRID_SIZE[2] + idx[:, 2]
+            counts = np.zeros((int(GRID_SIZE.prod()), NUM_CLASSES - 1), np.int32)
+            np.add.at(counts, (flat, olab), 1)
+            occ = counts.sum(1) > 0
+            sem.reshape(-1)[occ] = counts.argmax(1)[occ].astype(np.uint8)
+            weight.reshape(-1)[occ] = 1.0                       # hard: certain where occupied
+        # --- ray-verified free (weight free_w) vs unknown (weight 0) ---
+        free = free_space_mask(pts, origin) & (sem == FREE)     # free only where not occupied
+        weight[free] = self.free_w
+        return TeacherTarget(sem, weight)

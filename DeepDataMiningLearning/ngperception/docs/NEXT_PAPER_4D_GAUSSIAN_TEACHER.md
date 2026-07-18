@@ -99,6 +99,64 @@ into a planner only after forecasting clearly helps.
 | **Uncertainty = decoration** | reviewers reject unused uncertainty | tie to a concrete loss (weight/gate) + calibration ablation |
 | **scope creep (thesis in one paper)** | dilutes each result | **Paper 1 = Phase 1+2**; Paper 2 = Phase 3 (4D) |
 
+## 6b. Full target architecture (multi-modal teacher) + VGGT as a teacher densifier
+
+```
+ training data ─┬─ LiDAR rays ──── metric geometry + ray-verified FREE space
+                ├─ VGGT ────────── dense points + temporal tracks (LiDAR-anchored, filtered)
+                └─ 2D VFM ──────── semantic pseudo-label distributions
+                              │
+                              ▼
+             uncertainty-aware 3D/4D Gaussian teacher
+             (per Gaussian: μ metric pos, Σ surface covariance, α occupancy conf,
+              s semantic distribution, v temporal velocity)
+                              │
+             ┌────────────────┴────────────────┐
+             ▼                                 ▼
+    continuous 3D query loss          render2d camera-consistency loss (aux)
+             └────────────────┬────────────────┘
+                              ▼
+              multi-camera temporal student  →  camera-only occupancy / detection / forecasting
+```
+
+**VGGT as a teacher *densifier* (the narrative flip).** VGGT failed as a *student* prior (§5 / the
+VGGT ablations: depth-prior null, features −33%) because it is **dense but scale-drifting**. That
+same property makes it valuable *offline, LiDAR-anchored*: LiDAR fixes metric scale + gives reliable
+surfaces; VGGT fills the space *between* LiDAR beams (range / thin structures); **keep only VGGT
+points that are multi-view-consistent AND close to a LiDAR point, inside the camera frustum**, each
+with a **confidence α from its LiDAR-agreement × VGGT-confidence** (never uniform weight). So VGGT is
+useless as an unanchored inference prior but fills the teacher's real weakness (LiDAR sparsity). Same
+model, opposite role — a defensible, non-obvious use.
+
+## 6c. Current status vs the target (the running gate is a *lower bound*)
+
+The Phase-1 code (`gaussian4d/`) implements a **minimal** Gaussian teacher; several pieces that
+*create* the Gaussian advantage are not in yet, so a *tie* in the current gate is **not** a clean
+no-go:
+
+| target component | current `gaussian_teacher.py` | status |
+|---|---|---|
+| ray-aware free/occupied/**unknown** | occupied only; rest = "free" (no ray-cast) | **TODO #1** |
+| Σ surface covariance | isotropic scalar σ (kNN spacing) | partial |
+| s semantic **distribution** | hard argmax (cache only stores argmax) | partial |
+| v temporal velocity (4D) | none (static) | Phase 3 |
+| continuous 3D **query** loss | voxel-CE only | TODO #3 |
+| render2d as student aux | not wired | TODO #3 |
+| VGGT densifier | none | TODO #4 |
+
+**Staged build (each step must improve the *student*, else stop):**
+1. **ray-aware free/occupied/unknown** — cheap, high value (real free-space supervision + stop
+   penalising unobserved voxels). Add to **both** teachers.
+2. **anisotropic Σ + FM semantic distribution** (needs the labelgen cache to also store per-class
+   confidence, not just argmax).
+3. **continuous 3D query loss**; re-wire render2d as the camera-consistency aux.
+4. **VGGT densifier** (LiDAR-anchored, frustum-limited, confidence-weighted).
+5. **temporal v → 4D forecasting** (Phase 3).
+
+**Reviewer-defense rule (applies throughout):** any improvement that is *not the Gaussian
+representation itself* (ray-free-space, VGGT densify, better semantics) must be applied to the
+**voxel baseline too**, so the Gaussian-vs-voxel gate stays a clean representation comparison.
+
 ## 6. Positioning
 
 Distinct from: GaussianOcc / GaussianFormer / GaussRender (Gaussian occ, but *not* an offline

@@ -20,8 +20,8 @@ FREE = 17
 
 
 def load_lidar_ego(nusc, token, sweeps=1):
-    """LiDAR point cloud in the **ego** frame (of the keyframe). Returns (N,3) xyz + (N,) range.
-    sweeps>1 aggregates temporally-nearby sweeps (denser geometry, the strong voxel-teacher baseline)."""
+    """LiDAR point cloud in the **ego** frame (of the keyframe). Returns (N,3) xyz, (N,) range, and
+    the sensor `origin` (ego frame, for ray-casting). sweeps>1 aggregates temporally-nearby sweeps."""
     from nuscenes.utils.data_classes import LidarPointCloud
     from pyquaternion import Quaternion
     sample = nusc.get("sample", token)
@@ -34,7 +34,8 @@ def load_lidar_ego(nusc, token, sweeps=1):
     pc.rotate(Quaternion(cs["rotation"]).rotation_matrix)      # sensor -> ego
     pc.translate(np.array(cs["translation"]))
     pts = pc.points[:3].T.astype(np.float32)
-    return pts, np.linalg.norm(pts, axis=1)
+    origin = np.array(cs["translation"], np.float32)           # LiDAR sensor position in ego
+    return pts, np.linalg.norm(pts, axis=1), origin
 
 
 def assign_semantics(nusc, token, points_ego, labelgen_cache):
@@ -66,9 +67,17 @@ def assign_semantics(nusc, token, points_ego, labelgen_cache):
     return labels
 
 
+def lidar_scene(nusc, token, labelgen_cache, sweeps=1):
+    """Everything the teachers need in one pass: ALL ego points + their labels + the sensor origin.
+    Occupancy comes from labelled non-free points; ray-cast free-space uses all points from origin.
+    Returns (points_all (M,3), labels_all (M,) int [-1 unassigned / 17 free / 0..16 class], origin (3,))."""
+    pts, _, origin = load_lidar_ego(nusc, token, sweeps)
+    lab = assign_semantics(nusc, token, pts, labelgen_cache)
+    return pts, lab, origin
+
+
 def lidar_points_and_labels(nusc, token, labelgen_cache, sweeps=1):
     """(N,3) ego points + (N,) Occ3D-class labels, keeping only camera-labelled non-free points."""
-    pts, _ = load_lidar_ego(nusc, token, sweeps)
-    lab = assign_semantics(nusc, token, pts, labelgen_cache)
+    pts, lab, _ = lidar_scene(nusc, token, labelgen_cache, sweeps)
     keep = (lab >= 0) & (lab != FREE)
     return pts[keep], lab[keep]

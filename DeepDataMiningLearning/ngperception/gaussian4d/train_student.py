@@ -78,13 +78,13 @@ def collate(b):
     return {k: torch.stack([x[k] for x in b]) for k in b[0]}
 
 
-def teacher_loss(occ, tsem, tweight, free_w=0.02, lovasz_w=0.1):
-    """Weighted CE to teacher semantics (occupied voxels use the teacher uncertainty weight; free
-    voxels a small constant) + Lovász on the occupied region. occ (B,18,X,Y,Z)."""
-    B, C = occ.shape[:2]
-    eff = torch.where(tsem == FREE, torch.full_like(tweight, free_w), tweight.clamp_min(1e-3))
+def teacher_loss(occ, tsem, tweight, lovasz_w=0.1):
+    """Weighted CE to teacher semantics, per-voxel-weighted by the teacher `weight` directly:
+    occupied = teacher confidence, ray-verified free = small constant (set in the teacher), unknown
+    = 0 (NOT supervised — the ray-aware advantage). + Lovász on the occupied region. occ (B,18,X,Y,Z)."""
+    C = occ.shape[1]
     ce = F.cross_entropy(occ, tsem, reduction="none")               # (B,X,Y,Z)
-    l = (ce * eff).sum() / eff.sum().clamp_min(1.0)
+    l = (ce * tweight).sum() / tweight.sum().clamp_min(1.0)
     if lovasz_w > 0:
         probs = occ.softmax(1).permute(0, 2, 3, 4, 1).reshape(-1, C)
         l = l + lovasz_w * lovasz_softmax_flat(probs, tsem.reshape(-1), ignore=FREE)

@@ -20,7 +20,8 @@ from __future__ import annotations
 import numpy as np
 
 from .base import TeacherTarget, voxel_indices, FREE, NUM_CLASSES
-from .semantics import lidar_points_and_labels
+from .semantics import lidar_scene
+from .raycast import free_space_mask
 from ...occupancy.geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
 
 # 3x3x3 voxel neighbourhood offsets — where each Gaussian deposits sub-voxel mass.
@@ -29,11 +30,11 @@ _OFFS = np.array([[a, b, c] for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1
 
 class GaussianTeacher:
     def __init__(self, nusc, labelgen_cache, sweeps=1, scale_k=1.0, mass_tau=1.0,
-                 range_full=25.0, range_far=55.0, min_conf=0.3):
+                 range_full=25.0, range_far=55.0, min_conf=0.3, free_w=0.02):
         self.nusc, self.cache, self.sweeps = nusc, labelgen_cache, sweeps
         self.scale_k = scale_k            # Gaussian sigma = scale_k * (nearest-neighbour spacing)
         self.mass_tau = mass_tau          # accumulated mass -> confidence saturation
-        self.range_full, self.range_far, self.min_conf = range_full, range_far, min_conf
+        self.range_full, self.range_far, self.min_conf, self.free_w = range_full, range_far, min_conf, free_w
 
     def _sigma(self, pts):
         """Per-point isotropic sigma from local spacing (sparse regions -> larger, fills more)."""
@@ -46,12 +47,16 @@ class GaussianTeacher:
         return np.clip(self.scale_k * nn, 0.5 * VOXEL_SIZE, 2.0 * VOXEL_SIZE).astype(np.float32)
 
     def gaussians(self, token):
-        """The raw Gaussian list (pos, sigma, class) — exposed for the 4D extension / query loss."""
-        pts, lab = lidar_points_and_labels(self.nusc, token, self.cache, self.sweeps)
-        return pts, (self._sigma(pts) if len(pts) else np.zeros(0, np.float32)), lab
+        """Raw Gaussian list of labelled surface points (pos, sigma, class) + all-points + origin.
+        Exposed for the 4D extension / continuous 3D query loss."""
+        pts_all, lab, origin = lidar_scene(self.nusc, token, self.cache, self.sweeps)
+        keep = (lab >= 0) & (lab != FREE)
+        opts, olab = pts_all[keep], lab[keep]
+        sig = self._sigma(opts) if len(opts) else np.zeros(0, np.float32)
+        return opts, sig, olab, pts_all, origin
 
     def __call__(self, token) -> TeacherTarget:
-        pts, sig, lab = self.gaussians(token)
+        pts, sig, lab, pts_all, origin = self.gaussians(token)
         gx, gy, gz = [int(v) for v in GRID_SIZE]
         cls_mass = np.zeros((gx * gy * gz, NUM_CLASSES - 1), np.float32)   # per-voxel per-class mass
         tot_mass = np.zeros(gx * gy * gz, np.float32)
@@ -81,4 +86,8 @@ class GaussianTeacher:
         rng = np.linalg.norm(centres_all[:, :2], axis=1)
         rdisc = np.clip(1.0 - (rng - self.range_full) / (self.range_far - self.range_full), self.min_conf, 1.0)
         weight = np.where(occ, np.clip(conf * rdisc, 0.0, 1.0), 0.0).astype(np.float32)
-        return TeacherTarget(sem.reshape(GRID_SIZE), weight.reshape(GRID_SIZE))
+        sem = sem.reshape(GRID_SIZE); weight = weight.reshape(GRID_SIZE)
+        # ray-verified free (weight free_w) vs unknown (weight 0)
+        free = free_space_mask(pts_all, origin) & (sem == FREE)
+        weight[free] = np.maximum(weight[free], self.free_w)
+        return TeacherTarget(sem, weight)
