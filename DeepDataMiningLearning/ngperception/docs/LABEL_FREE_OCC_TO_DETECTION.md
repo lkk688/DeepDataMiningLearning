@@ -120,9 +120,11 @@ python -m ...train_gsocc_det --eval --nusc <nuscenes> --bev-cache <cache> \
 
 ### Result
 
-Det head trains cleanly on the frozen GaussianOcc BEV (loss 7.8→2.5 → the label-free features are
-informative for detection). **Official mAP: _running — to be filled_** (det head + full-val cache
-completing; number vs the render2d / Occ3D-GT / scratch curves goes here).
+Det head trains cleanly on the frozen GaussianOcc BEV (head-only, 3.0 M params; loss **7.8→2.1**
+over 24 epochs → the label-free features are informative for detection). BEV features cached for
+4000 train + all 6019 val tokens; official DetectionEval running on full val. **Official mAP:
+_eval in progress — number to be filled_** (compare vs the render2d / Occ3D-GT / scratch curves at
+the 4k train budget).
 
 ## 4. Comparison + takeaway
 

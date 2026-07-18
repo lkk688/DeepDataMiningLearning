@@ -35,12 +35,13 @@ BOTTOMS = [-1.0] * 10
 class BevDetDataset(Dataset):
     """Cached GaussianOcc BEV (64,200,200) + our ego-frame det GT, keyed by token."""
 
-    def __init__(self, bev_cache, token_file, nusc, gts):
+    def __init__(self, bev_cache, token_file, nusc, gts, load_gt=True):
         self.cache = bev_cache
+        self.load_gt = load_gt
         toks = [t.strip() for t in open(token_file) if t.strip()]
         self.tokens = [t for t in toks if os.path.isfile(os.path.join(bev_cache, t + ".npy"))]
-        self._gt = NuScenesOccTrainDataset(gts, nusc, lidar_fusion=False, det_boxes=True,
-                                           det_class_map=NUSC_10CLASS, max_samples=1)
+        self._gt = (NuScenesOccTrainDataset(gts, nusc, lidar_fusion=False, det_boxes=True,
+                                            det_class_map=NUSC_10CLASS, max_samples=1) if load_gt else None)
 
     def __len__(self):
         return len(self.tokens)
@@ -48,12 +49,17 @@ class BevDetDataset(Dataset):
     def __getitem__(self, i):
         tok = self.tokens[i]
         bev = np.load(os.path.join(self.cache, tok + ".npy")).astype(np.float32)   # (64,200,200)=(C,X,Y)
-        return {"bev": torch.from_numpy(bev), "det_gt": self._gt._det_boxes(tok), "token": tok}
+        out = {"bev": torch.from_numpy(bev), "token": tok}
+        if self.load_gt:                                        # det GT only needed for training
+            out["det_gt"] = self._gt._det_boxes(tok)
+        return out
 
 
 def collate(b):
-    return {"bev": torch.stack([x["bev"] for x in b]),
-            "det_gt": [x["det_gt"] for x in b], "token": [x["token"] for x in b]}
+    out = {"bev": torch.stack([x["bev"] for x in b]), "token": [x["token"] for x in b]}
+    if "det_gt" in b[0]:
+        out["det_gt"] = [x["det_gt"] for x in b]
+    return out
 
 
 def build_head(dev):
@@ -65,22 +71,23 @@ def run_eval(args, dev):
     import json
     from nuscenes import NuScenes
     from .eval_det_ablation_official import ego_box_to_global
-    from ..detection.nuscenes_dataset import NUSC_10CLASS as _CM
-    names = list(_CM.keys())
+    from ..detection.eval_nuscenes_official import DET_NAMES
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
     head = build_head(dev)
     head.load_state_dict(torch.load(args.ckpt, map_location=dev)); head.eval()
-    ds = BevDetDataset(args.bev_cache, args.val_tokens, nusc, args.gts)
-    ld = DataLoader(ds, batch_size=4, num_workers=6, collate_fn=collate)
+    ds = BevDetDataset(args.bev_cache, args.val_tokens, nusc, args.gts, load_gt=False)
+    ld = DataLoader(ds, batch_size=8, num_workers=8, collate_fn=collate)
     results = {}
     with torch.no_grad():
         for bi, b in enumerate(ld):
             vox = b["bev"].to(dev).unsqueeze(-1)                     # (B,64,200,200,1)
-            out = head.predict(head(vox), score_thresh=args.score_thresh, nms_thresh=0.2)
-            for j, tok in enumerate(b["token"]):
-                boxes, scores, labels = out[j]
-                results[tok] = [ego_box_to_global(nusc, tok, boxes[k], scores[k], names[int(labels[k])])
-                                for k in range(len(boxes))]
+            dets = head.predict(head(vox), score_thresh=args.score_thresh, nms_thresh=0.2)
+            for det, tok in zip(dets, b["token"]):
+                boxes = det["boxes"].cpu().numpy(); scores = det["scores"].cpu().numpy()
+                labels = det["labels"].cpu().numpy()
+                order = np.argsort(-scores)[:500]
+                results[tok] = [ego_box_to_global(nusc, tok, boxes[k], scores[k], DET_NAMES[int(labels[k])])
+                                for k in order]
             if (bi + 1) % 50 == 0:
                 print(f"  eval {bi+1}/{len(ld)}", flush=True)
     res_path = os.path.join(args.out_dir, "results_nusc.json")
