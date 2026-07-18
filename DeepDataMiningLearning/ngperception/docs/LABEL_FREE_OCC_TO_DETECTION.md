@@ -121,19 +121,29 @@ python -m ...train_gsocc_det --eval --nusc <nuscenes> --bev-cache <cache> \
 ### Result
 
 Det head trains cleanly on the frozen GaussianOcc BEV (head-only, 3.0 M params; loss **7.8→2.1**
-over 24 epochs → the label-free features are informative for detection). BEV features cached for
-4000 train + all 6019 val tokens; official DetectionEval running on full val. **Official mAP:
-_eval in progress — number to be filled_** (compare vs the render2d / Occ3D-GT / scratch curves at
-the 4k train budget).
+over 24 epochs, 4000 train frames). Official nuScenes DetectionEval on the full 6019-frame val:
+
+**GaussianOcc-backbone detector: mAP = 0.021, NDS = 0.069** (car 0.078, pedestrian 0.055,
+traffic_cone 0.032, bus 0.024; the rest ≈ 0).
+
+**Read — weak, and NOT comparable to the curves above.** Two caveats dominate: (1) GaussianOcc is a
+**camera-only** self-supervised model, so this is a *camera-only* detector, whereas the
+render2d/Occ3D-GT/scratch curves are **LiDAR-fusion** (where LiDAR does most of the work — camera-only
+3D detection is inherently far weaker, ~0.0x mAP). (2) The backbone is **frozen** (only the head
+trains). The number is **non-zero** (car 0.078, pedestrian 0.055), so the label-free features do
+carry a weak detection signal — but a fair verdict needs a **camera-only from-scratch baseline**
+(not yet run). As-is, this external point is *suggestive, not conclusive*: a published label-free
+camera backbone yields a trainable-but-weak detector. Adding LiDAR to the head, or an apples-to-apples
+camera-only scratch control, is the follow-up.
 
 ## 4. Comparison + takeaway
 
 Two independent tests of *"free occupancy pretext → label-efficient detection"*:
 
-| pretext | labels used | arch vs ceiling | headline |
+| pretext | labels used | modality / arch | headline |
 |---|---|---|---|
-| **render2d** | none (frozen-FM 2D pseudo-labels + LiDAR) | apples-to-apples (our LSS) | partial transfer: +35 % mAP / ped 2.2× at 4k; washes at 2k/8k |
-| **GaussianOcc** | none (published self-sup backbone) | different arch (external) | _pending eval_ |
+| **render2d** | none (frozen-FM 2D pseudo-labels + LiDAR) | fusion, our LSS (apples-to-apples) | partial transfer: **+35 % mAP / ped 2.2× at 4k**; washes at 2k/8k |
+| **GaussianOcc** | none (published self-sup backbone) | **camera-only**, external arch, frozen | trainable but weak (mAP 0.021); not comparable to the fusion curves — needs a camera-only control |
 
 The honest story so far: a **label-free occupancy pretext does transfer to detection** (rare-object,
 mid-budget), **partially recovering** the expensive-label benefit — you avoid *both* expensive
