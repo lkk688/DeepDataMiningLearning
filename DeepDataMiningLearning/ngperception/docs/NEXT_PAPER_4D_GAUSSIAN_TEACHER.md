@@ -167,8 +167,10 @@ absolute is low because the teacher is noisy + camera-only, Occ3D-GT camera ceil
 |---|---|---|---|---|
 | **minimal** (isotropic σ, hard argmax sem, no ray-free, voxel-CE) | voxel-10sweep | 0.0913 | 0.2938 | 0.0467 |
 | | **gaussian-1sweep** | **0.0947** | 0.2869 | **0.0486** |
-| **#1 ray-aware** (free/occupied/**unknown**) | voxel-10sweep | **0.0920** | **0.3597** | **0.0335** |
-| | gaussian-1sweep | 0.0852 | 0.2799 | 0.0305 |
+| **#1 ray-aware** (free/occupied/**unknown**) | voxel-10sweep | 0.0920 | 0.3597 | 0.0335 |
+| | gaussian isotropic (+ origin bug) | 0.0852 | 0.2799 | 0.0305 |
+| **#2 anisotropic Σ** (+ origin fix) | voxel-10sweep | 0.0920 | 0.3597 | 0.0335 |
+| | **gaussian anisotropic** | **0.1009** | **0.3696** | 0.0336 |
 
 **The ray-aware upgrade FLIPPED the gate** — voxel10 now wins all three metrics, reversing the
 minimal Gaussian edge. **Mechanism (diagnostic):** the isotropic Gaussian **over-fills** (30.9k
@@ -178,12 +180,17 @@ a recall advantage; once ray-casting supplies **verified free space**, the over-
 (0.287→0.280). So the minimal Gaussian "win" was an artifact of not penalizing over-fill. (Tail-IoU
 also dropped for both — the `free_w` balance needs tuning.)
 
-**Verdict:** the current **isotropic** Gaussian teacher does *not* beat the voxel teacher in a fair
-comparison — which points precisely at the untested core of the "less-quantization" claim: an
-**anisotropic, surface-aligned Σ** (a flat disk on a surface) would not bleed perpendicular into
-free space the way an isotropic blob does. That is the make-or-break next test (§6c step 2). Per the
-gate discipline: if a surface-aligned Gaussian does not beat voxel10 on tail-IoU, **do not proceed to
-4D** — the story is plain LiDAR distillation.
+**#2 result — anisotropic Σ + origin fix = a qualified PASS.** The two fixes (isotropic over-fill →
+surface-aligned flat-disk Σ; free-space cast from the LiDAR sensor, not the grid corner) flipped the
+gate back to Gaussian — and *this time it is not an over-fill artifact*: the anisotropic Gaussian
+(occupied 30.9k→23.4k, no over-fill) **beats voxel10 clearly on mIoU (0.1009 vs 0.0920, +9.7%) and
+geo-IoU (+2.8%)** — the best Gaussian yet — while **tying on tail-IoU** (winning 4/6 tail classes:
+pedestrian/cone/motorcycle/barrier; losing bicycle). So the Gaussian representation now has *real*
+value overall, but the *decisive* tail win the gate wanted is not there yet. The tail classes are
+**semantic**, and our hard-argmax labelgen labels are the likely bottleneck → the next lever
+(§6c step 2b, **FM semantic distributions**) directly targets the tie. Verdict: **proceed, cautiously**
+— continue the staged plan (semantic distributions next) rather than declaring a decisive win or
+abandoning; the go/no-go for 4D re-checks after the tail is addressed.
 
 ## 6. Positioning
 
