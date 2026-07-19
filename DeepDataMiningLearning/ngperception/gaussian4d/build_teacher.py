@@ -52,9 +52,12 @@ def main():
     ev = OccupancyEvaluator() if args.stats else None
     gt_by_tok = {tok: (sc, tok, lp) for sc, tok, lp in occ.items}
     for i, (sc, tok) in enumerate(items):
+        outp = os.path.join(args.out_dir, tok + ".npz") if args.out_dir else None
+        if outp and not args.stats and os.path.isfile(outp):
+            continue                                            # resumable: skip already-built targets
         tgt = teacher(tok)
         if args.out_dir:
-            tgt.save(os.path.join(args.out_dir, tok + ".npz"))
+            tgt.save(outp)
         if args.stats:
             g = np.load(gt_by_tok[tok][2])
             ev.add(tgt.semantics, g["semantics"].astype(np.uint8), g["mask_camera"].astype(bool))
