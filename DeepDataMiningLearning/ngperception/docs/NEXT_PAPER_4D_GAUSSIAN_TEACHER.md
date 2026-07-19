@@ -157,6 +157,34 @@ no-go:
 representation itself* (ray-free-space, VGGT densify, better semantics) must be applied to the
 **voxel baseline too**, so the Gaussian-vs-voxel gate stays a clean representation comparison.
 
+## 6d. Phase-1 gate results (so far)
+
+Camera-only student on Occ3D-nuScenes val; the *only* difference between arms is the teacher.
+2044-frame label-free pretraining (mixed scenes — the *delta* between teachers is the clean signal;
+absolute is low because the teacher is noisy + camera-only, Occ3D-GT camera ceiling ≈ 0.30).
+
+| version | teacher | mIoU | geo-IoU | tail-IoU |
+|---|---|---|---|---|
+| **minimal** (isotropic σ, hard argmax sem, no ray-free, voxel-CE) | voxel-10sweep | 0.0913 | 0.2938 | 0.0467 |
+| | **gaussian-1sweep** | **0.0947** | 0.2869 | **0.0486** |
+| **#1 ray-aware** (free/occupied/**unknown**) | voxel-10sweep | **0.0920** | **0.3597** | **0.0335** |
+| | gaussian-1sweep | 0.0852 | 0.2799 | 0.0305 |
+
+**The ray-aware upgrade FLIPPED the gate** — voxel10 now wins all three metrics, reversing the
+minimal Gaussian edge. **Mechanism (diagnostic):** the isotropic Gaussian **over-fills** (30.9k
+occupied voxels vs voxel's 12.1k). With no free-space penalty (minimal) that over-fill *looked* like
+a recall advantage; once ray-casting supplies **verified free space**, the over-filled voxels
+**conflict** with it — voxel10's geo-IoU jumps 0.294→0.360 while Gaussian's stays flat
+(0.287→0.280). So the minimal Gaussian "win" was an artifact of not penalizing over-fill. (Tail-IoU
+also dropped for both — the `free_w` balance needs tuning.)
+
+**Verdict:** the current **isotropic** Gaussian teacher does *not* beat the voxel teacher in a fair
+comparison — which points precisely at the untested core of the "less-quantization" claim: an
+**anisotropic, surface-aligned Σ** (a flat disk on a surface) would not bleed perpendicular into
+free space the way an isotropic blob does. That is the make-or-break next test (§6c step 2). Per the
+gate discipline: if a surface-aligned Gaussian does not beat voxel10 on tail-IoU, **do not proceed to
+4D** — the story is plain LiDAR distillation.
+
 ## 6. Positioning
 
 Distinct from: GaussianOcc / GaussianFormer / GaussRender (Gaussian occ, but *not* an offline
