@@ -140,6 +140,39 @@ class GroundedLabeler:
             seg_masks.append((mask, cls))
         return sem, seg_masks
 
+    # ----- soft semantic (per-pixel class DISTRIBUTION, for the Gaussian-teacher soft-semantics 2x2) -----
+    def _occ_distribution(self, cs_prob):
+        """Cityscapes softmax (19,H,W) -> Occ3D class distribution (18,H,W) via the taxonomy map
+        (mass of every Cityscapes class is added to its Occ3D target; dropped/sky -> free). Preserves
+        confusion structure (e.g. car/truck, bicycle/motorcycle) that a top-1 label throws away."""
+        C, H, W = cs_prob.shape
+        dist = np.zeros((len(self.tax.names), H, W), np.float32)
+        for cs_id in range(C):
+            oid = int(self.tax.cs_to_id[cs_id])
+            dist[oid if oid >= 0 else self.tax.sky_id] += cs_prob[cs_id]
+        return dist
+
+    def semantic_soft(self, pil, topk=3):
+        """PIL -> per-pixel top-k Occ3D class distribution: idx (H,W,K) uint8 + prob (H,W,K) f16.
+        SegFormer gives the stuff distribution; each Grounded-SAM thing BLENDS its class in with the
+        detection score as confidence (thing gets `score` mass, the rest keeps the FM distribution),
+        so the soft label carries both detection confidence and the underlying confusion."""
+        import torch, torch.nn.functional as F
+        W, H = pil.size
+        with torch.no_grad():
+            logits = self.seg(pixel_values=self.seg_processor_norm(pil).to(self.dev)).logits
+            logits = F.interpolate(logits, size=(H, W), mode="bilinear", align_corners=False)
+            cs_prob = logits.softmax(1)[0].cpu().numpy()          # (19,H,W)
+        dist = self._occ_distribution(cs_prob)                    # (18,H,W)
+        for mask, cls, score in sorted(self._grounded_sam(pil), key=lambda t: t[2]):
+            d = dist[:, mask] * (1.0 - score)
+            d[cls] += score
+            dist[:, mask] = d
+        dist /= dist.sum(0, keepdims=True).clip(1e-6)
+        idx = np.argsort(-dist, axis=0)[:topk]                    # (K,H,W)
+        pk = np.take_along_axis(dist, idx, 0)
+        return idx.transpose(1, 2, 0).astype(np.uint8), pk.transpose(1, 2, 0).astype(np.float16)
+
     # ----- depth -----
     def _depth_anything(self, pil):
         import torch, torch.nn.functional as F
