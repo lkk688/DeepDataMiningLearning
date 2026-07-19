@@ -67,6 +67,40 @@ def assign_semantics(nusc, token, points_ego, labelgen_cache):
     return labels
 
 
+def assign_semantics_soft(nusc, token, points_ego, soft_cache):
+    """Per-point top-K Occ3D class DISTRIBUTION by projecting into the cached soft labelgen semantics.
+    Returns (N,K) class idx + (N,K) prob; idx[:,0] = -1 where the point hits no camera. (Same
+    projection as `assign_semantics`; first camera the point lands in wins.)"""
+    from pyquaternion import Quaternion
+    npz = np.load(os.path.join(soft_cache, token + ".npz"))
+    sidx, sprob = npz["idx"], npz["prob"]                     # (6,H,W,K)
+    H, W = SEM_HW; K = sidx.shape[-1]
+    sample = nusc.get("sample", token)
+    oidx = np.full((len(points_ego), K), -1, np.int64)
+    oprob = np.zeros((len(points_ego), K), np.float32)
+    for ci, cam in enumerate(LABELGEN_CAMS):
+        sd = nusc.get("sample_data", sample["data"][cam])
+        cs = nusc.get("calibrated_sensor", sd["calibrated_sensor_token"])
+        R = Quaternion(cs["rotation"]).rotation_matrix.astype(np.float32); t = np.array(cs["translation"], np.float32)
+        Km = np.array(cs["camera_intrinsic"], np.float32).copy(); Km[0] *= W / sd["width"]; Km[1] *= H / sd["height"]
+        cam_pts = (points_ego - t) @ R; z = cam_pts[:, 2]
+        uvw = cam_pts @ Km.T
+        u = np.round(uvw[:, 0] / np.clip(z, 1e-3, None)).astype(np.int64)
+        v = np.round(uvw[:, 1] / np.clip(z, 1e-3, None)).astype(np.int64)
+        vis = (z > 0.5) & (u >= 0) & (u < W) & (v >= 0) & (v < H) & (oidx[:, 0] < 0)
+        w = np.where(vis)[0]
+        oidx[w] = sidx[ci][v[vis], u[vis]]
+        oprob[w] = sprob[ci][v[vis], u[vis]]
+    return oidx, oprob.astype(np.float32)
+
+
+def lidar_scene_soft(nusc, token, soft_cache, sweeps=1):
+    """ALL ego points + per-point top-K soft distribution + sensor origin (for the soft teachers)."""
+    pts, _, origin = load_lidar_ego(nusc, token, sweeps)
+    sidx, sprob = assign_semantics_soft(nusc, token, pts, soft_cache)
+    return pts, sidx, sprob, origin
+
+
 def lidar_scene(nusc, token, labelgen_cache, sweeps=1):
     """Everything the teachers need in one pass: ALL ego points + their labels + the sensor origin.
     Occupancy comes from labelled non-free points; ray-cast free-space uses all points from origin.
