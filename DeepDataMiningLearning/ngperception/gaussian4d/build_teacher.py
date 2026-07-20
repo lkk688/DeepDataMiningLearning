@@ -28,6 +28,7 @@ def main():
     ap = argparse.ArgumentParser(description="Build/cache label-free occupancy teacher targets.")
     ap.add_argument("--nusc", required=True); ap.add_argument("--gts", required=True)
     ap.add_argument("--labelgen-cache", required=True)
+    ap.add_argument("--soft-cache", default=None, help="set = soft top-K distribution teacher (2x2 soft arm)")
     ap.add_argument("--teacher", required=True, choices=["voxel1", "voxel10", "gaussian", "gaussian10"])
     ap.add_argument("--out-dir", default=None, help="cache <token>.npz targets here (skip = stats only)")
     ap.add_argument("--n", type=int, default=50)
@@ -36,11 +37,12 @@ def main():
 
     from nuscenes import NuScenes
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
-    teacher = build_teacher(args.teacher, nusc, args.labelgen_cache)
+    teacher = build_teacher(args.teacher, nusc, args.labelgen_cache, soft_cache=args.soft_cache)
     occ = Occ3DNuScenesDataset(args.gts, scenes=None)
     # only tokens that have a labelgen cache
     items = [(sc, tok) for sc, tok, _ in occ.items
-             if os.path.isfile(os.path.join(args.labelgen_cache, tok + ".npz"))][: args.n]
+             if os.path.isfile(os.path.join(args.labelgen_cache, tok + ".npz"))
+             and (args.soft_cache is None or os.path.isfile(os.path.join(args.soft_cache, tok + ".npz")))][: args.n]
     if args.out_dir:
         os.makedirs(args.out_dir, exist_ok=True)
     print(f"[teacher] {args.teacher} on {len(items)} frames"
@@ -50,9 +52,12 @@ def main():
     ev = OccupancyEvaluator() if args.stats else None
     gt_by_tok = {tok: (sc, tok, lp) for sc, tok, lp in occ.items}
     for i, (sc, tok) in enumerate(items):
+        outp = os.path.join(args.out_dir, tok + ".npz") if args.out_dir else None
+        if outp and not args.stats and os.path.isfile(outp):
+            continue                                            # resumable: skip already-built targets
         tgt = teacher(tok)
         if args.out_dir:
-            tgt.save(os.path.join(args.out_dir, tok + ".npz"))
+            tgt.save(outp)
         if args.stats:
             g = np.load(gt_by_tok[tok][2])
             ev.add(tgt.semantics, g["semantics"].astype(np.uint8), g["mask_camera"].astype(bool))

@@ -34,8 +34,10 @@ class TeacherTarget:
                 occupied voxels; the Gaussian teacher fills this with a soft, density/range-aware
                 confidence so the student is down-weighted where the teacher is unsure.
     """
-    semantics: np.ndarray
-    weight: np.ndarray
+    semantics: np.ndarray                 # (200,200,16) argmax class (17=free) — eval + hard loss
+    weight: np.ndarray                    # (200,200,16) per-voxel confidence (uncertainty)
+    soft_idx: np.ndarray = None           # (200,200,16,K) top-K class idx  (soft teachers only)
+    soft_prob: np.ndarray = None          # (200,200,16,K) top-K prob
 
     def __post_init__(self):
         assert self.semantics.shape == tuple(GRID_SIZE), self.semantics.shape
@@ -46,13 +48,17 @@ class TeacherTarget:
         return int((self.semantics != FREE).sum())
 
     def save(self, path):
-        np.savez_compressed(path, semantics=self.semantics.astype(np.uint8),
-                            weight=self.weight.astype(np.float16))
+        d = dict(semantics=self.semantics.astype(np.uint8), weight=self.weight.astype(np.float16))
+        if self.soft_idx is not None:
+            d["soft_idx"] = self.soft_idx.astype(np.uint8); d["soft_prob"] = self.soft_prob.astype(np.float16)
+        np.savez_compressed(path, **d)
 
     @staticmethod
     def load(path) -> "TeacherTarget":
         d = np.load(path)
-        return TeacherTarget(d["semantics"].astype(np.uint8), d["weight"].astype(np.float32))
+        return TeacherTarget(d["semantics"].astype(np.uint8), d["weight"].astype(np.float32),
+                             d["soft_idx"].astype(np.int64) if "soft_idx" in d else None,
+                             d["soft_prob"].astype(np.float32) if "soft_prob" in d else None)
 
 
 def voxel_indices(points_ego: np.ndarray):
@@ -60,6 +66,19 @@ def voxel_indices(points_ego: np.ndarray):
     idx = np.floor((points_ego - np.asarray(PC_RANGE[:3])) / VOXEL_SIZE).astype(np.int64)
     m = np.all((idx >= 0) & (idx < np.asarray(GRID_SIZE)), axis=1)
     return idx, m
+
+
+def topk_from_mass(cls_mass, occ_flat, K=3):
+    """Per-voxel accumulated per-class mass (V,17) -> top-K class idx (V,K) + normalised prob (V,K),
+    filled only on occupied voxels. Used by the soft teachers to emit a distribution target."""
+    V = cls_mass.shape[0]
+    idx = np.zeros((V, K), np.uint8); prob = np.zeros((V, K), np.float32)
+    m = cls_mass[occ_flat]                                       # (n_occ, 17)
+    order = np.argsort(-m, axis=1)[:, :K]                        # top-K classes
+    p = np.take_along_axis(m, order, 1)
+    p = p / p.sum(1, keepdims=True).clip(1e-6)
+    idx[occ_flat] = order.astype(np.uint8); prob[occ_flat] = p
+    return idx, prob
 
 
 def voxel_centers():
