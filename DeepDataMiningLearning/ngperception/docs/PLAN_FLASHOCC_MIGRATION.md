@@ -55,3 +55,24 @@ Reuse the voxel-soft teacher to generate **temporal** occupied/free/semantic dis
 future occupancy with an existing forecasting architecture (**OccProphet / OPUS-V2 / OccWorld**).
 Research question = **forecasting *pretraining* without human 3D/4D labels** — not another generic
 world model.
+
+## Env unblock (2026-07-20): bev_pool_v2 builds on H100 — port route is GO
+
+Official FlashOcc torch1.10/cu111 is blocked on H100, but the only hard native dep (`bev_pool_v2`
+CUDA op) **compiles and loads on H100** (sm_90) with the modern stack + an isolated CUDA toolkit:
+
+- torch 2.9+cu126 (py310); no system nvcc, so installed an **isolated CUDA 12.6 toolkit**:
+  `conda create -p /data/rnd-liu/cudatk -c nvidia cuda-toolkit=12.6` (does NOT touch py310's torch).
+- conda's `targets/x86_64-linux/` layout ≠ what torch's cpp_extension expects, so a **merged
+  CUDA_HOME** (`/data/rnd-liu/cuda_home2`) via symlinks: `bin→cudatk/bin`,
+  `include→cudatk/targets/x86_64-linux/include`, `lib64→cudatk/lib`, `nvvm→cudatk/nvvm`.
+- Build env: `CUDA_HOME=/data/rnd-liu/cuda_home2`, prepend `$CUDA_HOME/bin` to PATH,
+  `$CUDA_HOME/lib64` to LD_LIBRARY_PATH, `TORCH_CUDA_ARCH_LIST=9.0`.
+- Then `torch.utils.cpp_extension.load("bev_pool_v2_ext", ["src/bev_pool.cpp","src/bev_pool_cuda.cu"])`
+  from `Others/FlashOCC/projects/mmdet3d_plugin/ops/bev_pool_v2/` → **COMPILE_OK**, extension loads &
+  its forward is callable on the H100.
+
+⟹ The FlashOcc port is now a **pure-torch** job (strip mmcv `ConvModule`/`BaseModule`/`force_fp32` +
+registry decorators from the ~1289-line 3-file source; R50 from torchvision), reusing this compiled
+`bev_pool_v2`. Next: port the 3 modules → load the 562-param checkpoint (near-1:1 key match) →
+reproduce ~37.84 mIoU on Occ3D val (the de-risking milestone).
