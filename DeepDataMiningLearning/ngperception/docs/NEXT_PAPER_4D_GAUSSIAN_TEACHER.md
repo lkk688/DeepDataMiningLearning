@@ -199,3 +199,42 @@ uncertainty-aware teacher distilled to a camera-only student for downstream tran
 (VGGT backbones), Sensor2Sensor (generative sensor synthesis), plain privileged distillation
 (no Gaussian / no 4D / no transfer study). The defensible combination is **{4D Gaussian teacher +
 uncertainty + camera-only student + label-efficient downstream transfer}**, each shown empirically.
+
+---
+
+## VERDICT (2026-07-20): GAUSSIAN STOPPED — fair 2×2 + factorized rescue
+
+The Phase-1 anisotropic result (gaussian +9.7% mIoU vs voxel) did **not** survive a fair test.
+
+**Fair 2×2** {voxel10, aniso-gaussian} × {hard, soft-FM-distribution}, camera-only student, Occ3D
+val, identical 2044 tokens:
+
+| teacher  | hard (argmax)            | soft (top-K FM dist)       |
+|----------|--------------------------|----------------------------|
+| voxel10  | .0920 / .360 / .0335     | **.1040 / .396 / .0367** (best) |
+| gaussian | .1009 / .370 / .0336     | .0997 / .320 / .0343       |
+
+(mIoU / geo-IoU / tail-IoU). Soft semantics helps **voxel** a lot (+13% mIoU) but **hurts gaussian
+geometry** (.370→.320).
+
+**Audit (`audit_soft.py`) → the collapse is implementation coupling, not physics:** hard-vs-soft
+gaussian occupancy masks differ by 11k/5k/6k voxels (occupancy was derived from the semantic
+non-free cut), and the old soft loss down-weighted the *whole* occupied-voxel loss by `(1−entropy)`,
+so gaussian's 5³ spread (higher entropy) leaked uncertainty into geometry and was penalized more.
+
+**Factorized rescue** (`teacher_loss_factorized`: independent binary occ/free geometry loss +
+17-way conditional-on-occupied soft-CE; uncertainty modulates **only** semantics; no Lovász; both
+arms identical): voxel-fac **.0956 / .3917 / .0308** vs gaussian-fac **.0964 / .3554 / .0276**.
+The fix *did* recover gaussian geo (.320→.355) — confirming the coupling — but it still lands
+**below voxel**, ties on mIoU (noise), and loses geo+tail. **Pre-registered stop criterion (gaussian
+must exceed voxel-soft mIoU .1040, geo ≥ voxel-fac, tail not worse) FAILED on all three.**
+
+**Conclusion:** continuous Gaussian occupancy earns no advantage once the occupancy/semantic
+coupling is removed; the +9.7% was an artifact. **Stop continuous-query / VGGT-densifier / 4D.**
+
+**Pivot (Paper):** (1) soft-FM semantic distillation on a simple **voxel** teacher, label-free,
++13% mIoU (.092→.104); (2) this clean **negative** result on Gaussian, with the audit + factorized
+loss as the mechanism; (3) label-free **occ→detection transfer** works — voxel-soft encoder → center
+head, official camera-only **NDS 0.206 / mAP 0.205**. Next: close the causal chain (det transfer
+from-scratch control + ≥1 other teacher, identical recipe) to show better-occ → better-det.
+Scripts: `gaussian4d/{run_2x2.sh, audit_soft.py, run_rescue.sh, det_transfer.sh}`.
