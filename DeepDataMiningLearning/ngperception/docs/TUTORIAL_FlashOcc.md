@@ -115,11 +115,27 @@ Attach mmdet3d **CenterHead** to the FlashOcc BEV feature; **low-label** transfe
 from-scratch control vs voxel-soft-pretrained; ≥3 seeds; fp32 — amp corrupts BN → eval 0.000). Closes
 the causal chain: better label-free occ pretraining → better low-label detection.
 
+## Results (label-free, Occ3D val, camera-only)
+
+Same voxel-soft teacher + same 2044 frames as the LSS backbone set #1 — apples-to-apples across backbones:
+
+| model (label-free)              | mIoU   | geo-IoU | tail-IoU |
+|---------------------------------|--------|---------|----------|
+| LSS voxel-soft (backbone #1)    | 0.1040 | 0.396   | 0.0367   |
+| **FlashOcc-R50 voxel-soft**     | 0.0926 | **0.4367** | 0.0223 |
+| FlashOcc-R50 supervised (ceiling) | 0.3195 | —     | —        |
+
+External validation: the label-free teacher transfers to a different backbone (BEVDet/LSS+R50) at
+comparable mIoU and **better geometry** (explicit depth lift). Label-free gap to ceiling (~3.4×) is
+expected — this run = 2044 frames, no depth supervision, single-frame, no aug. Levers to close it:
+full teacher cache, LiDAR-depth supervision on the lift, image aug, 4D-stereo.
+
 ## Status
 
 - [x] FlashOcc cloned, R50-4D-stereo checkpoint downloaded + mapped (562 params).
 - [x] `bev_pool_v2` CUDA op builds + loads on H100 (isolated cu126 toolkit).
-- [ ] Single-frame `BEVDetOCC-R50` port + smoke test (in progress).
-- [ ] Label-free training from voxel-soft teacher (start here).
+- [x] Single-frame `BEVDetOCC-R50` port + smoke test (forward+backward OK).
+- [x] Label-free training from voxel-soft teacher → mIoU 0.0926 / geo 0.4367 (24 ep, 2044 frames).
+- [ ] Scale label-free run: full teacher cache + LiDAR-depth supervision on the lift + aug.
 - [ ] R50-4D-stereo port + checkpoint remap → reproduce 37.84 (ceiling).
 - [ ] Low-label CenterHead detection transfer.
