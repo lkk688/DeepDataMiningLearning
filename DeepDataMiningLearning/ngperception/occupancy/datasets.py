@@ -42,7 +42,7 @@ class Occ3DNuScenesDataset:
     """
 
     def __init__(self, gts_root: str, scenes: Optional[List[str]] = None,
-                 max_samples: Optional[int] = None, stride: int = 1):
+                 max_samples: Optional[int] = None, stride: int = 1, subset_seed: Optional[int] = None):
         self.gts_root = gts_root
         items = []
         scene_dirs = sorted(os.listdir(gts_root)) if scenes is None else scenes
@@ -56,6 +56,9 @@ class Occ3DNuScenesDataset:
                     items.append((sc, tok, lp))
         items = items[::stride]
         if max_samples:
+            if subset_seed is not None:          # random label-budget subset (label-efficiency seeds)
+                import random as _r
+                items = list(items); _r.Random(subset_seed).shuffle(items)
             items = items[:max_samples]
         self.items = items
 

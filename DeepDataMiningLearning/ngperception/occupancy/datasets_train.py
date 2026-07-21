@@ -42,7 +42,7 @@ class NuScenesOccTrainDataset(Dataset):
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
                  depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None,
                  lidar_fusion: bool = False, det_boxes: bool = False, det_class_map=None,
-                 vggt_depth_cache: str = None, vggt_feat_cache: str = None):
+                 vggt_depth_cache: str = None, vggt_feat_cache: str = None, subset_seed=None):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
@@ -50,7 +50,7 @@ class NuScenesOccTrainDataset(Dataset):
         # None -> car-only (label 0, back-compat). A {category_prefix: idx} map -> multi-class.
         self.det_class_map = det_class_map
         self.occ = Occ3DNuScenesDataset(gts_root, scenes=scenes,
-                                        max_samples=max_samples, stride=stride)
+                                        max_samples=max_samples, stride=stride, subset_seed=subset_seed)
         self.nusc = nusc
         self.H, self.W = image_hw
         self.fH, self.fW = self.H // downsample, self.W // downsample

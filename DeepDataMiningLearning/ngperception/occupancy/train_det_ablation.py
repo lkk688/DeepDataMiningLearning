@@ -18,6 +18,7 @@ Boxes are in the **ego** frame (the occ grid); eval to official nuScenes metrics
 from __future__ import annotations
 import argparse
 import os
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -49,6 +50,7 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-3); ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--cosine", action="store_true"); ap.add_argument("--amp", action="store_true")
     ap.add_argument("--out-dir", required=True); ap.add_argument("--device", default="cuda")
+    ap.add_argument("--seed", type=int, default=None, help="seed init + the random label-budget subset")
     ap.add_argument("--smoke", action="store_true")
     args = ap.parse_args()
     dev = args.device
@@ -80,8 +82,13 @@ def main():
     val_scenes = sorted(create_splits_scenes()["val"])
     ihw, ds = model.image_hw, model.downsample
     dkw = dict(image_hw=ihw, downsample=ds, lidar_fusion=True, det_boxes=True, det_class_map=NUSC_10CLASS)
+    if args.seed is not None:
+        import random as _r
+        _r.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
     n = 2 if args.smoke else args.max_samples
-    train_ds = NuScenesOccTrainDataset(args.gts, nusc, scenes=train_scenes, max_samples=n, **dkw)
+    train_ds = NuScenesOccTrainDataset(args.gts, nusc, scenes=train_scenes, max_samples=n,
+                                       subset_seed=args.seed, **dkw)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, scenes=val_scenes, max_samples=args.val_samples, **dkw)
     train_ld = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_mt,
                           num_workers=args.num_workers, drop_last=True)
