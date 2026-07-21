@@ -721,6 +721,12 @@ class FlashOccBEVStereo4D(nn.Module):
         occ_pred = occ_pred.permute(0, 4, 1, 2, 3).contiguous()  # (B, ncls, Dx, Dy, Dz)
         return occ_pred
 
+    def bev_feature(self, img_inputs):
+        """The (B, 256, Dx, Dy) BEV feature fed to the occ head — the shared representation for
+        multi-task heads (detection, world-model) on top of the strong occupancy backbone."""
+        img_feats, _ = self.extract_img_feat(img_inputs)
+        return img_feats[0]                       # (B, 256, 200, 200)
+
     # ------------------------------------------------------------------ ckpt loader
     @classmethod
     def from_official_checkpoint(cls, ckpt_path=None, map_location='cpu',
