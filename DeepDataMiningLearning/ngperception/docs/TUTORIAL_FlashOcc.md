@@ -123,7 +123,8 @@ Same voxel-soft teacher + same 2044 frames as the LSS backbone set #1 — apples
 |---------------------------------|--------|---------|----------|
 | LSS voxel-soft (backbone #1)    | 0.1040 | 0.396   | 0.0367   |
 | **FlashOcc-R50 voxel-soft**     | 0.0926 | **0.4367** | 0.0223 |
-| FlashOcc-R50 supervised (ceiling) | 0.3195 | —     | —        |
+| FlashOcc-R50 supervised (single-frame ceiling) | 0.3195 | —     | —        |
+| FlashOcc-R50-**4D-stereo** supervised (ceiling, in-codebase) | **0.3809** | 0.706 | 0.278 |
 
 External validation: the label-free teacher transfers to a different backbone (BEVDet/LSS+R50) at
 comparable mIoU and **better geometry** (explicit depth lift). Label-free gap to ceiling (~3.4×) is
@@ -137,5 +138,5 @@ full teacher cache, LiDAR-depth supervision on the lift, image aug, 4D-stereo.
 - [x] Single-frame `BEVDetOCC-R50` port + smoke test (forward+backward OK).
 - [x] Label-free training from voxel-soft teacher → mIoU 0.0926 / geo 0.4367 (24 ep, 2044 frames).
 - [ ] Scale label-free run: full teacher cache + LiDAR-depth supervision on the lift + aug.
-- [ ] R50-4D-stereo port + checkpoint remap → reproduce 37.84 (ceiling).
+- [x] R50-4D-stereo port + checkpoint remap → **reproduced: full-val mIoU 0.3809 (published 0.3784), strict-load 0/0**.
 - [ ] Low-label CenterHead detection transfer.
