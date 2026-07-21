@@ -55,12 +55,17 @@ def collate(batch):
 
 
 class FlashOccDet(nn.Module):
-    """Frozen BEVStereo4D backbone -> BEV feat (B,256,200,200) -> VoxelCenterHead (10-class)."""
-    def __init__(self):
+    """Frozen BEVStereo4D backbone -> BEV feat (B,256,200,200) -> VoxelCenterHead (10-class).
+    random_backbone=True keeps the backbone RANDOM-init (no occ pretraining) = the linear-probe
+    control: how much of the detection signal is the OCC representation vs a random BEV projection."""
+    def __init__(self, random_backbone=False):
         super().__init__()
         from .model_stereo import FlashOccBEVStereo4D
-        self.backbone, miss, unexp = FlashOccBEVStereo4D.from_official_checkpoint()
-        assert len(miss) == 0 and len(unexp) == 0, (len(miss), len(unexp))
+        if random_backbone:
+            self.backbone = FlashOccBEVStereo4D(pretrained_img=False)   # random (control)
+        else:
+            self.backbone, miss, unexp = FlashOccBEVStereo4D.from_official_checkpoint()
+            assert len(miss) == 0 and len(unexp) == 0, (len(miss), len(unexp))
         for p in self.backbone.parameters():
             p.requires_grad = False
         gx, gy, gz = [int(v) for v in GRID_SIZE]
@@ -80,6 +85,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=12); ap.add_argument("--batch-size", type=int, default=4)
     ap.add_argument("--lr", type=float, default=2e-3); ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--max-samples", type=int, default=None); ap.add_argument("--device", default="cuda")
+    ap.add_argument("--random-backbone", action="store_true", help="control: frozen RANDOM backbone")
     ap.add_argument("--out-dir", required=True)
     args = ap.parse_args()
     dev = args.device
@@ -89,9 +95,10 @@ def main():
     ds = StereoDetDataset(nusc, args.gts, scenes=sorted(splits.train), max_samples=args.max_samples)
     ld = DataLoader(ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers,
                     collate_fn=collate, drop_last=True)
-    model = FlashOccDet().to(dev)
+    model = FlashOccDet(random_backbone=args.random_backbone).to(dev)
     trainable = [p for p in model.parameters() if p.requires_grad]
-    print(f"[det-on-stereo] {len(ds)} train frames | frozen 4D-stereo backbone + CenterHead | "
+    bb = "RANDOM (control)" if args.random_backbone else "supervised 4D-stereo (occ-pretrained)"
+    print(f"[det-on-stereo] {len(ds)} train frames | frozen {bb} backbone + CenterHead | "
           f"{sum(p.numel() for p in trainable)/1e6:.1f}M trainable", flush=True)
     opt = torch.optim.AdamW(trainable, lr=args.lr, weight_decay=1e-2)
     os.makedirs(args.out_dir, exist_ok=True)
