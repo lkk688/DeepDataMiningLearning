@@ -105,3 +105,28 @@ This turns a large speculative pipeline into a single cheap nuScenes ablation th
 - Cross-dataset domain gap (sensor layout, ego frame conventions, class definitions) — ego-frame
   voxel occ is fairly sensor-agnostic, but foreground class alignment needs care.
 - Ego-grid orientation per dataset (AV2/PhysicalAI axis conventions vs nuScenes) — must match.
+
+---
+
+## PIVOT (2026-07-21): label-free occupancy PSEUDO-LABELING (the actual contribution)
+
+Occ3D/CVT-Occ already generate occ labels from **manual** signals → reproducing that is not novel.
+The novel problem: **occ pretraining from un-annotated LiDAR fleets (no manual 3D labels)**.
+
+**Occ3D's label-gen (the baseline to match, from its README):** accumulative multi-frame LiDAR
+(ego-pose motion-comp) → voxel semantics = the **manual LiDAR-semseg** class of the in-voxel point →
+**human 3D boxes** separate *dynamic* objects (aggregate each in object-frame so they don't smear) →
+camera+LiDAR visibility masks; free = unoccupied. Two manual dependencies to replace label-free:
+(a) LiDAR-semseg → **FM camera projection** (our `labelgen`); (b) 3D boxes → **self-mined tracks**.
+
+**Why our old voxel-soft was null (diagnosis):** it had 10-sweep accumulation + FM semantics but **NO
+dynamic/static separation** — accumulation smears moving objects into streaks, wrecking the foreground
+quality detection needs. That single missing Occ3D ingredient is the prime suspect.
+
+**STEP 0 (nuScenes ablation, isolate the ingredient):** `DynamicOccTeacher` = voxel-soft +
+dynamic/static separation. Static = multi-sweep points NOT in any box (FM semantics); dynamic =
+current-sweep points IN each box, labeled by the box class (sharp). Ablation arms → occ pretrain →
+det-transfer: (1) voxel-soft [null], (2) + dynamic-static w/ GT boxes [upper bound of the recipe],
+(3) + dynamic-static w/ PSEUDO boxes (zero-shot detector, label-free), vs Occ3D-GT [+35%]. If (2)≈+35%
+the recipe works and only the boxes need to be pseudo; (3) then tests the true label-free version.
+Then scale to PhysicalAI (extend `pseudolabel_physicalai` detect→track→mine for the pseudo boxes).
