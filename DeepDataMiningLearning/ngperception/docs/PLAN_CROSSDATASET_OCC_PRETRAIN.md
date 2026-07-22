@@ -39,11 +39,21 @@ background semantics is optional. v2 adds background (semseg or FM).
 
 ## Datasets (inventory — to be filled by the running scoping pass)
 
-- **Argoverse 2 (AV2) sensor** — `…/thesis-nurec/data/argoverse2_raw/sensor/{train,val}`. LiDAR +
-  3D annotations (`annotations.feather`) + `av2` devkit. [formats/counts: pending inventory]
-- **PhysicalAI** — `…/thesis-nurec/data/pai/{raw,…}`; loaders in `MyRepo/PhysicalAI-Drive`
-  (worldmodel_drive, py312) which already parse LiDAR + `obstacle.offline` 3D autolabels.
-  [formats/reusable loaders: pending inventory]
+- **Argoverse 2 (AV2) sensor** — `…/thesis-nurec/data/argoverse2_raw/sensor/{train,val}`. **train 100
+  logs / 15,664 sweeps; val 50 / 7,881**. LiDAR `sensors/lidar/<ts_ns>.feather` (x,y,z,intensity,
+  **ego frame**, motion-compensated). Boxes `annotations.feather` (ego frame; `timestamp_ns` matches
+  lidar filename; center tx/ty/tz, size l/w/h, quat) — **28 categories**. Calib/pose:
+  `egovehicle_SE3_sensor.feather`, `intrinsics.feather`, `city_SE3_egovehicle.feather`. 9-cam pinhole.
+  Feather = plain `pd.read_feather` (no `av2` devkit needed; devkit NOT installed). **No LiDAR semseg.**
+- **PhysicalAI** — two copies: (A) self-contained NCore packed-zarr
+  `…/thesis-nurec/data/pai/ncore/clips` (**1,147 clips**, `.zarr.itar` = tar-of-zarr; LiDAR as
+  direction×distance ray-bundle in rig frame; obstacle autolabels embedded in cuboids `.zattrs`); (B)
+  HF-parquet mirror `/fs/atipa/data/rnd-liu/Datasets/PhysicalAI-AV/` (DracoPy LiDAR, egomotion +
+  calib parquet local; `obstacle.offline` boxes fetched from HF on demand). **9 cuboid classes**
+  (rider=cyclist). Reusable primitives in `PhysicalAI-Drive/…/pseudolabel_physicalai/`:
+  `annotate_clip.py` (load_calib/decode_lidar/ftheta_project), `build_obstacle_dataset.py`
+  (`gt_boxes_at`, `yaw_of`), `eval_cyclist.py` (extract_lidar/load_gt). env **py312**
+  (pandas/pyarrow/DracoPy). **No LiDAR semseg.**
 - **Waymo v2.0.1** — data at `/fs/atipa/data/rnd-liu/Datasets/waymo201/validation` (**201 segments ≈
   40k frames**; parquet: `lidar/ lidar_box/ lidar_calibration/ vehicle_pose/ camera_*`). **Reusable
   loader IN OUR REPO**: `DeepDataMiningLearning/detection3d/dataset_waymo3dv201.py` →
@@ -62,14 +72,33 @@ background semantics is optional. v2 adds background (semseg or FM).
 
 ⟹ **v1 ingestion order: Waymo v2 (readiest, our loader) → AV2 → PhysicalAI.**
 
-## Experiment (the forward-looking scaling result)
+## PIVOTAL INSIGHT (from the inventory): none of Waymo/AV2/PhysicalAI has LiDAR semseg
 
-1. Ingest AV2 + PhysicalAI → unified `labels.npz` occ pool (CPU/IO, no GPU).
-2. Pretrain the occ model (`train_lss.py`) on **nuScenes-Occ3D ∪ AV2 ∪ PhysicalAI** (mixed pool),
-   camera-only, same arch as the label-efficiency det backbone.
-3. Transfer to **nuScenes low-label detection** (`run_le_occ3d.sh` style: 2k/4k/8k, seeds) →
-   does cross-dataset labeled-occ pretraining beat the nuScenes-only occ3d arm (0.163@2k)?
-4. Figure: label-efficiency curves — scratch / nuScenes-occ3d / **cross-dataset-occ** / voxel-soft.
+All three give **LiDAR geometry + 3D boxes** but **no per-point semantics** — so a cheap cross-dataset
+occ label is **foreground-from-boxes + geometry + free ONLY** (no road/building/vegetation stuff
+classes). But the nuScenes arm that gave +35% used **full Occ3D-GT semantics**. So the whole
+cross-dataset bet hinges on one untested question, cheaply answerable on nuScenes FIRST:
+
+**STEP 0 (decisive, cheap, do before any ingestion):** build a nuScenes **foreground-only** occ target
+(nuScenes 3D boxes → point-in-box foreground voxels + geometry + free; drop background stuff classes),
+pretrain the occ model on it, and run the same low-label det transfer. 
+- If foreground-only ≈ full-Occ3D (+35%) → the detection benefit comes from *object* occupancy, which
+  cross-dataset boxes CAN provide → green-light Waymo/AV2/PhysicalAI ingestion.
+- If foreground-only ≪ full-Occ3D → background stuff-semantics matter, and cross-dataset needs a
+  per-dataset **camera-FM projection** stage (expensive) → reconsider scope before ingesting.
+
+This turns a large speculative pipeline into a single cheap nuScenes ablation that de-risks it.
+
+## Experiment (gated on Step 0)
+
+1. **Step 0** above (nuScenes-only, reuses existing infra) — decides the whole direction.
+2. If green: ingest **Waymo v2** (readiest, `Waymo3DDataset`) → unified foreground occ `labels.npz`
+   (CPU/IO, no GPU), then AV2, then PhysicalAI. z-band per dataset (Waymo/AV2/PAI frame conventions).
+3. Pretrain occ on **nuScenes-fg ∪ Waymo ∪ AV2 ∪ PhysicalAI** (mixed pool), camera-only, same arch.
+4. Transfer to **nuScenes low-label detection** (`run_le_occ3d.sh` style: 2k/4k/8k, seeds) → does
+   cross-dataset labeled-occ pretraining beat the nuScenes-only occ3d arm (0.163@2k)?
+5. Figure: label-efficiency curves — scratch / nuScenes-occ3d / nuScenes-fg-only /
+   **cross-dataset-occ** / voxel-soft.
 
 ## Open questions / gaps
 - Background semantics without LiDAR semseg (FM projection cost vs coarse class).
