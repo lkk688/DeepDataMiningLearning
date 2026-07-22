@@ -44,7 +44,23 @@ background semantics is optional. v2 adds background (semseg or FM).
 - **PhysicalAI** — `…/thesis-nurec/data/pai/{raw,…}`; loaders in `MyRepo/PhysicalAI-Drive`
   (worldmodel_drive, py312) which already parse LiDAR + `obstacle.offline` 3D autolabels.
   [formats/reusable loaders: pending inventory]
-- **Waymo** — not present on this system; defer (needs download) or drop from v1.
+- **Waymo v2.0.1** — data at `/fs/atipa/data/rnd-liu/Datasets/waymo201/validation` (**201 segments ≈
+  40k frames**; parquet: `lidar/ lidar_box/ lidar_calibration/ vehicle_pose/ camera_*`). **Reusable
+  loader IN OUR REPO**: `DeepDataMiningLearning/detection3d/dataset_waymo3dv201.py` →
+  `Waymo3DDataset` returns per frame: LiDAR `(N,5)` **in vehicle frame** (+X fwd/+Y left/+Z up),
+  boxes_3d `(M,7)` [x,y,z,dx,dy,dz,yaw] vehicle frame, `labels` (1=Vehicle 2=Pedestrian 3=Sign
+  4=Cyclist), `T_vl` (lidar→vehicle), `world_from_vehicle`, multi-sweep fusion. **This is the readiest
+  ingestion source** — vehicle frame = ego, so LiDAR+box → occ grid is direct. Foreground map to
+  nuScenes-10: Vehicle→car, Pedestrian→pedestrian, Cyclist→bicycle (Sign→drop/barrier). NOTE Waymo
+  vehicle-frame Z origin (ground at rear axle) differs from nuScenes ego — set the grid z-range per
+  dataset (or shift) so the 16 z-bins cover the right band.
+- **Waymo v1.4.3** — 798 **training** tfrecords at
+  `/fs/atipa/data/cmpe249-fa25/waymov143_individuals/training/` (~160k frames, larger pool) but raw
+  tfrecords (needs `waymo-open-dataset`+TF to parse; the `kitti_format/` conversion is EMPTY). Use as
+  a scale-up after v2-validation proves the pipeline. Also a v2-parquet finetune loader exists at
+  `PhysicalAI-Drive/…/bevfusion/waymo/{dataset_waymo3dv201.py, waymo_finetune_dataset.py}`.
+
+⟹ **v1 ingestion order: Waymo v2 (readiest, our loader) → AV2 → PhysicalAI.**
 
 ## Experiment (the forward-looking scaling result)
 
