@@ -109,8 +109,33 @@ Occ and det rankings **agree**; larger DINOv2 helps both; DINOv2-L @2044 beats t
 
 ### 4.2 Occ mIoU ≠ detection transferability (the key decoupling)
 Same trainer (`train_lss`), Occ3D-GT labels: occ mIoU **saturates by 2044** (0.288 vs 28k 0.302), but
-**detection transfer scales with pretraining data** (DINOv2-base @2044 det 0.106 → full-data 0.163).
-[Data-scale @16k point completing.]
+**detection transfer scales with pretraining data**. Frozen DINOv2-L det-transfer vs pretraining frames:
+
+| frozen DINOv2-L → det mAP@2k | 2044 | 16k | 28k (base ref) |
+|---|---|---|---|
+| det mAP | 0.114 | **0.1462** | 0.163 |
+
+monotone and roughly log-linear in data — occ mIoU is flat over the same range.
+
+**Frozen vs. light-finetune (DINOv2-L) — a clean double dissociation.** Unfreezing the ViT-L at a low LR
+(1e-5) on 8000 frames moves the two metrics in **opposite** directions:
+
+| DINOv2-L | occ mIoU | det mAP | det NDS |
+|---|---|---|---|
+| frozen probe @2044 | **0.316** | 0.114 | — |
+| light-finetune @8000 | 0.290 ↓ | **0.1373** ↑ | 0.1390 |
+
+Finetuning **hurts occ mIoU** (0.316→0.290, mild over-fit / forgetting of general features — the frozen-FM
+thesis of Patch-Policy/LeCun) yet appears to **help detection transfer** (0.114→0.137). The same intervention
+pushes occ down and det up — the strongest single-experiment evidence that occ-mIoU and det-transferability
+are distinct objectives.
+
+**But the det gain is data, not finetuning.** The frozen data-scale curve above reaches **0.1462 at 16k with
+no finetuning**; log-linear interpolation puts **frozen @8000 ≈ 0.135**, statistically indistinguishable from
+the **finetune @8000 = 0.137**. So light-finetuning buys **essentially zero** detection transfer over feeding
+the same data to a *frozen* backbone — while **costing** occ mIoU (0.316→0.290) and ViT-L-scale training. The
+operational conclusion: **freeze the FM and scale pretraining data; don't finetune.** This is exactly the
+Patch-Policy/LeCun frozen-FM prescription, here validated on the AD occ→det transfer axis.
 
 ### 4.3 Occupancy → detection label-efficiency (official mAP)
 | pretext @budget | 2k | 4k | 8k |
