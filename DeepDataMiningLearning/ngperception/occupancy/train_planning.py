@@ -116,15 +116,20 @@ class PlanHeadBC(nn.Module):
 
 
 def collision_rate(waypoints, sem):
-    """Fraction of predicted waypoints landing in an obstacle voxel of the Occ3D-GT (any z)."""
+    """Fraction of predicted waypoints landing in an obstacle voxel of the Occ3D-GT (any z).
+    NaN/inf-safe: non-finite predictions are skipped (rate over valid waypoints), so a diverged
+    step never crashes eval."""
     lo = np.asarray(PC_RANGE[:2], np.float32); gx, gy = int(GRID_SIZE[0]), int(GRID_SIZE[1])
     obst_col = np.isin(sem, OBST).any(-1)                   # (X,Y) any obstacle along z
-    hit = 0
+    hit = 0; n = 0
     for w in waypoints:
+        if not np.isfinite(w).all():                        # skip NaN/inf waypoints
+            continue
+        n += 1
         ix = int((w[0] - lo[0]) / VOXEL_SIZE); iy = int((w[1] - lo[1]) / VOXEL_SIZE)
         if 0 <= ix < gx and 0 <= iy < gy and obst_col[ix, iy]:
             hit += 1
-    return hit / len(waypoints)
+    return hit / max(n, 1)
 
 
 def main():
@@ -172,8 +177,16 @@ def main():
                 out = occ(b["imgs"].to(dev), b["rots"].to(dev), b["trans"].to(dev), b["intrins"].to(dev))
                 o = out[0] if isinstance(out, (tuple, list)) else out       # (B,18,X,Y,Z)
             pred = head(o.float(), b["cmd"].to(dev))
-            loss = ((pred - b["ego_fut"].to(dev)) ** 2).sum(-1).sqrt().mean()   # ADE
-            opt.zero_grad(); loss.backward(); opt.step()
+            # ADE with eps INSIDE sqrt: sqrt(sum_sq) has infinite gradient at zero distance
+            # (pred==gt), which produces NaN grads that corrupt the head; +1e-6 removes the singularity.
+            loss = ((pred - b["ego_fut"].to(dev)) ** 2).sum(-1).add(1e-6).sqrt().mean()
+            if not torch.isfinite(loss):                                        # skip diverged step
+                opt.zero_grad(); continue
+            opt.zero_grad(); loss.backward()
+            gnorm = torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0)      # stabilize transformer head
+            if not torch.isfinite(gnorm):                                       # belt+suspenders: skip NaN/inf grads
+                opt.zero_grad(); continue
+            opt.step()
             if it % 50 == 0:
                 print(f"  ep{ep} it{it}: L2={loss.item():.3f}", flush=True)
         # eval
@@ -188,8 +201,8 @@ def main():
                 for s, k in ((1, 2), (2, 4), (3, 6)):
                     l2s[s].append(d[:k].mean())
                 cols.append(collision_rate(pred, b["semantics"][0].numpy()))
-        print(f"[plan] epoch {ep}: L2 1s={np.mean(l2s[1]):.3f} 2s={np.mean(l2s[2]):.3f} "
-              f"3s={np.mean(l2s[3]):.3f} | collision={np.mean(cols):.4f}", flush=True)
+        print(f"[plan] epoch {ep}: L2 1s={np.nanmean(l2s[1]):.3f} 2s={np.nanmean(l2s[2]):.3f} "
+              f"3s={np.nanmean(l2s[3]):.3f} | collision={np.nanmean(cols):.4f}", flush=True)
         torch.save(head.state_dict(), os.path.join(args.out_dir, "plan_head.pth"))
 
 

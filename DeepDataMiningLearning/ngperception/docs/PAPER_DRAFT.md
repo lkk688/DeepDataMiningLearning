@@ -100,12 +100,15 @@ Occ3D grid.
 | **DINOv2-large** | **0.316** | **0.114** | best on both |
 | DINOv2-base | 0.288 | 0.106 | |
 | RADIO (agglomerative) | 0.274 | 0.096 | < DINOv2 (non-obvious) |
+| SigLIP2 (VL FM) | 0.234 | 0.0628 | VL-contrastive + aspect distortion |
 | VGGT (geometry FM) | 0.218 | (deferred) | weakest semantic occ |
-| SigLIP2 (VL FM) | (running) | (running) | aspect-distortion caveat |
 | *lss_occ_full (DINOv2, 28k ref)* | 0.302 | 0.163 | full-data reference |
 | *FlashOcc-4D-stereo (supervised)* | **0.3809** | — | ceiling, reproduced |
 
-Occ and det rankings **agree**; larger DINOv2 helps both; DINOv2-L @2044 beats the 28k reference on occ.
+Occ and det rankings **agree exactly**: DINOv2-L > DINOv2-B > RADIO > SigLIP2 > VGGT on both. The ordering
+tracks **pretraining objective**, not model size alone — self-supervised dense FMs (DINOv2) beat distilled/
+agglomerative (RADIO), VL-contrastive (SigLIP2), and geometry (VGGT) features for semantic occ+det. Larger
+DINOv2 helps both metrics; DINOv2-L @2044 beats the 28k reference on occ.
 
 ### 4.2 Occ mIoU ≠ detection transferability (the key decoupling)
 Same trainer (`train_lss`), Occ3D-GT labels: occ mIoU **saturates by 2044** (0.288 vs 28k 0.302), but
@@ -157,9 +160,23 @@ once an occupancy/semantic-coupling confound is removed (audit + factorized-loss
 FlashOcc-4D-stereo ported to modern torch (H100; original torch-1.10 can't run) → full-val **mIoU
 0.3809 vs published 0.3784** (exact; found+fixed a BGR-normalization bug worth ~0.04).
 
-### 4.6 Planning / fusion [in progress]
-Lightweight transformer planning head (5.4M params) → L2@1/2/3s + collision on frozen backbones;
-FusionOcc-style fusion occ head on our BEVFusion (NDS 0.688), target ~FusionOcc 0.566.
+### 4.6 LiDAR+camera fusion column (Direction 2)
+Adding a LiDAR branch to the DINOv2-L LSS column (same @2044 occ pretrain → det @2k protocol):
+
+| DINOv2-L | occ mIoU | det mAP@2k | det NDS |
+|---|---|---|---|
+| camera-only | 0.316 | 0.114 | 0.1235 |
+| **LiDAR + camera** | **0.493** | **0.2417** | **0.2197** |
+
+Both metrics ≈ **double** with the LiDAR branch (occ +56%, det mAP +112%; car AP@0.5 0.520, ped 0.420) —
+direct range geometry makes occupancy far easier and gives detection a metric prior the camera lacks. The
+fusion occ mIoU (0.493) exceeds the camera-only supervised FlashOcc ceiling (0.3809), as expected for a
+sensor with explicit depth. This is the strong-sensor anchor for the otherwise camera-primary study.
+
+### 4.7 Planning head [in progress]
+Lightweight transformer planning head (5.4M params, Patch-Policy-style dense-token attention) → L2@1/2/3s
++ collision on the frozen backbones (DINOv2-L, DINOv2-base); training (early: L2@3s 5.0m, collision 0.065 at
+epoch 1, improving). FusionOcc-style semantic occ head on our BEVFusion (NDS 0.688) remains a queued build.
 
 ## 5. Discussion / findings
 - **Backbone capacity > backbone "type".** Larger DINOv2 wins; agglomerative (RADIO) and geometry (VGGT)
