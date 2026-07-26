@@ -173,16 +173,42 @@ direct range geometry makes occupancy far easier and gives detection a metric pr
 fusion occ mIoU (0.493) exceeds the camera-only supervised FlashOcc ceiling (0.3809), as expected for a
 sensor with explicit depth. This is the strong-sensor anchor for the otherwise camera-primary study.
 
-### 4.7 Planning head [in progress]
-Lightweight transformer planning head (5.4M params, Patch-Policy-style dense-token attention) → L2@1/2/3s
-+ collision on the frozen backbones (DINOv2-L, DINOv2-base); training (early: L2@3s 5.0m, collision 0.065 at
-epoch 1, improving). FusionOcc-style semantic occ head on our BEVFusion (NDS 0.688) remains a queued build.
+### 4.7 Occupancy → open-loop planning: ego-status dominates (Direction 4)
+Lightweight transformer planning head (Patch-Policy-style dense-token attention) → L2@1/2/3s + collision.
+To isolate the *perception* contribution from the well-known ego-status shortcut (BEV-Planner / AD-MLP:
+nuScenes open-loop L2 is dominated by the ego constant-velocity prior), we run a **controlled 3-arm ablation**
+on frozen backbones. The ego arm adds a constant-velocity prior from 2 s of ego history (the head predicts
+only the residual); the analytic CV floor on val is L2@3s = 2.09 m.
+
+| arm | input | L2@1s | L2@2s | **L2@3s** | collision |
+|---|---|---|---|---|---|
+| **occ-only** | occupancy + command | 2.12 | 3.56 | **5.04** | 0.065 |
+| **ego-only** | ego-history + command | 0.64 | 1.27 | **2.09** | 0.018 |
+| **occ+ego (DINOv2-base)** | both | 0.66 | 1.28 | **2.11** | 0.019 |
+| **occ+ego (DINOv2-large)** | both | 1.07 | 1.74 | **2.49** | 0.018 |
+
+Two clean, negative-but-informative findings:
+1. **Occupancy alone is a poor open-loop planner** (5.04 m ≫ 2.09 m): without ego kinematics the model cannot
+   infer speed, so it collapses to the mean trajectory.
+2. **Occupancy adds ~nothing on top of ego-status** — Δ(occ+ego − ego) ≈ 0 (base 2.11 vs 2.09), and the
+   *larger* occ backbone even **hurts** (large 2.49), its richer features injecting residual noise. Ego-only
+   already sits at the CV floor.
+
+So nuScenes open-loop L2 is **ego-status-dominated**; occupancy is valuable for *detection* transfer (§4.3)
+but **not** for open-loop planning. Combined with §4.2 (occ-mIoU ≠ det-transfer), this gives a **double
+decoupling**: the value of an occupancy representation depends entirely on the downstream task — it is a good
+detection pretext and a null planning input — a caution against treating occupancy as a universal world model.
+(FusionOcc-style semantic occ head on our BEVFusion, NDS 0.688, remains a queued build.)
 
 ## 5. Discussion / findings
 - **Backbone capacity > backbone "type".** Larger DINOv2 wins; agglomerative (RADIO) and geometry (VGGT)
   FMs *underperform* plain DINOv2 for semantic occ+det — a caution against assuming "more teachers /
   more geometry = better features."
 - **Occ mIoU is the wrong proxy for a detection/planning pretext.** Report transfer, not occ mIoU.
+- **The value of occupancy is task-dependent (double decoupling).** Occupancy is a strong *detection* pretext
+  (§4.3) but a *null* open-loop-planning input (§4.7): once the ego constant-velocity prior is present,
+  occupancy adds ≈0 (a larger occ backbone even hurts). nuScenes open-loop L2 is ego-status-dominated —
+  don't credit a perception module for it (corroborates BEV-Planner / AD-MLP).
 - **Label-free occ pretraining is bounded** by teacher quality *and* pretraining scale; naive label
   improvements can hurt. The lever is dense, camera-inferable, high-quality labels at scale.
 - **Frozen FM + lightweight head is the resource-right paradigm** (Patch Policy corroborates over VLAs).
