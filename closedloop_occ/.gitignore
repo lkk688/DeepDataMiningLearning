@@ -1,0 +1,25 @@
+# heavy/generated — do not commit
+alpasim/.venv/
+alpasim/data/sif/
+alpasim/data/bin/
+alpasim/data/nre-artifacts/
+alpasim/data/drivers/
+alpasim/outputs/
+alpasim/runs/
+alpasim/**/__pycache__/
+alpasim/**/*.egg-info/
+alpasim/**/.pytest_cache/
+alpasim/**/.ruff_cache/
+# run outputs
+m0_gtreplay/
+m1_occ_drive/
+m1_occ_da3/
+runs/
+*.log
+**/ctmp/
+# containers / model weights (referenced, never copied)
+*.sif
+*.usdz
+*.pth
+*.pt
+*.safetensors

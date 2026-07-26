@@ -1,0 +1,37 @@
+# Occupancy-conditioned driver for the closed-loop occ->planning study.
+#   - /driver: occ            (use in defaults, or `driver=occ` on the CLI)
+# model.use_occ=false -> STUB constant-velocity policy = the ego-only / no-occ ablation arm.
+# model.use_occ=true  -> occ backbone + CV-residual planner (the +occ arm, M1b).
+
+defaults:
+  - _self_
+  - manual_configs   # reuse the generic runtime overrides (no policy-specific assets)
+
+log_level: ${wizard.log_level}
+
+model:
+  model_type: occ
+  checkpoint_path: "unused"   # stub arm needs no checkpoint; +occ arm sets the occ ckpt
+  device: "cpu"               # stub is CPU-only; the +occ arm switches to "cuda"
+  use_occ: false              # <- ablation switch
+  horizon_s: 4.0
+
+host: "0.0.0.0"
+port: ???
+
+inference:
+  use_cameras: ["ring_front_center"]   # AV2 recons expose the front ring camera
+  max_batch_size: 1
+  subsample_factor: 1
+  context_length: 1
+
+route:
+  default_command: 2            # straight
+  use_waypoint_commands: true   # follow the route's turn commands (closed-loop driving)
+
+output_dir: "/mnt/output/driver"
+
+trajectory_optimizer:
+  enabled: false
+
+plot_debug_images: false
