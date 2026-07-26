@@ -224,7 +224,7 @@ def main():
     ap.add_argument("--occ-cb-power", type=float, default=0.25,
                     help="tempering exponent for class weights (0=uniform, 1=full inverse-freq)")
     ap.add_argument("--occ-cb-cache", default=None, help="cache file for computed class weights")
-    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base", "dinov2_large", "vggt", "radio", "siglip2"],
+    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base", "dinov2_large", "vggt", "radio", "siglip2", "dinov3"],
                     default="resnet18")
     ap.add_argument("--finetune-backbone", action="store_true", help="Phase-2: unfreeze the FM backbone")
     ap.add_argument("--backbone-lr", type=float, default=1e-5, help="low LR for the unfrozen backbone")

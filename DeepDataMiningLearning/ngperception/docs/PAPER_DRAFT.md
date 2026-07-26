@@ -97,18 +97,24 @@ Occ3D grid.
 ### 4.1 Frozen-FM backbone ranking (nuScenes, @2044 frames)
 | backbone | occ mIoU | det mAP@2k | note |
 |---|---|---|---|
-| **DINOv2-large** | **0.316** | **0.114** | best on both |
-| DINOv2-base | 0.288 | 0.106 | |
-| RADIO (agglomerative) | 0.274 | 0.096 | < DINOv2 (non-obvious) |
-| SigLIP2 (VL FM) | 0.234 | 0.0628 | VL-contrastive + aspect distortion |
-| VGGT (geometry FM) | 0.218 | (deferred) | weakest semantic occ |
-| *lss_occ_full (DINOv2, 28k ref)* | 0.302 | 0.163 | full-data reference |
-| *FlashOcc-4D-stereo (supervised)* | **0.3809** | — | ceiling, reproduced |
+| backbone | occ mIoU | det mAP@2k | det NDS | note |
+|---|---|---|---|---|
+| **DINOv2-large** | **0.316** | 0.114 | 0.1235 | best occ |
+| **DINOv3-large** | 0.292 | **0.1248** | **0.1296** | **best cam-only det** (occ↓ det↑ vs DINOv2-L) |
+| DINOv2-base | 0.288 | 0.106 | 0.1215 | |
+| RADIO (agglomerative) | 0.274 | 0.096 | 0.1095 | < DINOv2 (non-obvious) |
+| SigLIP2 (VL FM) | 0.234 | 0.0628 | 0.0872 | VL-contrastive + aspect distortion |
+| VGGT (geometry FM) | 0.218 | (deferred) | — | weakest semantic occ |
+| *lss_occ_full (DINOv2, 28k ref)* | 0.302 | 0.163 | — | full-data reference |
+| *FlashOcc-4D-stereo (supervised)* | **0.3809** | — | — | ceiling, reproduced |
 
-Occ and det rankings **agree exactly**: DINOv2-L > DINOv2-B > RADIO > SigLIP2 > VGGT on both. The ordering
-tracks **pretraining objective**, not model size alone — self-supervised dense FMs (DINOv2) beat distilled/
-agglomerative (RADIO), VL-contrastive (SigLIP2), and geometry (VGGT) features for semantic occ+det. Larger
-DINOv2 helps both metrics; DINOv2-L @2044 beats the 28k reference on occ.
+The occ ranking (DINOv2-L > DINOv3-L ≈ DINOv2-B > RADIO > SigLIP2 > VGGT) tracks **pretraining objective**, not
+model size — self-supervised dense FMs beat distilled/agglomerative (RADIO), VL-contrastive (SigLIP2), and
+geometry (VGGT). **DINOv3-L is a within-table instance of the occ≠det decoupling (§4.2): its occ (0.292) is
+*below* DINOv2-L (0.316) yet its det-transfer (0.1248) is the *best* camera-only** — newer/patch-16 features
+transfer better to detection despite weaker semantic occ (its patch-16 grid is interpolated to our patch-14
+lift, which may cost occ detail while its register-token features help det). So occ and det rankings do **not**
+agree once DINOv3 is included; report transfer, not occ mIoU.
 
 ### 4.2 Occ mIoU ≠ detection transferability (the key decoupling)
 Same trainer (`train_lss`), Occ3D-GT labels: occ mIoU **saturates by 2044** (0.288 vs 28k 0.302), but

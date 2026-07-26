@@ -90,6 +90,13 @@ class CamEncoder(nn.Module):
             self.register_buffer("_imnet_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
             self.register_buffer("_imnet_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
             feat_dim = 768
+        elif backbone == "dinov3":  # Meta DINOv3 ViT-L/16 (LVD-1689M), ImageNet-norm, patch-16, 4 register tokens
+            from transformers import AutoModel
+            self.dino = AutoModel.from_pretrained("facebook/dinov3-vitl16-pretrain-lvd1689m")
+            for p in self.dino.parameters():
+                p.requires_grad = False
+            self._dinov3_prefix = 5   # 1 CLS + 4 registers before the patch tokens
+            feat_dim = 1024
         else:
             raise ValueError(backbone)
         self.depthnet = nn.Sequential(
@@ -118,6 +125,15 @@ class CamEncoder(nn.Module):
             with torch.no_grad():
                 tok = self.siglip(xs).last_hidden_state         # (b,196,768)
             feat = tok.transpose(1, 2).reshape(b, 768, 14, 14)
+            return F.interpolate(feat, size=(H // 14, W // 14), mode="bilinear", align_corners=False)
+        if self.backbone == "dinov3":                           # ImageNet-norm patch-16 -> drop 5 prefix -> patch-14 grid
+            import torch.nn.functional as F
+            b, _, H, W = x.shape
+            Hr, Wr = (H // 16) * 16, (W // 16) * 16
+            xr = F.interpolate(x, size=(Hr, Wr), mode="bilinear", align_corners=False)   # x already ImageNet-norm (DINOv3 native)
+            with torch.no_grad():
+                tok = self.dino(xr).last_hidden_state[:, self._dinov3_prefix:]           # drop CLS+4 registers
+            feat = tok.transpose(1, 2).reshape(b, 1024, Hr // 16, Wr // 16)
             return F.interpolate(feat, size=(H // 14, W // 14), mode="bilinear", align_corners=False)
         b, _, H, W = x.shape
         with torch.no_grad():
@@ -186,7 +202,7 @@ class LSSOccupancy(nn.Module):
         self.lidar_fusion = lidar_fusion
         # ablation: zero the camera lifted volume so the decoder sees LiDAR only (same params).
         self.lidar_only = lidar_only
-        _dino = backbone.startswith("dinov2") or backbone in ("vggt", "radio", "siglip2")  # 252x700 patch grids
+        _dino = backbone.startswith("dinov") or backbone in ("vggt", "radio", "siglip2")  # 252x700 patch grids
         base_ds = 14 if _dino else 16
         # upsampling the features by U makes the effective patch/stride U× finer
         self.downsample = downsample or (base_ds // feat_upsample)
