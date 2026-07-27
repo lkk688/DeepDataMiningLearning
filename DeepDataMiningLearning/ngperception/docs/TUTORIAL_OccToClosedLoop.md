@@ -89,22 +89,28 @@ ego_pose_history} → `ModelPrediction`{trajectory_xy, headings}. With `use_occ=
 **collision_at_fault 1.00, offroad 0, progress 0.74** — it drives, then crashes. The ideal baseline: it leaves
 clear room for perception to help.
 
-### 2.3 M1b — DA3 occupancy + THE POSITIVE RESULT
-Occupancy provider = **DA3 monocular metric depth** (front camera only — matches the sim loop). OccModel reads
-the nearest obstacle distance (robust 5th-pct DA3 depth over the forward, non-sky corridor) and **caps the CV
-trajectory's forward extent at (obstacle − safety margin)** = reactive braking the CV prior lacks.
+### 2.3 M1b — DA3 occupancy: a 1-scene "positive" that multi-scene validation DEBUNKED
+Occupancy provider = **DA3 monocular metric depth** (front camera). OccModel reads the nearest obstacle
+distance (robust 5th-pct DA3 depth over the forward corridor) and **caps the CV trajectory at (obstacle −
+margin)** = reactive braking.
 
-| arm | **collision_at_fault** | collision_any | lane_centering (m) |
-|---|---|---|---|
-| ego-only (no perception) | **1.00** | 1.00 | 0.53 |
-| **+occ (DA3 depth)** | **0.00** | 1.00 | **0.15** |
+**1 scene looked great:** ego-only collision_at_fault 1.00 → +occ **0.00**, lane_centering 0.53 → 0.15.
 
-**Perception eliminates the at-fault collision** the ego prior drives into, and improves lane-centering. This
-is the closed-loop positive result. (`collision_any` stays 1.0 = a rear/blameless collision from pure braking;
-`collision_at_fault` — driving *into* something — is the meaningful safety metric, and it goes to 0.)
+**8-scene ablation told the honest story (`run_multiscene_ablation.sh`):**
+| arm | collision_at_fault | collision_any | lane_centering | progress |
+|---|---|---|---|---|
+| ego-only | 0.125 (1/8) | 0.750 | 0.348 | higher |
+| +occ (DA3-cap) | **0.000** | **1.000** ⚠️ | 0.290 | **lower** ⚠️ |
 
-**Status caveat:** this is **1 scene, 1 rollout** — a proof that the effect exists, not yet a statistic. Making
-it a paper result needs the multi-scene ablation in Part 5.
+Occ zeros the at-fault collisions, **but makes collision_any WORSE (0.75→1.0) and progress lower** — i.e.
+it **over-brakes on every scene**. Root cause (verified): **DA3 metric depth is BROKEN on NuRec-rendered
+frames** — median **1.35 m** (range [1.25,1.70]) vs **18 m** ([2.6,128]) on real images. The splat renders +
+AV2 portrait aspect are out-of-domain; cropping to the road band helps on some frames but is not robust. So
+the "+occ" arm was mostly *"depth says 1.4 m everywhere → always brake → avoid by barely moving (and get
+rear-ended)."* **The 1-scene positive was largely an artifact; multi-scene validation exposed it.**
+
+**Lesson:** in-loop perception must be reliable *on the rendered domain*. DA3-on-render is a domain gap that
+preprocessing does not fix → the fix is **sim-GT geometry (Part 6, Option A)**.
 
 ---
 
@@ -170,18 +176,38 @@ sim-GT (or teacher) — a smooth signal with statistical power, unlike binary co
 ---
 
 ## Part 6 — Honest status & roadmap
-**Done:** open-loop backbone study (all tables); closed-loop stack on our H100 (M0); occ_driver + ego-only
-baseline (M1a); DA3 in-loop occupancy + **positive result on 1 scene** (M1b).
+**Done:** open-loop backbone study (all tables §1); closed-loop stack on our H100, no SLURM (M0); occ_driver +
+ego-only baseline (M1a); DA3 in-loop occupancy (M1b) + **8-scene ablation that debunked the 1-scene positive**
+(DA3-on-render domain gap, §2.3). occ_driver `steer` mode (Q2) implemented (untested — depends on a reliable
+depth first).
 
-**Preliminary / to strengthen (priority order):**
-1. **Multi-scene closed-loop ablation** (AV2 val split) → collision_at_fault mean ± std for ego-only vs +occ.
-   Turns the 1-scene proof into a statistic.
-2. **Perception-quality → safety curve:** swap the in-loop occ (DA3-geometry → DINOv2-L-semantic → fusion) and
-   show safety scales with occ quality (answers Q1).
-3. **Dense perception reward / distillation:** sim-GT depth or DA3/GaussianOcc teacher → dense-train a fast
-   student; add depth-L1 / occ-IoU as a dense metric (answers Q2).
-4. Add steering avoidance (cut the rear/blameless collision); semantic occ (DA3 depth + 2D seg); cross-dataset
-   (PhysicalAI-AV reconstructions).
+**THE NEXT STEP (Option A — GT-LiDAR occupancy) — the blocker to a valid result.** DA3-on-render is unreliable,
+so replace it with **sim-GT geometry**: render LiDAR from the reconstruction (sensorsim `render_lidar` RPC) and
+push it to the driver, then run the clean **GT-occ vs no-occ** upper-bound. Only the runtime can render lidar
+(it alone has the actor `dynamic_objects`). Proto step is DONE (`egodriver.proto` `submit_lidar_observation` +
+`RolloutLidar`); the remaining 6-file integration is fully specified in
+**`closedloop_occ/IMPLEMENTATION_PLAN_LIDAR.md`** (exact files/lines/code + rebuild + test). ~1 day; do it in a
+fresh focused session (deep async event-queue surgery on the working runtime — clean context matters).
+
+**After Option A lands (priority order):**
+1. **Multi-scene GT-occ vs no-occ** → collision_at_fault mean ± std (a valid statistic, not a DA3 artifact).
+2. **Perception-quality → safety curve** (Q1): GT-lidar (ceiling) vs DINOv2-L semantic occ vs DA3 → safety
+   should scale with occ quality. (Surround occ needs a new AV2 multi-cam render config — front loop today.)
+3. **Dense perception reward / distillation** (Q2): sim-GT depth or DA3/GaussianOcc teacher → dense-train a
+   fast student that works *on the render domain*; add depth-L1 / occ-IoU as a dense metric.
+4. Steering avoidance (cut rear collisions); semantic occ (DA3 depth + 2D seg); cross-dataset (PhysicalAI-AV).
+
+## Part 7 — HANDOFF (resume in a fresh session)
+1. **Read this file + `closedloop_occ/IMPLEMENTATION_PLAN_LIDAR.md`** (the Option A step-by-step) +
+   `closedloop_occ/PLAN.md` (milestones). Memory notes: `closedloop-occ-alpasim`, `backbone-transfer-study`.
+2. **Execute Option A** per IMPLEMENTATION_PLAN_LIDAR.md (proto already done): sensorsim_service `render_lidar`
+   → event_loop submit → driver handler → PredictionInput → OccModel `occ_mode=lidar` → `compile-protos` +
+   reinstall + test. Verify lidar points arrive per step; obstacle scenes show near points.
+3. **Re-run the ablation** (`run_multiscene_ablation.sh`, add a `lidar` arm) for GT-occ vs no-occ.
+4. Env: conda `py310` for the open-loop code; the closed-loop uses `closedloop_occ/alpasim/.venv` inside
+   apptainer (containers referenced read-only from the thesis; DA3 already installed non-editable in that venv).
+   Cluster internet via proxy `http_proxy=http://172.16.1.2:3128`; we run inside a SLURM interactive alloc so
+   the run scripts `unset SLURM_JOB_ID` to force the local apptainer path.
 
 **Reproduce:** open-loop = `ngperception/occupancy/*` (see PAPER_DRAFT). Closed-loop = `closedloop_occ/`:
 `run_local_gtreplay.sh` (M0), `run_local_occ_drive.sh` (ego-only), `run_local_occ_da3.sh` (+occ). Details in
