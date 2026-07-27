@@ -37,6 +37,10 @@ class ModelConfig:
     # (false = ego-only CV stub; true = occ backbone + residual). horizon_s = traj horizon.
     use_occ: bool = False
     horizon_s: float = 4.0
+    occ_mode: str = "cap"          # occ avoidance: "cap" (brake) | "steer" (brake + steer around)
+    n_bins: int = 7                # azimuth bins for the forward obstacle profile
+    steer_trigger_m: float = 20.0  # steer when straight-ahead clearance < this
+    steer_gain_m: float = 3.0      # max lateral shift toward the clearest azimuth
 
 
 @dataclass
