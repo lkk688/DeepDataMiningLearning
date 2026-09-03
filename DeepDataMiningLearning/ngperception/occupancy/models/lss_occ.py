@@ -170,7 +170,7 @@ class LSSOccupancy(nn.Module):
                  lidar_fusion: bool = False, lidar_raw: int = 3, lidar_channels: int = 32,
                  lidar_only: bool = False, det_classes: int = 0, det_anchor_sizes=None,
                  det_anchor_bottom=None, det_head_type: str = "anchor",
-                 vggt_depth: bool = False):
+                 vggt_depth: bool = False, depth_prior_metric: bool = False):
         super().__init__()
         self.backbone = backbone
         # VGGT-depth lift (ablation #2): blend a frozen-VGGT metric-depth prior into the learned
@@ -228,9 +228,13 @@ class LSSOccupancy(nn.Module):
         self.free_idx = n_classes - 1                    # Occ3D free/empty class = 17
         if refine_iters > 1:                             # learnable strength of the feedback prior
             self.refine_alpha = nn.Parameter(torch.tensor(1.0))
-        if vggt_depth:                                   # ablation #2: VGGT metric-depth prior
+        if vggt_depth:                                   # depth-FM prior slot (ablation #2)
             import math
-            self.vggt_log_scale = nn.Parameter(torch.tensor(math.log(18.8)))  # up-to-scale -> metric
+            # VGGT depth is *up-to-scale* -> start at the empirical 18.8x. LDCM (depth-FM arm) is
+            # already **metric** (it consumes the sparse LiDAR), so it starts at 1.0 and only has
+            # to correct residual bias -- the scale init is the one thing that must differ.
+            self.vggt_log_scale = nn.Parameter(torch.tensor(0.0 if depth_prior_metric
+                                                            else math.log(18.8)))
             self.vggt_blend = nn.Parameter(torch.tensor(2.0))                 # prior strength (log blend)
         self.register_buffer("frustum", self._create_frustum(), persistent=False)
         # grid lower-corner and voxel size, for pooling
