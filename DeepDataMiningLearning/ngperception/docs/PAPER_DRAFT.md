@@ -27,7 +27,8 @@ a controlled map of *what transfers* in AD perception and *what does not*.
 
 ## 1. Contributions
 1. **A controlled frozen-FM backbone benchmark** across occupancy + detection (+ planning) under a fixed
-   finetune budget, on one GPU — DINOv2-S/B/L, RADIO, VGGT, SigLIP2 (DINOv3 pending access).
+   finetune budget, on one GPU — DINOv2-S/B/L, RADIO, VGGT, SigLIP2 (DINOv3 pending access). All
+   benchmarked FMs are **camera-side**; the point- and depth-FM axes are scoped in §6.
 2. **Occ-mIoU ≠ transferability**: a clean decoupling showing detection-transfer scales with pretraining
    data while occ mIoU saturates — occ mIoU is the wrong proxy for a pretext.
 3. **A battery of controlled negatives** (Gaussian occ teachers; label-free/pseudo-label pretexts;
@@ -71,6 +72,32 @@ Occ3D-nuScenes** (2D dense-depth + 3D voxel-LiDAR fusion). BEVFusion — the fus
 **Detection / monocular geometry.** SPAN [Wang et al., CVPR'26, 2511.06702] — 3D↔2D projection-alignment
 (a label-free geometric aux loss we can borrow). FlashOcc — efficient channel-to-height occ (our exact
 supervised ceiling).
+
+**Depth foundation models / sparse-depth completion.** **LDCM** [Yu et al., ICLR'26, 2605.30115] —
+a *large depth-completion model*: a frozen monocular depth FM (DepthAnythingV2) supplies relative
+depth, a **Poisson gradient-field alignment** fuses it with sparse LiDAR into a coherent *metric*
+coarse depth, and a DINOv2 ViT-B dual-encoder (RGB + coarse depth, prompt-fused) regresses an
+**intrinsic-free point map** (per-pixel 3D coords) instead of a depth map; ~2.7M samples / 11
+datasets, zero-shot across 1–10% random, keypoint, and **64/32/16/8-beam LiDAR** sparsity (KITTI rel.
+0.026 vs 0.042 prior best). *Directly relevant: our lift is depth-supervised and depth is its
+bottleneck, yet we found a geometry FM (VGGT) to be a **wash** as a depth prior — precisely because a
+learned depth head plus LiDAR depth supervision already carried that signal. LDCM differs **in kind**
+(metric, **sparse-observation-conditioned**), so it is the right test of whether a depth FM helps
+where VGGT could not: the sparse/low-beam and cross-rig regimes. Its intrinsic-free point map also
+removes the per-dataset intrinsics coupling that complicates our cross-dataset occ pool.*
+
+**3D / point-cloud foundation models.** **Sonata** [Wu et al., CVPR'25, 2503.16429] — self-supervised
+point representations (PTv3, encoder-only, 108M) self-distilled over **140k point clouds**. It names
+the **"geometric shortcut"**: in 3D, representations collapse onto low-level spatial cues (normals,
+height) because position is handed directly to the operators — fixed by *obscuring* spatial
+information and forcing reliance on input features. Outdoor: nuScenes **81.7** mIoU finetuned (80.4
+scratch) / **66.1** linear-probe, Waymo 72.9, SemanticKITTI 72.6; extreme data-efficiency (1% of
+ScanNet: 25.8→45.3). *Three things for us. (i) The geometric shortcut is an independently-named
+mechanism for our own negative — VGGT's geometry-specialized tokens are the wrong bias for a
+**semantic** occupancy head. (ii) Sonata reports **only segmentation** outdoors — **no detection** —
+so it does not establish the transfer our §4.2 decoupling says must not be assumed. (iii) It is the
+LiDAR-side counterpart our benchmark lacks, and an alternative route to label-free pretraining that
+sidesteps the teacher-quality bound of §4.3 entirely, because it uses **no teacher at all**.*
 
 **Policy / VLA (why we avoid them).** AutoVLA — VLM-based end-to-end driving (SFT+RL, camera→trajectory
 tokens; unreleased, multi-GPU). SimScale [OpenDriveLab] — sim-real scaling for NAVSIM planning (8-GPU).
@@ -145,11 +172,29 @@ FusionOcc-style fusion occ head on our BEVFusion (NDS 0.688), target ~FusionOcc 
   improvements can hurt. The lever is dense, camera-inferable, high-quality labels at scale.
 - **Frozen FM + lightweight head is the resource-right paradigm** (Patch Policy corroborates over VLAs).
 - **Gaussians belong in prediction/reconstruction, not labels** (VGOcc/ADGaussian corroborate).
+- **The "geometric shortcut" names our geometry-FM negative.** Sonata [25] identifies, in 3D SSL, a
+  collapse onto low-level spatial cues instead of semantics. Our camera-side result rhymes: VGGT (and,
+  more mildly, RADIO) lose to plain DINOv2 on *semantic* occupancy and its transfer. Geometry capacity
+  is not the binding constraint here — semantic capacity is.
+- **Segmentation-style metrics keep failing as transfer proxies.** Our occ-mIoU decoupling (§4.2) and
+  Sonata's outdoor tables (large semseg gains, *no* detection numbers) point the same way: a strong
+  dense-prediction score does not license a claim about detection transfer. Report transfer.
 
 ## 6. Limitations / future
 Small label budgets (finetune-only); single dataset (nuScenes); SigLIP2 aspect distortion; DINOv3 gated;
 fusion column and full multi-task (occ+det+planning) tables completing; cross-dataset (Waymo/AV2/
 PhysicalAI) and pose/ray-aware feature fusion (VGOcc/ADGaussian) as next steps.
+
+**Modality asymmetry — the main scope limitation.** Every backbone we benchmark is a **camera-side**
+FM (DINOv2/RADIO/VGGT/SigLIP2), while the LiDAR branch of our fusion column trains from scratch. The
+modality-symmetric study is the natural completion, and two concrete arms are now well-posed:
+- **(a) point-FM arm** — a frozen **Sonata** [25] PTv3 encoder as the LiDAR branch, pushed through the
+  same occ / det / label-efficiency protocol. Because it needs *no teacher*, it is a direct test of
+  whether the label-free ceiling in §4.3 is a **teacher-quality** bound or a **pretext** bound — and
+  its own missing detection numbers are exactly the gap our harness is built to measure.
+- **(b) depth-FM arm** — **LDCM** [26] as the lift's depth prior, evaluated specifically in the
+  sparse/low-beam (64→8-beam) and cross-rig regimes where our VGGT depth-prior null does *not* apply,
+  with its intrinsic-free point map as the shared representation for the Waymo/AV2/PhysicalAI pool.
 
 ## References
 [1] Tian et al. **Occ3D**: A Large-Scale 3D Occupancy Prediction Benchmark. CVPR 2023. (Tsinghua-MARS-Lab)
@@ -173,6 +218,8 @@ PhysicalAI) and pose/ray-aware feature fusion (VGOcc/ADGaussian) as next steps.
 [19] Oquab et al. **DINOv2**; **DINOv3** (Meta). [20] Ranzinger et al. **AM-RADIO/RADIO** (NVIDIA).
 [21] **VGGT**: Visual Geometry Grounded Transformer. [22] **SigLIP 2** (Google). [23] **V-JEPA 2** (Meta).
 [24] **ST-P3 / UniAD** — open-loop planning protocols.
+[25] Wu, DeTone, Frost, Shen, Xie, Yang, Engel, Newcombe, Zhao, Straub. **Sonata**: Self-Supervised Learning of Reliable Point Representations. CVPR 2025. arXiv:2503.16429. (Pointcept × Meta)
+[26] Yu, Zhao, Zhang, Qiu, Qiu, He, Zhu, Dong, Cao, Shen. **LDCM**: Large Depth Completion Model from Sparse Observations. ICLR 2026. arXiv:2605.30115. (Zhejiang Univ. × Tongyi Lab, Alibaba)
 
 *Result values current as of the run log; Phase-2 finetune, data-scale, SigLIP2, fusion, and planning
 numbers finalize as those jobs complete.*
