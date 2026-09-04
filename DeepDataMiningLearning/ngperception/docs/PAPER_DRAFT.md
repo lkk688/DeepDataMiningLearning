@@ -1,42 +1,55 @@
-# Paper Draft — Foundation-Model Backbones for the Autonomous-Driving Perception→Planning Stack: A Controlled Multi-Task Transfer Study
+# Paper Draft — Occupancy Pretraining Buys Label-Efficient 3D Detection — and Almost Nothing Else Does
 
-*Working draft compiled from the full experimental log (2026-06 → 2026-07). All numbers are our own
+*Working draft compiled from the full experimental log (2026-06 → 2026-09). All numbers are our own
 runs on nuScenes / Occ3D-nuScenes unless marked as a published reference. Companion docs:
+`TUTORIAL_RESULTS_AND_REPRODUCTION.md` (chapter-per-result, reproducible),
 `TUTORIAL_LABELFREE_PERCEPTION_JOURNEY.md`, `RESULTS_LABELFREE_OCC_2x2_TRANSFER.md`,
 `PLAN_FLASHOCC_MIGRATION.md`, `PLAN_FUSIONOCC.md`, `REFS_2026_OCC_GAUSSIAN_LABELFREE.md`.*
 
 ---
 
 ## Abstract (draft)
-3D occupancy is emerging as a unified scene representation for autonomous driving, and a wave of recent
-work explores *how* to obtain it — label-free pseudo-labeling, Gaussian representations, and large
-vision-language-action (VLA) policies. We run a **controlled, single-GPU, finetune-budget study** that
-cuts across these choices and asks a practical question: *which pretrained image backbone best supports
-the full perception→planning stack — occupancy, 3D detection, and open-loop planning — and why?* Our
-findings are largely **negative-result-driven and therefore diagnostic**: (1) among frozen foundation
-models, **plain DINOv2 (larger = better) beats agglomerative (RADIO) and geometry (VGGT) FMs** for
-semantic occupancy and its downstream transfer; (2) **occupancy mIoU does *not* predict detection
-transferability** — occ mIoU saturates with little data while detection transfer keeps improving with
-pretraining scale; (3) **label-free / pseudo-label occupancy pretexts are teacher- and data-bounded** —
-Gaussian teachers earn no advantage over voxels, and adding "better" object pseudo-labels (dynamic/static
-separation) *hurts* detection transfer; (4) consistent with concurrent work (Patch Policy, LeCun et al.),
-a **frozen FM + a lightweight head outperforms heavy fine-tuned VLAs** at a fraction of the cost. We
-reproduce a supervised occupancy ceiling exactly (FlashOcc-4D-stereo, 0.3809 vs published 0.3784) and
-outline a LiDAR-camera **fusion** extension (FusionOcc-style) for SOTA-competitive numbers. The study is
-a controlled map of *what transfers* in AD perception and *what does not*.
+Labelled 3D boxes are the scarcest resource in autonomous driving. We show that **pretraining on
+dense 3D occupancy makes 3D detection markedly more label-efficient**, and — more usefully — we
+identify *why*: on nuScenes with only 2k detection labels, occupancy pretraining lifts official mAP
+from **0.121 to 0.163 (+35%)**, and the gain is **not uniform** — it is concentrated almost entirely
+on **rare, thin classes** (pedestrian / cone / barrier, 1.5–3×) while easy `car` is a wash. The
+occupancy encoder learns dense per-voxel geometry exactly where detection-from-scratch is
+data-starved, and transfers it.
+
+The result only means something because we tried, under one controlled harness, essentially every
+competing way to get that gain — and **none of them worked**. Frozen foundation models: plain
+**DINOv2 beats agglomerative (RADIO) and geometry (VGGT)** FMs, and VGGT's tokens are **33% worse**
+as an occupancy backbone. Label-free occupancy pretexts are **null-to-negative**, and a pretext with
+**+60% better foreground pseudo-labels transfers *worse*** — better labels ≠ better transfer.
+Extending the study to the two non-camera modality axes closes the same way: a **point FM**
+(Sonata, teacher-free) *hurts* the LiDAR branch, and a **depth FM** (LDCM) appears to give +38%
+until a beam ladder shows the gain is **the LiDAR the prior ingests, not the model** — at zero rings
+it reproduces the VGGT null exactly. That last result generalises into a methodological rule we
+argue the field needs: **whenever a "prior" consumes a sensor the baseline lacks, add a zero-sensor
+rung before attributing the gain to the model.** We further show **occupancy mIoU does not predict
+detection transferability**, so the community's default pretext metric is the wrong one to optimise.
+We reproduce a supervised ceiling exactly (FlashOcc-4D-stereo, **0.3809** vs published 0.3784,
+finding a normalisation bug worth ~0.04 en route) and release the harness, every negative arm, and a
+chapter-per-result reproduction tutorial.
 
 ## 1. Contributions
-1. **A controlled frozen-FM backbone benchmark** across occupancy + detection (+ planning) under a fixed
-   finetune budget, on one GPU — DINOv2-S/B/L, RADIO, VGGT, SigLIP2 (DINOv3 pending access). All
-   benchmarked FMs are **camera-side**; the point- and depth-FM axes are scoped in §6.
-2. **Occ-mIoU ≠ transferability**: a clean decoupling showing detection-transfer scales with pretraining
-   data while occ mIoU saturates — occ mIoU is the wrong proxy for a pretext.
-3. **A battery of controlled negatives** (Gaussian occ teachers; label-free/pseudo-label pretexts;
-   agglomerative/geometry FMs) with mechanisms (audit + factorized-loss rescue).
-4. **Exact reproduction of a supervised occ ceiling** (FlashOcc-4D-stereo) and a modern-stack port that
-   runs on H100 where the original cannot.
-5. A **multi-task extension** (lightweight occ→detection→planning heads on one frozen backbone) with a
-   Patch-Policy-style dense-token transformer planning head.
+1. **The positive result, with its mechanism.** Occupancy pretraining is label-efficient for 3D
+   detection (**+35% official mAP at 2k labels**, holding at 4k/8k), and the gain is **rare-object
+   transfer** — a mechanism, not a leaderboard delta. §4.3.
+2. **Occ-mIoU ≠ transferability.** Detection transfer keeps scaling with pretraining data while occ
+   mIoU saturates — the default pretext metric is the wrong objective. §4.2.
+3. **Every alternative, actually run.** A battery of controlled negatives under one harness:
+   agglomerative/geometry camera FMs, a **point FM** (Sonata), a **depth FM** (LDCM), Gaussian occ
+   teachers, and label-free/pseudo-label pretexts — each with a mechanism, not just a null. §4.1,
+   §4.4, §4.7.
+4. **A methodological rule: the zero-sensor rung.** Our depth-FM ladder (32 / 8 / 0 rings) shows a
+   "camera-only" model carrying a sparse-depth-conditioned prior is not camera-only, and we document
+   two further evaluation traps we hit — scoring a sparse-conditioned prior on its own input pixels,
+   and scoring an up-to-scale prior as metric. §4.7, §5.
+5. **Exact reproductions + a runnable harness.** FlashOcc-4D-stereo (0.3809 vs 0.3784, incl. a
+   BGR-normalisation bug worth ~0.04) and GaussianOcc (11.26), ported to a modern stack that runs on
+   H100 where the originals cannot; plus a chapter-per-result reproduction tutorial. §4.5.
 
 ## 2. Related work (grouped, with our take)
 **Occupancy datasets/label-gen.** Occ3D [Tian et al., CVPR'23] — the Occ3D-nuScenes/Waymo benchmark and
@@ -121,6 +134,23 @@ Occ3D grid.
 **Budget.** One H100, finetune-only (no from-scratch backbones, no VLA/RL training).
 
 ## 4. Results
+
+**At a glance** (ordered by what the paper claims, not by section number):
+
+| # | claim | evidence | § |
+|---|---|---|---|
+| 1 | **Occupancy pretraining buys detection label-efficiency** | 0.121 → **0.163** mAP @2k labels (+35%); holds @4k/8k | §4.3 |
+| 2 | …and the gain is **rare-object transfer**, not a uniform lift | pedestrian/cone/barrier **1.5–3×**; `car` a wash | §4.3 |
+| 3 | **Occ mIoU ≠ transferability** | occ mIoU saturates @2044; det transfer keeps scaling | §4.2 |
+| 4 | Camera FMs: **plain DINOv2 wins**; geometry/agglomerative lose | VGGT backbone **−33%**; RADIO < DINOv2 | §4.1 |
+| 5 | Label-free pretexts are **null-to-negative** | voxel-soft null; DynamicOcc **worse** w/ +60% better labels | §4.3, §4.4 |
+| 6 | **Point FM** (teacher-free) does not clear the ceiling | Sonata **0.299 → 0.285** with *more* capacity | §4.7 |
+| 7 | **Depth FM's** apparent +38% is a **LiDAR side-channel** | 32/8/**0** rings → +0.070 / +0.060 / **−0.010** | §4.7 |
+| 8 | Supervised ceiling **reproduced exactly** | FlashOcc **0.3809** vs published 0.3784 | §4.5 |
+
+Rows 1–2 are the paper. Rows 4–7 are why row 1 is non-obvious: every competing route to the same
+gain was run under this harness and none of them worked.
+
 ### 4.1 Frozen-FM backbone ranking (nuScenes, @2044 frames)
 | backbone | occ mIoU | det mAP@2k | note |
 |---|---|---|---|
@@ -185,6 +215,14 @@ median-aligned = shape only, the fair protocol for an up-to-scale prior):
 | LDCM-32 | 0.069 | 0.923 | 0.088 | 0.934 |
 | LDCM-8 | 0.099 | 0.885 | 0.114 | 0.891 |
 | MoGe alone | 0.905 | **0.0002** | 0.329 | 0.456 |
+
+![LDCM depth completion](ldcm_depth_completion.png)
+
+The figure *is* the mechanism: MoGe alone (c) recovers plausible **structure** but no metric scale
+(raw δ<1.25 = 0.0002); the metric surface appears only once the Poisson step ingests the sparse
+returns (d, e).
+
+![beam ladder](arms_beam_ladder.png)
 
 **This corrects our own hypothesis.** We predicted LDCM would help *because* it is metric and
 sparse-conditioned — i.e. succeed where the VGGT prior was a wash. It does help (+38%), but the
