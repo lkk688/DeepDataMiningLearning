@@ -42,7 +42,8 @@ class NuScenesOccTrainDataset(Dataset):
                  scenes=None, max_samples: Optional[int] = None, stride: int = 1,
                  depth_source: str = "lidar", lidar_sweeps: int = 1, lidar_cache=None,
                  lidar_fusion: bool = False, det_boxes: bool = False, det_class_map=None,
-                 vggt_depth_cache: str = None, vggt_feat_cache: str = None, subset_seed=None):
+                 vggt_depth_cache: str = None, vggt_feat_cache: str = None, subset_seed=None,
+                 sonata_feat_cache: str = None):
         from pyquaternion import Quaternion
         from .geom import PC_RANGE, VOXEL_SIZE, GRID_SIZE
         self.Q = Quaternion
@@ -63,6 +64,7 @@ class NuScenesOccTrainDataset(Dataset):
         self.vggt_depth_cache = vggt_depth_cache     # dir of <token>.npy (N,fH,fW) frozen-VGGT depth
         self.vggt_feat_cache = vggt_feat_cache       # dir of <token>.npy (N,2048,fH,fW) VGGT features
         self.lidar_fusion = lidar_fusion             # also emit a voxelized-LiDAR volume (fusion input)
+        self.sonata_feat_cache = sonata_feat_cache   # point-FM arm: frozen Sonata voxel features
         self.lidar_cache = lidar_cache               # dir to cache aggregated multi-sweep points
         if lidar_cache:
             os.makedirs(lidar_cache, exist_ok=True)
@@ -152,6 +154,14 @@ class NuScenesOccTrainDataset(Dataset):
         occ = (count > 0).astype(np.float32)
         mean_zres = np.where(count > 0, zres / np.maximum(count, 1.0), 0.0)
         vol = np.stack([occ, np.log1p(count), mean_zres], 0)    # (3,nx,ny,nz)
+        if self.sonata_feat_cache:                              # point-FM arm: append frozen Sonata
+            fp = os.path.join(self.sonata_feat_cache, token + ".npz")
+            z = np.load(fp)
+            sidx, sfeat = z["idx"].astype(np.int64), z["feat"].astype(np.float32)
+            sv = np.zeros((sfeat.shape[1], gx, gy, gz), np.float32)
+            if len(sidx):
+                sv[:, sidx[:, 0], sidx[:, 1], sidx[:, 2]] = sfeat.T
+            vol = np.concatenate([vol, sv], 0)                  # (3+C,nx,ny,nz)
         return torch.from_numpy(vol)
 
     def _det_class_of(self, name):

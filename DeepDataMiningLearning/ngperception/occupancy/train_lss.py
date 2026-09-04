@@ -231,6 +231,13 @@ def main():
     ap.add_argument("--vggt-depth-cache", default=None,
                     help="dir of <token>.npy frozen-VGGT depth (N,fH,fW); enables the VGGT-depth "
                          "lift prior (ablation #2). Build with cache_vggt_depth.py.")
+    ap.add_argument("--sonata-feat-cache", default=None,
+                    help="point-FM arm: dir of frozen-Sonata voxel features (cache_sonata_feat.py). "
+                         "Appended to the 3 raw LiDAR channels -> does a teacher-free point FM add "
+                         "anything over raw geometry? Requires --lidar-fusion.")
+    ap.add_argument("--depth-prior-metric", action="store_true",
+                    help="the --vggt-depth-cache prior is already METRIC (LDCM depth-FM arm) -> "
+                         "init the learned scale at 1.0 instead of VGGT's up-to-scale 18.8x.")
     ap.add_argument("--vggt-feat-cache", default=None,
                     help="dir of <token>.npy frozen-VGGT features (N,2048,fH,fW); use with "
                          "--backbone vggt to feed VGGT patch tokens to the DepthNet (features lever, "
@@ -267,24 +274,33 @@ def main():
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
     n = 2 if args.smoke else args.max_samples
     dev = args.device
+    lidar_raw = 3
+    if args.sonata_feat_cache:                       # +C frozen point-FM channels
+        import numpy as _np
+        lidar_raw += int(_np.load(os.path.join(args.sonata_feat_cache, "_pca.npz"))["comp"].shape[0])
+        print(f"[point-FM] Sonata features -> lidar_raw={lidar_raw}", flush=True)
     model = LSSOccupancy(backbone=args.backbone, decoder_hidden=args.decoder_hidden,
                          decoder_layers=args.decoder_layers, feat_upsample=args.feat_upsample,
                          refine_iters=args.refine_iters, lidar_fusion=args.lidar_fusion,
+                         lidar_raw=lidar_raw,
                          lidar_only=args.lidar_only,
-                         vggt_depth=bool(args.vggt_depth_cache)).to(dev)
+                         vggt_depth=bool(args.vggt_depth_cache),
+                         depth_prior_metric=args.depth_prior_metric).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
     train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                        max_samples=n, depth_source=args.depth_source,
                                        lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache,
                                        lidar_fusion=args.lidar_fusion,
                                        vggt_depth_cache=args.vggt_depth_cache,
-                                       vggt_feat_cache=args.vggt_feat_cache)
+                                       vggt_feat_cache=args.vggt_feat_cache,
+                                       sonata_feat_cache=args.sonata_feat_cache)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
                                      lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion,
                                      vggt_depth_cache=args.vggt_depth_cache,
-                                     vggt_feat_cache=args.vggt_feat_cache)
+                                     vggt_feat_cache=args.vggt_feat_cache,
+                                     sonata_feat_cache=args.sonata_feat_cache)
     class_w = None
     if args.occ_class_balance:
         class_w = compute_class_weights(train_ds.occ, power=args.occ_cb_power,
