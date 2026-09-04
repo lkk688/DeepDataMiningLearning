@@ -163,6 +163,63 @@ FlashOcc-4D-stereo ported to modern torch (H100; original torch-1.10 can't run) 
 Lightweight transformer planning head (5.4M params) → L2@1/2/3s + collision on frozen backbones;
 FusionOcc-style fusion occ head on our BEVFusion (NDS 0.688), target ~FusionOcc 0.566.
 
+### 4.7 The two modality arms, measured (point-FM and depth-FM)
+
+Local-scale controlled runs — 400 frames / 12 epochs / DINOv2-B / **single seed**, one RTX 3090:
+a scaled-down §4.1 harness, so read the **deltas**, not the absolute mIoU.
+
+**Depth-FM arm (LDCM).** A ladder over *how much LiDAR the prior ingests*:
+
+| arm | depth prior | rings the prior sees | occ mIoU | Δ vs b0 |
+|---|---|---|---|---|
+| b0 | none | — | 0.183 | — |
+| b3 | MoGe alone (up-to-scale) | **0** | 0.173 | −0.010 (wash) |
+| b2 | LDCM | 8 | 0.243 | **+0.060** |
+| b1 | LDCM | 32 | 0.253 | **+0.070** |
+
+Prior accuracy on LiDAR returns **held out from the 8-ring input** (raw = metric grounding;
+median-aligned = shape only, the fair protocol for an up-to-scale prior):
+
+| prior | AbsRel raw | δ<1.25 raw | AbsRel aligned | δ<1.25 aligned |
+|---|---|---|---|---|
+| LDCM-32 | 0.069 | 0.923 | 0.088 | 0.934 |
+| LDCM-8 | 0.099 | 0.885 | 0.114 | 0.891 |
+| MoGe alone | 0.905 | **0.0002** | 0.329 | 0.456 |
+
+**This corrects our own hypothesis.** We predicted LDCM would help *because* it is metric and
+sparse-conditioned — i.e. succeed where the VGGT prior was a wash. It does help (+38%), but the
+ladder shows the gain is **monotone in the LiDAR the prior ingests and vanishes at zero rings**:
+with no sparse depth (b3) a strong monocular FM lands in exactly the same place as VGGT — a wash.
+So the +38% is a **LiDAR side-channel, not better monocular reasoning**, and a "camera-only" model
+carrying a sparse-depth-conditioned prior is *not camera-only*. The MoGe raw δ<1.25 = 0.0002
+confirms the mechanism directly: the monocular prior is not metric at all; metric grounding is
+injected by the Poisson step that consumes the sparse LiDAR.
+
+**What survives is a different, practical result:** a depth-completion FM is an *efficient
+channel* for routing sparse LiDAR into a camera lift — **8 rings recover 86% of the 32-ring gain**
+(+0.060 of +0.070), roughly half what a dedicated 32-beam fusion branch buys (a0, +0.116).
+That is a real option for low-beam / cheap-LiDAR rigs, and it is a claim about *plumbing*, not
+about foundation-model perception.
+
+**Point-FM arm (Sonata).** Frozen Sonata (PTv3, 108M) features, PCA-16, appended to the LiDAR
+branch's 3 raw geometry channels:
+
+| arm | LiDAR-branch input | occ mIoU | Δ |
+|---|---|---|---|
+| a0 | 3 raw geometry channels | **0.299** | — |
+| a1 | + frozen Sonata (16 ch) | 0.285 | **−0.014** |
+
+A clean negative: the FM arm has **more** capacity (19 vs 3 channels) and still loses, so capacity
+is not the explanation. It is consistent with the domain gap — Sonata is pretrained on **indoor**
+scans with `coord + colour`, while nuScenes LiDAR is outdoor and colourless (we feed intensity as
+grey), and Sonata's published outdoor numbers come from **fine-tuning**, not frozen transfer. It
+also answers the question the arm was built to decide: the label-free ceiling of §4.3 is **not
+merely a teacher-quality bound** — a *teacher-free* point FM does not clear it either when
+transferred out of domain.
+
+*Caveat: single seed at reduced scale; the ±0.01 differences (b3, a1) are within run-to-run noise
+and should be read as "no gain", not as a measured loss.*
+
 ## 5. Discussion / findings
 - **Backbone capacity > backbone "type".** Larger DINOv2 wins; agglomerative (RADIO) and geometry (VGGT)
   FMs *underperform* plain DINOv2 for semantic occ+det — a caution against assuming "more teachers /
@@ -172,6 +229,16 @@ FusionOcc-style fusion occ head on our BEVFusion (NDS 0.688), target ~FusionOcc 
   improvements can hurt. The lever is dense, camera-inferable, high-quality labels at scale.
 - **Frozen FM + lightweight head is the resource-right paradigm** (Patch Policy corroborates over VLAs).
 - **Gaussians belong in prediction/reconstruction, not labels** (VGOcc/ADGaussian corroborate).
+- **Depth-FM priors do not beat the VGGT null — they smuggle in LiDAR.** The strongest available
+  depth FM (LDCM: metric, sparse-conditioned, ICLR'26) helps the lift by +38% *only* in proportion
+  to the LiDAR it ingests, and reproduces the VGGT wash at zero rings (§4.7). The lesson
+  generalises: when a "prior" consumes a sensor the baseline lacks, attribute the gain to the
+  sensor until a zero-sensor rung says otherwise. Our own draft claimed the opposite before we ran
+  the ladder.
+- **Both new modality axes land on the same conclusion as the camera axis.** A point FM (Sonata)
+  and a depth FM (LDCM/MoGe) each fail to beat a plain, well-supervised baseline on *its own
+  merits* — mirroring RADIO and VGGT losing to plain DINOv2. Across camera, point and depth FMs,
+  **capacity and modality-specialisation lose to in-domain semantic capacity plus supervision.**
 - **The "geometric shortcut" names our geometry-FM negative.** Sonata [25] identifies, in 3D SSL, a
   collapse onto low-level spatial cues instead of semantics. Our camera-side result rhymes: VGGT (and,
   more mildly, RADIO) lose to plain DINOv2 on *semantic* occupancy and its transfer. Geometry capacity
@@ -185,16 +252,16 @@ Small label budgets (finetune-only); single dataset (nuScenes); SigLIP2 aspect d
 fusion column and full multi-task (occ+det+planning) tables completing; cross-dataset (Waymo/AV2/
 PhysicalAI) and pose/ray-aware feature fusion (VGOcc/ADGaussian) as next steps.
 
-**Modality asymmetry — the main scope limitation.** Every backbone we benchmark is a **camera-side**
-FM (DINOv2/RADIO/VGGT/SigLIP2), while the LiDAR branch of our fusion column trains from scratch. The
-modality-symmetric study is the natural completion, and two concrete arms are now well-posed:
-- **(a) point-FM arm** — a frozen **Sonata** [25] PTv3 encoder as the LiDAR branch, pushed through the
-  same occ / det / label-efficiency protocol. Because it needs *no teacher*, it is a direct test of
-  whether the label-free ceiling in §4.3 is a **teacher-quality** bound or a **pretext** bound — and
-  its own missing detection numbers are exactly the gap our harness is built to measure.
-- **(b) depth-FM arm** — **LDCM** [26] as the lift's depth prior, evaluated specifically in the
-  sparse/low-beam (64→8-beam) and cross-rig regimes where our VGGT depth-prior null does *not* apply,
-  with its intrinsic-free point map as the shared representation for the Waymo/AV2/PhysicalAI pool.
+**Modality asymmetry.** The camera-side benchmark is now complemented by a **point-FM** and a
+**depth-FM** arm (both run — §4.7), but only at reduced local scale and a single seed; re-running
+them at the §4.1 budget (2044 frames / 24 epochs, multi-seed) and pushing them through the
+*detection-transfer* protocol is the remaining work. The two arms were posed as:
+- **(a) point-FM arm** — frozen **Sonata** [25] as the LiDAR branch: *answered* — no gain out of
+  domain, and the label-free ceiling is not merely teacher-bounded (§4.7). Still open: an
+  **in-domain** point FM (outdoor-pretrained), and the detection-transfer curve.
+- **(b) depth-FM arm** — **LDCM** [26] as the lift's depth prior: *answered* — the gain tracks the
+  ingested LiDAR, not the FM (§4.7). Still open: its **intrinsic-free point map** as the shared
+  cross-rig representation for the Waymo/AV2/PhysicalAI pool, which the ladder does not touch.
 
 ## References
 [1] Tian et al. **Occ3D**: A Large-Scale 3D Occupancy Prediction Benchmark. CVPR 2023. (Tsinghua-MARS-Lab)

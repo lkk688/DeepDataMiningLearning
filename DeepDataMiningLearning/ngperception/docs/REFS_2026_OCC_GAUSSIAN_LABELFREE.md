@@ -86,6 +86,12 @@ label-efficiency transfer). **The single most important one for us is TT-Occ** �
 - **The gap it leaves us (our differentiator):** Sonata reports **only semantic segmentation** outdoors —
   **no 3D detection**. So its strong nuScenes number does **not** establish detection transfer, which is
   exactly what our §4.2 decoupling says must not be assumed. Our harness measures precisely that.
+- **RESULT (run 2026-09-03, PAPER_DRAFT §4.7):** frozen Sonata (PCA-16) appended to the LiDAR
+  branch's 3 raw geometry channels **hurt**: occ mIoU **0.299 -> 0.285**, with *more* capacity
+  (19 vs 3 channels). Clean negative, consistent with the indoor/colour domain gap. It does settle
+  the question the arm was built for: the label-free ceiling is **not merely a teacher-quality
+  bound** — a teacher-free point FM does not clear it either, out of domain. Open: an
+  *outdoor-pretrained* point FM.
 - **Reuse:** (a) frozen PTv3 as the **LiDAR branch** of the fusion column — the point-side counterpart
   our camera-only FM benchmark lacks; (b) its data-efficiency protocol (1% / 20-points-per-scene) is a
   ready template for our label-efficiency curves; (c) "obscure spatial info" is a design rule for any
@@ -106,6 +112,15 @@ label-efficiency transfer). **The single most important one for us is TT-Occ** �
   where it should pay are exactly the ones our VGGT null does **not** cover: **sparse / low-beam** LiDAR
   and **cross-rig** transfer. This makes "does a depth FM help the lift?" a *live* question again, with
   a stated, falsifiable condition.
+- **RESULT (run 2026-09-03, PAPER_DRAFT §4.7) — this refuted our own hypothesis.** LDCM as the
+  lift's depth prior gave **+0.070 mIoU (0.183 -> 0.253, +38%)**, but the beam ladder shows the gain
+  is **monotone in the LiDAR the prior ingests and vanishes at zero rings**: 32 rings +0.070,
+  8 rings +0.060, **0 rings (MoGe alone) -0.010 = the VGGT wash reproduced**. So it is a **LiDAR
+  side-channel, not better monocular reasoning** — a "camera-only" model carrying a
+  sparse-depth-conditioned prior is not camera-only. (MoGe's raw delta<1.25 = 0.0002 confirms the
+  monocular prior is not even metric; the Poisson step supplies the metric grounding.) What
+  survives: a depth-completion FM is an **efficient channel** for sparse LiDAR — **8 rings recover
+  86% of the 32-ring gain** — a plumbing result for low-beam rigs, not an FM-perception result.
 - **Reuse:** (a) **drop-in depth prior** in our existing `vggt_depth` slot (`lss_occ.py`) via the
   `cache_*_depth.py` pattern — a same-slot A/B against VGGT, swept over beam count; (b) the
   **intrinsic-free point map** is a clean answer to the per-rig **intrinsics coupling** that complicates
@@ -128,12 +143,16 @@ label-efficiency transfer). **The single most important one for us is TT-Occ** �
 4. **Cheap label-free geometric auxiliary (SPAN).** 3D→2D projection consistency as an extra
    self-supervised loss for the camera student — no labels needed.
 5. **Modality-drop robustness (PanDA)** for the cross-dataset / multi-sensor pretraining pool.
-6. **Test the teacher-vs-pretext bound (Sonata).** A frozen, teacher-free point FM as the LiDAR branch
-   is the decisive arm: if it lifts low-label detection where our pseudo-label pretexts did not, the
-   ceiling was **teacher quality**; if it also flattens, the ceiling is the **pretext/transfer** itself.
-7. **Re-open the depth-prior question under the right conditions (LDCM).** Same slot as the VGGT
-   ablation, but swept over **LiDAR beam count** — our VGGT null was measured only in the dense-sweep,
-   depth-supervised regime where the prior is redundant by construction.
+6. **Teacher-vs-pretext bound (Sonata) — ANSWERED.** The frozen point FM also flattens (0.299 ->
+   0.285), so the ceiling is **not** teacher quality alone. Next: an outdoor-pretrained point FM, and
+   the detection-transfer curve rather than occ mIoU.
+7. **Depth-prior question (LDCM) — ANSWERED, against our hypothesis.** Sweeping **beam count** was the
+   right design and it showed the gain is the *ingested LiDAR*, not the FM (0 rings reproduces the
+   VGGT null). **Methodological rule this bought us:** whenever a "prior" consumes a sensor the
+   baseline lacks, add a **zero-sensor rung** before attributing the gain to the model. Two eval
+   traps we hit and fixed: scoring a sparse-conditioned prior on its own input pixels
+   (self-reconstruction — use held-out returns), and scoring an up-to-scale prior as metric
+   (use median alignment for shape, raw for metric grounding).
 
 **Net:** none of these papers do label-free-occ → **detection-transfer** — *including Sonata, which
 reports segmentation only* — so our thesis stays differentiated. They hand us concrete upgrades for the
