@@ -17,11 +17,13 @@ You can access our CoE HPC information from the main website: http://coe-hpc-web
 If you provided your SJSU ID to your instructor, you can access the HPC using your SJSU account:
 
 - SSH: `ssh SJSUID@coe-hpc1.sjsu.edu` (replace `SJSUID` with your ID)
-- Accessible group folders: `/data/cmpe249-fa25` and `/scratch/cmpe249-fa25` (example class ID)
-- Create subdirectories in one of these group directories for your project
-- Place datasets in `/data/cmpe249-fa25`.
+- Course folder (Fall 2026): `/data/cmpe249-fa26` — read `/data/cmpe249-fa26/README.md` first. It contains
+  - `datasets/`: shared, read-only copies of KITTI, nuScenes, Waymo, Argoverse 2 (**do not copy them** — symlink)
+  - `envs/`: a ready-to-use Python environment with PyTorch + mmdetection3d (see the section *Shared course environment* below)
+  - `examples/`: ready-to-submit Slurm job scripts
+  - `students/<your SJSU ID>/`: your own workspace (`mkdir /data/cmpe249-fa26/students/$USER`)
 - The head node is not for heavy computation or large storage; keep home dir under 20 GB
-- GPU/CPU nodes are available upon request; courtesy resource with no guarantee
+- GPU/CPU nodes are a shared courtesy resource with no guarantee. **Run GPU work as batch jobs (`sbatch`)**, see the section *Running jobs with Slurm* below
 - Some frameworks cache in your home dir; set different cache folders for PyTorch and Hugging Face in `~/.bashrc` (below)
 
 ---
@@ -82,8 +84,8 @@ nano ~/.bashrc
 # add the following lines
 export http_proxy=http://172.16.1.2:3128
 export https_proxy=http://172.16.1.2:3128
-export HF_HOME=/data/cmpe249-fa25/[XXXcache]/huggingface
-export TORCH_HOME=/data/cmpe249-fa25/[XXXcache]/torch
+export HF_HOME=/data/cmpe249-fa26/students/$USER/cache/huggingface
+export TORCH_HOME=/data/cmpe249-fa26/students/$USER/cache/torch
 source ~/.bashrc  # to take effect
 ```
 ---
@@ -152,86 +154,200 @@ ssh -Y 010xxxxxxx@coe-hpc1.sjsu.edu
 
 ---
 
-## Load Software Modules and Request GPU Node
-Check available modules and load required ones on the head node:
+## Running jobs with Slurm
+
+The head node (`coe-hpc1` / `coe-hpc3`) is only for editing code, small tests and submitting jobs. All real work
+runs on compute nodes, which you get through Slurm.
+
+**Course rules**
+
+| Work | How | Why |
+|---|---|---|
+| GPU work (training, evaluation, inference) | **batch job: `sbatch job.sbatch`** | the GPU is released the moment your script finishes |
+| CPU work (data preprocessing, debugging, Jupyter) | interactive `srun --pty bash` on a CPU partition is fine | CPU nodes are plentiful |
+| Interactive GPU sessions (`srun -p gpuqs ... --pty bash`) | **do not use** | an idle interactive shell keeps the GPU locked for everyone for up to 2 days |
+
+Test your code on a CPU node (or with a tiny `--time=00:15:00` batch job), then submit the real run with `sbatch`.
+
+### Partitions and GPUs
+
+Check the live state any time with `sinfo` (partitions) and `sinfo -p gpuqs -N -o "%N %G %T"` (per-node GPUs and state).
+
+| Partition | Time limit | Nodes | Use |
+|---|---|---|---|
+| `defq` (default) | 6 h | `c[1-20]`, `homacs[1-4]` (CPU only) | interactive CPU work, preprocessing |
+| `cpuqs` / `cpuqm` / `cpuql` | 5 / 14 / 21 days | same CPU nodes | long CPU jobs |
+| `gpuqs` / `gpuqm` / `gpuql` | 2 / 7 / 14 days | `g[1-15]` P100 (1 GPU each), `cs[001-004]` A100 (4 GPUs each), `g[16,18-19]` H100 (1 GPU each) | **class GPU jobs — use `gpuqs` unless you really need longer** |
+| `nsfqs` / `nsfqm` / `nsfql` | 2 / 14 / 21 days | `g[20-32]` H100 | research (NSF grant) nodes |
+| `condo` | 30 days | faculty-owned nodes | not for class use; jobs can be preempted |
+
+You get a GPU **only** if you ask for one with `--gres`. Pick the type explicitly when it matters:
+
+| `--gres=` | GPU | Memory | CUDA compute capability | PyTorch build that works |
+|---|---|---|---|---|
+| `gpu:p100:1` | Tesla P100 | 12–16 GB | 6.0 (`sm_60`) | **CUDA 11.8 builds** (e.g. `torch==2.1.2+cu118`, the shared course env) |
+| `gpu:a100:1` | A100 | 40/80 GB | 8.0 | cu118 or cu12x |
+| `gpu:h100:1` | H100 | 80 GB | 9.0 | cu118 or cu12x |
+| `gpu:1` | whatever is free first | | | must work on all of the above → use cu118 |
+
+> **P100 warning.** P100s are the most available GPUs, but they are old (Pascal, `sm_60`). Recent PyTorch wheels built
+> for CUDA 12.8+ no longer ship `sm_60` kernels, and CUDA 13 drops Pascal entirely. On a P100 such a build fails with
+> `no kernel image is available for execution on the device`. Use a CUDA 11.8 build, and check with
+> `python -c "import torch; print(torch.cuda.get_arch_list())"` — the list must contain `sm_60`.
+> The same applies to compiled extensions (mmcv, spconv, your own CUDA ops): they must be built for `sm_60` too.
+> The *Shared course environment* (below) is already built for P100, A100 and H100.
+
+### Submitting a GPU job (`sbatch`)
+
+A ready-to-use template is in `/data/cmpe249-fa26/examples/gpu_job.sbatch`. Copy it into your folder and edit the
+last lines:
 
 ```bash
-module avail
+mkdir -p /data/cmpe249-fa26/students/$USER/jobs && cd $_
+cp /data/cmpe249-fa26/examples/gpu_job.sbatch .
+mkdir -p logs            # Slurm will NOT create the log folder for you
+sbatch gpu_job.sbatch    # prints: Submitted batch job 123456
 ```
 
-Conda environments:
+The template (`gpu_job.sbatch`):
 
 ```bash
-conda info --envs        # list available conda environments
-conda activate mycondapy311
+#!/bin/bash
+#SBATCH --job-name=cmpe249-job
+#SBATCH --partition=gpuqs            # GPU queue, max 2 days
+#SBATCH --gres=gpu:p100:1            # gpu:p100:1 | gpu:a100:1 | gpu:h100:1 | gpu:1 (any)
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8            # data-loader workers
+#SBATCH --mem=32G
+#SBATCH --time=04:00:00              # HH:MM:SS - ask for what you need; shorter jobs start sooner
+#SBATCH --output=logs/%x-%j.out      # %x = job name, %j = job id
+#SBATCH --error=logs/%x-%j.err
+##SBATCH --mail-type=END,FAIL        # remove one '#' to get an email
+##SBATCH --mail-user=your.name@sjsu.edu
+
+set -euo pipefail
+echo "job $SLURM_JOB_ID on $(hostname), started $(date)"
+nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
+
+# GPU nodes have no direct internet: use the proxy (pip, git, model downloads)
+export http_proxy=http://172.16.1.2:3128 https_proxy=http://172.16.1.2:3128
+# keep caches out of your 20 GB home directory
+export HF_HOME=/data/cmpe249-fa26/students/$USER/cache/huggingface
+export TORCH_HOME=/data/cmpe249-fa26/students/$USER/cache/torch
+
+# shared course environment (PyTorch 2.1 + CUDA 11.8 + mmdetection3d; works on P100/A100/H100)
+export PATH=/data/cmpe249-fa26/envs/mmdet3d-cu118/bin:$PATH
+# ... or your own:  source ~/miniconda3/bin/activate myenv
+
+python /data/cmpe249-fa26/examples/check_env.py      # quick GPU + mmcv/spconv sanity check
+
+# ---- your work goes here ----
+# cd /data/cmpe249-fa26/students/$USER/mmdetection3d
+# python tools/train.py configs/pointpillars/pointpillars_hv_secfpn_8xb6-160e_kitti-3d-3class.py \
+#        --work-dir /data/cmpe249-fa26/students/$USER/work_dirs/pointpillars
+
+echo "finished $(date)"
 ```
 
-### Request a Node with Slurm
-Request a CPU node (interactive bash):
+Monitor and manage your jobs:
 
 ```bash
-srun --pty /bin/bash
-# ...
-exit  # exit the computing node when done
+squeue -u $USER                    # your jobs: PD = pending, R = running
+squeue -u $USER --start            # estimated start time of pending jobs
+tail -f logs/cmpe249-job-123456.out   # follow the output while it runs
+scancel 123456                     # cancel one job      (scancel -u $USER cancels all of yours)
+sacct -j 123456 --format=JobID,State,Elapsed,MaxRSS,ExitCode   # after it finished
 ```
 
-Request a GPU node (interactive bash):
+Tips:
+- A job that is `PD (Resources)` is waiting for a free GPU. `--gres=gpu:1` (any type) or a shorter `--time` usually starts sooner.
+- Save checkpoints regularly and make your script resumable; a job is killed at its `--time` limit.
+- To run several configs (e.g. seeds), submit an array: add `#SBATCH --array=0-4` and use `$SLURM_ARRAY_TASK_ID` in the script.
+- `nvidia-smi` inside the job tells you which GPU you got; `torch.cuda.get_device_name(0)` does the same from Python.
+
+### Interactive CPU session (`srun`)
+
+For debugging, data preprocessing (e.g. `create_data.py`) and Jupyter, take an interactive **CPU** node:
 
 ```bash
-PARTITION   Max TIMELIMIT   Comments
-========    ==============  =======================================
-defq             4:00:00    4 hours - Default CPU queue
-cpuqs        05-01:00:00    5 days  -   Short CPU queue
-cpuqm        14-01:00:00   14 days  -  Medium CPU queue
-cpuql        21-01:00:00   21 days  -    Long CPU queue
-gpuqs        02-01:00:00    2 days  -   Short GPU queue
-gpuqm        07-01:00:00    7 days  -  Medium GPU queue
-gpuql        14-01:00:00   14 days  -    Long GPU queue
-condo        30-01:00:00   30 days  -   condo GPU - Faculty queue
-chemq        30-01:00:00   30 days  -   cchem GPU - Faculty queue
-
-========================>>>>>>> NOTICE <<<<<<<<====================
-
-        NSF Campus CyberInfrastructure Grant
-
-PARTITION   Max TIMELIMIT   Comments: GPU nodes
-========    ==============  =======================================
-nsfqs        up 2-01:00:00      2 days     Short GPU queue
-nsfqm        up 14-01:00:0     14 days    Medium GPU queue
-nsfql        up 21-01:00:0     21 days      Long GPU queue
-
-srun -p gpuqs --pty /bin/bash
-nvidia-smi
-
-exit #exit the GPU node if you are not using
+srun -p defq --cpus-per-task=8 --mem=32G --time=04:00:00 --pty /bin/bash
+# ... work ...
+exit     # always exit when done - this releases the node
 ```
 
-Note: if you see `srun: job <id> queued and waiting for resources`, wait until `allocated resources` message appears. You will be automatically logged into the allocated GPU.
-
-### Optional: Load TensorRT Library
-
-```bash
-conda activate mycondapy311
-export LD_LIBRARY_PATH=/data/cmpe249-fa25/mycuda/TensorRT-8.4.2.4/lib:$LD_LIBRARY_PATH
-```
+Use `-p cpuqs` with a longer `--time` if you need more than 6 hours.
 
 ---
 
 ## JupyterLab Access
-GPU nodes do not have internet access. To access Jupyter in your local browser, set up SSH tunnels from your local machine → HPC headnode, then from headnode → GPU node. Change port `10001` to an available port.
+Run JupyterLab on an interactive **CPU** node (see above) for data exploration and visualization; submit GPU training as a
+batch job. Compute nodes have no direct internet, so tunnel through the head node from your laptop:
 
 ```bash
-# local → headnode
-ssh -L 10001:localhost:10001 0107xxx@coe-hpc1.sjsu.edu
-# headnode → GPU node
-ssh -L 10001:localhost:10001 0107xxx@g7
-# activate your Python environment
-jupyter lab --no-browser --port=10001
+# 1) on the head node: get a CPU node and start Jupyter there
+srun -p defq --cpus-per-task=4 --mem=16G --time=04:00:00 --pty /bin/bash
+hostname                                   # e.g. c5
+export PATH=/data/cmpe249-fa26/envs/mmdet3d-cu118/bin:$PATH   # or activate your own env
+jupyter lab --no-browser --ip=$(hostname) --port=10001
+
+# 2) on your laptop (new terminal): forward the port through the head node to that node
+ssh -L 10001:c5:10001 SJSUID@coe-hpc1.sjsu.edu
 ```
 
-Open the URL shown in the terminal in your local browser.
+Open the `http://127.0.0.1:10001/lab?token=...` URL printed by Jupyter in your local browser. Change `10001` if the port
+is taken. Stop Jupyter (Ctrl-C) and `exit` the node when you are done.
 
-Note: if Jupyter picks a different port, the previous port might be occupied.
+---
+
+## Shared course environment (recommended)
+
+Building mmdetection3d with its CUDA extensions is the most common thing that goes wrong in this course. A tested
+environment is ready to use at `/data/cmpe249-fa26/envs/mmdet3d-cu118`:
+
+| Package | Version |
+|---|---|
+| Python | 3.10 |
+| PyTorch / torchvision | 2.1.2+cu118 / 0.16.2 (kernels for `sm_50 … sm_90`) |
+| mmengine / mmcv / mmdet / mmdet3d | 0.10.4 / 2.1.0 (built from source for `sm_60, 70, 75, 80, 86, 90`) / 3.2.0 / 1.4.0 |
+| spconv | 2.3.8 (cu118) |
+| also | numpy 1.26, nuscenes-devkit, av2, OpenCV, JupyterLab, OmegaConf/Hydra |
+
+Use it without installing anything:
+
+```bash
+export PATH=/data/cmpe249-fa26/envs/mmdet3d-cu118/bin:$PATH       # or:
+conda activate /data/cmpe249-fa26/envs/mmdet3d-cu118              # if you have conda
+python -c "import torch, mmcv, mmdet3d; print(torch.__version__, mmcv.__version__, mmdet3d.__version__)"
+```
+
+It is read-only. To add your own packages, make a light-weight venv **on top of it** in your folder (the big packages
+are reused, only your extras are installed):
+
+```bash
+/data/cmpe249-fa26/envs/mmdet3d-cu118/bin/python -m venv --system-site-packages \
+    /data/cmpe249-fa26/students/$USER/venv
+source /data/cmpe249-fa26/students/$USER/venv/bin/activate
+pip install <your-package>          # do NOT reinstall torch/mmcv here
+```
+
+For mmdetection3d's `tools/` and `configs/`, clone the matching version into your folder (the Python package itself
+comes from the shared env):
+
+```bash
+cd /data/cmpe249-fa26/students/$USER
+git clone -b v1.4.0 --depth 1 https://github.com/open-mmlab/mmdetection3d.git
+cd mmdetection3d && mkdir -p data && ln -s /data/cmpe249-fa26/datasets/kitti data/kitti
+```
+
+If you need to compile your own CUDA extension against this env (e.g. BEVFusion's `bev_pool`), use the matching
+CUDA 11.8 toolkit at `/data/cmpe249-fa26/envs/cuda-11.8`:
+
+```bash
+export CUDA_HOME=/data/cmpe249-fa26/envs/cuda-11.8 PATH=/data/cmpe249-fa26/envs/cuda-11.8/bin:$PATH
+export TORCH_CUDA_ARCH_LIST="6.0;7.0;8.0;8.6;9.0"     # P100, V100, A100, A40, H100
+pip install --no-build-isolation -e .
+```
 
 ---
 
@@ -270,41 +386,53 @@ ipython kernel install --user --name=mycondapy311
 ---
 
 ## CUDA Setup Tutorial
-Multiple options to install CUDA on HPC:
+You only need a CUDA *toolkit* (`nvcc`) to **compile** CUDA extensions. Running PyTorch only needs the GPU driver, which
+is already installed on every GPU node — the pip/conda PyTorch wheels bring their own CUDA runtime.
 
-### Option 1: Use Preinstalled CUDA via Modules (recommended)
+Pick the toolkit that matches the CUDA version of your PyTorch build (`python -c "import torch; print(torch.version.cuda)"`):
+
+### Option 1: CUDA 11.8 (for the shared env / P100-compatible builds)
 
 ```bash
-$ module avail
-$ module load nvhpc-hpcx-cuda12/24.11
-$ nvcc --version
-nvcc: NVIDIA (R) Cuda compiler driver
-Copyright (c) 2005-2024 NVIDIA Corporation
-Built on Thu_Sep_12_02:18:05_PDT_2024
-Cuda compilation tools, release 12.6, V12.6.77
-Build cuda_12.6.r12.6/compiler.34841621_0
+export CUDA_HOME=/data/cmpe249-fa26/envs/cuda-11.8
+export PATH=$CUDA_HOME/bin:$PATH
+nvcc --version          # release 11.8
 ```
 
-### Option 2: Install CUDA under Conda
+### Option 2: CUDA 12.6 via the NVHPC module (for cu126 PyTorch; A100/H100)
 
 ```bash
-conda activate mycondapy311
-conda install -c conda-forge cudatoolkit=11.8.0
-# Optional: CUDA development kit for nvcc
-conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
+module load nvhpc-hpcx-cuda12/24.11
+export CUDA_HOME=/opt/ohpc/pub/apps/nvidia/nvhpc/24.11/Linux_x86_64/24.11/cuda/12.6
+export PATH=$CUDA_HOME/bin:$PATH
+nvcc --version          # release 12.6
+# the math-library headers (cusparse.h, cublas_v2.h) live in a separate folder:
+export CPATH=$CPATH:/opt/ohpc/pub/apps/nvidia/nvhpc/24.11/Linux_x86_64/24.11/math_libs/12.6/targets/x86_64-linux/include
+```
+
+### Option 3: Install a CUDA toolkit into your own conda env
+
+```bash
+conda install -c "nvidia/label/cuda-11.8.0" cuda-nvcc cuda-cudart-dev cuda-libraries-dev
 nvcc -V
 ```
 
 ---
 
 ## PyTorch Installation
-Install PyTorch with matched CUDA version:
+Choose the CUDA build by the GPU you will run on:
 
 ```bash
-(py310) $ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+# Works on every GPU in the cluster, including P100 (sm_60):
+pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
+# A100/H100 only (newer PyTorch; check the P100 note in "Partitions and GPUs" before using on a P100):
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list())"
 python -m torch.utils.collect_env
 ```
 
+If you request `--gres=gpu:1` (any GPU), your environment must work on P100 — use the cu118 build or the shared env.
 
 ## Additional Projects and Tools
 
@@ -333,6 +461,11 @@ from waymo_open_dataset import v2
 ```
 
 ### mmdetection3d
+**Easiest: use the *Shared course environment* (section above)** — it already contains a
+working mmcv/mmdet3d/spconv stack for P100, A100 and H100. The notes below record how to build your own (they use
+PyTorch cu126 + CUDA 12.6 on an H100 node; extensions compiled this way only contain kernels for the GPU you built on
+unless you set `TORCH_CUDA_ARCH_LIST`, so the result will not run on a P100).
+
 ```bash
 (py310) lkk688@newalienware:~/Developer/mmdetection3d$ ln -snf /mnt/e/Shared/Dataset/NuScenes/v1.0-trainval ./data/nuScenes
 (py310) lkk688@newalienware:~/Developer/mmdetection3d$ python tools/create_data.py nuscenes --root-path ./data/nuScenes --out-dir ./data/nuScenes --extra-tag nuscenes
@@ -426,7 +559,7 @@ pip install .
 #7. (optional) save your MMCV 2.2.0 build
 python setup.py bdist_wheel
 #in the dist/ folder
-mmcv]$ cp ./dist/mmcv-2.1.0-cp310-cp310-linux_x86_64.whl /data/cmpe249-fa25
+mmcv]$ cp ./dist/mmcv-2.1.0-cp310-cp310-linux_x86_64.whl /data/cmpe249-fa26/students/$USER/
 
 pip install dist/mmcv-2.1.0*-linux_x86_64.whl --force-reinstall
 ```

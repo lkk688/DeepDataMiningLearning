@@ -266,7 +266,9 @@ class NuScenesOccTrainDataset(Dataset):
         if self.vggt_depth_cache:                                  # frozen-VGGT depth prior (N,fH,fW)
             vp = os.path.join(self.vggt_depth_cache, s.sample_token + ".npy")
             out["vggt_depth"] = torch.from_numpy(np.load(vp).astype(np.float32))
-        if self.vggt_feat_cache:                                   # frozen-VGGT features (N,2048,fH,fW)
+        if self.vggt_feat_cache:            # cached frozen patch features (N,feat_dim,fH,fW)
+            # Also carries the frozen driving-VLM tap (`--vlm-feat-cache`, feat_dim 2560);
+            # the transport is identical, only the producer differs.
             fp = os.path.join(self.vggt_feat_cache, s.sample_token + ".npy")
             out["vggt_feat"] = torch.from_numpy(np.load(fp).astype(np.float32))
         out["sample_idx"] = torch.tensor(i)                        # -> ds.occ.items[i] for token lookup

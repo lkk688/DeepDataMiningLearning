@@ -184,3 +184,15 @@ yolo*.pt
 Others/FlashOCC/
 Others/Occ3D/
 Others/FusionOcc/
+
+CLAUDE.md
+.claude
+# closed-loop research (private: paper material, sim assets, run outputs) - kept local only
+closedloop_occ/
+
+# comparison videos contain NVIDIA PhysicalAI-AV frames (not redistributable)
+DeepDataMiningLearning/ngperception/docs/videos/
+
+# dataset-derived media and third-party papers (not redistributable)
+DeepDataMiningLearning/ngperception/docs/media/
+DeepDataMiningLearning/ngperception/docs/*.pdf

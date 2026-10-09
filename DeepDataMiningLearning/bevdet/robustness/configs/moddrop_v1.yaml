@@ -1,0 +1,82 @@
+# Training vs architecture: does modality-dropout training alone stop a fusion
+# model from falling below its own LiDAR-only floor under camera failure?
+#
+# WHY THIS RUNS SEPARATELY FROM gonogo_v1.yaml
+# `Bmod_dropout_s2` is FlowGuidedTemporalBEVFusion evaluated on the mkf30
+# multi-keyframe protocol (`nuscenes_infos_val_mkf30.pkl`). Its absolute NDS is
+# NOT comparable to the gonogo_v1 arms (LC 0.7118 / L 0.6922 / ours 0.6881) --
+# reported clean numbers for this protocol are LC 0.5685 / L-only 0.5573.
+# Compare it only against its OWN floor, produced by the `_lidaronly` arm below.
+#
+# THE FLOOR IS BETTER HERE THAN IN gonogo_v1
+# `_lidaronly` is the SAME checkpoint with BEV_MODALITY=lidar, which zeroes the
+# camera BEV branch inside the model (`bevfusion_ca.py::_modality_mask`). That is
+# a within-model ablation -- same weights, camera path masked -- rather than the
+# cross-model proxy floor gonogo_v1 has to use. It also separates two different
+# things that gonogo_v1 conflates:
+#   BEV_MODALITY=lidar : "no camera"      -- the clean ablation
+#   cam_drop_all       : "broken camera"  -- camera present but uninformative
+# The gap between them is exactly how much a *corrupted* refiner costs over
+# simply not having one.
+#
+# READING IT
+#   Bmod under cam_dark / cam_drop_all >= its own _lidaronly clean score
+#     -> modality-dropout TRAINING is sufficient; no architecture change needed,
+#        and the CMT/MetaBEV port (3-7 days each) is not justified yet.
+#   Bmod still falls below its own floor
+#     -> training is not enough; the separate-attention architectures become the
+#        next thing to test.
+
+name: moddrop_v1
+seed: 0
+
+repo_root: /data/rnd-liu/MyRepo/DeepDataMiningLearning
+mmdet3d_root: /data/rnd-liu/MyRepo/mmdetection3d
+output_root: /data/rnd-liu/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/bevdet/robustness/outputs
+python: /home/010796032/miniconda3/envs/py310/bin/python
+
+dataloader:
+  batch_size: 1
+  num_workers: 4
+
+models:
+  - key: moddrop_full
+    config: work_dirs/B22_nuscenes_backeval/20260526_145720/vis_data/config.py
+    checkpoint: work_dirs/Bmod_dropout_s2/epoch_4.pth
+    anchor: {NDS: 0.5685, mAP: 0.4368}    # mkf30 protocol, fused
+    env: {BEV_MODALITY: full}
+
+  # within-model floor: same weights, camera BEV zeroed inside the model.
+  # Camera-side corruptions are no-ops once the camera branch is masked, so the
+  # single clean cell IS the floor for every camera condition.
+  - key: moddrop_lidaronly
+    config: work_dirs/B22_nuscenes_backeval/20260526_145720/vis_data/config.py
+    checkpoint: work_dirs/Bmod_dropout_s2/epoch_4.pth
+    anchor: {NDS: 0.5573, mAP: 0.4189}    # mkf30 protocol, LiDAR-only
+    env: {BEV_MODALITY: lidar}
+    skip_conditions:
+      - cam_drop_all
+      - cam_drop_front
+      - cam_blur
+      - cam_dark
+      - cam_fog
+      - cam_noise
+      - calib_rot1deg
+
+conditions:
+  - key: clean
+    ops: []
+  - key: cam_drop_all
+    ops: [{type: cam_drop, views: [all]}]
+  - key: cam_dark
+    ops: [{type: cam_dark, gain: 0.25, gamma: 1.5}]
+  - key: cam_drop_front
+    ops: [{type: cam_drop, views: [front]}]
+  - key: cam_blur
+    ops: [{type: cam_blur, sigma: 3.0}]
+  - key: cam_fog
+    ops: [{type: cam_fog, t: 0.6}]
+  - key: cam_noise
+    ops: [{type: cam_noise, sigma: 25.0}]
+  - key: calib_rot1deg
+    ops: [{type: calib_extrinsic, rot_deg: 1.0, trans_m: 0.05}]

@@ -1,0 +1,176 @@
+# Go/no-go probe v1 -- does the clean-nuScenes fusion ranking survive degradation?
+#
+# Three models spanning the axis we care about:
+#   bevfusion_lc_official  dense BEV grid, depth-distribution LSS lifting  (anchor NDS 0.7117)
+#   ours_calss             dense BEV grid, cross-attention lifting (no depth distribution)
+#   bevfusion_l_official   LiDAR only -- the floor that says how much of each
+#                          model's robustness is simply "it still has LiDAR"
+#
+# Everything is scored on the FULL official val split (6019 samples) with the
+# official nuScenes metric, so the clean row must reproduce the published anchors.
+
+name: gonogo_v1
+seed: 0
+
+repo_root: /data/rnd-liu/MyRepo/DeepDataMiningLearning
+mmdet3d_root: /data/rnd-liu/MyRepo/mmdetection3d
+output_root: /data/rnd-liu/MyRepo/DeepDataMiningLearning/DeepDataMiningLearning/bevdet/robustness/outputs
+python: /home/010796032/miniconda3/envs/py310/bin/python
+
+dataloader:
+  batch_size: 1        # matches the protocol that produced the 0.7117 anchor
+  num_workers: 4       # corruption is CPU work; 4 keeps the GPU fed without
+                       # starving other jobs sharing this node
+
+models:
+  - key: bevfusion_lc_official
+    config: projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py
+    checkpoint: modelzoo_mmdetection3d/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.weightsonly.pth
+    anchor: {NDS: 0.7117, mAP: 0.6837}   # our own measurement, 2025-11-13
+
+  - key: ours_calss
+    config: work_dirs/mybevfusion7_newv3/mybevfusion7_crossattnaux_paintingv3.py
+    checkpoint: work_dirs/mybevfusion7_newv3/epoch_3.pth
+    anchor: {NDS: 0.6881, mAP: 0.6397}
+
+  # Within-model floor for ours_calss: same weights, camera BEV zeroed before fusion
+  # (BEVFusionWithAux._modality_mask_hook). Input corruption alone cannot tell a
+  # disconnected branch from one emitting a useful input-independent constant --
+  # moddrop_v1 proved that distinction is real. Camera-side conditions are no-ops once
+  # the branch is masked, so `clean` is the whole measurement.
+  - key: ours_calss_lidaronly
+    config: work_dirs/mybevfusion7_newv3/mybevfusion7_crossattnaux_paintingv3.py
+    checkpoint: work_dirs/mybevfusion7_newv3/epoch_3.pth
+    env: {BEV_MODALITY: lidar}
+    skip_conditions:
+      - cam_drop_all
+      - cam_drop_front
+      - cam_blur
+      - cam_dark
+      - cam_fog
+      - cam_noise
+      - calib_rot1deg
+      - lidar_dropout_p50
+      - lidar_beams_16
+      - lidar_beams_8
+      - lidar_fov_front180
+
+  # POSITIVE CONTROL for the hook itself. ours_calss_lidaronly returned a 2.3e-07 delta,
+  # which is either "the camera branch is fully disconnected" or "the hook never fired".
+  # Dropping the *LiDAR* BEV instead must be catastrophic (LiDAR is the dominant
+  # modality); if this also returns ~0.6881 the hook is a no-op and the lidaronly row
+  # means nothing.
+  - key: ours_calss_cameraonly
+    config: work_dirs/mybevfusion7_newv3/mybevfusion7_crossattnaux_paintingv3.py
+    checkpoint: work_dirs/mybevfusion7_newv3/epoch_3.pth
+    env: {BEV_MODALITY: camera}
+    skip_conditions:
+      - cam_drop_all
+      - cam_drop_front
+      - cam_blur
+      - cam_dark
+      - cam_fog
+      - cam_noise
+      - calib_rot1deg
+      - lidar_dropout_p50
+      - lidar_dropout_p85
+      - lidar_dropout_p95
+      - lidar_beams_16
+      - lidar_beams_8
+      - lidar_fov_front180
+
+  - key: bevfusion_l_official
+    config: projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py
+    checkpoint: modelzoo_mmdetection3d/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-2628f933.pth
+    # Camera-side conditions are meaningless for a LiDAR-only model. The cam_* ones
+    # would be silent no-ops; calib_rot1deg is worse -- it perturbs camera extrinsics
+    # and hard-fails with KeyError: 'lidar2cam', because a LiDAR-only test pipeline
+    # never loads them. Skip all seven.
+    skip_conditions:
+      - cam_drop_all
+      - cam_drop_front
+      - cam_blur
+      - cam_dark
+      - cam_fog
+      - cam_noise
+      - calib_rot1deg
+
+conditions:
+  - key: clean
+    ops: []
+
+  # ---- camera degradation ----
+  - key: cam_drop_all
+    note: total camera loss -- the model must fall back on LiDAR alone
+    ops:
+      - {type: cam_drop, views: [all]}
+
+  - key: cam_drop_front
+    note: single-camera failure, the most common real one
+    ops:
+      - {type: cam_drop, views: [front]}
+
+  - key: cam_blur
+    note: defocus / motion blur, sigma 3 px at 1600x900
+    ops:
+      - {type: cam_blur, sigma: 3.0}
+
+  - key: cam_dark
+    note: night / underexposure
+    ops:
+      - {type: cam_dark, gain: 0.25, gamma: 1.5}
+
+  - key: cam_fog
+    note: uniform airlight blend t=0.6 (contrast loss, depth-independent)
+    ops:
+      - {type: cam_fog, t: 0.6}
+
+  - key: cam_noise
+    note: additive sensor noise, sigma 25/255
+    ops:
+      - {type: cam_noise, sigma: 25.0}
+
+  # ---- LiDAR degradation ----
+  - key: lidar_beams_16
+    note: 32-beam -> 16-beam sensor
+    ops:
+      - {type: lidar_beam_decimate, keep_beams: 16}
+
+  - key: lidar_beams_8
+    note: 32-beam -> 8-beam sensor
+    ops:
+      - {type: lidar_beam_decimate, keep_beams: 8}
+
+  - key: lidar_dropout_p50
+    note: half the returns lost (reflectivity / rain)
+    ops:
+      - {type: lidar_dropout, p: 0.5}
+
+  - key: lidar_fov_front180
+    note: scanner blinded behind -- forward 180 deg wedge only
+    ops:
+      - {type: lidar_fov, fov_deg: 180.0}
+
+  # ---- severity-matched dropout (RESEARCH_DIRECTIONS.md 5) ----
+  # F4 claims the camera fills in where LiDAR is *sparse* but not where it is *absent*.
+  # The evidence is that lidar_fov_front180 damages the LiDAR-only model MORE than
+  # lidar_beams_16 (-0.177 vs -0.124) yet the camera is worth LESS there (0.60x vs
+  # 2.55x of its clean value), so severity alone cannot explain the pattern. What is
+  # still missing is a *random* degradation matched in severity to 16-beam: p=0.5 only
+  # damages L-only by -0.027, far short of -0.124. These two calibrate p; run the
+  # fusion arms only at whichever lands nearest -0.124.
+  - key: lidar_dropout_p85
+    note: severity calibration -- target L-only damage ~= -0.124 (the 16-beam level)
+    ops:
+      - {type: lidar_dropout, p: 0.85}
+
+  - key: lidar_dropout_p95
+    note: severity calibration, upper bracket
+    ops:
+      - {type: lidar_dropout, p: 0.95}
+
+  # ---- calibration ----
+  - key: calib_rot1deg
+    note: per-camera extrinsic error, 1 deg rotation + 5 cm translation
+    ops:
+      - {type: calib_extrinsic, rot_deg: 1.0, trans_m: 0.05}

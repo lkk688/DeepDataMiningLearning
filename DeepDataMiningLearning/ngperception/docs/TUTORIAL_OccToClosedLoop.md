@@ -4,7 +4,7 @@
 the pivot to closed-loop simulation, and the first positive result (occupancy prevents an at-fault collision).
 Includes DA3 and GaussianOcc roles, and the strategy for a solid paper result.*
 
-Last updated: 2026-07-26. Companion files: `docs/PAPER_DRAFT.md` (open-loop paper), `closedloop_occ/PLAN.md`
+Last updated: 2026-07-26. Companion files: `closedloop_occ/RESEARCH_DIRECTIONS.md` (private, gitignored), `closedloop_occ/PLAN.md`
 (closed-loop project + milestones).
 
 ---
@@ -189,6 +189,12 @@ push it to the driver, then run the clean **GT-occ vs no-occ** upper-bound. Only
 **`closedloop_occ/IMPLEMENTATION_PLAN_LIDAR.md`** (exact files/lines/code + rebuild + test). ~1 day; do it in a
 fresh focused session (deep async event-queue surgery on the working runtime — clean context matters).
 
+> **Note (2026-09-27): Option A has landed, and its first version had a sensor-placement bug.** The rendered LiDAR
+> came from the rig origin (ground level) instead of the roof mount, which produced ego self-hits and a "ground
+> disk". A geometric occupancy gate fed by it braked almost constantly. The fix renders from the per-scene mount in
+> the scene USDZ (`lidar_calibrations.T_sensor_rig`) and returns rig-frame points; results obtained with the old
+> LiDAR need a re-run.
+
 **After Option A lands (priority order):**
 1. **Multi-scene GT-occ vs no-occ** → collision_at_fault mean ± std (a valid statistic, not a DA3 artifact).
 2. **Perception-quality → safety curve** (Q1): GT-lidar (ceiling) vs DINOv2-L semantic occ vs DA3 → safety
@@ -209,6 +215,6 @@ fresh focused session (deep async event-queue surgery on the working runtime —
    Cluster internet via proxy `http_proxy=http://172.16.1.2:3128`; we run inside a SLURM interactive alloc so
    the run scripts `unset SLURM_JOB_ID` to force the local apptainer path.
 
-**Reproduce:** open-loop = `ngperception/occupancy/*` (see PAPER_DRAFT). Closed-loop = `closedloop_occ/`:
+**Reproduce:** open-loop = `ngperception/occupancy/*` (see RESEARCH_DIRECTIONS.md). Closed-loop = `closedloop_occ/`:
 `run_local_gtreplay.sh` (M0), `run_local_occ_drive.sh` (ego-only), `run_local_occ_da3.sh` (+occ). Details in
 the [[closedloop-occ-alpasim]] and [[backbone-transfer-study]] memory notes.

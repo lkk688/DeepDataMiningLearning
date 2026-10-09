@@ -74,6 +74,12 @@ class CamEncoder(nn.Module):
             feat_dim = {"dinov2": 384, "dinov2_base": 768, "dinov2_large": 1024}[backbone]
         elif backbone == "vggt":
             feat_dim = 2048        # frozen VGGT patch tokens, fed from cache (no in-module backbone)
+        elif backbone == "qwendrive":
+            # Frozen driving-VLM image tap: the decoder's hidden states at image-token
+            # positions, after language_model.norm -- literally the tensor Qwen-Drive's own
+            # BEV head reads. Fed from a cache (bevdet/lidar_tokens/cache_vlm_feat.py); the
+            # 4 B VLM never enters the training loop.
+            feat_dim = 2560
         elif backbone == "radio":  # NVIDIA agglomerative FM (distills DINOv2+CLIP+SAM), ViT patch-16
             self.radio = torch.hub.load("NVlabs/RADIO", "radio_model", version="radio_v2.5-b",
                                         progress=False, skip_validation=True)
@@ -203,10 +209,17 @@ class LSSOccupancy(nn.Module):
         # ablation: zero the camera lifted volume so the decoder sees LiDAR only (same params).
         self.lidar_only = lidar_only
         _dino = backbone.startswith("dinov") or backbone in ("vggt", "radio", "siglip2")  # 252x700 patch grids
-        base_ds = 14 if _dino else 16
+        if backbone == "qwendrive":
+            # Qwen-Drive resizes every camera to 896x512 and its merged image-token grid is
+            # 28x16, so 896/32 = 28 and 512/32 = 16: the cached grid IS image_hw//downsample
+            # and the dataset's existing intrinsic rescaling makes the lift geometry match by
+            # construction rather than by a correction factor.
+            base_ds, default_hw = 32, (512, 896)
+        else:
+            base_ds, default_hw = (14 if _dino else 16), ((252, 700) if _dino else (256, 704))
         # upsampling the features by U makes the effective patch/stride U× finer
         self.downsample = downsample or (base_ds // feat_upsample)
-        self.image_hw = image_hw or ((252, 700) if _dino else (256, 704))
+        self.image_hw = image_hw or default_hw
         self.C = ctx_channels
         self.n_classes = n_classes
         self.xb, self.yb, self.zb = XBOUND, YBOUND, ZBOUND
@@ -356,7 +369,7 @@ class LSSOccupancy(nn.Module):
         / fusion (modality-robust training + inference).
         Returns (occ_final, depth_init, aux) with aux={'occ':[...],'depth':[...]} for deep supervision."""
         B, N = imgs.shape[:2]
-        if self.backbone == "vggt" and vggt_feat is not None:   # cached frozen-VGGT patch features
+        if self.backbone in ("vggt", "qwendrive") and vggt_feat is not None:  # cached frozen features
             ctx, depth = self.encoder.forward_feat(vggt_feat.flatten(0, 1).float())
         else:
             ctx, depth = self.encoder(imgs.flatten(0, 1))   # (B*N,C,h,w), (B*N,D,h,w)

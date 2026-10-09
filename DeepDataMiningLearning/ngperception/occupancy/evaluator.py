@@ -64,6 +64,7 @@ class OccupancyEvaluator:
         # class-agnostic occupied-vs-free
         self.g_tp = self.g_fp = self.g_fn = 0
         self.n = 0
+        self.rows = []   # per-sample counts, in add() order (for per-sample benchmarks / dashboards)
 
     def add(self, pred: np.ndarray, gt: np.ndarray, mask_camera: np.ndarray = None):
         """pred, gt: (200,200,16) uint8 semantic grids; mask_camera: bool/uint8 grid."""
@@ -73,17 +74,26 @@ class OccupancyEvaluator:
             sel = np.ones_like(gt, bool)
         p, g = pred[sel].astype(np.int64), gt[sel].astype(np.int64)
 
+        row = np.zeros((NUM_SEMANTIC + 1, 3), np.int64)       # [tp, fp, fn]; last row = geometric
         for c in range(NUM_SEMANTIC):
             pc, gc = (p == c), (g == c)
-            self.tp[c] += int(np.sum(pc & gc))
-            self.fp[c] += int(np.sum(pc & ~gc))
-            self.fn[c] += int(np.sum(~pc & gc))
+            row[c] = (np.sum(pc & gc), np.sum(pc & ~gc), np.sum(~pc & gc))
         # geometric: occupied = any class != free
         po, go = (p != FREE), (g != FREE)
-        self.g_tp += int(np.sum(po & go))
-        self.g_fp += int(np.sum(po & ~go))
-        self.g_fn += int(np.sum(~po & go))
+        row[-1] = (np.sum(po & go), np.sum(po & ~go), np.sum(~po & go))
+        self.tp += row[:-1, 0]; self.fp += row[:-1, 1]; self.fn += row[:-1, 2]
+        self.g_tp += int(row[-1, 0]); self.g_fp += int(row[-1, 1]); self.g_fn += int(row[-1, 2])
+        self.rows.append(row)
         self.n += 1
+
+    def dump(self, path: str, tokens: List[str], meta: Dict = None) -> None:
+        """Write per-sample [tp, fp, fn] counts (17 classes + geometric) to an .npz, keyed by token.
+        Aggregates recomputed from these rows equal summarize() exactly (the global confusion is
+        their sum), so a dashboard can show per-sample IoU and any subset's mIoU."""
+        import json
+        assert len(tokens) == len(self.rows), (len(tokens), len(self.rows))
+        np.savez_compressed(path, tokens=np.asarray(tokens), counts=np.stack(self.rows),
+                            classes=np.asarray(OCC3D_CLASSES[:NUM_SEMANTIC]), meta=json.dumps(meta or {}))
 
     def summarize(self, verbose: bool = True) -> Dict[str, float]:
         iou = self.tp / np.maximum(self.tp + self.fp + self.fn, 1)

@@ -32,6 +32,7 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--max-samples", type=int, default=None); ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--persample-out", default=None, help="write per-sample [tp,fp,fn] counts (.npz) for benchmarks")
     args = ap.parse_args()
     dev = args.device
     from nuscenes import NuScenes
@@ -54,6 +55,9 @@ def main():
             if (i + 1) % 500 == 0:
                 print(f"  {i+1}/{len(ds)}", flush=True)
     s = ev.summarize(verbose=False)
+    if args.persample_out:
+        ev.dump(args.persample_out, [ds.occ[i].sample_token for i in range(len(ds))], meta=vars(args))
+        print("wrote per-sample counts ->", args.persample_out, flush=True)
     tail = {CLASS_NAMES[c]: s["per_class"][OCC3D_CLASSES[c]] for c in TAIL_CLASSES}
     print(f"\n===== FlashOcc (camera-only) on Occ3D val =====")
     print(f"  mIoU = {s['mIoU']:.4f}   geo-IoU = {s['geo_IoU']:.4f}   "

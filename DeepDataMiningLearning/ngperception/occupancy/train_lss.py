@@ -61,13 +61,40 @@ def lovasz_softmax_flat(probas, labels, ignore=17):
     return torch.stack(losses).mean()
 
 
-def occ_loss(occ, semantics, mask_camera, class_w=None, lovasz_w=0.0):
+def occ_loss(occ, semantics, mask_camera, class_w=None, lovasz_w=0.0, balance_with=None):
     """occ: (B,C,X,Y,Z); semantics: (B,X,Y,Z); mask_camera: (B,X,Y,Z) bool.
-    CE (optionally class-balanced) + optional Lovász-softmax (direct mIoU surrogate)."""
+    CE (optionally class-balanced) + optional Lovász-softmax (direct mIoU surrogate).
+
+    NOTE ON THE MASK. Occ3D's protocol supervises (and scores) only camera-visible
+    voxels. Measured over 120 frames, that discards **37 % of labelled occupied
+    voxels**, and the discarded part is disproportionately vehicles (car 1.04x,
+    truck 1.23x, trailer 1.58x more voxels outside the mask than inside) while the
+    kept part is dominated by near-field flat ground. Those labels already exist --
+    Occ3D's GT is accumulated over the sequence -- so `--occ-mask all` supervises the
+    occluded region at no annotation cost. See RESEARCH_DIRECTIONS.md 4.6."""
     B, C = occ.shape[:2]
-    logit = occ.permute(0, 2, 3, 4, 1).reshape(-1, C)[mask_camera.reshape(-1)]
-    tgt = semantics.reshape(-1)[mask_camera.reshape(-1)]
-    loss = F.cross_entropy(logit, tgt, weight=class_w)
+    flat = occ.permute(0, 2, 3, 4, 1).reshape(-1, C)
+    sem_flat = semantics.reshape(-1)
+    sel = mask_camera.reshape(-1)
+    if balance_with is not None:
+        # Region-BALANCED: average the CE of the two regions instead of pooling their
+        # voxels. `--occ-mask all` pools them, and since the occluded region is ~84% of
+        # the grid it then dominates the mean and dilutes the gradient on the observable
+        # region -- which is a plausible cause of the -64% in-mask collapse that mode
+        # produced. Averaging makes each region worth half regardless of voxel count, so
+        # this run separates "the occluded region is unlearnable" from "the loss was
+        # re-weighted".
+        other = balance_with.reshape(-1)
+        parts = []
+        for m in (sel, other):
+            if m.any():
+                parts.append(F.cross_entropy(flat[m], sem_flat[m], weight=class_w))
+        loss = sum(parts) / max(len(parts), 1)
+        logit, tgt = flat[sel], sem_flat[sel]          # Lovász stays on the visible region
+    else:
+        logit = flat[sel]
+        tgt = sem_flat[sel]
+        loss = F.cross_entropy(logit, tgt, weight=class_w)
     if lovasz_w > 0:
         loss = loss + lovasz_w * lovasz_softmax_flat(logit.float().softmax(1), tgt, ignore=17)
     return loss
@@ -177,8 +204,19 @@ def collate(batch):
 
 
 def evaluate(model, loader, device, max_batches=None):
+    """Stratified evaluation.
+
+    `mIoU` / `geo_IoU` keep the Occ3D convention (camera-visible voxels only) so every
+    historical number stays comparable. The extra keys split the grid by what the
+    protocol can and cannot see:
+      pred_mIoU  -- voxels OUTSIDE mask_camera: the region the standard loss and metric
+                    both discard, i.e. what a model must *predict* rather than measure
+      all_mIoU   -- every labelled voxel
+    """
     model.eval()
     ev = OccupancyEvaluator()
+    ev_pred = OccupancyEvaluator()
+    ev_all = OccupancyEvaluator(use_camera_mask=False)
     with torch.no_grad():
         for i, b in enumerate(loader):
             lv = b["lidar_vox"].to(device) if "lidar_vox" in b else None
@@ -189,10 +227,18 @@ def evaluate(model, loader, device, max_batches=None):
                         vggt_depth=vd, vggt_feat=vf)[0]
             pred = occ.argmax(1).cpu().numpy()
             for j in range(pred.shape[0]):
-                ev.add(pred[j], b["semantics"][j].numpy(), b["mask_camera"][j].numpy())
+                mc = b["mask_camera"][j].numpy().astype(bool)
+                sem_j = b["semantics"][j].numpy()
+                ev.add(pred[j], sem_j, mc)
+                ev_pred.add(pred[j], sem_j, ~mc)
+                ev_all.add(pred[j], sem_j)
             if max_batches and i + 1 >= max_batches:
                 break
-    return ev.summarize(verbose=False)
+    out = ev.summarize(verbose=False)
+    for tag, e in (("pred", ev_pred), ("all", ev_all)):
+        for k, v in e.summarize(verbose=False).items():
+            out[f"{tag}_{k}"] = v
+    return out
 
 
 def main():
@@ -201,6 +247,9 @@ def main():
     ap.add_argument("--nusc", default="/mnt/e/Shared/Dataset/NuScenes/v1.0-trainval")
     ap.add_argument("--max-samples", type=int, default=400)
     ap.add_argument("--val-samples", type=int, default=30)
+    ap.add_argument("--occ-mask", choices=["camera", "all", "balanced"], default="camera",
+                    help="voxels the occupancy loss covers: Occ3D's camera-visible mask "
+                         "(default, the standard protocol) or every labelled voxel")
     ap.add_argument("--epochs", type=int, default=6)
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--lr", type=float, default=2e-3)
@@ -224,7 +273,7 @@ def main():
     ap.add_argument("--occ-cb-power", type=float, default=0.25,
                     help="tempering exponent for class weights (0=uniform, 1=full inverse-freq)")
     ap.add_argument("--occ-cb-cache", default=None, help="cache file for computed class weights")
-    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base", "dinov2_large", "vggt", "radio", "siglip2", "dinov3"],
+    ap.add_argument("--backbone", choices=["resnet18", "dinov2", "dinov2_base", "dinov2_large", "vggt", "radio", "siglip2", "dinov3", "qwendrive"],
                     default="resnet18")
     ap.add_argument("--finetune-backbone", action="store_true", help="Phase-2: unfreeze the FM backbone")
     ap.add_argument("--backbone-lr", type=float, default=1e-5, help="low LR for the unfrozen backbone")
@@ -241,6 +290,13 @@ def main():
                     help="upsample backbone features for a finer lift/supervision grid (2 -> 36x100)")
     ap.add_argument("--refine-iters", type=int, default=1,
                     help="iterative render-and-refine lift passes (1=single-shot; 2 = one refine)")
+    ap.add_argument("--vlm-feat-cache", default=None,
+                    help="dir of <token>.npy (N,2560,16,28) frozen driving-VLM image-tap features; "
+                         "use with --backbone qwendrive. Built by "
+                         "bevdet/lidar_tokens/cache_vlm_feat.py. Tests whether the occluded-space "
+                         "ceiling (§4.6 pred_mIoU 0.070) is a property of single-frame information "
+                         "or of vision-only features -- the loss was varied there, the feature "
+                         "prior never was.")
     ap.add_argument("--lidar-fusion", action="store_true",
                     help="fuse voxelized LiDAR as an input (train+inference), not just depth sup.")
     ap.add_argument("--lidar-only", action="store_true",
@@ -278,13 +334,13 @@ def main():
                                        lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache,
                                        lidar_fusion=args.lidar_fusion,
                                        vggt_depth_cache=args.vggt_depth_cache,
-                                       vggt_feat_cache=args.vggt_feat_cache)
+                                       vggt_feat_cache=args.vggt_feat_cache or args.vlm_feat_cache)
     val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
                                      lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion,
                                      vggt_depth_cache=args.vggt_depth_cache,
-                                     vggt_feat_cache=args.vggt_feat_cache)
+                                     vggt_feat_cache=args.vggt_feat_cache or args.vlm_feat_cache)
     class_w = None
     if args.occ_class_balance:
         class_w = compute_class_weights(train_ds.occ, power=args.occ_cb_power,
@@ -329,7 +385,14 @@ def main():
                                         b["trans"].to(dev), b["intrins"].to(dev), lidar_vox=lv,
                                         vggt_depth=vd, vggt_feat=vf)
                 sem_d, mask_d = b["semantics"].to(dev), b["mask_camera"].to(dev)
-                l_occ = occ_loss(occ, sem_d, mask_d, class_w=class_w, lovasz_w=args.occ_lovasz)
+                if args.occ_mask == "camera":
+                    loss_mask, bal = mask_d, None
+                elif args.occ_mask == "all":
+                    loss_mask, bal = torch.ones_like(mask_d), None
+                else:                                   # balanced
+                    loss_mask, bal = mask_d, ~mask_d
+                l_occ = occ_loss(occ, sem_d, loss_mask, class_w=class_w,
+                                 lovasz_w=args.occ_lovasz, balance_with=bal)
                 if len(aux["occ"]) > 1:            # deep supervision on the earlier refine stages
                     for occ_i in aux["occ"][:-1]:
                         l_occ = l_occ + args.refine_occ_weight * occ_loss(
@@ -358,7 +421,10 @@ def main():
             if args.smoke and it >= 1:
                 break
         m = evaluate(model, val_ld, dev, max_batches=3 if args.smoke else None)
-        print(f"[lss_occ] epoch {ep}: val mIoU={m['mIoU']:.3f} geo_IoU={m['geo_IoU']:.3f}", flush=True)
+        print(f"[lss_occ] epoch {ep}: val mIoU={m['mIoU']:.3f} geo_IoU={m['geo_IoU']:.3f}"
+              f" | pred_mIoU={m.get('pred_mIoU', float('nan')):.3f}"
+              f" pred_geo={m.get('pred_geo_IoU', float('nan')):.3f}"
+              f" all_mIoU={m.get('all_mIoU', float('nan')):.3f}", flush=True)
 
     if not args.smoke:
         os.makedirs(args.out_dir, exist_ok=True)

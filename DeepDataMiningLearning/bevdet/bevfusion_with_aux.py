@@ -4,6 +4,7 @@
 # predicts a class-agnostic center heatmap and combines it with the main
 # detection loss. This file also includes robust helpers for extracting
 # multi-view image tensors and stacking calibration/augmentation matrices.
+import os
 from copy import deepcopy
 from typing import Dict, List, Tuple, Optional
 import math
@@ -304,8 +305,39 @@ class BEVFusionWithAux(BEVFusion):
       )
     """
 
+    @staticmethod
+    def _modality_mask_hook(module, args):
+        """Zero one BEV branch just before fusion, driven by ``BEV_MODALITY``.
+
+        Mirrors ``bevfusion_ca.BEVFusionCA._modality_mask`` so the two model families
+        answer the same diagnostic question. Registered as a *forward pre-hook* on
+        ``fusion_layer`` rather than by wrapping the module, so the module tree and
+        therefore every checkpoint key stay untouched, and both the training path
+        (``loss()``) and the inference path (the parent's ``extract_feat``) are covered
+        by one hook.
+
+        Why it exists: the robustness probe can corrupt a branch's *input* (black
+        images), but that cannot distinguish a branch that is disconnected from one
+        that emits a useful but input-independent constant -- `Bmod_dropout_s2` turned
+        out to be the latter (black images cost 1.1e-4 NDS, zeroing the feature cost
+        0.0112). Telling those apart needs this *feature* ablation as well.
+
+        No-op unless BEV_MODALITY is set, so existing runs are unaffected.
+        """
+        mode = os.environ.get('BEV_MODALITY', '').strip().lower()
+        if mode not in ('lidar', 'camera'):
+            return None                       # leave args untouched
+        feats = list(args[0])                 # fusion_layer([img_bev, pts_bev])
+        if len(feats) != 2:
+            return None
+        i = 0 if mode == 'lidar' else 1       # 'lidar' = drop the camera BEV
+        feats[i] = torch.zeros_like(feats[i])
+        return (feats,) + tuple(args[1:])
+
     def __init__(self, aux_cfg: Optional[Dict] = None, **kwargs):
         super().__init__(**kwargs)
+        if getattr(self, 'fusion_layer', None) is not None:
+            self.fusion_layer.register_forward_pre_hook(self._modality_mask_hook)
         self.aux_on = aux_cfg is not None
         if self.aux_on:
             # The auxiliary head operates on the image BEV produced by the
