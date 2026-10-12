@@ -1,0 +1,17 @@
+# The 4-arm capacity gate of QWEN_DRIVE_LIDAR_TOKENS.md §4, as a config.
+#   python train_projector.py --config configs/gate_demo6.yaml --inject lidar
+# Precedence is command line > this file > defaults, so `inject` is deliberately absent:
+# pass it per arm (see run_projector_gate.sh).
+vlm: /data/rnd-liu/Others/Qwen-Drive-1.0-4B
+head: /data/rnd-liu/Others/Qwen-Drive-1.0-4B/perception
+frames: /data/rnd-liu/Others/Qwen-Drive-1.0/data/demo/perception
+exp_name: gate
+grid: 8                # K = 64 LiDAR tokens
+height_bins: 16
+hidden: 512
+lr: 0.001
+epochs: 15
+eval_every: 5
+seed: 0
+eval_attn: kernel      # report the released model's own numbers
+attn_math: fp32        # training-time deformable attention precision

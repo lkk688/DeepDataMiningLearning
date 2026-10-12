@@ -273,11 +273,25 @@ class BEVFusionCA(Base3DDetector):
     # ---------- LiDAR branch ----------
     def extract_pts_feat(self, batch_inputs_dict) -> torch.Tensor:
         points = batch_inputs_dict['points']
+        # pts_middle_encoder must stay INSIDE the autocast-disabled block.
+        # spconv decorates its autograd Functions with
+        #     amp.custom_fwd(cast_inputs=torch.float16)
+        # so it casts to float16 unconditionally whenever autocast is enabled,
+        # ignoring the configured autocast dtype. These runs use
+        # AmpOptimWrapper(dtype=bfloat16): bf16 has fp32's exponent range but
+        # fp16 saturates at 65504, so voxel features that are safe in bf16
+        # overflow to Inf inside the sparse encoder. The Inf propagates through
+        # the temporal block into the decoder and finally surfaces, far from
+        # its origin, as
+        #     ValueError: matrix contains invalid numeric entries
+        # raised by linear_sum_assignment in HungarianAssigner3D.
+        # With autocast disabled, custom_fwd performs no cast and the encoder
+        # runs in fp32.
         with torch.autocast('cuda', enabled=False):
             points = [p.float() for p in points]
             feats, coords, sizes = self.voxelize(points)
             batch_size = coords[-1, 0] + 1
-        x = self.pts_middle_encoder(feats, coords, batch_size)
+            x = self.pts_middle_encoder(feats, coords, batch_size)
         return x
 
     @torch.no_grad()

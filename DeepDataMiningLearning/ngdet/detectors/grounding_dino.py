@@ -112,9 +112,17 @@ class HFZeroShotDetector(BaseDetector):
                     text_threshold=self.text_threshold,
                     target_sizes=target_sizes)[0]
             except (TypeError, AttributeError):
-                # OWL fallback: plain object-detection post-processing.
-                results = self.processor.post_process_object_detection(
-                    outputs, threshold=0.0, target_sizes=target_sizes)[0]
+                if hasattr(self.processor, "post_process_object_detection"):
+                    # OWL fallback (transformers 4.x): plain object-detection post-processing.
+                    results = self.processor.post_process_object_detection(
+                        outputs, threshold=0.0, target_sizes=target_sizes)[0]
+                else:
+                    # OWL on transformers 5.x: grounded post-processing without text_threshold; pass the query
+                    # terms so results carry "text_labels" (names), not just query indices.
+                    terms = self.text_prompt[0] if isinstance(self.text_prompt, list) and self.text_prompt \
+                        and isinstance(self.text_prompt[0], list) else self.text_prompt
+                    results = self.processor.post_process_grounded_object_detection(
+                        outputs, threshold=0.0, target_sizes=target_sizes, text_labels=[list(terms)])[0]
 
         boxes = results["boxes"].detach().cpu().numpy().reshape(-1, 4)
         scores = results["scores"].detach().cpu().numpy().reshape(-1)

@@ -1081,3 +1081,216 @@ keypoint, curve, anchor-line), the CULane/OpenLane SOTA landscape, datasets, met
 roadmap to 3-D lanes — is in **[lane/TUTORIAL.md](lane/TUTORIAL.md)**.
 
 ![lane demo](docs/lane_demo_frame.png)
+
+## 4. Cross-domain evaluation — does nuScenes occupancy transfer to the closed-loop renders?
+
+The closed-loop AV2 driving simulator (NuRec 3DGS reconstructions of Argoverse-2) is *out of domain*
+for every occupancy model here — they are all trained on real nuScenes cameras. Before feeding an occ
+model to the closed loop, we ask: **how much does a nuScenes-trained occupancy model degrade on the
+AV2 renders, and which model transfers best?** That best transferer is the right base to fine-tune.
+
+### 4.1 The harness (`occupancy/xdomain/`)
+1. **Render AV2 surround** (`closedloop_occ/run_av2_surround_render.sh` + camera config `av2_surround`):
+   a GT-replay renders all **7 AV2 ring cameras** (front/side/rear) from the recon along the recorded
+   trajectory. The recon exposes each camera's OpenCV intrinsics + pose, so no calibration guessing.
+2. **Extract** (`av2_extract.py`): per frame → 7 JPEGs + intrinsics + camera→ego extrinsics + the
+   ego pose + actor boxes (dynamic + static, with sizes; AV2 boxes carry **no semantic class**).
+3. **GT**: voxelize the dynamic actor boxes into the Occ3D ego grid (200×200×16) = a *class-agnostic*
+   object-occupancy target. (Full dense geometric GT would need a rendered-LiDAR pass; the AV2 renders
+   have no dense semantic labels, so we score geometry/objects, not 18-class mIoU.)
+4. **Run + score** (`av2_run_lss.py`, `metrics.py`): feed the 7 cameras to a baseline → predicted occ →
+   **object recall** (does it put occupancy where the objects are — robust to over-prediction),
+   precision, and object-occ IoU.
+
+### 4.2 First result — our camera-only LSS
+| metric | nuScenes (in-domain) | AV2 surround (cross-domain) |
+|---|---|---|
+| object recall (occ ∩ object / object) | **0.755** | **0.546** |
+| predicted occupied fraction | 0.49 | 0.36 |
+
+The camera-only LSS **still detects objects on the AV2 renders** (recall 0.55, well above chance) but
+drops ~28% relative — a real but not catastrophic domain gap. Its very low precision (it over-predicts
+occupancy everywhere, occ-frac 0.36–0.49 vs GT ~0.05) is a *model* property, consistent across domains,
+so recall is the honest transfer signal here. This is the weakest baseline; the calibrated teachers
+(FlashOcc 0.381, OPUSv2 0.386) are next (§4.3) and give the informative transfer ranking.
+
+### 4.3 The baseline transfer table — self-supervised models transfer, supervised-ResNet50 models collapse
+
+We evaluate four nuScenes-trained **camera-only** occ teachers on **4 AV2 scenes** (`00a6ffc1`,
+`06e5ac08`, `0d37aee4`, `106d962b`; 48 surround keyframes total), each against a matched in-domain
+nuScenes-Occ3D reference. **Airtight controls:** every model gets the *same* 6 AV2 cameras
+(`av2_common.AV2_6`; all three were trained on 6 cams and OPUS/FusionOcc hardcode `//6`), the *same*
+anisotropic full-resize to 256×704 (no crop — AV2's portrait `front_center` would lose most content
+under the nuScenes width-resize+bottom-crop; the projection was validated by re-projecting actor-box
+centers, 55/60 land in-frame vs 6/60 with the buggy crop), and the *same* actor-box GT + metric.
+
+Dense-semantic occ fills the whole static scene, so raw "occupied recall" is inflated by
+over-prediction. The over-prediction-robust headline is **FG_REC** — of the voxels inside a real object,
+the fraction labeled a *foreground object class* (car/truck/ped/…), chance level `fg_frac`≈0.01.
+Harness (`xdomain/`): `av2_extract_temporal.py` (8-frame windows from a rollout), `av2_transfer_table.py`
+(LSS+FlashOcc), `av2_run_opus.py`, `av2_run_gaussianocc.py`, `av2_run_flashocc.py`; matched references
+`*_indomain_ref.py` (incl. `fusionocc_indomain_ref.py`); shared `av2_common.py` (6-camera choice + metrics)
+and `metrics.py`; all assembled by `aggregate_table.py`.
+
+| model | backbone / pretraining | in-domain FG_REC | AV2 FG_REC | occ_frac in→AV2 | **FG retention** |
+|---|---|---|---|---|---|
+| **GaussianOcc** — self-sup, 1-frame | **self-supervised** (no labels) | 0.297 | 0.185 | 0.40 → 0.63 | **62 %** ⟵ robust |
+| **our LSS** — DINOv2-base, 1-frame | **self-sup DINOv2** + occ head | 0.645 | **0.382** | 0.20 → 0.32 | **59 %** ⟵ robust |
+| **FlashOcc** — R50 + temporal-stereo, 3-frame | supervised ImageNet R50 | 0.525 | 0.105 | 0.19 → **0.68** | 20 % ⟵ over-predicts |
+| **OPUSv2-L** — R50 sparse-query, 8-frame | supervised ImageNet R50 | 0.618 | 0.036 | 0.19 → **0.04** | 6 % ⟵ under-predicts |
+
+**The finding.** On the 3DGS render domain the four models split cleanly by **pretraining**, not by
+architecture, temporal depth, or in-domain accuracy:
+- **The two self-supervised / foundation-feature models retain the most** — GaussianOcc 62 %, DINOv2 LSS
+  59 % — even though GaussianOcc is a much *weaker* model at home (in-domain FG_REC 0.297). Its
+  robustness generalizes the result beyond DINOv2: it is **self-supervision itself**, not one specific
+  backbone, that survives the render gap.
+- **The two supervised-ResNet50 models collapse**, in opposite failure modes: **OPUSv2 under-predicts to
+  near-empty** (occ_frac 0.19→0.04 — sparse queries lose confidence, the score threshold prunes them, the
+  scene vanishes; 6 % retained) and **FlashOcc over-predicts** (occ_frac 0.19→0.68 — the camera-aware
+  DepthNet floods the grid and paints obstacles as *background* road/terrain/building; 20 % retained).
+
+**Two readings, one recommendation.** By *retention* (fraction of home ability kept) GaussianOcc leads,
+which is the cleanest evidence for the self-supervision claim. But for the **fine-tuning base** what
+matters is *absolute* AV2 object recognition — and there **the DINOv2 LSS wins decisively (AV2 FG_REC
+0.382, 2× GaussianOcc's 0.185) while also being robust (59 %)**. So: the paper's *scientific* claim is
+"self-supervised pretraining dominates in-domain accuracy for render transfer"; the *engineering* choice
+for Phase-4 fine-tuning is the **DINOv2 LSS**.
+
+**Confounds ruled out.** (1) FlashOcc's collapse is not the temporal adapter — a degenerate zero-baseline
+stereo window (frame ×3) reproduces occ_frac 0.83 / FG_REC 0.06. (2) OPUS's collapse is not the AV2
+`ego2img` adapter — its *in-domain* run (0.618, native loader) proves the model works, and every AV2
+adapter is **geometrically validated** by re-projecting actor-box centers (OPUS 55/60 in-frame;
+GaussianOcc 407/407 = 100 %; each self-sup/supervised model gets a matched in-domain reference proving the
+model+checkpoint are sound). (3) The preprocessing is identical across models, so the ranking is not a
+preprocessing artifact. (4) Each model reuses its *own* training preprocessing where possible (GaussianOcc
+runs through its native dataset/rasterizer, OPUS/FusionOcc via their native loaders in-domain), so the
+collapse is a property of the models, not our harness.
+
+**Scope / honesty.** 4 AV2 scenes, 48 keyframes; object-focused FG_REC/obj_IoU (no dense geometric GT —
+that needs the rendered-LiDAR Option-A pass). In-domain uses each model's *native* preprocessing (its true
+home performance) while AV2 uses the shared anisotropic resize (unavoidable — AV2 aspect ratios differ),
+so retention folds in a small preprocessing component; the cross-model *ranking* is unaffected.
+
+**GaussianOcc** (self-supervised, camera-only) is added as the fourth camera row — the key test of
+whether the robustness is about *self-supervision in general* or specifically the DINOv2 features.
+
+**FusionOcc** (camera+LiDAR, Swin-B) is **validated in-domain (FG_REC 0.812** — best of all, LiDAR gives
+precise geometry) but its AV2 row is **deferred to Phase 4**. Two reasons: (1) the sim renders GT LiDAR
+(`send_lidar`) but pushes it to the driver *without logging it to `rollout.asl`*, so extraction needs a
+sim-recorder change — which is the same rendered-LiDAR work Phase 4 needs anyway for dense *geometric*
+occ GT; and (2) the only available LiDAR is Option-A GT geometry (near-perfect), so a FusionOcc number is
+a *perfect-LiDAR upper bound* ("does robust LiDAR rescue the camera-domain collapse"), not a clean
+camera-domain-gap measurement — it belongs with the Phase-4 rendered-LiDAR study, not this camera table.
+
+### 4.4 Phase 4 — domain-adapting the DINOv2 LSS on renders nearly *doubles* held-out obstacle recall
+
+We fine-tune the winning DINOv2 LSS on AV2 renders. The obstacle is that renders give **class-agnostic
+object boxes** (GT locations, no class) but **no dense semantic GT**, so a naive box-only loss has no
+free-space signal and drifts into FlashOcc-style over-prediction. Our objective (`train_lss_av2ft.py`)
+avoids that with two terms:
+- **Foreground loss** at object-box voxels: `-log Σ_{c∈OBJ} softmax(c)` — maximize the probability the
+  voxel is *some* foreground object class. Adapts the encoder to render-domain object appearance.
+- **Frozen-teacher KD** at every other voxel: `KL(student ‖ pretrained-teacher)` anchors the pretrained
+  road/free/background behavior (anti-forgetting), so total occupancy cannot balloon.
+
+**Protocol.** 16 training scenes rendered (480 keyframes), **disjoint** from the 4 eval scenes; 4 epochs,
+lr 1e-5. Training is clean: foreground loss 1.92→0.57 (P(fg) at boxes ~0.15→0.56), KD flat ~0.37.
+Evaluated on the **held-out** 4 scenes:
+
+| metric | pretrained | **+ AV2 fine-tune** | Δ |
+|---|---|---|---|
+| **FG_REC** (obstacle recall) | 0.382 | **0.706** | **+0.324 (+85 %)** |
+| occ_recall (geometric) | 0.471 | 0.750 | +0.279 |
+| occ_frac (total occupancy) | 0.320 | 0.314 | −0.006 ✓ no over-prediction |
+| obj_IoU (foreground precision) | 0.098 | 0.048 | −0.050 |
+| fg_frac (foreground share) | 0.018 | 0.068 | +0.050 |
+
+**Result.** Held-out obstacle recall **nearly doubles (0.382→0.706)** — closing most of the domain gap —
+while total occupancy stays flat (occ_frac 0.320→0.314): the KD held the geometry, the foreground loss
+re-labeled occupied voxels background→foreground. Every eval scene improved (e.g. `0d37aee4` 0.567→0.877,
+`106d962b` 0.292→0.767). This validates the arc: **identify the gap → pick the domain-robust model (DINOv2
+LSS) → close most of it with only weak object-box supervision.**
+
+**Video.** `docs/media/occ_temporal_0d37aee4.mp4` (still: `docs/media/occ_temporal_still.png`) — the
+fine-tuned model frame-by-frame on a held-out clip. Left: `ring_front_center` render; right: predicted
+occupancy in a **camera-aligned chase view** (ego at bottom-center, +x forward into the scene; black
+box + yellow heading), so it lines up with the front camera — the bus ahead ↔ blue voxels ahead, the
+right-side wall ↔ grey `manmade`, the road ↔ magenta `drivable`. **Honest caveat:** the dense semantic
+prediction is visibly *noisy* on the render domain — we optimized/measured obstacle recall (FG_REC), never
+clean dense semantics, so the voxel map is speckled and occasionally misclassifies (a clean-occupancy
+objective or the rendered-LiDAR geometry of §4.5 would be needed to fix it). Generate:
+`occupancy/predict_occ_sequence.py` → `occupancy/occ_video.py` (headless pyvista/vtk-osmesa vizenv).
+
+**The tradeoff, and a precision term.** The box-only gain is pure *recall*: foreground precision drops
+(obj_IoU 0.098→0.048, above-chance enrichment 21×→10×) because the loss rewards recall only. Since the
+sim's object GT is **complete**, any foreground predicted *outside* a box is a true false positive, so we
+add a precision term — `-log(1-P_fg)` at non-box voxels (self-balancing: ~0 where already correct, large
+only on false positives). Re-fine-tuned:
+
+| model | FG_REC | occ_frac | fg_frac | obj_IoU | enrichment |
+|---|---|---|---|---|---|
+| pretrained | 0.382 | 0.320 | 0.018 | 0.098 | 20.8× |
+| + box-only fine-tune | **0.706** | 0.314 | 0.068 | 0.048 | 10.3× |
+| + box + **precision** term | 0.695 | 0.309 | 0.060 | **0.054** | 11.6× |
+
+The precision term tightens foreground (fg_frac 0.068→0.060, enrichment 10.3→11.6×, obj_IoU +12 %) while
+holding the recall gain (0.695 ≈ 0.706). The effect is modest — the recall/precision tradeoff is
+fundamental (the pretrained model's high precision comes from barely predicting foreground at all) — but
+it confirms the mechanism, and for the closed-loop *"does the reflex see the obstacle?"* question recall
+is the safety-critical axis. Harness: `train_lss_av2ft.py`, `eval_lss_ckpt.py`; checkpoints
+`output/lss_occ_av2ft{,_prec}/`.
+
+### 4.5 The rendered-LiDAR path — infrastructure works, GT LiDAR is ground-mesh-dominated
+
+> **Correction (2026-09-27).** The diagnosis below is wrong. The "dense flat ground disk right at the ego" was not
+> caused by `--use-ground-mesh=true`. Our LiDAR render request placed the sensor at the **rig origin** (rear axle,
+> ground level) instead of its roof mount: `construct_lidar_render_request` passed the ego pose with no sensor
+> offset, while cameras do get their `rig_to_camera` offset. Rays that start at ground level hit the ground mesh and
+> the ego body immediately. The fix renders from `ego_pose @ T_sensor_rig`, where `T_sensor_rig` is the per-scene
+> LiDAR calibration in the scene USDZ (`rig_trajectories.json → lidar_calibrations`), and maps the returned points
+> back to the rig frame. After it, ego self-hits drop from ~34 % to 0 % and the cloud shows normal ring structure and
+> range. `lidar_dense_gt.lidar_occ_free` must then ray-march from the sensor origin, not (0, 0, 0). Anything built on
+> the old dumps (free-space labels, LiDAR teachers, geometric occupancy gates) should be regenerated.
+
+For a *geometric* (rather than box-complement) precision signal we wired the sim's GT LiDAR out: the
+`send_lidar` render pushes points to the driver but logs nothing, so we added a localized dump in the
+render event (`events/camera.py`, `<logdir>/lidar_dump/lidar_<t>_<cam>.npy`) — this **works** (56 k
+points/frame, rig frame, extractable, dense-GT builder in `lidar_dense_gt.py`). But the physics
+backend runs with `--use-ground-mesh=true`, so the GT LiDAR is **dominated by a dense flat ground disk
+right at the ego** (≈90 % of returns within 2.7 m at z≈0) with only sparse far geometry — ray-traversed
+free space is too sparse (≈1 %) to supervise cleanly. The box-complement precision term above sidesteps
+this. A proper rendered-LiDAR free-space / FusionOcc-fusion study needs a real LiDAR-sensor model (no
+ground-mesh self-hits) — that is the open Phase-4 item, and it is where the deferred **FusionOcc** row
+(validated in-domain FG_REC 0.812) also belongs.
+
+### 4.6 Is temporal/recurrent occupancy worth it? A go/no-go probe — and an honest negative
+
+Occupancy *should* be a persistent belief updated frame-by-frame (occlusions fill in as the ego moves,
+predictions stop flickering). Before building a learned recurrent state (an SSM/Mamba-style occupancy
+world-model — constant memory vs a growing KV-cache), we ran the cheap baseline it must beat: a
+hand-coded ego-warp + EMA temporal filter over the fine-tuned LSS's per-frame occupancy
+(`temporal_filter_probe.py`, dense 0.13 s clips, 456 scored frames):
+
+| filter | FG_REC | occ_frac | obj_IoU | flicker (fg-IoU) |
+|---|---|---|---|---|
+| **single-frame** | **0.719** | 0.308 | 0.053 | 0.682 |
+| naive ego-warp + EMA | 0.676 | 0.247 | 0.063 | 0.671 |
+| **class-aware warp** (static warped, dynamics from current frame) | 0.715 | 0.255 | 0.055 | 0.693 |
+
+**The naive filter *hurts* recall (0.719→0.676)** — a rigid ego-warp is correct for the static world but
+**misplaces dynamic objects** (they move independently of the ego), so the EMA averages a smear. This
+reproduces a prior nuScenes finding ("rigid-warp temporal −23%"). The **class-aware warp** (ego-warp only
+the static classes; take the foreground classes from the current frame) **recovers recall to parity**
+(0.715 ≈ 0.719) — confirming dynamics was the cause — but it does **not beat** single-frame; the
+occlusion-fill benefit is real but small and is cancelled by warp diffusion/edge erosion (occ_frac still
+drops).
+
+**Honest conclusion.** On *open-loop occupancy accuracy*, temporal fusion is **neutral at best** — a
+learned SSM would fight the same headwind, and framing it as a mIoU/recall win would be a red-ocean
+grind. Temporal/recurrent occupancy earns its place only through capabilities the single-frame model
+*cannot* have: (1) **forecasting** — a recurrent state that models motion can roll forward with no new
+image (a new capability, the world-model/VLA angle), and (2) **closed-loop stability** — whether
+temporal consistency lowers the reactivity tax, which open-loop metrics can't measure. That reframing
+(world-model + closed-loop, not accuracy) is what launched the `closedloop_occ/worldmodel_occ/` project;
+see its `PLAN.md`.

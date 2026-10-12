@@ -44,6 +44,7 @@ def main():
     ap.add_argument("--batch-size", type=int, default=8)
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--device", default="cuda")
+    ap.add_argument("--persample-out", default=None, help="write per-sample [tp,fp,fn] counts (.npz) for benchmarks")
     args = ap.parse_args()
 
     from nuscenes import NuScenes
@@ -83,6 +84,9 @@ def main():
                 print(f"  {(i+1)*args.batch_size}/{len(ds)} frames", flush=True)
 
     out = ev.summarize(verbose=False)
+    if args.persample_out:
+        ev.dump(args.persample_out, [ds.occ[i].sample_token for i in range(len(ds))], meta=vars(args))
+        print("wrote per-sample counts ->", args.persample_out, flush=True)
     print("\n=== official Occ3D-nuScenes val ===")
     print(f"frames={out['num_samples']}  mIoU={out['mIoU']:.4f}  geo_IoU={out['geo_IoU']:.4f}")
     print("\n--- per-class IoU (17 semantic classes) ---")
