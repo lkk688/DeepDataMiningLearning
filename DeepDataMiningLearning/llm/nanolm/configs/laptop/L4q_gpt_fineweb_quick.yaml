@@ -1,0 +1,6 @@
+# Laptop track L4-quick (~10 min): a 4-layer x 256 GPT on FineWeb for 1000 steps -- check the
+# pipeline before committing an hour to L4.
+defaults: [L4_gpt_fineweb.yaml]
+name: L4q_gpt_fineweb_quick
+model: {dim: 256, n_layers: 4, n_heads: 4}
+train: {max_steps: 1000, eval_every: 250, max_time_sec: 1500}

@@ -1,0 +1,21 @@
+# Part 1 tokenizer study, laptop-sized (~8 runs x 10-20 min).
+name: laptop_tokenizers
+base: ../laptop/L3_tokenizer.yaml
+seeds: [1337]
+runs:
+  - name: char
+    overrides: {data.tokenizer: char}
+  - name: byte
+    overrides: {data.tokenizer: byte}
+  - name: word_2048
+    overrides: {data.tokenizer: "word:2048"}
+  - name: word_8192
+    overrides: {data.tokenizer: "word:8192"}
+  - name: sp_bpe_512
+    overrides: {data.tokenizer: "sp_train:bpe:512"}
+  - name: sp_bpe_2048
+    overrides: {data.tokenizer: "sp_train:bpe:2048"}
+  - name: sp_unigram_2048
+    overrides: {data.tokenizer: "sp_train:unigram:2048"}
+  - name: gpt2_bpe
+    overrides: {data.tokenizer: gpt2, train.batch_size: 8, train.grad_accum: 4}

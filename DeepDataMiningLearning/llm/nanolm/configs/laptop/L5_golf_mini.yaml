@@ -1,0 +1,23 @@
+# Laptop track L5 (target ~40-60 min, ~2.5 GB): the parameter-golf BASELINE architecture, scaled down:
+# 6 layers x 384 (6 heads / 3 KV heads), relu^2 MLP x2, U-Net skips, x0 mixing, QK-norm + gain,
+# logit softcap, tied embeddings, Muon + Adam, warmdown. 2500 steps x 16k tokens = 41M tokens.
+defaults: [../04_golf_baseline.yaml]
+name: L5_golf_mini
+model: {dim: 384, n_layers: 6, n_heads: 6, n_kv_heads: 3}
+train:
+  seq_len: 512
+  batch_size: 16
+  grad_accum: 2
+  max_steps: 2500
+  max_time_sec: 5400
+  warmdown_frac: 0.25
+  compile: false
+  eval_every: 500
+  eval_tokens: 262144
+eval:
+  final_eval_tokens: 2097152
+  batch_size: 8
+export:
+  quant_bits: 8
+  compressor: lzma
+  budget_mb: 6.5             # a laptop-sized "golf" budget (the baseline fits at int8; bigger models need int6)

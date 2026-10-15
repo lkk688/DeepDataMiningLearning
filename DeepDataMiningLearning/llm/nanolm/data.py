@@ -157,6 +157,127 @@ class SentencePieceTokenizer(Tokenizer):
             base[i] = len(piece.encode("utf-8"))
         return base, lead, boundary
 
+class WordTokenizer(Tokenizer):
+    """Word-level tokenizer that is LOSSLESS thanks to byte fallback.
+
+    Text is split into words, whitespace runs and single punctuation marks (regex below), so
+    joining the pieces gives back the exact text. The vocabulary is the 256 byte values followed
+    by the most frequent pieces in the TRAINING text. A piece that is not in the vocabulary
+    (out-of-vocabulary, "OOV") is spelled out as its UTF-8 bytes instead of becoming <unk>,
+    so every token has a known byte length and bits-per-byte stays exact.
+    """
+    PATTERN = r"\w+|\s+|[^\w\s]"
+
+    def __init__(self, pieces: list[str]):
+        self.spec = f"word:{256 + len(pieces)}"
+        self.pieces = list(pieces)
+        self.stoi = {p: 256 + i for i, p in enumerate(self.pieces)}
+        self.vocab_size = 256 + len(self.pieces)
+
+    @classmethod
+    def train(cls, text: str, vocab_size: int) -> "WordTokenizer":
+        import collections
+        import re
+        counts = collections.Counter(re.findall(cls.PATTERN, text))
+        return cls([p for p, _ in counts.most_common(max(0, vocab_size - 256))])
+
+    def encode(self, text: str) -> list[int]:
+        import re
+        ids: list[int] = []
+        for piece in re.findall(self.PATTERN, text):
+            i = self.stoi.get(piece)
+            if i is None:
+                ids.extend(piece.encode("utf-8"))      # byte fallback for OOV pieces
+            else:
+                ids.append(i)
+        return ids
+
+    def decode(self, ids) -> str:
+        out, buf = [], bytearray()
+        for i in ids:
+            i = int(i)
+            if i < 256:
+                buf.append(i)
+                continue
+            if buf:
+                out.append(buf.decode("utf-8", errors="replace"))
+                buf = bytearray()
+            out.append(self.pieces[i - 256])
+        if buf:
+            out.append(buf.decode("utf-8", errors="replace"))
+        return "".join(out)
+
+    def byte_luts(self):
+        base = np.array([1] * 256 + [len(p.encode("utf-8")) for p in self.pieces], dtype=np.int16)
+        z = np.zeros(self.vocab_size, dtype=bool)
+        return base, z, z.copy()
+
+    def meta(self) -> dict:
+        return {**super().meta(), "pieces": self.pieces}
+
+
+def train_sentencepiece(text: str, model_type: str, vocab_size: int, out_prefix: str) -> str:
+    """Train a LOSSLESS SentencePiece model on `text` (identity normalisation, whitespace kept,
+    byte fallback) so that the bpb byte accounting stays exact. Returns the .model path."""
+    import sentencepiece as spm
+    tmp = out_prefix + ".train.txt"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    spm.SentencePieceTrainer.train(
+        input=tmp, model_prefix=out_prefix, model_type=model_type, vocab_size=vocab_size,
+        character_coverage=1.0, byte_fallback=True, normalization_rule_name="identity",
+        remove_extra_whitespaces=False, allow_whitespace_only_pieces=True, split_digits=True,
+        bos_id=1, eos_id=2, pad_id=0, unk_id=3, max_sentence_length=1 << 20,
+        input_sentence_size=2_000_000, shuffle_input_sentence=True, minloglevel=2)
+    os.remove(tmp)
+    return out_prefix + ".model"
+
+
+def _bytes_to_unicode() -> dict[int, str]:
+    """GPT-2's byte -> printable-unicode table used by byte-level BPE tokenizers."""
+    bs = list(range(ord("!"), ord("~") + 1)) + list(range(ord("¡"), ord("¬") + 1)) + list(range(ord("®"), ord("ÿ") + 1))
+    cs = bs[:]
+    n = 0
+    for b in range(256):
+        if b not in bs:
+            bs.append(b)
+            cs.append(256 + n)
+            n += 1
+    return dict(zip(bs, map(chr, cs)))
+
+
+class HFTokenizer(Tokenizer):
+    """Any HuggingFace tokenizer (`hf:Qwen/Qwen2.5-0.5B`, `hf:gpt2`, ...)."""
+
+    def __init__(self, name: str):
+        from transformers import AutoTokenizer
+        self.name = name
+        self.tok = AutoTokenizer.from_pretrained(name)
+        self.spec, self.vocab_size = f"hf:{name}", len(self.tok)
+        self.eot_id = self.tok.eos_token_id
+
+    def encode(self, text: str) -> list[int]:
+        return self.tok.encode(text, add_special_tokens=False)
+
+    def decode(self, ids) -> str:
+        return self.tok.decode([int(i) for i in ids])
+
+    def byte_luts(self):
+        n = self.vocab_size
+        base = np.zeros(n, dtype=np.int16)
+        boundary = np.zeros(n, dtype=bool)
+        inv = {c: b for b, c in _bytes_to_unicode().items()}
+        special = set(self.tok.all_special_ids)
+        for i, t in enumerate(self.tok.convert_ids_to_tokens(list(range(n)))):
+            if i in special or t is None:
+                boundary[i] = True
+                continue
+            if all(c in inv for c in t):               # byte-level BPE: exact
+                base[i] = len(t)
+            else:                                      # other schemes: decode (approximate)
+                base[i] = len(self.tok.decode([i]).encode("utf-8"))
+        return base, np.zeros(n, dtype=bool), boundary
+
 
 def build_tokenizer(spec: str, text_for_vocab: str | None = None, meta: dict | None = None) -> Tokenizer:
     if spec == "char":
@@ -171,29 +292,42 @@ def build_tokenizer(spec: str, text_for_vocab: str | None = None, meta: dict | N
         return TiktokenTokenizer(spec)
     if spec.startswith("sp:"):
         return SentencePieceTokenizer(os.path.expanduser(spec[3:]))
-    raise ValueError(f"unknown tokenizer spec {spec!r} (char | byte | gpt2 | sp:<model>)")
+    if spec.startswith("word:"):
+        if meta and "pieces" in meta:
+            return WordTokenizer(meta["pieces"])
+        if text_for_vocab is None:
+            raise ValueError("word tokenizer needs the training text to build its vocabulary")
+        return WordTokenizer.train(text_for_vocab, int(spec.split(":")[1]))
+    if spec.startswith("hf:"):
+        return HFTokenizer(spec[3:])
+    raise ValueError(f"unknown tokenizer spec {spec!r} "
+                     "(char | byte | gpt2 | word:<V> | sp:<model> | sp_train:<bpe|unigram>:<V> | hf:<name>)")
 
 
 # ============================================================================ shard I/O
-def write_shard(path: str | Path, tokens) -> None:
-    arr = np.asarray(tokens, dtype=np.uint16)
+def write_shard(path: str | Path, tokens, vocab_size: int = 65535) -> None:
+    """Version 1 = uint16 tokens (parameter-golf format); version 2 = uint32 for vocab > 65535."""
+    wide = vocab_size > 65535
+    dt = "<u4" if wide else "<u2"
+    arr = np.asarray(tokens).astype(dt)
     header = np.zeros(HEADER_INTS, dtype="<i4")
-    header[0], header[1], header[2] = SHARD_MAGIC, SHARD_VERSION, arr.size
+    header[0], header[1], header[2] = SHARD_MAGIC, 2 if wide else SHARD_VERSION, arr.size
     with open(path, "wb") as f:
         f.write(header.tobytes())
-        f.write(arr.astype("<u2").tobytes())
+        f.write(arr.tobytes())
 
 
 def read_shard(path: str | Path) -> np.ndarray:
     """Memory-map a shard: costs no RAM until the pages are touched."""
     header = np.fromfile(path, dtype="<i4", count=HEADER_INTS)
-    if header.size != HEADER_INTS or header[0] != SHARD_MAGIC or header[1] != SHARD_VERSION:
+    if header.size != HEADER_INTS or header[0] != SHARD_MAGIC or header[1] not in (1, 2):
         raise ValueError(f"{path}: not a nanolm/parameter-golf token shard")
     n = int(header[2])
-    expected = HEADER_INTS * 4 + 2 * n
+    width = 2 if header[1] == 1 else 4
+    expected = HEADER_INTS * 4 + width * n
     if os.path.getsize(path) != expected:
         raise ValueError(f"{path}: size mismatch (expected {expected} bytes)")
-    return np.memmap(path, dtype="<u2", mode="r", offset=HEADER_INTS * 4, shape=(n,))
+    return np.memmap(path, dtype="<u2" if width == 2 else "<u4", mode="r", offset=HEADER_INTS * 4, shape=(n,))
 
 
 # ======================================================================= dataset prepare
@@ -234,7 +368,9 @@ def _load_raw_docs(cfg) -> list[str]:
 
 
 def _tok_name(spec: str) -> str:
-    return Path(spec[3:]).stem if spec.startswith("sp:") else spec
+    if spec.startswith("sp:"):
+        return Path(spec[3:]).stem
+    return spec.replace(":", "").replace("/", "_")
 
 
 def prepare_dataset(cfg) -> dict:
@@ -263,9 +399,17 @@ def prepare_dataset(cfg) -> dict:
         cut = int(len(full) * (1 - cfg.val_fraction))
         train_docs, val_docs = [full[:cut]], [full[cut:]]
 
-    tok = build_tokenizer(cfg.tokenizer, text_for_vocab="".join(train_docs + val_docs))
-    if tok.vocab_size > 65535:
-        raise ValueError("vocab does not fit in uint16 shards")
+    train_text = "\n\n".join(train_docs)
+    out.mkdir(parents=True, exist_ok=True)
+    spec = cfg.tokenizer
+    if spec.startswith("sp_train:"):          # learn a BPE / unigram vocabulary on TRAIN text only
+        _, kind, v = spec.split(":")
+        print(f"[data] training SentencePiece {kind} with vocab {v} on {len(train_text):,} chars")
+        spec = "sp:" + train_sentencepiece(train_text, kind, int(v), str(out / "tokenizer"))
+    if spec == "char":                        # a character inventory is not "learned": use all text
+        tok = build_tokenizer(spec, text_for_vocab=train_text + "".join(val_docs))
+    else:                                     # learned vocabularies must never see validation text
+        tok = build_tokenizer(spec, text_for_vocab=train_text)
 
     def encode_docs(ds: list[str]) -> np.ndarray:
         ids: list[int] = []
@@ -276,12 +420,11 @@ def prepare_dataset(cfg) -> dict:
                 else:
                     ids.extend(tok.encode("\n\n"))
             ids.extend(tok.encode(d))
-        return np.asarray(ids, dtype=np.uint16)
+        return np.asarray(ids, dtype=np.int64)
 
-    out.mkdir(parents=True, exist_ok=True)
     train_ids, val_ids = encode_docs(train_docs), encode_docs(val_docs)
-    write_shard(out / "train.bin", train_ids)
-    write_shard(out / "val.bin", val_ids)
+    write_shard(out / "train.bin", train_ids, tok.vocab_size)
+    write_shard(out / "val.bin", val_ids, tok.vocab_size)
     meta = {
         **tok.meta(),
         "dataset": tag,
@@ -309,7 +452,7 @@ def _shard_dataset_info(cfg) -> dict:
         raise FileNotFoundError(f"no shards in {d!r} matching {cfg.train_pattern} / {cfg.val_pattern}. "
                                 f"Run: python -m nanolm.prepare --golf-shards 1")
     if not cfg.tokenizer.startswith("sp:"):
-        raise ValueError("data.source=shards needs data.tokenizer=sp:<model> for bpb byte counting")
+        raise ValueError("data.source=shards needs data.tokenizer=sp:<model> (the model the shards were made with)")
     tok = build_tokenizer(cfg.tokenizer)
     return {**tok.meta(), "dataset": Path(d).name, "train_files": train, "val_files": val}
 
@@ -332,6 +475,18 @@ def download_golf_fineweb(dest: str, train_shards: int = 1, variant: str = "sp10
         print(f"[data] downloading {sub}/{name}")
         p = hf_hub_download(repo_id=GOLF_HF_REPO, filename=name, subfolder=sub, repo_type="dataset")
         shutil.copy2(Path(p).resolve(), target)
+
+
+def val_documents(meta: dict, n_docs: int) -> list[str]:
+    """The first `n_docs` validation documents as text (golf shards start every doc with BOS)."""
+    tok = build_tokenizer(meta["spec"], meta=meta)
+    val = np.concatenate([np.asarray(read_shard(f)) for f in meta["val_files"]])
+    bos = tok.eot_id if tok.eot_id is not None else 1
+    starts = list(np.flatnonzero(val == bos))
+    if not starts:                            # single-document corpus (e.g. Shakespeare tail)
+        return [tok.decode(val)]
+    bounds = starts + [val.size]
+    return [tok.decode(val[bounds[i] + 1: bounds[i + 1]]) for i in range(min(n_docs, len(starts)))]
 
 
 # ============================================================================= batching

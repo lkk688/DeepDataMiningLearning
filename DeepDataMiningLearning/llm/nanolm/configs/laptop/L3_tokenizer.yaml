@@ -1,0 +1,7 @@
+# Laptop track L3 (~10-20 min each): the same Transformer, different tokenizers. Examples:
+#   data.tokenizer=char | byte | word:2048 | sp_train:bpe:512 | sp_train:bpe:2048 | sp_train:unigram:2048 | gpt2
+# Learned tokenizers (word, sp_train) are trained on the TRAIN split only.
+defaults: [../02b_char_transformer_modern.yaml]
+name: L3_tokenizer
+data: {tokenizer: "sp_train:bpe:1024"}
+train: {compile: false, max_time_sec: 2700}

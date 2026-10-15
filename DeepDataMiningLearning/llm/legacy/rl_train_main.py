@@ -25,7 +25,7 @@ from peft import LoraConfig, get_peft_model, TaskType
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 # If running in the same folder, just import:
 try:
-    from DeepDataMiningLearning.llm.rl_dataset import build_rl_dataset, RLDataModule
+    from DeepDataMiningLearning.llm.legacy.rl_dataset import build_rl_dataset, RLDataModule
 except ImportError:
     # Fallback if file structure differs
     from rl_dataset import build_rl_dataset, RLDataModule

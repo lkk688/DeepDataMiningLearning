@@ -1,18 +1,15 @@
 # LLM teaching code
 
-| Topic | Where |
+| Start here | |
 |---|---|
-| **Pre-training course: RNN → char Transformer → GPT on FineWeb → Parameter Golf** (config-driven, Mac/CUDA/CPU) | [`TUTORIAL_nanolm.md`](TUTORIAL_nanolm.md), code in [`nanolm/`](nanolm/README.md) |
-| HuggingFace fine-tuning, instruction tuning, seq2seq | `train_lm.py`, `lm_dataset.py`, `transformer.py`, `experiments.py` |
-| RL post-training (SFT / DPO / GRPO / PPO with TRL) | `rl_train_main.py`, `rl_dataset.py` |
-| tokenizers (char / word / SentencePiece / tiktoken / HF) | `tokenizer_utils.py` |
-
-For *pre-training* experiments, use `nanolm`. `TUTORIAL_nanolm.md` §1.4 lists the problems of the older
-pipeline: stride-1 windows, a sorted validation tail, and per-token loss compared across tokenizers.
+| **Students with a laptop / Mac** | [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md): download, run, expected time / memory / results |
+| **The course** | [`TUTORIAL_nanolm.md`](TUTORIAL_nanolm.md). Part 1: LM basics, RNN → LSTM → Transformer, tokenizers, sampling. Part 2: pre-training on web text, using / SFT / DPO-tuning pretrained LLMs. Part 3: Parameter Golf. Part 4: methodology |
+| **The code** | [`nanolm/`](nanolm/README.md): one config-driven package for every part (CUDA / Apple MPS / CPU) |
+| the previous course code | [`legacy/`](legacy/README.md), with a map from each old function to its replacement |
 
 ---
 
-## Legacy run log (char-level typing experiment with the old pipeline)
+## Legacy run log (char-level typing experiment with the old pipeline, `legacy/experiments.py`)
 
 
 

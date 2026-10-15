@@ -1384,7 +1384,7 @@ def test_char_word_tokenizer():
     print(tok_mix2.decode(ids_mix))
 
 def test_hftokenizer(name="gpt2"):
-    #from DeepDataMiningLearning.llm.tokenizer_utils import HFTokenizerWrapper
+    #from DeepDataMiningLearning.llm.legacy.tokenizer_utils import HFTokenizerWrapper
 
     # 1️⃣ Load pretrained tokenizer
     tok = HFTokenizerWrapper(name)

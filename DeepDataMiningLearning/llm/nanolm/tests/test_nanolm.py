@@ -150,3 +150,85 @@ def test_wsd_schedule_shape():
     assert lr_multiplier(t, 0, 0.5) == 1.0
     assert abs(lr_multiplier(t, 0, 0.9) - 0.5) < 1e-9
     assert abs(lr_multiplier(t, 0, 1.0)) < 1e-9
+
+
+# ------------------------------------------------------------------ tokenizers added for Part 1
+SHAKESPEARE_LIKE = ("First Citizen:\nBefore we proceed any further, hear me speak.\n\n"
+                    "All:\nSpeak, speak.  Naïve café — 1234 tokens!\n") * 20
+
+
+def _exact_bytes(tok, text):
+    ids = torch.tensor([tok.encode(text)])
+    base, lead, boundary = (torch.tensor(a) for a in tok.byte_luts())
+    n = count_bytes(ids[:, :-1], ids[:, 1:], (base.int(), lead, boundary)).sum().item()
+    first = int(base[ids[0, 0]])
+    return n + first
+
+
+def test_word_tokenizer_lossless_with_byte_fallback():
+    from nanolm.data import WordTokenizer
+    tok = WordTokenizer.train(SHAKESPEARE_LIKE, vocab_size=280)
+    unseen = "Zebra-quagga met Ünïcödé friends 😀 in 2026."
+    for text in (SHAKESPEARE_LIKE, unseen):
+        assert tok.decode(tok.encode(text)) == text
+        assert _exact_bytes(tok, text) == len(text.encode("utf-8"))
+    assert any(i < 256 for i in tok.encode(unseen))      # OOV words fell back to bytes
+
+
+def test_trained_sentencepiece_is_lossless(tmp_path):
+    from nanolm.data import SentencePieceTokenizer, train_sentencepiece
+    model = train_sentencepiece(SHAKESPEARE_LIKE, "bpe", 300, str(tmp_path / "sp"))
+    tok = SentencePieceTokenizer(model)
+    text = "Before we proceed, hear me.\n\nAll:\n  Speak café 😀!"
+    assert tok.decode(tok.encode(text)) == text
+    # the very first piece carries SentencePiece's dummy-prefix space, which is not a real byte
+    assert abs(_exact_bytes(tok, text) - len(text.encode("utf-8"))) <= 1
+
+
+def test_uint32_shards_roundtrip(tmp_path):
+    from nanolm.data import read_shard, write_shard
+    ids = np.array([0, 5, 70000, 151000], dtype=np.int64)
+    write_shard(tmp_path / "x.bin", ids, vocab_size=151_936)
+    assert read_shard(tmp_path / "x.bin").tolist() == ids.tolist()
+    write_shard(tmp_path / "y.bin", ids[:2], vocab_size=1024)
+    assert read_shard(tmp_path / "y.bin").dtype.itemsize == 2
+
+
+# ------------------------------------------------------------------ Part 2 (pretrained models)
+def _tiny_llama():
+    transformers = pytest.importorskip("transformers")
+    torch.manual_seed(0)
+    cfg = transformers.LlamaConfig(vocab_size=101, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+                                   num_attention_heads=4, num_key_value_heads=2, max_position_embeddings=64)
+    return transformers.LlamaForCausalLM(cfg).eval()
+
+
+def test_token_logprobs_matches_hf_loss():
+    from nanolm.finetune import IGNORE, token_logprobs
+    model = _tiny_llama()
+    ids = torch.randint(0, 101, (3, 20))
+    att = torch.ones_like(ids)
+    labels = ids.clone()
+    labels[:, :8] = IGNORE                        # prompt tokens are not scored
+    with torch.no_grad():
+        lp, n = token_logprobs(model, ids, att, labels, chunk=7)     # odd chunk size on purpose
+        hf = model(input_ids=ids, attention_mask=att, labels=labels).loss
+    assert torch.allclose(-(lp.sum() / n.sum()), hf, atol=1e-5)
+    assert n.tolist() == [12.0, 12.0, 12.0]
+
+
+def test_dpo_starts_at_zero_margin_with_lora():
+    peft = pytest.importorskip("peft")
+    from nanolm.finetune import IGNORE, dpo_terms
+    model = peft.get_peft_model(_tiny_llama(), peft.LoraConfig(r=4, target_modules=["q_proj", "v_proj"]))
+    model.eval()
+    def batch():
+        ids = torch.randint(0, 101, (2, 16))
+        lab = ids.clone()
+        lab[:, :6] = IGNORE
+        return ids, torch.ones_like(ids), lab
+    with torch.no_grad():
+        loss, acc, margin = dpo_terms(model, (batch(), batch()), beta=0.1)
+    assert abs(margin.item()) < 1e-6              # LoRA B starts at 0: policy == reference
+    assert abs(loss.item() - math.log(2)) < 1e-5  # -log sigmoid(0)
+    assert acc.item() == 0.5                      # ties count as half

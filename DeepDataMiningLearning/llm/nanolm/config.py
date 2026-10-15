@@ -136,6 +136,7 @@ class EvalConfig:
     sample_prompt: str = ""
     temperature: float = 0.8
     top_k: int = 50
+    top_p: float = 1.0                   # nucleus sampling (1.0 = off)
 
 
 @dataclass
@@ -159,6 +160,76 @@ class RunConfig:
     train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
+
+
+# ======================================================= Part 2: pretrained-model configs
+@dataclass
+class FTModelConfig:
+    name: str = "Qwen/Qwen2.5-0.5B"      # any HuggingFace causal LM
+    dtype: str = "auto"                  # auto (bf16 on CUDA, fp32 on MPS/CPU) | fp32 | bf16 | fp16
+    lora: bool = True                    # False = full fine-tuning (needs ~4x more memory)
+    lora_r: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    lora_targets: list = field(default_factory=lambda: ["q_proj", "k_proj", "v_proj", "o_proj",
+                                                        "gate_proj", "up_proj", "down_proj"])
+    grad_checkpointing: bool = True      # trade compute for memory (laptops!)
+
+
+@dataclass
+class FTDataConfig:
+    # alpaca       : instruction / input / output   (SFT)
+    # ultrafeedback: chosen / rejected chat pairs    (DPO)
+    # golf_val     : FineWeb validation documents    (bits-per-byte evaluation)
+    format: str = "alpaca"
+    dataset: str = "yahma/alpaca-cleaned"
+    split: str = "train"
+    val_split: str = ""                  # "" = carve n_val examples out of `split` (seeded)
+    n_train: int = 2000
+    n_val: int = 100
+    max_len: int = 512                   # tokens (prompt + response); longer examples are dropped
+    min_score_gap: float = 1.0           # DPO: keep pairs whose quality scores differ by >= this
+    shard_dir: str = "data/golf/fineweb10B_sp1024"          # golf_val
+    shard_tokenizer: str = "sp:data/golf/tokenizers/fineweb_1024_bpe.model"
+    eval_docs: int = 200                 # golf_val: number of validation documents
+
+
+@dataclass
+class FTTrainConfig:
+    method: str = "sft"                  # sft | dpo | eval_bpb
+    steps: int = 300
+    batch_size: int = 4
+    grad_accum: int = 4
+    lr: float = 2e-4                     # LoRA likes ~1e-4..3e-4; full fine-tuning ~1e-5
+    weight_decay: float = 0.0
+    warmup_steps: int = 20
+    dpo_beta: float = 0.1                # strength of the KL anchor to the reference model
+    log_every: int = 10
+    eval_every: int = 100
+    max_time_sec: float = 0.0
+    ctx_len: int = 1024                  # eval_bpb window
+
+
+@dataclass
+class FTRunConfig:
+    name: str = "finetune"
+    seed: int = 1337
+    device: str = "auto"
+    precision: str = "auto"
+    out_dir: str = "outputs/nanolm"
+    run_dir: str = ""
+    tags: list = field(default_factory=list)
+    model: FTModelConfig = field(default_factory=FTModelConfig)
+    data: FTDataConfig = field(default_factory=FTDataConfig)
+    train: FTTrainConfig = field(default_factory=FTTrainConfig)
+    eval_prompts: list = field(default_factory=lambda: [
+        "Give three tips for staying healthy.",
+        "Explain what a language model is to a 10-year-old.",
+        "Write a haiku about autumn.",
+        "What is the capital of France, and why is it famous?",
+        "Translate 'good morning' into Spanish and Chinese.",
+    ])
+    gen_tokens: int = 128
 
 
 # ------------------------------------------------------------------ YAML machinery
@@ -233,18 +304,18 @@ def from_dict(cls, d: dict, where: str = ""):
 
 
 def load_config(path: str | None = None, overrides: list[str] | None = None,
-                extra: dict | None = None) -> RunConfig:
+                extra: dict | None = None, cls=RunConfig):
     raw = load_yaml_with_defaults(path) if path else {}
     if extra:
         raw = deep_merge(raw, extra)
     raw = deep_merge(raw, parse_overrides(overrides or []))
-    return from_dict(RunConfig, raw)
+    return from_dict(cls, raw)
 
 
 def to_dict(cfg) -> dict:
     return dataclasses.asdict(cfg)
 
 
-def save_config(cfg: RunConfig, path: str | Path) -> None:
+def save_config(cfg, path: str | Path) -> None:
     with open(path, "w") as f:
         yaml.safe_dump(to_dict(cfg), f, sort_keys=False)
