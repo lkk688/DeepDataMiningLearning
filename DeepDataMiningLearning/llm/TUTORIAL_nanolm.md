@@ -17,6 +17,7 @@ commands, downloads, run times, memory use, and the numbers you should get.
 | **3** | **From GPT to modern LLMs:** how the architecture evolved (GQA, MoE, linear attention, ...), inside Qwen3.5, evaluating a pretrained model (perplexity and benchmarks such as MMLU and GPQA), fine-tuning with LoRA, SFT and DPO | `finetune.py`, `benchmarks.py` |
 | **4** | **Parameter Golf: exploring next-generation architectures.** What wins when the model must fit in 16 MB, measured technique by technique | `models/gpt.py` switches, `sweeps/04_*` |
 | **5** | **Research methodology:** seeds, noise, telling a bug from a negative result | `analyze.py` |
+| **HW** | **Four homework assignments** (one per part): experiments to design and run, figures to make, a report to write, and a grading rubric | — |
 
 > **Where the numbers come from.** Every number and figure in this tutorial comes from running the
 > command shown next to it. We ran them on NVIDIA H100 GPUs; the laptop-track reference numbers used
@@ -138,17 +139,17 @@ A language model assigns a probability to every possible text. It does this with
 probability. A text is first cut into tokens $x_1, \dots, x_T$ (characters, bytes, or word pieces;
 §1.4). Then
 
-$$
+```math
 p(x_1, \dots, x_T) \;=\; \prod_{t=1}^{T} p_\theta(x_t \mid x_1, \dots, x_{t-1}) .
-$$
+```
 
 So the model only ever has to answer one question: **given the text so far, what is the probability
 of each possible next token?** For a vocabulary of $V$ tokens, the network outputs $V$ real numbers
 (the *logits* $z \in \mathbb{R}^V$), and a softmax turns them into a distribution:
 
-$$
+```math
 p_\theta(x_t = v \mid x_{<t}) \;=\; \mathrm{softmax}(z)_v \;=\; \frac{e^{z_v}}{\sum_{u=1}^{V} e^{z_u}} .
-$$
+```
 
 Generating text means repeating this: compute the distribution, pick a token (§1.9), append it, and
 repeat. Every model in this course, from a vanilla RNN to Qwen3.5, has the same interface:
@@ -160,40 +161,104 @@ logits = model(idx)        # idx: [B, T] token ids  ->  logits: [B, T, V]
 Position $t$ of the output holds the prediction for token $t+1$. A batch of $B$ sequences of length
 $T$ therefore yields $B \times T$ predictions at once, and every one of them is a training example.
 
-## 1.2 The loss: cross-entropy, perplexity and bits-per-byte
+## 1.2 Measuring a language model: loss, perplexity and bits-per-byte
 
-Training maximizes the probability the model assigns to the real text. Equivalently, it minimizes
-the average **negative log-likelihood**, also called the **cross-entropy**:
+All three numbers come from the same quantity: **the probability the model gave to each actual next
+token.** They differ in what they average over and in their units, and confusing them is one of the
+most common mistakes in reading LM results.
 
-$$
-\mathcal{L}(\theta) \;=\; -\frac{1}{N} \sum_{t=1}^{N} \ln p_\theta(x_t \mid x_{<t}) \qquad \text{(nats per token)}.
-$$
+### 1.2.1 Cross-entropy loss: what we train on
 
-In code this is one line (`train.py`); `y` is the input shifted left by one position:
+When the true next token is $x_t$, the model's "surprise" at that position is $-\ln p_\theta(x_t \mid x_{\lt t})$.
+This is 0 if it was certain and right, and it grows without bound as the probability goes to 0.
+The **loss** is the average surprise over all $N$ predicted tokens:
 
-```python
-loss = F.cross_entropy(logits.float().view(-1, V), y.reshape(-1))
+```math
+\mathcal{L}(\theta) \;=\; -\frac{1}{N} \sum_{t=1}^{N} \ln p_\theta(x_t \mid x_{<t}) \qquad \text{(nats per token)}
 ```
 
-**A worked example.** Say the model gives the correct next character probability 0.35. That
-position then contributes $-\ln 0.35 = 1.05$ nats to the loss. Three quantities are derived from
-the average loss $\mathcal{L}$, and they are easy to confuse:
+In code it is one line (`train.py`; `y` is the input shifted left by one position):
 
-| quantity | formula | meaning | example ($\mathcal{L}$ = 1.46 nats/char) |
-|---|---|---|---|
-| loss | $\mathcal{L}$ | average surprise per token, in nats | 1.46 |
-| perplexity | $e^{\mathcal{L}}$ | "as uncertain as a fair choice among this many tokens" | 4.3 |
-| **bits-per-byte (bpb)** | $\dfrac{\sum_t -\log_2 p(x_t \mid x_{<t})}{\text{UTF-8 bytes of the text}} = \dfrac{\mathcal{L}}{\ln 2}\cdot\dfrac{\#\text{tokens}}{\#\text{bytes}}$ | bits needed to compress the text, per byte | 2.11 |
+```python
+loss = F.cross_entropy(logits.float().view(-1, V), y.reshape(-1))      # natural log -> nats
+```
 
-**Why we report bits-per-byte.** Loss and perplexity are *per token*, and a token means different
-things for different tokenizers. A character model predicts about 1 byte per step, while GPT-2's
-tokenizer predicts about 3–4 bytes per step. Comparing their per-token losses is like comparing
-prices quoted per gram with prices quoted per pound. Bits-per-byte divides by the size of the text
-itself, so it is comparable across *all* tokenizers and models. It is also the metric of the
-Parameter Golf challenge (Part 4).
+- **Units.** With the natural log the unit is the *nat*; with $\log_2$ it is the *bit*. One nat is
+  $1/\ln 2 = 1.443$ bits.
+- **Why this loss.** Minimizing it is *maximum likelihood*: it makes the real text as probable as
+  possible. It is also called *cross-entropy* because it estimates
+  $H(p_{\text{data}}, p_\theta) = H(p_{\text{data}}) + \mathrm{KL}(p_{\text{data}} \,\Vert\, p_\theta)$.
+  The loss therefore can never go below the true entropy of the text. Training can only shrink the
+  KL term, the gap between the model and reality.
+- **A built-in sanity check.** A model that knows nothing gives every token probability $1/V$, so its
+  loss is $\ln V$. Our untrained character Transformer ($V = 65$) starts at **4.22 nats**, against
+  $\ln 65 = 4.17$. A fresh model that starts far from $\ln V$ usually means an initialization or
+  data bug.
+- **Use it for:** training (it is differentiable), and comparing models that use **the same
+  tokenizer on the same evaluation text**.
 
-Bits-per-byte is literally a compression rate: a language model plus arithmetic coding *is* a
-compressor. Some reference points:
+### 1.2.2 Perplexity: the same number, made intuitive
+
+```math
+\mathrm{PPL} \;=\; e^{\mathcal{L}} \;=\; \exp\!\Big(-\frac{1}{N}\sum_{t} \ln p_\theta(x_t \mid x_{<t})\Big)
+```
+
+- **Meaning.** Perplexity is the *effective number of equally likely choices* the model is torn
+  between at each step. A model that guesses uniformly among $V$ tokens has perplexity exactly $V$.
+  Our trained character model has perplexity 4.3: on average it is as uncertain as a fair choice among
+  about 4 characters, out of 65.
+- **Use it for:** an intuitive reading of the loss. It is very common in papers.
+- **Pitfalls.**
+  - Perplexity is an exponential, so small loss differences look large: 1.46 vs 1.50 nats is
+    4.31 vs 4.48.
+  - Like the loss, it is **per token**. Two models with different tokenizers are measured in different
+    units, so their perplexities cannot be compared (example below).
+  - It also depends on how much context each token gets during evaluation (Part 4, sliding windows).
+
+### 1.2.3 Bits-per-byte: the fair comparison
+
+```math
+\text{bpb} \;=\; \frac{\sum_{t} -\log_2 p_\theta(x_t \mid x_{<t})}{\text{number of UTF-8 bytes of the evaluated text}}
+\;=\; \underbrace{\frac{\mathcal{L}}{\ln 2}}_{\text{bits per token}} \;\times\; \underbrace{\frac{N_{\text{tokens}}}{N_{\text{bytes}}}}_{\text{tokens per byte}}
+```
+
+- **Meaning: bpb is a compression rate.** Shannon's source-coding theorem says a symbol of
+  probability $p$ can be encoded in $-\log_2 p$ bits, and arithmetic coding achieves this to within
+  2 bits for a whole file. A language model plus an arithmetic coder *is* a text compressor, and
+  bpb is its output size per input byte. That makes it directly comparable with ordinary compressors
+  (table below).
+- **Why it is fair.** The numerator is the total information in bits, whatever the token size. The
+  denominator is the size of the text itself, which does not depend on the tokenizer. Character, byte,
+  word and BPE models, and any two pretrained LLMs, can therefore be compared. For plain ASCII text
+  the same quantity is often called *bits per character* (bpc).
+- **Use it for:** comparing models with **different tokenizers**: §1.8, Part 3 (GPT-2 vs. Qwen vs.
+  SmolLM), and Part 4 (it is the official Parameter Golf metric).
+
+### 1.2.4 One worked example: why per-token numbers mislead
+
+Three models from the tokenizer study (§1.8), all evaluated on the same Shakespeare validation text:
+
+| tokenizer | loss (nats/token) | perplexity | bits/token = loss / ln 2 | bytes/token | **bpb** = bits/token ÷ bytes/token |
+|---|---:|---:|---:|---:|---:|
+| characters | 1.459 | 4.3 | 2.105 | 1.00 | **2.105** |
+| words (V = 2048) | 2.339 | 10.4 | 3.374 | 1.62 | **2.080** |
+| GPT-2 BPE (V = 50257) | 6.055 | 426 | 8.736 | 3.09 | **2.825** |
+
+By loss or perplexity, the word model looks 2.4× worse than the character model (10.4 vs 4.3). In
+fact it is the **best** of the three: each of its tokens covers 1.62 bytes, so it is allowed more
+bits per token. The GPT-2 model looks 100× worse by perplexity; by bpb it is 34% worse. **Only bpb
+ranks these models correctly.**
+
+| quantity | definition | unit | depends on the tokenizer? | use it for |
+|---|---|---|:---:|---|
+| loss | mean $-\ln p$ per token | nats / token | yes | training; comparisons with the same tokenizer |
+| perplexity | $e^{\text{loss}}$ | "choices" | yes | intuition; papers (same tokenizer only) |
+| bits/token | loss / ln 2 | bits / token | yes | an intermediate step |
+| **bpb** | total bits / total bytes | bits / byte | **no** | comparing any two models; compression; Parameter Golf |
+
+### 1.2.5 Reference points
+
+Bits-per-byte is literally a compression rate, so classic compressors are natural baselines:
 
 | what | bpb |
 |---|---:|
@@ -201,19 +266,21 @@ compressor. Some reference points:
 | gzip -9 on the Shakespeare validation text (measured) | 3.19 |
 | bzip2 on the same text (measured) | 2.64 |
 | our 3M-parameter character Transformer on the same text | 2.11 |
-| GPT-2 small on web text | 1.08 |
-| Qwen2.5-0.5B on web text | 0.95 |
+| GPT-2 small on web text (Part 3) | 1.08 |
+| Qwen2.5-0.5B on web text (Part 3) | 0.95 |
 
-**Counting bytes exactly.** bpb needs to know how many bytes each predicted token covers.
-`data.py` builds three lookup tables per tokenizer (bytes per token, a "has leading space" flag, a
-"document boundary" flag). With them,
+### 1.2.6 Counting bytes exactly
 
-$$
-\text{bytes}(y_t) = \text{base}[y_t] + \mathbb{1}\{\text{leading-space}[y_t] \wedge \neg\,\text{boundary}[x_{t}]\},
-$$
+bpb needs the number of bytes each predicted token covers. `data.py` builds three lookup tables per
+tokenizer: bytes per token, a "has a leading space" flag (SentencePiece's ▁), and a "document
+boundary" flag. With them,
 
-which is the exact rule used by the Parameter Golf challenge. A unit test checks that the counted
-bytes equal `len(text.encode("utf-8"))` for every tokenizer.
+```math
+\text{bytes}(y_t) = \text{base}[y_t] + \mathbb{1}\{\text{leading-space}[y_t] \wedge \neg\,\text{boundary}[x_t]\}
+```
+
+This is the exact rule of the Parameter Golf challenge. A unit test checks that the counted bytes equal
+`len(text.encode("utf-8"))` for every tokenizer.
 
 ## 1.3 Data: from raw text to training batches
 
@@ -325,9 +392,9 @@ Code: `nanolm/models/rnn.py`. Configs: `configs/01_char_rnn.yaml` (`laptop/L1_ch
 A recurrent network reads one token at a time and keeps a **hidden state** $h_t \in \mathbb{R}^d$, a
 fixed-size summary of everything it has read so far:
 
-$$
+```math
 e_t = E[x_t], \qquad h_t = \tanh(W_x e_t + W_h h_{t-1} + b), \qquad z_t = W_o h_t .
-$$
+```
 
 Here $E$ is the embedding table (one learned vector per token) and $W_o$ maps the state to logits.
 Training uses **back-propagation through time**. The gradient that reaches step $t-k$ is multiplied
@@ -339,12 +406,12 @@ cannot learn long-range structure.
 **The LSTM** adds a separate *cell* $c_t$ that is updated *additively*, controlled by three gates
 with values in $(0,1)$:
 
-$$
+```math
 \begin{aligned}
 i_t &= \sigma(W_i[e_t, h_{t-1}]),\quad f_t = \sigma(W_f[e_t, h_{t-1}]),\quad o_t = \sigma(W_o[e_t, h_{t-1}]),\quad g_t = \tanh(W_g[e_t, h_{t-1}]),\\
 c_t &= f_t \odot c_{t-1} + i_t \odot g_t, \qquad h_t = o_t \odot \tanh(c_t).
 \end{aligned}
-$$
+```
 
 When the forget gate $f_t \approx 1$, $\partial c_t / \partial c_{t-1} \approx 1$. Information and
 gradient then pass through many steps unchanged. `LSTMScratch` in `rnn.py` implements exactly these
@@ -396,9 +463,9 @@ So the model must be told where each token sits. There are two common ways:
   coordinates $(q_{2i}, q_{2i+1})$ by an angle that grows with position, $m\,\omega_i$, where
   $\omega_i = \text{base}^{-2i/d_h}$:
 
-$$
+```math
 \begin{pmatrix} q'_{2i} \\ q'_{2i+1} \end{pmatrix} = \begin{pmatrix} \cos m\omega_i & -\sin m\omega_i \\ \sin m\omega_i & \cos m\omega_i \end{pmatrix}\begin{pmatrix} q_{2i} \\ q_{2i+1} \end{pmatrix}.
-$$
+```
 
   Because rotations compose, $\langle R_m q, R_n k\rangle = \langle q, R_{n-m} k\rangle$: the attention
   score depends only on the **relative** offset $n-m$. There are no extra parameters.
@@ -409,14 +476,14 @@ $$
 For each position, the block computes a **query** ("what am I looking for?"), a **key** ("what do I
 contain?") and a **value** ("what do I pass on?"):
 
-$$
+```math
 Q = XW_Q,\quad K = XW_K,\quad V = XW_V \qquad (\in \mathbb{R}^{T\times d_h}),
-$$
+```
 
-$$
+```math
 \mathrm{Attention}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_h}} + M\right)V, \qquad
 M_{ts} = \begin{cases} 0 & s \le t \\ -\infty & s > t \end{cases}
-$$
+```
 
 - The score $q_t\cdot k_s$ measures how relevant position $s$ is to position $t$.
 - Dividing by $\sqrt{d_h}$ keeps the scores' variance near 1, so the softmax does not saturate.
@@ -449,13 +516,13 @@ Regenerate the figure for your own model with `python -m nanolm.viz attention --
 
 After attention mixes information *across* positions, the MLP processes each position *separately*:
 
-$$
+```math
 \text{GELU MLP (GPT-2):}\quad \mathrm{MLP}(x) = W_2\,\mathrm{GELU}(W_1 x), \qquad W_1 \in \mathbb{R}^{4d\times d}
-$$
+```
 
-$$
+```math
 \text{SwiGLU (Llama, Qwen):}\quad \mathrm{MLP}(x) = W_2\big(\mathrm{SiLU}(W_1 x) \odot W_3 x\big), \qquad W_1, W_3 \in \mathbb{R}^{\frac{8}{3}d\times d}
-$$
+```
 
 SwiGLU multiplies two projections: a *gate*, $\mathrm{SiLU}(W_1x)$, and a *value*, $W_3x$. The width
 factor 8/3 keeps its parameter count equal to the 4× GELU MLP. Selected with `model.mlp:
@@ -468,10 +535,10 @@ $x \leftarrow x + \mathrm{MLP}(\mathrm{Norm}(x))$. This is the "pre-norm" residu
 gives gradients a direct path from the loss to every layer, like the LSTM's cell. The normalization
 keeps the activation scale stable:
 
-$$
+```math
 \mathrm{LayerNorm}(x) = \gamma \odot \frac{x - \mu(x)}{\sqrt{\sigma^2(x)+\epsilon}} + \beta, \qquad
 \mathrm{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\tfrac{1}{d}\sum_i x_i^2 + \epsilon}} .
-$$
+```
 
 RMSNorm (`model.norm: rmsnorm`) drops the mean subtraction and the bias. It is cheaper and works equally well.
 
@@ -486,10 +553,10 @@ table as the output layer and saves $V \times d$ parameters.
 A block with width $d$ has $4d^2$ attention weights ($W_Q, W_K, W_V, W_O$) and $8d^2$ MLP weights.
 A model with $L$ layers therefore has
 
-$$
+```math
 N \approx 12\,L\,d^2 \;(+\; V d \text{ for the embedding}), \qquad
 \text{training FLOPs} \approx 6\,N\,D
-$$
+```
 
 for $D$ training tokens: 2 FLOPs per weight per token for the forward pass and 4 for the backward
 pass. For our 4-layer, 256-wide character model, $12 \cdot 4 \cdot 256^2 = 3.1$M, which matches the
@@ -531,10 +598,10 @@ What to learn from this:
 **AdamW** (`train.optimizer: adamw`) keeps running averages of each parameter's gradient
 $g_t$ and squared gradient:
 
-$$
+```math
 m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t,\quad v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2,\quad
 \theta_t = \theta_{t-1} - \eta_t\Big(\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon} + \lambda\,\theta_{t-1}\Big)
-$$
+```
 
 ($\hat m, \hat v$ are bias-corrected.) Each coordinate thus gets its own step size. The $\lambda\theta$
 term is *decoupled* weight decay; `nanolm` applies it only to weight matrices, not to norms or biases.
@@ -547,7 +614,7 @@ early instability. After it:
 ![learning-rate schedules](docs/nanolm_figs/p2_lr_schedules.png)
 
 Two more ingredients:
-- **Gradient clipping.** If $\lVert g \rVert > c$, rescale $g$ to norm $c$ (`train.grad_clip`).
+- **Gradient clipping.** If $\lVert g \rVert \gt  c$, rescale $g$ to norm $c$ (`train.grad_clip`).
 - **Mixed precision.** On a GPU the forward pass runs in bfloat16 (`precision: auto`); master weights
   and the loss stay in float32.
 
@@ -590,15 +657,15 @@ Three lessons:
 
 ## 1.9 Sampling: turning probabilities into text
 
-A trained model gives $p(\cdot \mid x_{<t})$. The *decoding* rule decides which token to emit
+A trained model gives $p(\cdot \mid x_{\lt t})$. The *decoding* rule decides which token to emit
 (`evaluate.py: sample_next`):
 
-$$
+```math
 p_\tau(v) = \frac{e^{z_v/\tau}}{\sum_u e^{z_u/\tau}} .
-$$
+```
 
 - **temperature** $\tau$: $\tau \to 0$ is greedy (always the most likely token), $\tau = 1$ is the
-  model's own distribution, and $\tau > 1$ flattens it toward noise.
+  model's own distribution, and $\tau \gt  1$ flattens it toward noise.
 - **top-k** keeps only the $k$ most likely tokens.
 - **top-p (nucleus)** keeps the smallest set of tokens whose total probability reaches $p$. The set
   is small when the model is confident and large when it is unsure.
@@ -684,9 +751,9 @@ used by every top Parameter Golf entry and by Kimi K2, treats each 2-D weight ma
 Take the momentum-averaged gradient and its singular value decomposition $G = U\Sigma V^\top$. Muon
 replaces it by the closest *orthogonal* matrix:
 
-$$
+```math
 \Delta W = -\eta\, U V^\top \qquad (\text{all singular values set to } 1).
-$$
+```
 
 A gradient is usually dominated by a few directions (large singular values). Plain gradient descent
 spends almost the whole step on them and barely moves in the others. Muon gives every direction the
@@ -695,9 +762,9 @@ five iterations of a polynomial that pushes every singular value toward 1. This 
 **Newton–Schulz iteration** in `optim.py: zeropower_via_newtonschulz5`, and it uses only matrix
 multiplications:
 
-$$
+```math
 X_0 = G/\lVert G\rVert_F, \qquad X_{k+1} = a X_k + b\,(X_k X_k^\top)X_k + c\,(X_k X_k^\top)^2 X_k, \qquad (a,b,c) = (3.4445,\,-4.7750,\,2.0315).
-$$
+```
 
 The real gradient of one weight matrix in our model, before and after:
 
@@ -734,7 +801,7 @@ How to read this like a researcher:
 - **Not every published improvement reproduces.** SwiGLU learned faster for the first ~1,500 steps,
   then fell behind on both seeds. Halving its learning rate made it worse still (1.814). With 2 seeds
   and p = 0.23 this is a *weak* negative result for this budget (49M tokens), not a refutation of
-  SwiGLU. Investigating it is Exercise 4.
+  SwiGLU. Investigating it is the extra-credit task of HW 2.
 - **Seed noise here is about 0.01 bpb.** A 50M-token run is far from converged, so differences
   smaller than about 0.02 need more seeds.
 
@@ -795,15 +862,15 @@ change since then targets one of three costs:
 When a model generates text, it caches the keys and values of all earlier tokens (the **KV cache**),
 so they are not recomputed at every step. Its size is
 
-$$
+```math
 \text{KV bytes} = 2 \times L \times H_{kv} \times d_h \times T \times \text{bytes per value},
-$$
+```
 
 which grows linearly with the context length $T$. It often dominates inference memory.
 
 - **Multi-head attention (MHA)**: every query head has its own key/value head, so $H_{kv} = H$.
 - **Multi-query attention (MQA)**: all query heads share one K/V head, $H_{kv} = 1$.
-- **Grouped-query attention (GQA)**: groups of query heads share a K/V head, $1 < H_{kv} < H$. This is
+- **Grouped-query attention (GQA)**: groups of query heads share a K/V head, $1 \lt  H_{kv} \lt  H$. This is
   the default today. In `nanolm`, `model.n_kv_heads: 4` with `n_heads: 8` gives GQA.
 - **Multi-head latent attention (MLA)** (DeepSeek, Kimi): cache one low-rank latent vector per token
   (rank 512) and reconstruct K and V from it.
@@ -823,9 +890,9 @@ Full attention costs $O(T^2)$ compute and an $O(T)$ cache. Two families cut this
   matrix** $S_t \in \mathbb{R}^{d_v \times d_k}$, updated once per token like an RNN. Qwen3.5 uses
   **Gated DeltaNet** (Yang et al., 2024):
 
-$$
+```math
 S_t = S_{t-1}\,\alpha_t\big(I - \beta_t\, k_t k_t^{\top}\big) + \beta_t\, v_t k_t^{\top}, \qquad o_t = S_t\, q_t .
-$$
+```
 
   Think of $S$ as a key→value associative memory:
   - $S_{t-1}k_t$ is what the memory currently returns for key $k_t$.
@@ -860,10 +927,10 @@ of each head, exactly the "16 of 64 dimensions" setting that also appeared in Pa
 An MoE layer replaces the single MLP with $E$ expert MLPs and a **router** that picks $k$ of them per
 token:
 
-$$
+```math
 g = \mathrm{softmax}(W_r x), \qquad \mathcal{T} = \mathrm{top}k(g), \qquad
 y = \sum_{i \in \mathcal{T}} \frac{g_i}{\sum_{j\in\mathcal{T}} g_j}\, \mathrm{Expert}_i(x).
-$$
+```
 
 Total parameters grow with $E$, but compute per token grows only with $k$. Qwen3.5-35B-A3B has 35B
 parameters and runs about 3B per token: 256 experts, 8 routed + 1 shared. If the router sends most
@@ -949,8 +1016,8 @@ dimension 128), the forward pass is:
 2. **Short causal convolution.** A depthwise `Conv1d` with kernel 4 over the $q, k, v$ channels,
    followed by SiLU. Each token's $q, k, v$ thus mixes in the previous 3 tokens: cheap local context
    before the recurrence.
-3. **Gates.** $\beta_t = \sigma(b_t)$, and $\log\alpha_t = g_t = -e^{A}\cdot\mathrm{softplus}(a_t + \text{dt\_bias})$.
-   $A$ and dt_bias are learned per head, so $0 < \alpha_t < 1$. $q$ and $k$ are L2-normalized and
+3. **Gates.** $\beta_t = \sigma(b_t)$, and $\log\alpha_t = g_t = -e^{A}\cdot\mathrm{softplus}(a_t + b_{\mathrm{dt}})$.
+   $A$ and $b_{\mathrm{dt}}$ (`A_log`, `dt_bias` in the code) are learned per head, so $0 \lt  \alpha_t \lt  1$. $q$ and $k$ are L2-normalized and
    $q$ is scaled by $1/\sqrt{d_k}$.
 4. **The delta rule** (§3.2.2; the code stores the transposed state $S \in \mathbb{R}^{d_k \times d_v}$, so it reads $S^\top k$). The
    library's pure-PyTorch *reference* version is literally this loop
@@ -1127,11 +1194,11 @@ its terms on HuggingFace before running it.
 anything. For a question $q$ and choices $c_1 \dots c_K$, sum the log-probabilities of each choice's
 tokens:
 
-$$
+```math
 s_i = \sum_{t} \log p_\theta\big(c_i[t] \mid q, c_i[<t]\big), \qquad
-\hat\imath_{\text{acc}} = \arg\max_i s_i, \qquad
-\hat\imath_{\text{acc\_norm}} = \arg\max_i \frac{s_i}{|c_i|} .
-$$
+\hat\imath = \arg\max_i s_i, \qquad
+\hat\imath_{\mathrm{norm}} = \arg\max_i \frac{s_i}{|c_i|} .
+```
 
 `acc_norm` divides by the length $|c_i|$ (characters of the choice text) so that long answers are not
 penalized for having more tokens. For
@@ -1242,9 +1309,9 @@ For a 360M model that is 5.8 GB before any activations, too much for many laptop
 
 **LoRA** (Hu et al., 2021) freezes the pretrained weight $W_0$ and learns a low-rank correction:
 
-$$
+```math
 W = W_0 + \frac{\alpha}{r} B A, \qquad A \in \mathbb{R}^{r \times d_{in}},\; B \in \mathbb{R}^{d_{out} \times r},\; r \ll d .
-$$
+```
 
 $B$ starts at zero, so training starts exactly from the pretrained model. With $r = 16$ on every
 attention and MLP projection of SmolLM2-360M, only **8.7M of 370M weights (2.3%)** are trained. Their
@@ -1259,10 +1326,10 @@ A base model continues documents. Ask it a question and it may continue with mor
 **Supervised fine-tuning** on (instruction, answer) pairs teaches it to *answer, then stop*. The loss
 is the usual cross-entropy, but **only on the answer tokens**:
 
-$$
+```math
 \mathcal{L}_{\text{SFT}} = -\frac{1}{|\mathcal{A}|} \sum_{t \in \mathcal{A}} \log p_\theta(x_t \mid x_{<t}),
 \qquad \mathcal{A} = \text{positions of the answer (including the end-of-turn token)}.
-$$
+```
 
 The prompt positions get label −100, which PyTorch ignores. The model is not trained to reproduce
 questions. The end-of-turn token *is* in $\mathcal{A}$: that is how the model learns to stop.
@@ -1315,9 +1382,9 @@ SFT imitates given answers. **Preference tuning** learns from *comparisons*: for
 person (or a model) preferred answer $y_w$ over $y_l$. The **Bradley–Terry** model says preferences
 follow a hidden reward $r$:
 
-$$
+```math
 P(y_w \succ y_l \mid x) = \sigma\big(r(x, y_w) - r(x, y_l)\big).
-$$
+```
 
 Classic RLHF first fits a reward model, then optimizes the policy with reinforcement learning (PPO)
 under a KL penalty toward the original model. **DPO** (Rafailov et al., 2023) shows that the optimal
@@ -1325,9 +1392,9 @@ policy of that objective satisfies $r(x,y) = \beta \log \frac{\pi_\theta(y\mid x
 Substituting this into Bradley–Terry gives a loss that trains the policy *directly*, with no reward
 model and no sampling:
 
-$$
+```math
 \mathcal{L}_{\text{DPO}} = -\log \sigma\Big(\beta\Big[\log\frac{\pi_\theta(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)} - \log\frac{\pi_\theta(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}\Big]\Big).
-$$
+```
 
 The bracket times $\beta$ is the **implicit reward margin**. In `finetune.py`, $\pi_{\text{ref}}$ is
 the same network with the LoRA adapter switched off. No second copy of the model is needed.
@@ -1594,7 +1661,7 @@ under-reports what the model can do, because a token at the start of a window ha
 
 That is about −0.073 bpb (−5%) from a 2% compute budget. On the leaderboard, baseline → winner was
 −0.168 with about 50× more training tokens, a larger vocabulary, GPTQ and test-time training: the
-techniques we did not implement, which make good exercises.
+techniques we did not implement. They make good final projects (HW 4).
 
 ---
 
@@ -1644,7 +1711,7 @@ What carries over from the server-scale results, and what does not:
 - **The stack is more than the sum of its parts here.** The individually measured parts add up to about
   −0.014 (XSA was not tested alone), but together they give −0.033. The parts interact: for example,
   3× MLP may only pay off together with value residual and recurrence. The way to find out is a
-  *leave-one-out* ablation, which is Exercise 13. Whether effects add up is itself something to
+  *leave-one-out* ablation, which is part of HW 4. Whether effects add up is itself something to
   measure, not assume.
 - The whole laptop golf track (L5, L6 and the one-seed ablation) is about one night of laptop compute.
   It reproduces the main lessons of a multi-GPU study.
@@ -1703,58 +1770,185 @@ measurement pipeline we could not tell which ideas were good.
 
 ---
 
-# Exercises
+# Homework assignments
 
-**Part 1: from scratch**
+There are four assignments, one per part of the course. Each is a small research project: you design
+experiments, run them with `nanolm`, analyze the results with statistics and figures, and write a
+report. Every assignment fits on a laptop (§0.2). Run `python -m nanolm.bench` first and plan your
+runs within your machine's budget.
 
-1. **Context length.** Train `laptop/L2_char_gpt` with `train.seq_len=64, 128, 256, 512`, and the LSTM
-   with the same lengths. Plot bpb against context. Where does the LSTM stop benefiting?
-2. **Break it on purpose.** Remove `is_causal=True` from `Attention.forward` in `models/gpt.py` and
-   run the tests. Then train for 100 steps and look at the bpb. Explain why the number is meaningless.
-3. **Read your model's mind.** Run `python -m nanolm.viz attention --run <your run> --text "..."` on
-   three different kinds of text: dialogue, a name, a long word. Find one head whose behaviour you can
-   describe, and back the description with a number, as in §1.6.2.
+## General requirements (all assignments)
 
-**Part 2: pre-training**
+**Reproducibility.**
+- Every number in your report must come from a run directory produced by `nanolm`.
+- Each experiment is a YAML config or sweep file. Do not edit the library code to change an
+  experiment; adding a new feature as a config key is fine (HW 4).
+- Submit your config/sweep files and the `summary.csv` written by `python -m nanolm.analyze`.
+- State the git commit (from any run's `meta.json`), your device, and the wall-clock time of your
+  runs (from `metrics.json`).
 
-4. **The SwiGLU puzzle.** In §2.2.2 SwiGLU *hurt*. Test two hypotheses with 2 seeds each: (a) it needs a
-   larger learning rate (`train.lr=2e-3`); (b) it only helps with more training tokens
-   (`train.max_steps=9000`). Which one, if either, explains the result?
-5. **A scaling law in one afternoon.** Sweep `model.dim` × `model.n_layers` (use `grid:` in a sweep
-   file) at a fixed token budget. Plot bpb against non-embedding parameters (`params_non_embedding` in
-   `metrics.json`).
-6. **AdamW vs. Muon at equal tuning effort.** Give each optimizer the same 4-point learning-rate grid.
-   Is the gap larger or smaller than with the default learning rates?
+**Statistics.**
+- Any claim that A is better than B needs **at least 2 seeds per configuration** (3 for HW 4), with
+  the same seeds for A and B.
+- Report mean ± standard deviation and the paired p-value from `analyze.py`.
+- Call a difference smaller than about twice the seed noise floor "not resolved", not "better".
 
-**Part 3: modern LLMs**
+**Figures.**
+- At least one learning-curve figure (validation bpb vs. training tokens) and one summary figure (final
+  metric per configuration, with error bars) per assignment.
+- Label both axes with units, and include a legend when there is more than one series.
+- Use `analyze.py` and `viz.py` outputs, or your own plotting script, submitted with the report.
 
-7. **Benchmarks on a laptop.** Run `nanolm/configs/part3/B2_laptop.yaml`. Compare your numbers with
-   §3.6.4: the same model and the same tasks should agree to within the reported standard errors.
-8. **Scoring rules matter.** Run `arc_easy` for one model and compare `acc` with `acc_norm`. Then
-   change `mc_accuracy` to normalize by the number of *tokens* instead of bytes. How many answers change?
-9. **Thinking mode.** Run `ifeval` and `gsm8k_cot` for `Qwen/Qwen3.5-0.8B` with `enable_thinking=True`
-   and with `enable_thinking=False` (`extra_args` in the benchmark config; raise the generation limit
-   for thinking). Explain the card's "11.9 on GPQA" (§3.6.5) in light of what you see.
-10. **LoRA rank.** Run `part2/P2_sft_alpaca` with `model.lora_r=4`, `16` and `64`. Plot the after-SFT
-    answer loss against trainable parameters. Where does a larger rank stop helping?
-11. **LoRA vs. full fine-tuning.** Run the SFT config with `model.lora=false train.lr=2e-5` on the 135M
-    model. Compare memory (`peak_mem_mb`), time and quality.
-12. **How hard should DPO pull?** Sweep `train.dpo_beta` over 0.05, 0.1 and 0.5. Plot the reward accuracy
-    against how much the samples change.
+**The report** is a PDF or Markdown file of at most 5 pages plus an appendix, with these sections:
+1. *Question and hypothesis*: what you expected, and why.
+2. *Setup*: model, data, tokenizer, token budget, FLOPs ($\approx 6ND$), seeds, device.
+3. *Results*: figures and tables.
+4. *Analysis*: what the results mean. When something did not work as expected, say whether you believe
+   it is a **bug** or a **genuine negative result**, and what evidence supports that (§5.2).
+5. *Conclusion and limitations*.
 
-**Part 4: Parameter Golf**
+A well-supported negative result earns full credit; an unsupported positive one does not.
 
-13. **Reproduce a record claim.** Pick one row of §4.3 and test it with 3 seeds in `04_golf_lab`. Does
-    the claimed gain survive at our scale?
-14. **The byte budget.** With `python -m nanolm.compress`, find the fewest bits per weight that cost
-    less than 0.01 bpb. Then widen the model until int6 + lzma fills exactly 16 MB. Does it beat the int8
-    model of the same size?
-15. **Leave-one-out.** In the laptop ablation (§4.8) the stack (−0.033) beat the sum of its parts
-    (about −0.014). Add five runs, each equal to `stack_verified` minus one technique. Which technique
-    matters most *inside* the stack?
-16. **Bring a modern idea to the golf course.** Implement one Part 3 component as a config key in
-    `models/gpt.py`, for example sliding-window attention on alternate layers, or a 2-expert MoE MLP.
-    Add it to the causality tests and run a 2-seed ablation against `L5_golf_mini`.
+**Submission.**
+- The report.
+- The `configs/` you used.
+- `summary.csv` / `summary.md`.
+- Your figures and any plotting scripts.
+- Do **not** submit checkpoints or datasets.
+
+**Grading (every assignment):**
+
+| criterion | weight | what we look for |
+|---|---:|---|
+| correctness and reproducibility | 30% | configs reproduce the numbers; no leakage; metrics computed correctly |
+| experimental design | 25% | controlled comparisons (one change at a time), seeds, fair budgets, control runs |
+| analysis and interpretation | 30% | claims match the evidence; uncertainty stated; bug vs. negative result reasoned |
+| presentation | 15% | clear figures and tables; concise writing |
+
+---
+
+## HW 1 — Language models from scratch (Part 1)
+
+**Goal:** understand what the metrics mean, and how RNNs and Transformers differ in practice.
+**Budget:** about 2–3 hours of laptop compute.
+
+Required:
+1. **Metrics by hand.** For one trained character model, recompute loss, perplexity, bits/token and
+   bits-per-byte from the `val_loss`, `val_tokens` and `val_bytes` in `metrics.json`, and check them
+   against the logged `val_ppl` and `val_bpb`. Then measure the loss of an *untrained* model (for
+   example `train.max_steps=1`) for two different tokenizers. Compare each with $\ln V$.
+2. **RNN vs. LSTM vs. GRU vs. Transformer.** Use `sweeps/01_char_models.yaml` or a laptop version with
+   fewer steps. Give every model the same token budget; 2 seeds. Produce a learning-curve figure and a
+   results table with parameter counts.
+3. **Context length.** Train the LSTM and the modern Transformer with `train.seq_len` = 64, 128, 256 and
+   512. Plot bpb against context length for both. Where does each stop benefiting from more context?
+4. **Attention analysis.** Use `python -m nanolm.viz attention --run <run> --text "..."` on three
+   kinds of text. Identify at least two kinds of heads (e.g. previous-token, word-start), and support
+   each with a number: the average attention weight on the relevant position, as in §1.6.2.
+
+Questions to answer in the report:
+- Why does the vanilla RNN fall so far behind?
+- Is the larger LSTM better or worse, and what in your curves shows why?
+- Which architecture uses longer context more effectively?
+
+Extra credit (pick one):
+- Write a GRU cell gate by gate (like `LSTMScratch`) and verify that it matches `nn.GRU` numerically.
+- Measure sample diversity (the fraction of distinct 4-grams) against temperature and top-p, at fixed
+  bpb.
+
+## HW 2 — Tokenizers and pre-training on web text (Parts 1–2)
+
+**Goal:** design controlled comparisons, and learn to separate the effect of an idea from the effect
+of its budget. **Budget:** about 4–6 hours of laptop compute.
+
+Required:
+1. **Tokenizer study.** Run `sweeps/laptop_tokenizers.yaml` (or a subset of at least 5 tokenizers).
+   Report the final *and* best validation bpb, and the number of passes over the data for each.
+   Pick one large-vocabulary tokenizer that overfits, propose a fix (early stopping, more data, a
+   smaller embedding, …), and test it.
+2. **The training recipe.** On FineWeb at `laptop/L4q_gpt_fineweb_quick` size, compare four
+   configurations, 2 seeds each:
+   - the textbook GPT;
+   - + RMSNorm/RoPE;
+   - + WSD;
+   - + Muon.
+
+   Include the control that separates the schedule from the optimizer (§2.2.2). Plot the curves; give
+   the paired differences.
+3. **A scaling plot.** At a fixed token budget, sweep at least 4 model sizes (`model.dim` ×
+   `model.n_layers`). Plot bpb against non-embedding parameters and against training FLOPs.
+   Describe the trend you see. Does it flatten?
+
+Questions to answer in the report:
+- Why can't per-token loss be used to compare tokenizers?
+- Which recipe change mattered most at your budget? Did any published improvement *not* reproduce?
+  Why might that be?
+- With your compute, would you rather have a 2× larger model or 2× more tokens? Use your scaling plot.
+
+Extra credit: investigate the SwiGLU result of §2.2.2 (learning rate? token budget?) with 2 seeds per
+hypothesis.
+
+## HW 3 — Working with modern LLMs (Part 3)
+
+**Goal:** evaluate, adapt and critically read results about pretrained models.
+**Budget:** about 4–6 hours of laptop compute (GPU recommended for SFT/DPO, but not required).
+
+Required:
+1. **Evaluate small models.** Choose at least 3 pretrained models of ≤ 0.8B parameters. Measure their
+   FineWeb bpb (`part2/P1_eval_bpb.yaml`) and run `part3/B2_laptop.yaml`, adding your models. Make one
+   table and one figure, with chance levels and standard errors ($\sqrt{p(1-p)/n}$). Where the model
+   card publishes numbers for the same benchmark, compare them with yours and explain the
+   differences: few-shot setting, generated vs. log-likelihood scoring, chat template, thinking mode.
+2. **Check the scoring rule.** Run `python -m nanolm.benchmarks crosscheck <model> --limit 300` and
+   the matching `lm_eval` command. Show that the two agree. Then change the normalization in
+   `mc_accuracy` from characters to tokens: how many answers flip, and why?
+3. **Instruction tuning.** Run one SFT study, 2 seeds per setting. Either:
+   - LoRA rank $r \in \{4, 16, 64\}$, or
+   - training-set size $\in \{500, 2000, 8000\}$.
+
+   Report the held-out answer loss, show before/after samples for the same prompts, and measure
+   whether SFT changed the scores of task 1 (the "alignment tax").
+4. **Preference tuning.** Sweep the DPO $\beta \in \{0.05, 0.1, 0.5\}$. Plot the held-out reward
+   accuracy and margin, and judge the qualitative changes in the samples.
+5. **Read an architecture.** For one modern model (e.g. Qwen3.5-2B or a model of your choice), compute
+   from its `config.json` the parameters per component and the KV-cache size at 32k and 262k context.
+   Compare with a model of similar size that uses only full attention.
+
+Questions to answer in the report:
+- Which benchmarks are below or near chance for small models, and what does that imply about using
+  them to compare small models?
+- What did SFT and DPO change, and what didn't they change? Give evidence, not impressions.
+- Why do hybrid-attention models (§3.3) exist? Answer quantitatively.
+
+## HW 4 / Final project — Parameter Golf on a laptop (Parts 4–5)
+
+**Goal:** run a real architecture-research loop under a fixed budget.
+
+**The challenge:**
+- Get the lowest validation bpb with a model whose compressed artifact is at most **6.5 MB**.
+- Training budget: no more than `laptop/L5_golf_mini.yaml` (41M tokens, or its wall-clock cap).
+- Evaluation: the first 2M validation tokens; sliding-window evaluation is allowed.
+- Hard rule: no training on validation data.
+
+Required:
+1. **Baseline.** Reproduce `L5_golf_mini` with 3 seeds.
+2. **Ablation.** Test every technique you use *one at a time* against the baseline, 3 seeds each.
+   Include at least one idea that is **not** in this tutorial, implemented as a new config key in
+   `models/gpt.py`, with a causality test added to `tests/test_nanolm.py`. Candidates:
+   - a Part 3 component (sliding-window layers, a small MoE, MTP, ...);
+   - something of your own.
+3. **Final stack.** Combine your best techniques. Run a **leave-one-out** ablation of the stack: the
+   stack minus one technique, for each technique. Report whether the effects add up.
+4. **Bytes.** Report the artifact size of the final model with `python -m nanolm.compress`, as a
+   quantization-bits × compressor table, and the cost of the quantization in bpb.
+
+Deliverables:
+- a 6–8 page report in the format above, including a one-paragraph "what we learned that we did not
+  expect";
+- a leaderboard row: final bpb (mean ± std over 3 seeds), artifact size, and config file.
+
+Grading follows the standard rubric. **Rigor is weighted above rank:** a carefully measured
+negative result beats an unexplained high score.
 
 ---
 
