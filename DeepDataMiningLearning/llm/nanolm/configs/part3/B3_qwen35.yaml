@@ -1,0 +1,25 @@
+# Part 3: the same benchmarks for the Qwen3.5 small models (hybrid Gated DeltaNet + gated attention).
+# Results go to the same directory as B1, so `summary` shows all models together.
+# Fast path: install flash-linear-attention (+ causal-conv1d on CUDA); see tutorial §3.3.1.
+#   python -m nanolm.benchmarks run -c nanolm/configs/part3/B3_qwen35.yaml --slots 4
+# Every (model, group) is a separate lm_eval process; finished ones are skipped on re-run.
+name: small_models
+out_dir: outputs/nanolm/benchmarks
+batch_size: 32
+models:
+  - {name: Qwen3.5-0.8B-Base,      hf: Qwen/Qwen3.5-0.8B-Base}
+  - {name: Qwen3.5-0.8B,           hf: Qwen/Qwen3.5-0.8B, chat: true, extra_args: enable_thinking=False}
+task_groups:
+  knowledge:                     # log-likelihood multiple choice, 0-shot
+    tasks: [mmlu, arc_easy, arc_challenge, hellaswag, winogrande, piqa]
+    num_fewshot: 0
+  gpqa:                          # graduate-level science MC (gated dataset: accept terms on HF first)
+    tasks: [gpqa_diamond_zeroshot]
+    batch_size: 4                # long questions x 150k-token vocabularies: logits need a small batch
+  math:                          # generative, exact match on the final number, 5-shot (base-model prompting)
+    tasks: [gsm8k]
+    num_fewshot: 5
+  ifeval:                        # verifiable instruction following; chat models only, with their chat template
+    tasks: [ifeval]
+    chat_only: true
+    use_chat_template: true

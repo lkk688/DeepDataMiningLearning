@@ -13,9 +13,9 @@ is the *how*.
 | 3 | Part 1: char LSTM and Transformer on Shakespeare | 1 MB | 5–30 min | < 1 GB |
 | 4 | Part 1: tokenizers study (optional) | — | 1–2 h | < 1 GB (4 GB for GPT-2 BPE) |
 | 5 | Part 2: GPT on real web text (FineWeb) | 324 MB | 10 min + 1–2 h | < 2 GB |
-| 6 | Part 2: evaluate / instruction-tune / preference-tune a real LLM | 1–3 GB | 15 min + 2 × (0.5–1.5 h) | 2–4 GB |
-| 7 | Part 3: Parameter Golf mini (baseline + verified stack) | — | 2 × (0.5–1.5 h) | < 2 GB |
-| 8 | Part 3: golf ablation (optional, overnight) | — | 5–8 h | < 2 GB |
+| 6 | Part 3: evaluate / benchmark / instruction-tune / preference-tune a real LLM | 1–3 GB | 15 min + 2 × (0.5–1.5 h) | 2–4 GB |
+| 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | 2 × (0.5–1.5 h) | < 2 GB |
+| 8 | Part 4: golf ablation (optional, overnight) | — | 5–8 h | < 2 GB |
 
 \* **Estimated** from each config's FLOP count, assuming 0.5–1.5 TFLOP/s on Apple-Silicon MPS. Step 2
 gives you the real number for your machine. Every config also has a wall-clock cap, so a slow machine
@@ -98,7 +98,7 @@ python -m nanolm.analyze outputs/nanolm/sweeps/laptop_tokenizers --baseline char
 This trains the same model with 8 tokenizers: char, byte, two word vocabularies, BPE and unigram
 vocabularies you train yourself, and GPT-2's BPE. `analyze` writes `summary.md`, `curves.png` and
 `bars.png` into the sweep directory. Look at `curves.png`: the large vocabularies get *worse* after a
-few hundred steps. Tutorial §1.7.1 explains why.
+few hundred steps. Tutorial §1.8 explains why.
 
 ## Step 5. Part 2: pre-train a GPT on real web text
 
@@ -115,9 +115,9 @@ python -m nanolm.train -c nanolm/configs/laptop/L4_gpt_fineweb.yaml           # 
 ```
 
 Reference: L4-quick **1.879** bpb, L4 **1.647** bpb. For scale: GPT-2 small scores 1.079 on the same
-documents, and the Parameter Golf winner 1.057 (step 6, and Part 3).
+documents, and the Parameter Golf winner 1.057 (step 6, and Parts 3–4).
 
-## Step 6. Part 2: work with a real pretrained LLM
+## Step 6. Part 3: work with a real pretrained LLM
 
 These download models from HuggingFace on first use:
 - SmolLM2-360M: 0.7 GB
@@ -135,12 +135,17 @@ python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml
 
 # (c) preference tuning (DPO) with LoRA   ~30-90 min
 python -m nanolm.finetune -c nanolm/configs/part2/P3_dpo.yaml
+
+# (d) the benchmarks model releases report (ARC, HellaSwag, MMLU, GSM8K), subsampled   ~30-60 min
+pip install lm-eval langdetect immutabledict
+python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml
+python -m nanolm.benchmarks summary outputs/nanolm/benchmarks/laptop
 ```
 
 Open `samples_before.txt` and `samples_after.txt` in the run directory: they show the same 5 prompts,
 before and after tuning. `metrics.json` has the measured before/after numbers.
 
-**What you should see** (reference runs; details in tutorial §2.2–§2.4):
+**What you should see** (reference runs; details in tutorial §3.5 and §3.8–§3.9):
 
 | run | reference result | peak memory (fp32) |
 |---|---|---:|
@@ -149,9 +154,9 @@ before and after tuning. `metrics.json` has the measured before/after numbers.
 | (c) DPO, Qwen2.5-0.5B-Instruct | held-out reward accuracy 0.50 → 0.68 | 2.9 GB |
 
 The "after" samples are fluent but not always correct. For example, the SFT model puts Paris in
-Normandy. SFT and DPO change *how* a model answers, not what it knows (tutorial §2.3).
+Normandy. SFT and DPO change *how* a model answers, not what it knows (tutorial §3.8).
 
-## Step 7. Part 3: Parameter Golf on a laptop
+## Step 7. Part 4: Parameter Golf on a laptop
 
 ```bash
 python -m nanolm.train -c nanolm/configs/laptop/L5_golf_mini.yaml          # golf baseline architecture
@@ -166,7 +171,7 @@ L6 adds the techniques that survived our ablation, exports in int6 (the "artifac
 - L5: **1.633** bpb, 6.1 MB at int8.
 - L6: **1.601** bpb, then **1.554** with sliding-window eval, 5.6 MB at int6.
 
-Both fit the laptop "golf budget" of 6.5 MB. Tutorial §3.8 has the full ablation.
+Both fit the laptop "golf budget" of 6.5 MB. Tutorial §4.8 has the full ablation.
 
 ## Step 8. Your own ablation (optional, overnight)
 

@@ -1,31 +1,28 @@
-# From RNNs to Parameter Golf: a hands-on language-modeling course with `nanolm`
+# Language Models from Scratch to Frontier: a hands-on course with `nanolm`
 
-This course goes from a character-level RNN to the techniques behind the winning entries of
-OpenAI's **Parameter Golf** challenge (2026). The same small codebase, `llm/nanolm/`, is used
-throughout. Every experiment is a **YAML config** that you run with one command on a **Mac (Apple
-Silicon)**, a laptop with an **NVIDIA GPU**, a **server GPU**, or a plain **CPU**. Every run saves
-its config, metadata, logs and final metrics, so results can be analyzed, compared across seeds, and
-reproduced.
+This course builds language models step by step. You start with a character-level RNN and work up to
+the architectures inside today's open LLMs (Qwen3.5 and others). Every idea comes with
+**the math, the code that implements it, a configuration you can run, and a measured result**,
+usually with a figure. The same small codebase, `llm/nanolm/`, is used throughout. It runs on a
+**Mac (Apple Silicon)**, a laptop with an **NVIDIA GPU**, a **server GPU**, or a plain **CPU**.
 
-**Students with a laptop: start with [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md).** It is a
-step-by-step guide (download, run, expected time, memory, and numbers) where every step fits in
-1–2 hours on an ordinary Mac.
+**On a laptop? Start with [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md).** It lists the exact
+commands, downloads, run times, memory use, and the numbers you should get.
 
-| Part | Topic | Laptop configs | Server-scale configs |
-|---|---|---|---|
-| 0 | Setup, the laptop track, the experiment workflow | `00_smoke.yaml` | |
-| 1 | Foundations: the LM task, bits-per-byte, RNN → LSTM → Transformer, tokenizers, sampling | `laptop/L1–L3`, `sweeps/laptop_tokenizers.yaml` | `01_*`, `02_*`, `sweeps/01_*`, `sweeps/02_*` |
-| 2 | Transformers for real: pre-training on web text; using, instruction-tuning (SFT) and preference-tuning (DPO) pretrained models | `laptop/L4*`, `part2/P1–P3` | `03_*`, `sweeps/03_*` |
-| 3 | Parameter Golf: the challenge, the winners, ablations, compression | `laptop/L5–L6`, `sweeps/laptop_golf_ablation.yaml` | `04_*`, `05_*`, `sweeps/04_*` |
-| 4 | Methodology: seeds, noise, debug vs. negative result, a post-mortem | `analyze.py` | |
+| Part | You will learn | Main code |
+|---|---|---|
+| **0** | Setup; how experiments are configured, recorded and compared | `config.py`, `train.py`, `sweep.py`, `analyze.py` |
+| **1** | **Language models from scratch:** the probability model, the loss, data and tokenizers, RNN → LSTM → Transformer (every component, with equations), optimization, sampling | `data.py`, `models/`, `optim.py`, `evaluate.py` |
+| **2** | **Pre-training a GPT on web text:** real data, the modern recipe (RMSNorm, RoPE, SwiGLU, Muon, WSD), what each change is worth | `configs/03_*`, `sweeps/03_*` |
+| **3** | **From GPT to modern LLMs:** how the architecture evolved (GQA, MoE, linear attention, ...), inside Qwen3.5, evaluating a pretrained model (perplexity and benchmarks such as MMLU and GPQA), fine-tuning with LoRA, SFT and DPO | `finetune.py`, `benchmarks.py` |
+| **4** | **Parameter Golf: exploring next-generation architectures.** What wins when the model must fit in 16 MB, measured technique by technique | `models/gpt.py` switches, `sweeps/04_*` |
+| **5** | **Research methodology:** seeds, noise, telling a bug from a negative result | `analyze.py` |
 
-> **Where the numbers come from.** Every result table in this tutorial was produced by the commands
-> shown next to it, on NVIDIA H100 GPUs. For some runs another job was using most of the GPU at the
-> same time, so wall-clock times are pessimistic. The raw run directories are under
-> `outputs/nanolm/sweeps/`. Numbers about the public leaderboard are quoted from the official
-> repository and linked. Nothing is copied from memory.
-> Laptop-track reference numbers were produced with `precision=fp32`, the Mac default, so that
-> memory and accuracy match what a Mac run reports.
+> **Where the numbers come from.** Every number and figure in this tutorial comes from running the
+> command shown next to it. We ran them on NVIDIA H100 GPUs; the laptop-track reference numbers used
+> fp32, the Mac default. Every figure can be regenerated with `python -m nanolm.viz all`, and the raw
+> runs are under `outputs/nanolm/`. Numbers about other people's models (leaderboards, model cards)
+> are quoted from the linked source. Nothing is reproduced from memory.
 
 ---
 
@@ -34,104 +31,77 @@ step-by-step guide (download, run, expected time, memory, and numbers) where eve
 ## 0.1 Install
 
 ```bash
-# any machine: Python >= 3.10, PyTorch >= 2.4
+# Python >= 3.10, PyTorch >= 2.4, any OS
 pip install torch numpy pyyaml sentencepiece tiktoken pandas matplotlib scipy huggingface_hub datasets pytest
-pip install transformers peft                 # Part 2 (pretrained models) only
-cd DeepDataMiningLearning/llm                 # all commands below run from this directory
-python -m pytest nanolm/tests -q              # correctness tests, ~5 s on CPU
-python -m nanolm.train -c nanolm/configs/00_smoke.yaml     # 30-second end-to-end run
+pip install transformers peft lm-eval         # Part 3 only (pretrained models, benchmarks)
+cd DeepDataMiningLearning/llm                 # every command below runs from this directory
+python -m pytest nanolm/tests -q              # correctness tests (~15 s on CPU)
+python -m nanolm.train -c nanolm/configs/00_smoke.yaml     # a 30-second end-to-end run
 ```
 
-`device: auto` chooses **CUDA → MPS (Apple Silicon) → CPU** in that order. Nothing in the code says
-`.cuda()`. The device-specific choices all live in `nanolm/device.py`:
+`device: auto` picks **CUDA → MPS (Apple Silicon) → CPU**. Nothing in the code calls `.cuda()`
+directly; all device-specific choices are in `nanolm/device.py`:
 
 | | CUDA | MPS (Mac) | CPU |
 |---|---|---|---|
-| mixed precision (`precision: auto`) | bf16 autocast | fp32 (opt in with `precision=bf16`, needs macOS 14+) | fp32 |
-| `torch.compile` (`train.compile`) | yes | ignored | ignored |
-| fused AdamW | yes | no | no |
-| Muon Newton-Schulz | bf16 | fp32 | fp32 |
+| mixed precision (`precision: auto`) | bf16 autocast | fp32 (`precision=bf16` on macOS 14+) | fp32 |
+| `torch.compile` (`train.compile`) | yes | skipped | skipped |
+| Muon's Newton–Schulz iteration | bf16 | fp32 | fp32 |
 | multi-GPU (`torchrun`) | NCCL | — | gloo |
 
-The official challenge shipped a separate Apple-MLX script (`train_gpt_mlx.py`) next to its CUDA
-script. That means two codebases that drift apart. We chose one PyTorch codebase with a device
-abstraction instead: every feature works on every backend, and a student's Mac result and a GPU
-result come from the same code.
+## 0.2 The laptop track
 
-> **Honest caveat.** The MPS path is written to avoid CUDA-only operations, and the CPU path
-> (which exercises the same non-CUDA branches) is tested. It has **not** been benchmarked on a Mac by
-> us. If something fails on MPS, run with `device=cpu` to check whether it is MPS-specific, and
-> please report it.
+Every stage has a laptop-sized configuration: `nanolm/configs/laptop/` for training from scratch and
+`nanolm/configs/part2/` for pretrained models. The rules for sizing them:
+- at most about 4 PFLOP of training (FLOPs ≈ 6 × parameters × tokens, see §1.6.6);
+- a wall-clock cap (`train.max_time_sec`), so a slow machine finishes on time with a slightly weaker
+  model instead of running all night;
+- measured peak memory of at most 2.9 GB in fp32.
 
-## 0.2 The laptop track: what runs where
+**Measure your own machine first:** `python -m nanolm.bench -c <config>` runs 13 real training steps
+and prints tokens/s, peak memory, and the projected time of the whole config.
 
-Everything in this course has a **laptop configuration** in `nanolm/configs/laptop/` (Parts 1–3) and
-`nanolm/configs/part2/` (Part 2, pretrained models). Each one is sized for an ordinary laptop:
-
-- **Compute.** Each config does at most about 4 PFLOP of training (FLOPs ≈ 6 × parameters × tokens).
-  On an Apple-Silicon Mac this means minutes for Part 1 and roughly 1–2 hours for the biggest runs.
-- **Time cap.** Each config also sets `train.max_time_sec`. If your machine is slower than expected,
-  training stops at the cap, and the learning-rate schedule (which follows *progress* =
-  max(step/max_steps, time/max_time_sec)) still decays properly. You get a slightly weaker model,
-  not a crash at 3 a.m.
-- **Memory.** Measured fp32 peaks are at most 2.9 GB, for both the from-scratch and the
-  post-training configs, so an 8 GB Mac works. Close other heavy apps.
-
-**Measure your own machine first.** Run `python -m nanolm.bench -c <config>`. It runs 13 real
-training steps and prints tokens/s, memory, and the projected training time for that config.
-
-| config | what it trains | FLOPs | est. time on a Mac* | peak memory (fp32) | reference val bpb |
+| config | trains | FLOPs | est. Mac time* | peak memory (fp32) | reference result |
 |---|---|---:|---:|---:|---:|
-| `00_smoke` | tiny GPT, 60 steps | — | < 1 min | < 0.2 GB | (sanity only) |
-| `laptop/L1_char_lstm` | 2-layer LSTM, Shakespeare chars | 0.1 P | 1–3 min | 0.3 GB | 2.154 |
-| `laptop/L2_char_gpt` | 4-layer modern Transformer, Shakespeare | 0.36 P | 4–12 min | 0.8 GB | 2.106 |
-| `laptop/L3_tokenizer` | same, your own BPE-1024 tokenizer | 0.36 P | 4–12 min | 0.9 GB | 2.279 (best checkpoint lower, §1.7.1) |
-| `laptop/L4q_gpt_fineweb_quick` | 4 × 256 GPT on FineWeb, 16M tokens | 0.4 P | 5–14 min | 0.9 GB | 1.879 |
-| `laptop/L4_gpt_fineweb` | 6 × 384 GPT on FineWeb, 49M tokens, Muon | 3.8 P | 45–130 min (cap 2 h) | 1.8 GB | 1.647 |
-| `laptop/L5_golf_mini` | golf baseline architecture, 6 × 384, 41M tokens | 2.1 P | 25–70 min | 1.8 GB | 1.633 |
-| `laptop/L6_golf_mini_stack` | + the verified golf stack, int6, sliding eval | 3.1 P | 35–105 min | 2.9 GB | 1.601 (sliding: 1.554) |
-| `part2/P1_eval_bpb` | score Qwen2.5-0.5B on FineWeb (no training) | — | 5–15 min | ~3 GB (est.) | 0.951 |
-| `part2/P2_sft_alpaca` | LoRA instruction tuning of SmolLM2-360M | ~3 P | 30–90 min | 2.0 GB | answer NLL 1.556 → 1.321 |
-| `part2/P3_dpo` | LoRA DPO of Qwen2.5-0.5B-Instruct | ~3 P | 30–90 min | 2.9 GB | reward acc 0.50 → 0.68 |
+| `laptop/L1_char_lstm` | 2-layer LSTM, Shakespeare | 0.1 P | 1–3 min | 0.3 GB | 2.154 bpb |
+| `laptop/L2_char_gpt` | 4-layer Transformer, Shakespeare | 0.36 P | 4–12 min | 0.8 GB | 2.106 bpb |
+| `laptop/L3_tokenizer` | same, your own BPE tokenizer | 0.36 P | 4–12 min | 0.9 GB | 2.279 bpb |
+| `laptop/L4q_gpt_fineweb_quick` | 4 × 256 GPT on web text | 0.4 P | 5–14 min | 0.9 GB | 1.879 bpb |
+| `laptop/L4_gpt_fineweb` | 6 × 384 GPT, 49M tokens, Muon | 3.8 P | 45–130 min | 1.8 GB | 1.647 bpb |
+| `part2/P1_eval_bpb` | score Qwen2.5-0.5B (no training) | — | 5–15 min | ~3 GB (est.) | 0.951 bpb |
+| `part2/P2_sft_alpaca` | LoRA SFT of SmolLM2-360M | ~3 P | 30–90 min | 2.0 GB | answer loss 1.556 → 1.321 |
+| `part2/P3_dpo` | LoRA DPO of Qwen2.5-0.5B-Instruct | ~3 P | 30–90 min | 2.9 GB | reward acc. 0.50 → 0.68 |
+| `laptop/L5_golf_mini` | Parameter-Golf baseline, 6 × 384 | 2.1 P | 25–70 min | 1.8 GB | 1.633 bpb |
+| `laptop/L6_golf_mini_stack` | + verified golf techniques | 3.1 P | 35–105 min | 2.9 GB | 1.554 bpb (sliding eval) |
 
-\* **Estimated.** The time range assumes 0.5–1.5 TFLOP/s achieved on MPS in fp32. These are not
-measurements from a Mac. Your `bench` output is the real number. The reference bpb and memory
-were measured on a GPU with `precision=fp32` (the Mac default), so your result should match the
-reference to within about ±0.01 bpb. The exception is when the time cap stops your run early.
-
-On a **laptop with an NVIDIA GPU** (4–8 GB of VRAM), the same configs run in bf16 and use roughly
-half the memory shown. Keep `train.compile=false` on Windows.
+\* *Estimated* from each config's FLOP count at 0.5–1.5 TFLOP/s; `bench` gives the real figure for
+your machine. Your bpb should match the reference to within about ±0.01, unless the time cap ended
+your run early.
 
 ## 0.3 Code map
 
 ```
 llm/nanolm/
-  config.py      typed dataclass configs; YAML + inheritance + key=value overrides; rejects typos
-  device.py      cuda/mps/cpu selection, autocast, seed_everything(), synchronize()
-  data.py        tokenizers (char, byte, word, gpt2-BPE, SentencePiece, train-your-own BPE, any HF)
-                 -> token shards -> batches; per-token byte lookup tables for bits-per-byte
-  models/rnn.py  RNN / GRU / LSTM (+ a hand-written LSTM cell)
-  models/gpt.py  ONE GPT class; every parameter-golf trick is a config switch (default off)
-  optim.py       AdamW groups, Muon (Newton-Schulz), cosine / WSD schedules, EMA
-  evaluate.py    loss, bpb, sliding-window eval (each token scored exactly once), sampling
-  quant.py       int8/6/5/4 per-row quantization + zlib/lzma -> "artifact" size + round-trip bpb
-  train.py       Parts 1, 3: the single training entry point for from-scratch models
-  finetune.py    Part 2: pretrained HF models -- bits-per-byte eval, LoRA SFT, LoRA DPO
-  generate.py    sample from a checkpoint (temperature / top-k / top-p, interactive)
-  bench.py       measure THIS machine: tokens/s, memory, projected time of a config
-  sweep.py       experiments x seeds from one sweep file; resumable; several machines can share it
-  analyze.py     tables (mean +- std over seeds, paired t-test vs. baseline) + plots
-  compress.py    re-evaluate a saved model: quantization bits x compressor x eval stride
-  prepare.py     download / tokenize data ahead of time
-  configs/       one YAML per experiment: laptop/ (L1-L6), part2/ (P1-P3), server-scale 00-05,
-                 sweeps/ one YAML per study
-  tests/         correctness tests (causality of every feature, bpb byte counting, tokenizers, ...)
-llm/legacy/      the previous course code, with a map from each old function to its replacement
+  config.py      typed configs: YAML + inheritance + key=value overrides; a misspelled key is an error
+  device.py      cuda / mps / cpu selection, autocast, seed_everything()
+  data.py        tokenizers (char, byte, word, BPE, any HuggingFace tokenizer) -> token shards -> batches
+  models/rnn.py  RNN / GRU / LSTM (+ an LSTM cell written gate by gate)
+  models/gpt.py  ONE Transformer class; every architectural variant is a config switch
+  optim.py       AdamW, Muon, learning-rate schedules, weight averaging (EMA)
+  evaluate.py    loss, bits-per-byte, sliding-window evaluation, sampling
+  train.py       entry point: train a model from scratch
+  finetune.py    entry point: evaluate / SFT / DPO a pretrained HuggingFace model
+  benchmarks.py  entry point: MMLU, GPQA, GSM8K, IFEval, ... via lm-evaluation-harness (+ our own scorer)
+  generate.py    sample text from a trained model
+  sweep.py, analyze.py   run many experiments x seeds; tables with statistics; plots
+  bench.py, compress.py, viz.py, prepare.py   machine benchmark, quantization study, figures, data download
+  configs/       one YAML file per experiment;   tests/   correctness tests
 ```
 
-## 0.4 The experiment workflow (the important part)
+## 0.4 How every experiment works
 
-**Rule 1: an experiment is a config, never an edited line of code.** Configs inherit:
+**An experiment is a config file, never an edited line of code.** Configs inherit from each other,
+so a variant is a few lines:
 
 ```yaml
 # configs/02b_char_transformer_modern.yaml  -- the whole file
@@ -140,476 +110,1187 @@ name: char_gpt_modern
 model: {norm: rmsnorm, pos: rope, mlp: swiglu, bias: false}
 ```
 
-Any key can also be overridden from the command line:
+Any key can also be overridden on the command line, for example
+`python -m nanolm.train -c nanolm/configs/02_char_transformer.yaml model.n_layers=6 train.lr=5e-4 seed=2`.
+Every key is typed, and a typo such as `model.n_layer=6` stops the run with
+`unknown config key(s) ['n_layer']`, instead of silently doing nothing.
 
-```bash
-python -m nanolm.train -c nanolm/configs/02_char_transformer.yaml model.n_layers=6 train.lr=5e-4 seed=2
-```
+**Every run leaves a complete record** in `outputs/nanolm/<date>_<name>/`:
+- `config.yaml`: the exact, fully resolved settings;
+- `meta.json`: git commit, seed, date, machine and command line;
+- `train_log.jsonl` and `eval_log.jsonl`: the curves;
+- `metrics.json`: the final numbers;
+- `sample.txt`: generated text;
+- `model.pt`: the checkpoint.
 
-Every key is typed, and a misspelled key is an error. For example, `model.n_layer=6` stops with
-`unknown config key(s) ['n_layer']`. In our own parameter-golf code, configuration went through
-environment variables, and an unknown key only produced a warning. Several "ablations" there
-silently changed nothing (§4.3).
-
-**Rule 2: every run leaves a complete record.** `outputs/nanolm/<date>_<name>/` holds:
-
-| file | content |
-|---|---|
-| `config.yaml` | the fully resolved config; rerun the run with `--config <this file>` |
-| `meta.json` | git commit + dirty flag, seed, date, host, device, torch version, command line |
-| `train_log.jsonl` | step, loss, lr, tokens/s every `log_every` steps |
-| `eval_log.jsonl` | val loss / bpb every `eval_every` steps |
-| `metrics.json` | final full-validation bpb, sliding-window bpb, quantized size and round-trip bpb, time, memory |
-| `sample.txt`, `model.pt` | generated text, checkpoint |
-
-**Rule 3: a study is a sweep file, and every claim needs seeds.**
-
-```bash
-python -m nanolm.sweep  --sweep nanolm/configs/sweeps/04_golf_ablation.yaml --gpus 0,1,2,3
-python -m nanolm.analyze outputs/nanolm/sweeps/golf_ablation
-```
-
-The sweep validates every config before launching anything. It runs each (experiment, seed) in its
-own process, and skips runs that already have a `metrics.json`, so rerunning the command resumes a
-crashed sweep. `analyze.py` reports mean ± std over seeds and a paired t-test against the baseline,
-and plots the curves. Part 4 explains why this is not optional.
-
-**Rule 4: the code is tested.** The most important test is causality. Every model feature is
-checked to make sure that changing *future* tokens cannot change *past* predictions. A model that
-leaks the future gets a spectacular and meaningless score (§4.3 shows how this happened to us).
+**A study is a sweep file, and every claim needs several random seeds.**
+`python -m nanolm.sweep --sweep <file>` runs every experiment × seed, each in its own process, and
+skips finished runs, so it can resume after a crash. `python -m nanolm.analyze <dir>` then reports
+mean ± standard deviation and a paired test against the baseline (Part 5).
 
 ---
 
-# Part 1 — Foundations: from characters to Transformers
+# Part 1 — Language models from scratch
 
-## 1.1 The task
+## 1.1 What a language model computes
 
-A language model assigns a probability to the next token given the past:
-p(x_t | x_<t). Training minimizes the cross-entropy, i.e. the average −ln p(x_t | x_<t) over the
-training tokens. In `nanolm`, every model maps `idx[B, T] → logits[B, T, V]`, and the loss in
-`train.py` is one line:
+A language model assigns a probability to every possible text. It does this with the chain rule of
+probability. A text is first cut into tokens $x_1, \dots, x_T$ (characters, bytes, or word pieces;
+§1.4). Then
+
+$$
+p(x_1, \dots, x_T) \;=\; \prod_{t=1}^{T} p_\theta(x_t \mid x_1, \dots, x_{t-1}) .
+$$
+
+So the model only ever has to answer one question: **given the text so far, what is the probability
+of each possible next token?** For a vocabulary of $V$ tokens, the network outputs $V$ real numbers
+(the *logits* $z \in \mathbb{R}^V$), and a softmax turns them into a distribution:
+
+$$
+p_\theta(x_t = v \mid x_{<t}) \;=\; \mathrm{softmax}(z)_v \;=\; \frac{e^{z_v}}{\sum_{u=1}^{V} e^{z_u}} .
+$$
+
+Generating text means repeating this: compute the distribution, pick a token (§1.9), append it, and
+repeat. Every model in this course, from a vanilla RNN to Qwen3.5, has the same interface:
 
 ```python
-loss = F.cross_entropy(logits.float().view(-1, V), y.reshape(-1))     # y = idx shifted by one
+logits = model(idx)        # idx: [B, T] token ids  ->  logits: [B, T, V]
 ```
 
-## 1.2 Why bits-per-byte, not loss or perplexity
+Position $t$ of the output holds the prediction for token $t+1$. A batch of $B$ sequences of length
+$T$ therefore yields $B \times T$ predictions at once, and every one of them is a training example.
 
-Per-token loss and perplexity depend on what a "token" is. A character model predicts about 1 byte
-per step. A GPT-2 BPE model predicts about 4 bytes per step, so its per-token loss is naturally
-larger. Comparing the two numbers is meaningless. The old tokenizer-comparison experiment in this
-folder (now `legacy/experiments.py: run_tokenizer_comparison_experiment`) made exactly this mistake.
+## 1.2 The loss: cross-entropy, perplexity and bits-per-byte
 
-**Bits-per-byte** removes the unit. It is the number of bits the model needs to compress the
-validation text, divided by the length of that text in UTF-8 bytes:
+Training maximizes the probability the model assigns to the real text. Equivalently, it minimizes
+the average **negative log-likelihood**, also called the **cross-entropy**:
 
-```
-bpb = (sum over scored tokens of -ln p(token)) / ln 2 / (number of UTF-8 bytes those tokens cover)
-```
+$$
+\mathcal{L}(\theta) \;=\; -\frac{1}{N} \sum_{t=1}^{N} \ln p_\theta(x_t \mid x_{<t}) \qquad \text{(nats per token)}.
+$$
 
-It is the official Parameter Golf metric, and it is what `nanolm` reports as `val_bpb`.
-Counting bytes per token is subtle for SentencePiece, where the leading "▁" stands for a space byte
-that is not counted after a document boundary. `data.py` builds three lookup tables per tokenizer
-that reproduce the challenge's rule exactly:
-`bytes(y) = base_bytes[y] + (has_leading_space[y] & ~is_boundary[x_prev])`.
-`tests/test_nanolm.py` checks that the counted bytes equal `len(text.encode("utf-8"))`.
+In code this is one line (`train.py`); `y` is the input shifted left by one position:
 
-Reference points: a uniform guess over 256 byte values costs 8 bpb. gzip on English text gets about
-2.5–3 bpb. The Parameter Golf baseline (a 17M-parameter GPT, 10 min on 8xH100) gets 1.2244, and the
-winning entry gets 1.0565.
-
-## 1.3 The data pipeline (borrowed from Parameter Golf)
-
-1. **Tokenize once.** Store all token ids as one flat `uint16` array in the challenge's `.bin` shard
-   format (a 256-int header, then the tokens; `uint32` for vocabularies above 65,535), and memory-map it (`data.py: write_shard, read_shard`).
-   A 100M-token shard costs no RAM until it is read.
-2. **Sample windows.** Each training batch is `B` random windows of `T+1` tokens (`sampler: random`),
-   or the next contiguous chunk of the stream (`sampler: sequential`, the golf loader, which never
-   repeats data).
-3. **Count steps and tokens, not epochs.** `train.max_steps × batch_size × seq_len × grad_accum` is
-   the token budget. The log prints how many passes over the training set that is.
-4. **Fix the validation split by the data, not by the run seed.** Use the contiguous tail of a
-   corpus (Shakespeare), a seeded *document* shuffle (`split_by: doc`), or the challenge's fixed
-   first-50k-documents split.
-
-## 1.4 What was wrong with the old pipeline (worth discussing in class)
-
-| Old behavior (`legacy/lm_dataset.py` / `legacy/train_lm.py`) | Consequence | nanolm |
-|---|---|---|
-| sliding windows with `stride=1`, stored as Python lists | 13.7M overlapping 64-token "sequences" for 13.7M characters; one "epoch" shows each character 64 times; about 12 min per epoch for a 2-layer RNN | windows sampled from a memory-mapped token array |
-| validation = last 10% of an **alphabetically sorted** dictionary | validation is all words starting with late letters (distribution shift). The log shows val loss *rising* from epoch 1 while train loss falls | data-defined random doc split or contiguous tail |
-| tokenizer comparison by per-token loss / perplexity | units differ, so the ranking is meaningless | bits-per-byte |
-| device = `cuda` or `cpu` | Mac students fall back to CPU | cuda → mps → cpu |
-| `FullTransformer` built `[layer for _ in range(n)]` | the same layer object was repeated, so all N layers shared weights | fixed (in `legacy/transformer.py`) |
-| hyper-parameters spread over `Args` classes inside `legacy/experiments.py` | an experiment means editing code | YAML + overrides |
-
----
-
-## 1.5 Recurrent language models: RNN → GRU → LSTM
-
-Code: `nanolm/models/rnn.py`. Config: `configs/01_char_rnn.yaml` (laptop: `configs/laptop/L1_char_lstm.yaml`, the same run).
-
-A recurrent LM reads one token at a time and carries a hidden state h_t:
-
-- **Vanilla RNN:** h_t = tanh(W_x x_t + W_h h_{t-1}). Gradients flowing back through T steps are
-  multiplied by W_h about T times, so they explode or vanish. Gradient clipping (`train.grad_clip`)
-  fixes the explosion. Nothing simple fixes the vanishing.
-- **LSTM:** adds a cell c_t that is updated *additively*, c_t = f ⊙ c_{t-1} + i ⊙ g. The forget gate f
-  lets information (and gradient) flow across long spans. `LSTMScratch` writes the four gates out
-  explicitly, and initializes the forget-gate bias to 1 so the cell remembers by default.
-- **GRU:** a cheaper two-gate variant.
-
-Training uses **truncated back-propagation through time**: each window of `seq_len` characters
-starts from a zero state. RNNs and Transformers therefore share the data pipeline and the evaluation
-exactly.
-
-```bash
-python -m nanolm.train -c nanolm/configs/01_char_rnn.yaml                      # LSTM
-python -m nanolm.train -c nanolm/configs/01_char_rnn.yaml model.arch=gru name=char_gru
-python -m nanolm.train -c nanolm/configs/01_char_rnn.yaml model.arch=lstm_scratch train.max_steps=200  # readable, slow
+```python
+loss = F.cross_entropy(logits.float().view(-1, V), y.reshape(-1))
 ```
 
-The results for all architectures are in the table in §1.6.3.
+**A worked example.** Say the model gives the correct next character probability 0.35. That
+position then contributes $-\ln 0.35 = 1.05$ nats to the loss. Three quantities are derived from
+the average loss $\mathcal{L}$, and they are easy to confuse:
 
----
+| quantity | formula | meaning | example ($\mathcal{L}$ = 1.46 nats/char) |
+|---|---|---|---|
+| loss | $\mathcal{L}$ | average surprise per token, in nats | 1.46 |
+| perplexity | $e^{\mathcal{L}}$ | "as uncertain as a fair choice among this many tokens" | 4.3 |
+| **bits-per-byte (bpb)** | $\dfrac{\sum_t -\log_2 p(x_t \mid x_{<t})}{\text{UTF-8 bytes of the text}} = \dfrac{\mathcal{L}}{\ln 2}\cdot\dfrac{\#\text{tokens}}{\#\text{bytes}}$ | bits needed to compress the text, per byte | 2.11 |
 
-## 1.6 The character-level Transformer
+**Why we report bits-per-byte.** Loss and perplexity are *per token*, and a token means different
+things for different tokenizers. A character model predicts about 1 byte per step, while GPT-2's
+tokenizer predicts about 3–4 bytes per step. Comparing their per-token losses is like comparing
+prices quoted per gram with prices quoted per pound. Bits-per-byte divides by the size of the text
+itself, so it is comparable across *all* tokenizers and models. It is also the metric of the
+Parameter Golf challenge (Part 4).
 
-Code: `nanolm/models/gpt.py`. Configs: `02_char_transformer.yaml` (textbook), `02b_char_transformer_modern.yaml`
-(laptop: `laptop/L2_char_gpt.yaml`). Every run in this section takes under 15 minutes on a laptop.
+Bits-per-byte is literally a compression rate: a language model plus arithmetic coding *is* a
+compressor. Some reference points:
 
-### 1.6.1 The textbook (GPT-2) block
+| what | bpb |
+|---|---:|
+| guessing uniformly among 256 byte values | 8.0 |
+| gzip -9 on the Shakespeare validation text (measured) | 3.19 |
+| bzip2 on the same text (measured) | 2.64 |
+| our 3M-parameter character Transformer on the same text | 2.11 |
+| GPT-2 small on web text | 1.08 |
+| Qwen2.5-0.5B on web text | 0.95 |
+
+**Counting bytes exactly.** bpb needs to know how many bytes each predicted token covers.
+`data.py` builds three lookup tables per tokenizer (bytes per token, a "has leading space" flag, a
+"document boundary" flag). With them,
+
+$$
+\text{bytes}(y_t) = \text{base}[y_t] + \mathbb{1}\{\text{leading-space}[y_t] \wedge \neg\,\text{boundary}[x_{t}]\},
+$$
+
+which is the exact rule used by the Parameter Golf challenge. A unit test checks that the counted
+bytes equal `len(text.encode("utf-8"))` for every tokenizer.
+
+## 1.3 Data: from raw text to training batches
+
+**The corpus.** Part 1 uses *Tiny Shakespeare*: 1,115,394 characters of plays. `data.py` downloads
+it automatically. Here is how it begins:
 
 ```
-x = tok_emb(idx) + pos_emb(positions)
-for each layer:   x = x + Attention(LayerNorm(x))         # tokens exchange information
-                  x = x + MLP(LayerNorm(x))               # per-token computation (GELU, 4x width)
-logits = LayerNorm(x) @ tok_emb.weight^T                  # tied input/output embedding
+First Citizen:
+Before we proceed any further, hear me speak.
+
+All:
+Speak, speak.
+
+First Citizen:
+You are all resolved rather to die than to famish?
 ```
 
-The attention is causal: `F.scaled_dot_product_attention(q, k, v, is_causal=True)`, so position t
-only sees positions ≤ t. This one flag is what makes it a *language model*. Remove it and the model
-reads the answer.
+**Step 1: split.** The last 10% of the text becomes the validation set. The split is fixed by the
+data, not by the random seed, so every run is evaluated on the same 111,540 characters. They are
+never trained on.
 
-### 1.6.2 The modern ("Llama") block
+**Step 2: build a vocabulary and encode.** For a character model, the vocabulary is just the 65
+distinct characters that occur, sorted:
 
-| Textbook | Modern | Why |
-|---|---|---|
-| LayerNorm | **RMSNorm** | no mean subtraction or bias; cheaper, equally stable |
-| learned absolute positions | **RoPE** (rotary) | relative positions enter q·k directly; no position table |
-| GELU MLP | **SwiGLU** | gated MLP; the 2/3 width keeps the parameter count equal |
-| biases | none | fewer parameters, no loss in quality |
-
-Each row is one config key (`model.norm`, `model.pos`, `model.mlp`, `model.bias`).
-
-### 1.6.3 Results: RNN vs. Transformer (Tiny Shakespeare, characters)
-
-```bash
-python -m nanolm.sweep   --sweep nanolm/configs/sweeps/01_char_models.yaml
-python -m nanolm.analyze outputs/nanolm/sweeps/char_models --baseline gpt_textbook --metric val_bpb
+```
+\n !$&',-.3:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz
 ```
 
-Setup: 1.0M training / 0.11M validation characters. 2000 steps × 32 × 256 = 16.4M training
-characters (about 16 passes). Final evaluation on the full validation split. Two seeds.
+Each character maps to its index. For example, `encode("ROMEO:") = [30, 27, 25, 17, 27, 10]`.
 
-| model | params | val bpb (mean ± std, 2 seeds) | Δ vs. textbook GPT | paired p | train time |
-|---|---:|---:|---:|---:|---:|
-| **GPT modern** (RMSNorm+RoPE+SwiGLU, 4L×256) | 3.16M | **2.105 ± 0.002** | −0.084 | 0.03 | 37 s |
-| LSTM 2×256 | 1.07M | 2.134 ± 0.008 | −0.056 | 0.005 | 51 s |
-| GRU 2×256 | 0.81M | 2.167 ± 0.007 | −0.022 | 0.26 | 48 s |
-| LSTM 2×512 (parameter-matched) | 4.24M | 2.171 ± 0.013 | −0.019 | 0.13 | 58 s |
-| GPT textbook (LayerNorm+learned pos+GELU) | 3.44M | 2.189 ± 0.007 | 0 | — | 26 s |
-| vanilla RNN 2×256 | 0.28M | 2.436 ± 0.009 | +0.246 | 0.003 | 17 s |
+**Step 3: store the tokens once, as one flat array.** The whole training set becomes 1,003,854
+integers, written to `train.bin` as `uint16` values after a 256-integer header. This is the shard
+format of the Parameter Golf challenge. The file is *memory-mapped*: the operating system loads only
+the pages that are actually read, so a 100M-token file costs no RAM until it is used.
 
-Seed noise floor (median within-experiment std): **0.0076 bpb**. With only 2 seeds a paired t-test
-has 1 degree of freedom, so treat the p-values as a rough guide.
+**Step 4: sample training windows.** A training example is any window of $T+1$ consecutive tokens.
+The input $x$ is the first $T$ tokens and the target $y$ is the last $T$, the same window shifted by
+one position:
 
-![validation bpb vs tokens](docs/nanolm_figs/char_models_curves.png)
+![one training window](docs/nanolm_figs/p1_data_window.png)
 
-What to notice:
-- **The vanilla RNN is far behind** (+0.25 bpb). The gated cells (GRU, LSTM) fix most of that.
-- **The modern recipe matters more than "Transformer vs. LSTM".** The textbook GPT is *worse* than a
-  1M-parameter LSTM at this budget. The same-size model with RMSNorm + RoPE + SwiGLU is the best
-  model. (2.105 bpb = 1.46 nats/char, in line with the well-known nanoGPT Shakespeare-char result.)
-- **The bigger LSTM overfits.** LSTM-512 is best at about 10M tokens and then gets *worse*: its final
-  train loss is 1.02 nats against 1.51 on validation (LSTM-256: 1.28 vs. 1.48). At 1 MB of text,
-  data is the bottleneck, not parameters. This is a regularization lesson, not an architecture lesson.
-- These conclusions hold **at this budget** (16 passes over 1 MB). Exercise 1 asks how they change
-  with context length; more data (Part 2) changes them more.
+A real batch from `TokenData.train_batch(B=2, T=16)`, decoded:
 
----
-
-## 1.7 Tokenizers: what a "token" should be
-
-```bash
-python -m nanolm.sweep --sweep nanolm/configs/sweeps/02_tokenizers.yaml
-python -m nanolm.analyze outputs/nanolm/sweeps/tokenizers --metric val_bpb
+```
+x[0] = [ 1, 44, 53, 53, 50,  6,  1, 42, 53,  1, 52, 53, 58,  1, 44, 50]   ' fool, do not fl'
+y[0] = [44, 53, 53, 50,  6,  1, 42, 53,  1, 52, 53, 58,  1, 44, 50, 39]   'fool, do not fla'
 ```
 
-Same modern Transformer, same 2000 × 32 × 256 token budget, three tokenizers. Because the token
-budget is fixed, the BPE model sees about 3–4× more *text*, but it must also learn a
-50,257-row embedding table from 1 MB of data.
+Every position is a prediction problem: after `' '` predict `'f'`, after `' f'` predict `'o'`, and
+so on. Windows start at random positions (`sampler: random`), or are read in order without repetition
+(`sampler: sequential`, used for the large web-text corpus in Part 2). The training budget is counted in
+**tokens and optimizer steps**, not epochs: `max_steps × batch_size × seq_len` tokens. Every run
+prints how many passes over the training set that is.
 
-| tokenizer | vocab | params (non-emb.) | bytes/token | train passes | val loss (nats/token) | val ppl | **val bpb** |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| char | 65 | 3.16M (3.15M) | 1.00 | 16 | 1.460 | 4.31 | **2.107** |
-| byte | 256 | 3.21M (3.15M) | 1.00 | 16 | 1.450 | 4.26 | **2.092** |
-| GPT-2 BPE | 50,257 | 16.0M (3.15M) | 3.09 | 54 | 5.998 | 402 | **2.798** (best checkpoint, step 250: 2.163) |
+## 1.4 Tokenizers: what is a "token"?
 
-(One seed each. The char/byte difference of 0.015 is about 2× the seed noise floor measured in §1.6.3,
-so do not over-read it.)
+The model sees integers, so text must be cut into pieces from a fixed vocabulary. The choice is a
+trade-off:
+- **Small vocabulary (characters, bytes).** Long sequences. Every word must be assembled letter by
+  letter. A tiny embedding table.
+- **Large vocabulary (words, BPE).** Short sequences: one step covers several characters. But the
+  embedding table is large, and a rare piece has few training examples.
 
-![tokenizer curves](docs/nanolm_figs/tokenizers_curves.png)
+**Byte-pair encoding (BPE)**, used by GPT-2, Llama and Qwen, learns its vocabulary from data. It
+starts from single characters (or bytes) and repeatedly **merges the most frequent adjacent pair into a
+new token**. The whole algorithm fits in 20 lines. Here is a run on a toy corpus of word counts
+(`_` marks the end of a word):
 
-Three lessons in one table:
-1. **Loss and perplexity are not comparable across tokenizers.** By perplexity, BPE looks 100× worse
-   (402 vs. 4.3). In bpb it is 33% worse at the end and nearly equal at its best point. Only bpb
-   measures the same thing for all three.
-2. **A large vocabulary needs data.** Shakespeare has only 302k GPT-2 tokens. The fixed token budget
-   becomes 54 passes, and the 12.9M-parameter embedding table memorizes: train loss 1.30 nats/token
-   against 6.0 on validation. The BPE model was best after 250 steps (2.163 bpb) and got worse from
-   then on. Early stopping, or more data, would rescue it.
-3. On a small corpus, bytes are as good as characters and need no vocabulary building. This is the
-   byte-level-model argument in miniature.
+```python
+words = {"low_": 5, "lower_": 2, "newest_": 6, "widest_": 3}
+merges = bpe_train(words, 6)
+# merge 1: 'es'   (pair seen 9 times)      merge 4: 'lo'   (7 times)
+# merge 2: 'est'  (9 times)                merge 5: 'low'  (7 times)
+# merge 3: 'est_' (9 times)                merge 6: 'ne'   (6 times)
+# words now:  low _ | low e r _ | ne w est_ | w i d est_
+```
 
-Parameter Golf turned this trade-off into one of its biggest levers. The vocabulary grew from
-sp1024 → sp4096 → sp8192 over the competition, about −0.012 bpb per step, combined with other
-changes (§3.2). A larger vocabulary means more bytes per token, which means more text per
-step and per unit of attention context. But the embedding table must fit in the 16 MB budget,
-which is why quantizing the embeddings (int7/int6 GPTQ) arrived together with the large vocabularies.
+Frequent fragments such as `est_` and `low` become single tokens. Encoding new text applies the same
+merges in the same order. Production tokenizers work on **bytes** rather than characters, so any
+string, in any language, can be encoded with no "unknown" token.
 
----
-
-### 1.7.1 More tokenizers: words, and training your own BPE (laptop sweep)
-
-Part 1's tokenizer menu, all trained on the **training split only** (a tokenizer trained on
-validation text leaks it). Each one is lossless, so bpb is exact (`tests/test_nanolm.py` checks this):
+`nanolm` lets you swap the tokenizer with one config key, `data.tokenizer`:
 
 | spec | what it is |
 |---|---|
 | `char`, `byte` | one token per character / per UTF-8 byte |
-| `word:<V>` | the V−256 most frequent words, whitespace runs and punctuation; **out-of-vocabulary words fall back to bytes** instead of `<unk>` |
-| `sp_train:bpe:<V>`, `sp_train:unigram:<V>` | train your own SentencePiece BPE or unigram vocabulary (lossless settings, byte fallback) |
-| `gpt2`, `hf:<name>` | a pretrained tokenizer (GPT-2's 50k BPE, Qwen's 151k, ...) |
+| `word:<V>` | the most frequent words, spaces and punctuation; unknown words fall back to bytes, so nothing is lost |
+| `sp_train:bpe:<V>`, `sp_train:unigram:<V>` | train your own BPE or unigram vocabulary of size V on the training split |
+| `sp:<file>` | a trained SentencePiece model (e.g. the 1024-token tokenizer of Parameter Golf) |
+| `gpt2`, `hf:<name>` | a pretrained tokenizer (GPT-2's 50,257 tokens, Qwen's 151k or 248k, ...) |
+
+The same sentence through five of them (real output; box width = bytes covered, ␣ = space):
+
+![tokenizers compared](docs/nanolm_figs/p1_tokenization.png)
+
+What the figure shows:
+- The word tokenizer was trained on Shakespeare, so "brown", "fox" and "jumps" are not in its
+  vocabulary. They fall back to single bytes.
+- The 1024-token BPE learned from web text splits words into frequent fragments (`␣qu`, `ick`, `␣over`).
+- GPT-2's 50k vocabulary has whole words (`␣quick`, `␣brown`), even `␣naïve`.
+- Fewer tokens per byte means shorter sequences, but every token must be learned.
+
+§1.8 measures which tokenizer gives the best model.
+
+## 1.5 Recurrent networks: RNN, GRU, LSTM
+
+Code: `nanolm/models/rnn.py`. Configs: `configs/01_char_rnn.yaml` (`laptop/L1_char_lstm.yaml`).
+
+A recurrent network reads one token at a time and keeps a **hidden state** $h_t \in \mathbb{R}^d$, a
+fixed-size summary of everything it has read so far:
+
+$$
+e_t = E[x_t], \qquad h_t = \tanh(W_x e_t + W_h h_{t-1} + b), \qquad z_t = W_o h_t .
+$$
+
+Here $E$ is the embedding table (one learned vector per token) and $W_o$ maps the state to logits.
+Training uses **back-propagation through time**. The gradient that reaches step $t-k$ is multiplied
+by roughly $k$ Jacobians $\partial h_{s}/\partial h_{s-1} = \mathrm{diag}(1-h_s^2)\,W_h$. When their
+norms are below 1 the gradient *vanishes* exponentially; above 1, it *explodes*. Clipping the
+gradient norm (`train.grad_clip`) fixes explosions. Nothing simple fixes vanishing, so a vanilla RNN
+cannot learn long-range structure.
+
+**The LSTM** adds a separate *cell* $c_t$ that is updated *additively*, controlled by three gates
+with values in $(0,1)$:
+
+$$
+\begin{aligned}
+i_t &= \sigma(W_i[e_t, h_{t-1}]),\quad f_t = \sigma(W_f[e_t, h_{t-1}]),\quad o_t = \sigma(W_o[e_t, h_{t-1}]),\quad g_t = \tanh(W_g[e_t, h_{t-1}]),\\
+c_t &= f_t \odot c_{t-1} + i_t \odot g_t, \qquad h_t = o_t \odot \tanh(c_t).
+\end{aligned}
+$$
+
+When the forget gate $f_t \approx 1$, $\partial c_t / \partial c_{t-1} \approx 1$. Information and
+gradient then pass through many steps unchanged. `LSTMScratch` in `rnn.py` implements exactly these
+equations, with the forget-gate bias set to 1 so the cell remembers by default. The **GRU** is a cheaper
+two-gate variant. In practice we use PyTorch's `nn.LSTM`/`nn.GRU` (fast cuDNN kernels), which compute
+the same function.
+
+Each training window starts from $h_0 = 0$ (*truncated* back-propagation over `seq_len` steps).
+That way RNNs and Transformers use exactly the same data and evaluation, and the comparison in
+§1.6.7 is fair.
 
 ```bash
-python -m nanolm.sweep --sweep nanolm/configs/sweeps/laptop_tokenizers.yaml     # 8 runs, ~1-2 h on a Mac
+python -m nanolm.train -c nanolm/configs/laptop/L1_char_lstm.yaml                   # LSTM, ~2 min
+python -m nanolm.train -c nanolm/configs/laptop/L1_char_lstm.yaml model.arch=rnn    # vanilla RNN
+python -m nanolm.train -c nanolm/configs/laptop/L1_char_lstm.yaml model.arch=lstm_scratch train.max_steps=200
+```
+
+## 1.6 The Transformer, piece by piece
+
+Code: `nanolm/models/gpt.py` (class `GPT`). Configs: `configs/02_char_transformer.yaml` (the
+textbook GPT-2 design) and `02b_char_transformer_modern.yaml` (the modern design), plus
+`laptop/L2_char_gpt.yaml`.
+
+An RNN squeezes the past into one vector. A Transformer instead lets **every position look directly at
+every earlier position**. The whole model is a stack of $L$ identical blocks around a "residual stream":
+
+```mermaid
+flowchart LR
+    A["token ids<br/>[B,T]"] --> B["embedding E<br/>[B,T,d]"]
+    B --> C["block 1"] --> D["block 2"] --> E["…"] --> F["block L"]
+    F --> G["final norm"] --> H["logits = h·Eᵀ<br/>[B,T,V]"]
+    subgraph block["one block (pre-norm)"]
+      direction TB
+      X["x"] --> N1["Norm"] --> AT["causal self-attention"] --> P1(("+"))
+      X --> P1
+      P1 --> N2["Norm"] --> M["MLP"] --> P2(("+"))
+      P1 --> P2
+    end
+```
+
+### 1.6.1 Embeddings and positions
+
+The input is $X^{(0)} = E[x_{1..T}] \in \mathbb{R}^{T\times d}$: one learned vector per token.
+Attention by itself is order-blind; shuffling the tokens would shuffle its output in the same way.
+So the model must be told where each token sits. There are two common ways:
+- **Learned absolute positions** (GPT-2): add a learned vector $P_t$ to position $t$. Simple, but it
+  does not extend beyond the maximum training length.
+- **Rotary position embedding (RoPE)** (Llama, Qwen; `model.pos: rope`). Rotate each pair of query/key
+  coordinates $(q_{2i}, q_{2i+1})$ by an angle that grows with position, $m\,\omega_i$, where
+  $\omega_i = \text{base}^{-2i/d_h}$:
+
+$$
+\begin{pmatrix} q'_{2i} \\ q'_{2i+1} \end{pmatrix} = \begin{pmatrix} \cos m\omega_i & -\sin m\omega_i \\ \sin m\omega_i & \cos m\omega_i \end{pmatrix}\begin{pmatrix} q_{2i} \\ q_{2i+1} \end{pmatrix}.
+$$
+
+  Because rotations compose, $\langle R_m q, R_n k\rangle = \langle q, R_{n-m} k\rangle$: the attention
+  score depends only on the **relative** offset $n-m$. There are no extra parameters.
+  (`model.rope_dims` rotates only part of each head: "partial RoPE", used in Part 4 and by Qwen3.5.)
+
+### 1.6.2 Causal self-attention
+
+For each position, the block computes a **query** ("what am I looking for?"), a **key** ("what do I
+contain?") and a **value** ("what do I pass on?"):
+
+$$
+Q = XW_Q,\quad K = XW_K,\quad V = XW_V \qquad (\in \mathbb{R}^{T\times d_h}),
+$$
+
+$$
+\mathrm{Attention}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_h}} + M\right)V, \qquad
+M_{ts} = \begin{cases} 0 & s \le t \\ -\infty & s > t \end{cases}
+$$
+
+- The score $q_t\cdot k_s$ measures how relevant position $s$ is to position $t$.
+- Dividing by $\sqrt{d_h}$ keeps the scores' variance near 1, so the softmax does not saturate.
+- The **causal mask** $M$ forbids looking at future tokens. Without it, the model could read the
+  answer, and training would be meaningless. A unit test checks causality for every model variant in
+  `nanolm`.
+- **Multi-head attention** runs $H$ such attentions in parallel on $d/H$-dimensional slices
+  ($d_h = d/H$). It concatenates the results and mixes them with an output matrix $W_O$. Different heads
+  learn different patterns.
+
+In `gpt.py` this is one call to PyTorch's fused kernel: `F.scaled_dot_product_attention(q, k, v,
+is_causal=True)`. Here are the actual attention weights of our trained 4-layer character model
+(`laptop/L2_char_gpt`) reading `ROMEO:⏎But soft! what light through`. Row $t$ shows where position
+$t$ looks; the upper triangle is empty because of the causal mask:
+
+![attention maps](docs/nanolm_figs/p1_attention_maps.png)
+
+Several heads are interpretable. These numbers are measured on this sentence, with the weights averaged over positions:
+- **Layer 0:** all four heads mostly look one step back. 30–62% of their weight goes to the
+  previous character, so they act like learned bigram/trigram detectors.
+- **L2·H3 and L3·H3:** about 30% of their weight goes to the **first letter of the current word**.
+  They help spell out the rest of a word.
+- **L3·H2:** **50%** of its weight goes to the `:` and newline after the speaker's name, wherever
+  the current position is. It "remembers" that a line of dialogue has started. Its average look-back
+  distance (7.8 characters) is the longest of all 16 heads.
+
+Regenerate the figure for your own model with `python -m nanolm.viz attention --run <your run dir> --text "..."`.
+
+### 1.6.3 The MLP
+
+After attention mixes information *across* positions, the MLP processes each position *separately*:
+
+$$
+\text{GELU MLP (GPT-2):}\quad \mathrm{MLP}(x) = W_2\,\mathrm{GELU}(W_1 x), \qquad W_1 \in \mathbb{R}^{4d\times d}
+$$
+
+$$
+\text{SwiGLU (Llama, Qwen):}\quad \mathrm{MLP}(x) = W_2\big(\mathrm{SiLU}(W_1 x) \odot W_3 x\big), \qquad W_1, W_3 \in \mathbb{R}^{\frac{8}{3}d\times d}
+$$
+
+SwiGLU multiplies two projections: a *gate*, $\mathrm{SiLU}(W_1x)$, and a *value*, $W_3x$. The width
+factor 8/3 keeps its parameter count equal to the 4× GELU MLP. Selected with `model.mlp:
+gelu | swiglu | relu2 | leaky_relu2`. The last two come from Part 4.
+
+### 1.6.4 Residual stream and normalization
+
+Each block *adds* its output to its input: $x \leftarrow x + \mathrm{Attn}(\mathrm{Norm}(x))$, then
+$x \leftarrow x + \mathrm{MLP}(\mathrm{Norm}(x))$. This is the "pre-norm" residual design. The addition
+gives gradients a direct path from the loss to every layer, like the LSTM's cell. The normalization
+keeps the activation scale stable:
+
+$$
+\mathrm{LayerNorm}(x) = \gamma \odot \frac{x - \mu(x)}{\sqrt{\sigma^2(x)+\epsilon}} + \beta, \qquad
+\mathrm{RMSNorm}(x) = \gamma \odot \frac{x}{\sqrt{\tfrac{1}{d}\sum_i x_i^2 + \epsilon}} .
+$$
+
+RMSNorm (`model.norm: rmsnorm`) drops the mean subtraction and the bias. It is cheaper and works equally well.
+
+### 1.6.5 Output layer
+
+The final hidden state is normalized and multiplied by the transposed embedding matrix,
+$z = \mathrm{Norm}(h_t)\,E^\top$. This *weight tying* (`model.tie_embeddings`) reuses the input
+table as the output layer and saves $V \times d$ parameters.
+
+### 1.6.6 Counting parameters and compute
+
+A block with width $d$ has $4d^2$ attention weights ($W_Q, W_K, W_V, W_O$) and $8d^2$ MLP weights.
+A model with $L$ layers therefore has
+
+$$
+N \approx 12\,L\,d^2 \;(+\; V d \text{ for the embedding}), \qquad
+\text{training FLOPs} \approx 6\,N\,D
+$$
+
+for $D$ training tokens: 2 FLOPs per weight per token for the forward pass and 4 for the backward
+pass. For our 4-layer, 256-wide character model, $12 \cdot 4 \cdot 256^2 = 3.1$M, which matches the
+3.16M that `train.py` prints. Training it on 16.4M tokens costs about $6 \times 3.1\text{M} \times
+16.4\text{M} \approx 3 \times 10^{14}$ FLOPs. That is the number used to size the laptop configs.
+
+### 1.6.7 Results: RNNs vs. Transformers
+
+```bash
+python -m nanolm.sweep   --sweep nanolm/configs/sweeps/01_char_models.yaml        # 12 runs (6 models x 2 seeds)
+python -m nanolm.analyze outputs/nanolm/sweeps/char_models --baseline gpt_textbook --metric val_bpb
+```
+
+All models get the same data, the same 16.4M training characters (about 16 passes over the
+corpus), and the same evaluation on the full validation set. Two seeds each:
+
+| model | params | val bpb (mean ± std) | Δ vs. GPT-2-style | train time |
+|---|---:|---:|---:|---:|
+| **Transformer, modern** (RMSNorm + RoPE + SwiGLU, 4 × 256) | 3.16M | **2.105 ± 0.002** | −0.084 | 37 s |
+| LSTM 2 × 256 | 1.07M | 2.134 ± 0.008 | −0.056 | 51 s |
+| GRU 2 × 256 | 0.81M | 2.167 ± 0.007 | −0.022 | 48 s |
+| LSTM 2 × 512 (similar parameter count) | 4.24M | 2.171 ± 0.013 | −0.019 | 58 s |
+| Transformer, GPT-2 style (LayerNorm + learned positions + GELU) | 3.44M | 2.189 ± 0.007 | 0 | 26 s |
+| vanilla RNN 2 × 256 | 0.28M | 2.436 ± 0.009 | +0.246 | 17 s |
+
+![RNN vs Transformer curves](docs/nanolm_figs/p1_char_models.png)
+
+What to learn from this:
+- **Gates matter.** The vanilla RNN is far behind (+0.25 bpb); GRU and LSTM close most of the gap.
+- **The recipe matters as much as the architecture.** The GPT-2-style Transformer is *worse* than a
+  small LSTM here. The same Transformer with RMSNorm + RoPE + SwiGLU is the best model. Its 2.105 bpb
+  equals 1.46 nats per character.
+- **Bigger is not always better: watch for overfitting.** The 512-wide LSTM reaches its best score at
+  about 10M tokens and then gets *worse*. Its final training loss is 1.02 nats against 1.51 on validation.
+  With only 1 MB of text, it memorizes. Always look at the curves, not just the final number.
+
+## 1.7 Optimization
+
+**AdamW** (`train.optimizer: adamw`) keeps running averages of each parameter's gradient
+$g_t$ and squared gradient:
+
+$$
+m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t,\quad v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2,\quad
+\theta_t = \theta_{t-1} - \eta_t\Big(\frac{\hat m_t}{\sqrt{\hat v_t}+\epsilon} + \lambda\,\theta_{t-1}\Big)
+$$
+
+($\hat m, \hat v$ are bias-corrected.) Each coordinate thus gets its own step size. The $\lambda\theta$
+term is *decoupled* weight decay; `nanolm` applies it only to weight matrices, not to norms or biases.
+
+**The learning rate $\eta_t$ follows a schedule** (`train.schedule`). A short linear warm-up avoids
+early instability. After it:
+- **cosine** decays smoothly to a floor;
+- **WSD** (warmup–stable–decay) holds the LR constant and then decays it linearly to zero at the end.
+
+![learning-rate schedules](docs/nanolm_figs/p2_lr_schedules.png)
+
+Two more ingredients:
+- **Gradient clipping.** If $\lVert g \rVert > c$, rescale $g$ to norm $c$ (`train.grad_clip`).
+- **Mixed precision.** On a GPU the forward pass runs in bfloat16 (`precision: auto`); master weights
+  and the loss stay in float32.
+
+Part 2 compares cosine with WSD and AdamW with **Muon**.
+
+## 1.8 Which tokenizer gives the best model?
+
+```bash
+python -m nanolm.sweep   --sweep nanolm/configs/sweeps/laptop_tokenizers.yaml       # 8 runs, ~1-2 h on a laptop
 python -m nanolm.analyze outputs/nanolm/sweeps/laptop_tokenizers --baseline char --metric val_bpb
 ```
 
-Same 4-layer Transformer, same 2000 × 8,192-token budget, one seed. "Passes" is how many times the
-1 MB corpus is seen; a larger vocabulary packs more text into each token:
+The same 4-layer Transformer and the same 2,000 × 8,192-token budget, with eight tokenizers. Learned
+vocabularies are trained on the training split only. *Passes* is how often the 1 MB corpus is seen:
+a bigger vocabulary packs more text into each token, so the fixed budget covers the corpus more often.
 
 | tokenizer | vocab | bytes/token | passes | final val bpb | **best val bpb** (step) |
 |---|---:|---:|---:|---:|---:|
 | byte | 256 | 1.00 | 16 | 2.092 | 2.088 (1750) |
 | char | 65 | 1.00 | 16 | 2.105 | 2.105 (1750) |
 | **word, 2048** | 2048 | 1.62 | ~27 | **2.080** | **2.047** (1250) |
-| SentencePiece BPE, 512 | 512 | 1.76 | 29 | 2.163 | 2.123 (1250) |
-| SentencePiece BPE, 2048 | 2048 | 2.41 | 42 | 2.368 | 2.104 (500) |
-| SentencePiece unigram, 2048 | 2048 | 2.36 | 43 | 2.340 | 2.113 (500) |
+| BPE, 512 | 512 | 1.76 | 29 | 2.163 | 2.123 (1250) |
+| BPE, 2048 | 2048 | 2.41 | 42 | 2.368 | 2.104 (500) |
+| unigram, 2048 | 2048 | 2.36 | 43 | 2.340 | 2.113 (500) |
 | word, 8192 | 8192 | 1.98 | ~32 | 2.318 | 2.113 (750) |
 | GPT-2 BPE | 50257 | 3.09 | 54 | 2.825 | 2.171 (500) |
 
-Every tokenizer with a larger vocabulary reaches its best score *early* and then overfits. At a fixed
-token budget a larger vocabulary means more passes over a tiny corpus, plus a larger embedding table
-to memorize with. Compared at their best checkpoints, word-2048 (2.047) and BPE-2048 (2.104) beat
-characters (2.105).
+![tokenizer curves](docs/nanolm_figs/p1_tokenizers.png)
 
-The conclusion depends on the regime, which is the general lesson:
-- **Data-limited** (1 MB of Shakespeare): small vocabularies and early stopping win.
-- **Data-rich** (Parameter Golf, billions of FineWeb tokens): the vocabulary *grew* from 1024 to 8192
-  over the competition and gained about 0.012 bpb at each step.
+Three lessons:
+1. **Compare in bits-per-byte.** GPT-2's BPE has validation perplexity 402, against 4.3 for characters.
+   That looks 100× worse, but in bpb it is 2.83 vs 2.11 at the end, and at its best checkpoint (2.17)
+   the gap nearly closes.
+2. **Large vocabularies need data.** Every large vocabulary peaks within the first few hundred steps
+   and then overfits. With only 1 MB of text, the many passes and the big embedding table let the model
+   memorize. At their best checkpoints, word-2048 (2.047) and BPE-2048 (2.104) beat characters.
+3. **The answer depends on the regime.** With little data, small vocabularies and early stopping win.
+   With billions of tokens, large vocabularies win: the Parameter Golf vocabulary grew from 1,024 to
+   8,192 during the competition (Part 4), and Qwen3.5 uses 248,320 tokens.
 
-## 1.8 Sampling: temperature, top-k, top-p
+## 1.9 Sampling: turning probabilities into text
 
-A language model gives a distribution over the next token. *Decoding* turns that distribution into
-text (`evaluate.py: sample_next`, CLI `nanolm/generate.py`, replacing the old `inference_utils.py`):
+A trained model gives $p(\cdot \mid x_{<t})$. The *decoding* rule decides which token to emit
+(`evaluate.py: sample_next`):
 
-- **temperature** τ divides the logits. τ → 0 is greedy (always the argmax): repetitive and safe.
-  τ = 1 samples the model's own distribution. τ > 1 flattens it toward noise.
-- **top-k** keeps the k most likely tokens.
-- **top-p (nucleus)** keeps the smallest set of tokens whose total probability is ≥ p, so the set
-  adapts to how confident the model is.
+$$
+p_\tau(v) = \frac{e^{z_v/\tau}}{\sum_u e^{z_u/\tau}} .
+$$
 
-```bash
-python -m nanolm.generate outputs/nanolm/<your L2 run> --prompt "ROMEO:" --compare-temperatures
-python -m nanolm.generate outputs/nanolm/<your L2 run> --prompt "JULIET:" --top-k 0 --top-p 0.9
-python -m nanolm.generate outputs/nanolm/<your L2 run> --interactive
+- **temperature** $\tau$: $\tau \to 0$ is greedy (always the most likely token), $\tau = 1$ is the
+  model's own distribution, and $\tau > 1$ flattens it toward noise.
+- **top-k** keeps only the $k$ most likely tokens.
+- **top-p (nucleus)** keeps the smallest set of tokens whose total probability reaches $p$. The set
+  is small when the model is confident and large when it is unsure.
+
+The next-character distribution of our model after `…through yonder wi` (real values):
+
+![temperature](docs/nanolm_figs/p1_temperature.png)
+
+At $\tau = 0.5$, "l" (→ "will"/"wild") gets 56%. At $\tau = 1.5$ the distribution spreads out, and
+unlikely letters start to appear. Samples from the same model:
+
 ```
-
-Real output of the char Transformer from §1.6 (`--compare-temperatures`, prompt `ROMEO:`):
-
-```
-τ=0.0  That the sun shall be so soon to the state, / And therefore shall be so soon t...   (loops)
+τ=0.0  That the sun shall be so soon to the state, / And therefore shall be so soon t...   (repeats)
 τ=0.5  The more than self-made a merry brother, / The true of the house of Lancaster is not live.
 τ=1.0  Three fairest self it one means! would help me Menenius, / Or now here hath not seen like...
 τ=1.5  Threehold her! Therefore, meank! woud I tles, grey / further forwardre hath not seemed...
 ```
 
-Decoding settings change how the text *looks*, but not the model's bpb. bpb is a property of the
-distribution, not of one sample from it.
+```bash
+python -m nanolm.generate <run dir> --prompt "ROMEO:" --compare-temperatures
+python -m nanolm.generate <run dir> --top-k 0 --top-p 0.9 --interactive
+```
+
+Decoding changes how the output *looks*, never the model's bpb. bpb measures the distribution itself.
 
 ---
 
-# Part 2 — Transformers for real: pre-training and post-training
+# Part 2 — Pre-training a GPT on web text
 
-## 2.1 Pre-training on web text: FineWeb, the Parameter Golf data
+Shakespeare is 1 MB. Real language models are pre-trained on terabytes of web text. Part 2 uses
+the web-text corpus of the Parameter Golf challenge, so our numbers sit on the same scale as
+published results.
+
+## 2.1 The data: FineWeb
 
 ```bash
-python -m nanolm.prepare --golf-shards 1 --dest data/golf    # val (62M tokens) + 1 train shard (100M) + sp1024 tokenizer
-python -m nanolm.train -c nanolm/configs/03_gpt_fineweb.yaml
-python -m nanolm.sweep --sweep nanolm/configs/sweeps/03_transformer_recipe.yaml
+python -m nanolm.prepare --golf-shards 1 --dest data/golf    # 324 MB, once
 ```
 
-The data is the challenge's FineWeb export: web documents tokenized with a 1024-token SentencePiece
-BPE (`sp1024`). Because we report bpb on the same validation documents, our numbers sit on the same
-axis as the public leaderboard. Ours use about 50M training tokens, while leaderboard runs use about
-7B tokens (8 GPUs × 10 minutes).
+[FineWeb](https://huggingface.co/datasets/HuggingFaceFW/fineweb) is a large, filtered crawl of
+English web pages. The challenge's export contains:
+- a **fixed validation set**: the first 50,000 documents, 62,021,846 tokens;
+- **training shards** of 100M tokens each (one is enough here);
+- a **1,024-token SentencePiece BPE** tokenizer, "sp1024".
 
-### 2.1.1 Muon
+Each document starts with a special beginning-of-sequence token (id 1). Here is the start of
+validation document 0, decoded back to text:
 
-AdamW scales every coordinate of the update separately. **Muon** (Keller Jordan, used by every
-golf record) treats each hidden weight matrix as a whole. It takes the momentum-averaged gradient
-G = U S Vᵀ and applies **U Vᵀ** instead: every singular direction gets the same step size, so
-directions with small gradients are not starved. U Vᵀ is approximated in 5 matrix-multiply-only
-Newton–Schulz iterations (`optim.py: zeropower_via_newtonschulz5`). Embeddings, the output head and
-all vectors/scalars stay on Adam (`build_optimizers`). A test checks that the iteration maps the
-singular values into roughly [0.7, 1.2].
+```
+Insurance Company Declares Living Man Dead George Johannesen is very much alive. Which is why it was so
+surprising when the Canadian man received a letter addressed "To the Estate of George Johannesen." ...
+```
 
-### 2.1.2 Schedules
+And how sp1024 cuts its first words (▁ marks a leading space):
 
-- **Cosine** (textbook): warm up, then cosine decay to `min_lr_frac`.
-- **WSD / "warmdown"** (golf): constant LR, then linear decay over the last `warmdown_frac` of
-  training. Progress is `max(step/max_steps, time/max_time_sec)`, so the same schedule works under
-  a wall-clock budget, which is how golf runs were limited.
+```
+ids    [966, 945, 946, 343, 551, 795, 954, 803, 834, 951, 949, 942, 448, 387, 456, 280, ...]
+pieces ['I', 'n', 's', 'ur', 'ance', '▁Com', 'p', 'any', '▁De', 'c', 'l', 'a', 'res', '▁L', 'iv', 'ing', ...]
+```
 
-### 2.1.3 Results: the recipe, one change at a time
+With only 1,024 tokens, frequent words such as "the" and "over" get their own token, but most words are
+built from 2–5 pieces. On average one sp1024 token covers 2.4 bytes. The vocabulary also contains 256
+*byte* tokens (`<0x00>` … `<0xFF>`), so any text can be encoded.
 
-Setup: 6 layers × 384, 11M parameters, 3000 steps × 16k tokens = 49M training tokens (half of one
-shard, streamed once). Final evaluation on the first 4.2M validation tokens. Two seeds. "p" is a
-paired t-test with 1 degree of freedom, so it is a rough guide only.
+## 2.2 The modern recipe
 
-| step in the recipe | val bpb (2 seeds) | change vs. the previous row | paired p |
+Config: `configs/03_gpt_fineweb.yaml` (laptop: `laptop/L4_gpt_fineweb.yaml`). The model has 6
+layers, width 384, 6 heads and 11M parameters, and trains on 49M tokens (3,000 steps × 16k tokens).
+We start from the 2019 GPT-2 design and change **one thing at a time**:
+
+| step | change | config keys |
+|---|---|---|
+| 0 | GPT-2 textbook: LayerNorm, learned positions, GELU, biases, AdamW + cosine | `norm: layernorm, pos: learned, mlp: gelu, bias: true` |
+| 1 | + RMSNorm and RoPE, no biases (§1.6) | `norm: rmsnorm, pos: rope, bias: false` |
+| 2 | + SwiGLU MLP (§1.6.3) | `mlp: swiglu` |
+| 3 | + WSD schedule instead of cosine (§1.7) | `train.schedule: wsd` |
+| 4 | + **Muon** optimizer for the weight matrices | `train.optimizer: muon` |
+
+### 2.2.1 Muon
+
+AdamW treats every coordinate of a weight matrix independently. **Muon** (Jordan et al., 2024),
+used by every top Parameter Golf entry and by Kimi K2, treats each 2-D weight matrix as a whole.
+Take the momentum-averaged gradient and its singular value decomposition $G = U\Sigma V^\top$. Muon
+replaces it by the closest *orthogonal* matrix:
+
+$$
+\Delta W = -\eta\, U V^\top \qquad (\text{all singular values set to } 1).
+$$
+
+A gradient is usually dominated by a few directions (large singular values). Plain gradient descent
+spends almost the whole step on them and barely moves in the others. Muon gives every direction the
+same step size. Computing an SVD every step would be too slow, so Muon approximates $UV^\top$ with
+five iterations of a polynomial that pushes every singular value toward 1. This is the
+**Newton–Schulz iteration** in `optim.py: zeropower_via_newtonschulz5`, and it uses only matrix
+multiplications:
+
+$$
+X_0 = G/\lVert G\rVert_F, \qquad X_{k+1} = a X_k + b\,(X_k X_k^\top)X_k + c\,(X_k X_k^\top)^2 X_k, \qquad (a,b,c) = (3.4445,\,-4.7750,\,2.0315).
+$$
+
+The real gradient of one weight matrix in our model, before and after:
+
+![Muon spectrum](docs/nanolm_figs/p2_muon_spectrum.png)
+
+The raw gradient's singular values span two orders of magnitude, from 0.6 down to 0.007. After 5
+iterations they all lie between about 0.7 and 1.1. Embeddings, the output layer, and all vectors and
+scalars still use Adam, because orthogonalization only makes sense for hidden-layer matrices.
+
+### 2.2.2 Results
+
+```bash
+python -m nanolm.sweep   --sweep nanolm/configs/sweeps/03_transformer_recipe.yaml
+python -m nanolm.analyze outputs/nanolm/sweeps/transformer_recipe --baseline gpt2_textbook
+```
+
+Validation bpb on the first 4.2M validation tokens, mean of 2 seeds. "p" is a paired t-test (Part 5):
+
+| recipe | val bpb | change vs. the row above | paired p |
 |---|---:|---:|---:|
-| GPT-2 textbook (LayerNorm, learned pos, GELU, bias), AdamW + cosine | 1.790 ± 0.001 | — | — |
-| + RMSNorm + RoPE, no bias | 1.744 ± 0.010 | **−0.046** (both seeds −0.04 to −0.05) | 0.10 |
-| + SwiGLU (same parameter count) | 1.786 ± 0.013 | **+0.042** (worse on both seeds) | 0.23 |
-| ↳ SwiGLU at half the LR (5e-4) | 1.814 ± 0.001 | +0.029 vs. SwiGLU | 0.20 |
-| + WSD schedule instead of cosine (still AdamW) | 1.728 ± 0.010 | **−0.058** | 0.02 |
-| + **Muon** (matrices) + Adam (rest), WSD | **1.647 ± 0.010** | **−0.081** | 0.001 |
+| GPT-2 textbook, AdamW + cosine | 1.790 ± 0.001 | — | — |
+| + RMSNorm + RoPE, no bias | 1.744 ± 0.010 | **−0.046** | 0.10 |
+| + SwiGLU | 1.786 ± 0.013 | **+0.042** (worse on both seeds) | 0.23 |
+| + WSD schedule (still AdamW) | 1.728 ± 0.010 | **−0.058** | 0.02 |
+| + **Muon** (WSD) | **1.647 ± 0.010** | **−0.081** | 0.001 |
 
-![recipe curves](docs/nanolm_figs/recipe_curves.png)
+![recipe curves](docs/nanolm_figs/p2_recipe.png)
 
-Reading the table as a researcher:
-- **The two biggest wins are about optimization, not architecture.** Holding the LR high and then
-  decaying it linearly to 0 (WSD) beats cosine by 0.058. Muon adds another 0.081 on top of the same
-  schedule. Together they are worth more than all the block changes combined. This is also what
-  Parameter Golf found.
-- **The `plus_muon` row is not a pure optimizer effect on its own.** That run also switched cosine →
-  WSD. Only the `plus_wsd_adamw` control row lets us split the gain into schedule and optimizer.
-  When a run changes two things, add the control.
-- **SwiGLU did *not* help here.** It learned faster for the first ~1,500 steps (training loss up to
-  0.18 lower), then crossed over and finished worse on both seeds. Halving the LR made it *worse*,
-  which suggests this short, cosine-decayed run is under-trained rather than unstable. We report the
-  result as it is: the published benefit of SwiGLU did not reproduce at 49M tokens with this LR. With
-  only 2 seeds, p = 0.23, this is a weak negative result, and finding out why is a good student project.
-- Seed noise here is about 0.01 bpb. That is larger than on Shakespeare, because a 50M-token run is
-  still far from converged.
+How to read this like a researcher:
+- **The two largest gains come from optimization, not architecture.** Keeping the learning rate high
+  and decaying it at the end (WSD) is worth −0.058. Muon is worth another −0.081.
+- **Control experiments matter.** The Muon run uses the WSD schedule. Only because the
+  `plus_wsd_adamw` row exists can the gain be split into its schedule part and its optimizer part.
+- **Not every published improvement reproduces.** SwiGLU learned faster for the first ~1,500 steps,
+  then fell behind on both seeds. Halving its learning rate made it worse still (1.814). With 2 seeds
+  and p = 0.23 this is a *weak* negative result for this budget (49M tokens), not a refutation of
+  SwiGLU. Investigating it is Exercise 4.
+- **Seed noise here is about 0.01 bpb.** A 50M-token run is far from converged, so differences
+  smaller than about 0.02 need more seeds.
+
+## 2.3 How far is this from a "real" model?
+
+Our best 11M-parameter model reaches **1.647 bpb** after 49M tokens. For scale, here are other models
+on the same validation documents:
+- GPT-2 small (124M parameters, 2019): **1.079**.
+- Qwen2.5-0.5B: **0.951**. It was trained on about 18 trillion tokens, roughly 370,000× more than ours.
+  §3.5 measures these numbers.
+
+The rough law behind this gap is the **compute-optimal scaling** result of Hoffmann et al. (2022,
+"Chinchilla"). For a fixed compute budget $C \approx 6ND$, loss is lowest when parameters $N$ and
+tokens $D$ grow together, at roughly $D \approx 20N$. Our run used $D/N \approx 4.5$, so it is
+under-trained for its size. Today's small open models go far in the other direction, training on
+thousands of tokens per parameter, because a model that is trained once and then served billions of
+times should be small.
 
 ---
 
-### 2.1.4 The laptop version
+# Part 3 — From GPT to modern LLMs
 
-`laptop/L4_gpt_fineweb.yaml` is the best recipe from §2.1.3: RMSNorm, RoPE, SwiGLU, Muon and WSD,
-with 6 layers × 384 width, 11M parameters, and 49M tokens. The only change is the micro-batch:
-16 sequences × 2 accumulation steps instead of 32 × 1. That is the same math in half the
-activation memory.
+Parts 1–2 built a GPT from scratch. Part 3 looks at how today's open models differ from it, how to
+*use* them, how they are *evaluated* (perplexity, and benchmarks such as MMLU and GPQA), and how they
+are *adapted* (LoRA, SFT, DPO). Every code path runs on a laptop with models of 0.1–0.8B parameters.
 
-```bash
-python -m nanolm.prepare --golf-shards 1 --dest data/golf          # ~330 MB, once
-python -m nanolm.bench   -c nanolm/configs/laptop/L4q_gpt_fineweb_quick.yaml
-python -m nanolm.train   -c nanolm/configs/laptop/L4q_gpt_fineweb_quick.yaml   # ~5-15 min
-python -m nanolm.train   -c nanolm/configs/laptop/L4_gpt_fineweb.yaml          # ~1-2 h
+## 3.1 Seven years of architecture changes
+
+The 2026 decoder-only Transformer is still recognizably GPT-2: embeddings, a stack of
+attention + MLP blocks with residual connections, and a softmax over the vocabulary. Almost every
+change since then targets one of three costs:
+- **quality per FLOP** (normalization, activations, optimizers);
+- **memory and speed at inference** (fewer KV heads, sparse experts, linear attention);
+- **context length** (position encodings, local attention).
+
+| year | model | what changed | source |
+|---|---|---|---|
+| 2018 | GPT-1 | decoder-only Transformer, 12 layers × 768, BPE (40k merges), 512 tokens | [paper](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf) |
+| 2019 | GPT-2 | **pre-norm** (LayerNorm moved to the input of each sub-block), vocab 50,257, 1,024 tokens | [paper](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) |
+| 2020 | GPT-3 | same design scaled to 175B; alternating dense and locally banded sparse attention; 2,048 tokens | [arXiv 2005.14165](https://arxiv.org/abs/2005.14165) |
+| 2022 | PaLM | **SwiGLU**, parallel attention+MLP blocks, **multi-query attention**, RoPE, no biases, 256k vocab | [arXiv 2204.02311](https://arxiv.org/abs/2204.02311) |
+| 2023 | Llama 1 / 2 | the "standard recipe": pre-RMSNorm + SwiGLU + RoPE; Llama 2 adds **GQA** (34B/70B) | [2302.13971](https://arxiv.org/abs/2302.13971), [2307.09288](https://arxiv.org/abs/2307.09288) |
+| 2023 | Mistral 7B | GQA + **sliding-window attention** (W = 4,096) | [2310.06825](https://arxiv.org/abs/2310.06825) |
+| 2024 | Mixtral 8×7B | **mixture of experts**: 8 MLP experts per layer, 2 active (47B total / 13B active) | [2401.04088](https://arxiv.org/abs/2401.04088) |
+| 2024 | Llama 3 | GQA (8 KV heads) at all sizes, 128k vocab, RoPE base 500k, up to 128k context | [2407.21783](https://arxiv.org/abs/2407.21783) |
+| 2024 | DeepSeek-V2 / V3 | **multi-head latent attention** (low-rank KV cache), fine-grained MoE (256 routed + 1 shared expert, 8 active), auxiliary-loss-free load balancing, **multi-token prediction**, FP8 training | [2405.04434](https://arxiv.org/abs/2405.04434), [2412.19437](https://arxiv.org/abs/2412.19437) |
+| 2025 | Qwen3 | **QK-norm** replaces QKV bias; MoE with 128 experts / 8 active; thinking and non-thinking modes; 36T training tokens | [2505.09388](https://arxiv.org/abs/2505.09388) |
+| 2025 | Gemma 3 | 5 local (sliding-window 1,024) : 1 global attention layers; QK-norm replaces logit soft-capping | [2503.19786](https://arxiv.org/abs/2503.19786) |
+| 2025 | Kimi K2 | trained with **MuonClip** (Muon + QK-clip) on 15.5T tokens "with zero loss spike"; 1T total / 32B active | [2507.20534](https://arxiv.org/abs/2507.20534) |
+| 2025 | gpt-oss | alternating banded (128-token) / dense attention, learned **attention sinks**, MoE in 4-bit MXFP4 | [2508.10925](https://arxiv.org/abs/2508.10925) |
+| 2025 | Qwen3-Next | **hybrid linear attention**: 3 Gated DeltaNet layers per gated full-attention layer; 512 experts, 10 + 1 shared active | [model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct) |
+| 2026 | **Qwen3.5** | the Qwen3-Next design across a whole family (0.8B–397B), natively multimodal, 248k vocab, 262k context (§3.3) | [model cards](https://huggingface.co/Qwen/Qwen3.5-0.8B) |
+
+## 3.2 The modern components, with their math
+
+### 3.2.1 Fewer key/value heads: MHA → MQA → GQA → MLA
+
+When a model generates text, it caches the keys and values of all earlier tokens (the **KV cache**),
+so they are not recomputed at every step. Its size is
+
+$$
+\text{KV bytes} = 2 \times L \times H_{kv} \times d_h \times T \times \text{bytes per value},
+$$
+
+which grows linearly with the context length $T$. It often dominates inference memory.
+
+- **Multi-head attention (MHA)**: every query head has its own key/value head, so $H_{kv} = H$.
+- **Multi-query attention (MQA)**: all query heads share one K/V head, $H_{kv} = 1$.
+- **Grouped-query attention (GQA)**: groups of query heads share a K/V head, $1 < H_{kv} < H$. This is
+  the default today. In `nanolm`, `model.n_kv_heads: 4` with `n_heads: 8` gives GQA.
+- **Multi-head latent attention (MLA)** (DeepSeek, Kimi): cache one low-rank latent vector per token
+  (rank 512) and reconstruct K and V from it.
+
+A worked example. Qwen2.5-0.5B has 24 layers, 14 query heads, 2 KV heads, $d_h = 64$. At a 32k
+context in bf16 its KV cache is $2 \cdot 24 \cdot 2 \cdot 64 \cdot 32768 \cdot 2\,\text{B} = 0.40$ GB.
+With full MHA (14 KV heads) it would be 2.8 GB, more than five times the 1 GB of weights.
+
+### 3.2.2 Attention that does not see everything: sliding windows and linear attention
+
+Full attention costs $O(T^2)$ compute and an $O(T)$ cache. Two families cut this:
+
+- **Local (sliding-window) attention**: each token attends only to the last $W$ tokens. Models
+  interleave local and global layers (Gemma 3: 5 local : 1 global; gpt-oss: alternating). Global layers
+  pass information further, so long-range information still flows.
+- **Linear attention / state-space layers** replace the growing KV cache with a **fixed-size state
+  matrix** $S_t \in \mathbb{R}^{d_v \times d_k}$, updated once per token like an RNN. Qwen3.5 uses
+  **Gated DeltaNet** (Yang et al., 2024):
+
+$$
+S_t = S_{t-1}\,\alpha_t\big(I - \beta_t\, k_t k_t^{\top}\big) + \beta_t\, v_t k_t^{\top}, \qquad o_t = S_t\, q_t .
+$$
+
+  Think of $S$ as a key→value associative memory:
+  - $S_{t-1}k_t$ is what the memory currently returns for key $k_t$.
+  - The *delta rule* term moves that answer toward the new value $v_t$, with step size $\beta_t \in (0,1)$.
+  - The *gate* $\alpha_t \in (0,1)$ lets the memory forget.
+
+  In the transformers implementation, $\beta_t = \sigma(\cdot)$ and
+  $\alpha_t = \exp\!\big(-e^{A}\,\mathrm{softplus}(\cdot)\big)$ are both computed from the input, and
+  $q, k$ are L2-normalized. Compared with §1.5, this is an RNN with a *matrix* state and an
+  error-correcting update. Training processes it in parallel chunks. Generation costs $O(1)$ memory
+  per token, however long the context.
+
+### 3.2.3 Stabilizers: QK-norm and gated attention
+
+- **QK-norm** (Qwen3, Gemma 3): apply RMSNorm to $q$ and $k$ before the dot product, so
+  attention logits cannot grow without bound. This prevents a classic cause of training loss spikes.
+  (`model.qk_norm` in `nanolm`; the Parameter Golf baseline has it too.)
+- **Gated attention** (Qwen3-Next / Qwen3.5): multiply the attention output by a learned sigmoid gate,
+  $o = \sigma(x W_g) \odot \mathrm{Attn}(x)$. This lets a head output (near) zero when it has nothing
+  useful to say. (`model.attn_gate` in `nanolm`, Part 4.)
+
+### 3.2.4 Positions for long contexts
+
+RoPE (§1.6.1) rotates by angles $m\,\omega_i$ with $\omega_i = \text{base}^{-2i/d_h}$. A larger base
+(Llama 3: 500,000; Qwen3.5: 10,000,000) slows the rotation, so distant positions stay
+distinguishable. Context extension methods such as **YaRN** rescale the frequencies after training.
+**Partial RoPE** rotates only part of each head and leaves the rest position-free. Qwen3.5 rotates 25%
+of each head, exactly the "16 of 64 dimensions" setting that also appeared in Parameter Golf (Part 4).
+
+### 3.2.5 Mixture of experts (MoE)
+
+An MoE layer replaces the single MLP with $E$ expert MLPs and a **router** that picks $k$ of them per
+token:
+
+$$
+g = \mathrm{softmax}(W_r x), \qquad \mathcal{T} = \mathrm{top}k(g), \qquad
+y = \sum_{i \in \mathcal{T}} \frac{g_i}{\sum_{j\in\mathcal{T}} g_j}\, \mathrm{Expert}_i(x).
+$$
+
+Total parameters grow with $E$, but compute per token grows only with $k$. Qwen3.5-35B-A3B has 35B
+parameters and runs about 3B per token: 256 experts, 8 routed + 1 shared. If the router sends most
+tokens to a few experts, the rest never learn. Training therefore adds a **load-balancing** term. In
+the classic Switch-Transformer form it is $\mathcal{L}_{aux} = E \sum_i f_i P_i$, where $f_i$ is the
+fraction of tokens routed to expert $i$ and $P_i$ its mean router probability. DeepSeek-V3 instead
+nudges per-expert routing biases ("auxiliary-loss-free").
+
+### 3.2.6 Predicting more than one token: MTP
+
+**Multi-token prediction** adds a small extra module, trained to predict token $t+2$ (and beyond)
+alongside the main head. DeepSeek-V3 and Qwen3.5 use it during training, and at inference for
+*speculative decoding*: draft several tokens cheaply, then verify them in one forward pass.
+
+## 3.3 Inside Qwen3.5
+
+All numbers below come from the models' `config.json` files. The script `nanolm/viz.py` reads
+them; no weights are needed.
+
+| model | layers (linear / full) | width | MLP | full-attn Q/KV heads | vocab | tied emb. |
+|---|---|---:|---|---|---:|:---:|
+| Qwen3.5-0.8B | 24 (18 / 6) | 1024 | 3,584 | 8 / 2 | 248,320 | yes |
+| Qwen3.5-2B | 24 (18 / 6) | 2048 | 6,144 | 8 / 2 | 248,320 | yes |
+| Qwen3.5-9B | 32 (24 / 8) | 4096 | 12,288 | 16 / 4 | 248,320 | no |
+| Qwen3.5-27B | 64 (48 / 16) | 5120 | 17,408 | 24 / 4 | 248,320 | no |
+| Qwen3.5-35B-A3B | 40 (30 / 10) | 2048 | MoE: 256 experts, 8 + 1 shared, expert width 512 | 16 / 2 | 248,320 | no |
+| Qwen3.5-397B-A17B | 60 (45 / 15) | 4096 | MoE: 512 experts, 10 + 1 shared, expert width 1,024 | 32 / 2 | 248,320 | no |
+
+Common to all sizes:
+- **Layer pattern.** `full_attention_interval: 4`, i.e. three Gated DeltaNet layers, then one
+  full-attention layer, repeated:
+
+  ![Qwen3.5 layer pattern](docs/nanolm_figs/p3_qwen35_layer_pattern.png)
+
+- **Full-attention layers.** Head dimension 256, gated output, QK-norm, and RoPE on 25% of each head
+  with base $10^7$.
+- **Gated DeltaNet layers.** 16 key heads of dimension 128.
+- **Context.** 262,144 tokens natively.
+- **Other.** One MTP layer, and a vision encoder: every checkpoint is a vision-language model.
+
+**Why hybrid?** Count the memory at the full 262k context for Qwen3.5-0.8B:
+- Only the 6 full-attention layers keep a KV cache: $2 \cdot 6 \cdot 2 \cdot 256 \cdot 262144 \cdot 2\,\text{B} \approx 3.2$ GB.
+  If all 24 layers were full attention, it would be about 12.9 GB.
+- The 18 Gated DeltaNet layers each keep a fixed $16 \times 128 \times 128$ state: about 19 MB in
+  total, *independent of the context length*.
+
+**Where the parameters are.** The breakdown below builds each model on PyTorch's `meta` device from
+its config (no weights downloaded) and counts parameters by component:
+
+![model anatomy](docs/nanolm_figs/p3_model_anatomy.png)
+
+- In small models the **embedding table is a large share**. Qwen3.5-0.8B's 248k-token vocabulary
+  takes 254M of its 752M language-model parameters (34%).
+- Linear attention (green) replaces most of the softmax attention in Qwen3.5.
+
+Inspect any model yourself:
+
+```python
+from transformers import AutoConfig, AutoModelForCausalLM
+import torch
+cfg = AutoConfig.from_pretrained("Qwen/Qwen3.5-0.8B")
+cfg = getattr(cfg, "text_config", cfg)               # Qwen3.5 configs are multimodal; the LM is in text_config
+print(cfg.layer_types[:8], cfg.vocab_size, cfg.num_key_value_heads, cfg.head_dim)
+with torch.device("meta"):                           # build the model without allocating weights
+    model = AutoModelForCausalLM.from_config(cfg)
+print(model)                                         # the full module tree
+print(sum(p.numel() for p in model.parameters()) / 1e6, "M parameters")
 ```
 
-Reference (fp32, as on a Mac): quick version **1.879** bpb (0.9 GB). Full L4 **1.647** bpb (1.8 GB).
-The full L4 matches the server-scale `plus_muon` result (1.647 ± 0.010). Same model, same tokens,
-same answer, at any batch split and any precision.
+The small Qwen3.5 models run in plain PyTorch. If the `flash-linear-attention` kernels are missing,
+transformers falls back to a pure-PyTorch implementation of the Gated DeltaNet layer: slower, but
+correct. We use that fallback on Mac and CPU.
 
-## 2.2 Using pretrained models: how good is a "real" LLM in bits-per-byte?
+### 3.3.1 The Gated DeltaNet layer in code, and how to make it fast
 
-Part 2 switches from models we train from scratch to models someone else pre-trained.
-`nanolm/finetune.py` loads any HuggingFace causal LM (this replaces the old `train_lm.py`/
-`experiments.py` HF branch). The first thing to do with a new model is to measure it in **our**
-metric, on **our** data:
+Read the implementation in `transformers/models/qwen3_5/modeling_qwen3_5.py`, class
+`Qwen3_5GatedDeltaNet`. For one layer of Qwen3.5-0.8B (width 1024; 16 heads with key and value
+dimension 128), the forward pass is:
+
+1. **Projections.** `in_proj_qkv` gives $q, k, v$ for all heads at once. `in_proj_z` gives an output
+   gate $z$. `in_proj_b` and `in_proj_a` give one scalar per head and token: the write strength
+   $\beta_t$ and the decay $\alpha_t$.
+2. **Short causal convolution.** A depthwise `Conv1d` with kernel 4 over the $q, k, v$ channels,
+   followed by SiLU. Each token's $q, k, v$ thus mixes in the previous 3 tokens: cheap local context
+   before the recurrence.
+3. **Gates.** $\beta_t = \sigma(b_t)$, and $\log\alpha_t = g_t = -e^{A}\cdot\mathrm{softplus}(a_t + \text{dt\_bias})$.
+   $A$ and dt_bias are learned per head, so $0 < \alpha_t < 1$. $q$ and $k$ are L2-normalized and
+   $q$ is scaled by $1/\sqrt{d_k}$.
+4. **The delta rule** (§3.2.2; the code stores the transposed state $S \in \mathbb{R}^{d_k \times d_v}$, so it reads $S^\top k$). The
+   library's pure-PyTorch *reference* version is literally this loop
+   (`torch_recurrent_gated_delta_rule`):
+
+```python
+for t in range(T):
+    S = S * exp(g[t])                      # forget:  S <- alpha_t * S
+    kv_mem = (S * k[t, :, None]).sum(0)    # what the memory returns for key k_t   (= S^T k_t)
+    delta = (v[t] - kv_mem) * beta[t]      # error-correcting update (the "delta rule")
+    S = S + k[t, :, None] * delta[None]    # write:   S <- S + k_t (beta_t (v_t - S^T k_t))^T
+    o[t] = (S * q[t, :, None]).sum(0)      # read:    o_t = S^T q_t
+```
+
+5. **Output.** Each head's output is RMS-normalized and multiplied by $\mathrm{SiLU}(z)$ (a *gated*
+   RMSNorm). `out_proj` then maps it back to width 1024.
+
+When *generating*, the layer keeps only two small things per sequence: the last 3 inputs of the
+convolution, and the $16 \times 128 \times 128$ state $S$. That is why its memory does not grow with
+the context. When *training* or reading a prompt, a token-by-token loop would be slow on a GPU.
+`chunk_gated_delta_rule` instead splits the sequence into **chunks of 64 tokens**. It computes
+everything inside a chunk with matrix multiplications (in parallel), and runs the recurrence only
+*across* chunks.
+
+**The fast path.** transformers picks each piece independently:
+
+| piece | fast implementation | fallback (always available) |
+|---|---|---|
+| chunked delta rule (prompt / training) | `fla.ops.gated_delta_rule.chunk_gated_delta_rule` (Triton) | `torch_chunk_gated_delta_rule` |
+| recurrent delta rule (generation, 1 token) | `fla...fused_recurrent_gated_delta_rule` (Triton) | `torch_recurrent_gated_delta_rule` |
+| gated RMSNorm | `fla.modules.FusedRMSNormGated` | `Qwen3_5RMSNormGated` |
+| causal convolution | `causal_conv1d_fn` / `causal_conv1d_update` (CUDA) | `nn.Conv1d` / `torch_causal_conv1d_update` |
+
+If any of these is missing, it logs *"The fast path is not available … Falling back to torch
+implementation"*. The model still computes the same function, up to floating-point rounding.
+Installation, on a CUDA machine only:
 
 ```bash
-python -m nanolm.finetune -c nanolm/configs/part2/P1_eval_bpb.yaml                                  # Qwen2.5-0.5B
+pip install flash-linear-attention     # "fla": Triton kernels, pure-Python install, needs an NVIDIA GPU
+pip install causal-conv1d              # CUDA extension: needs nvcc matching PyTorch's CUDA version
+                                       # (it compiles from source if no prebuilt wheel fits; can take minutes)
+python -c "import transformers.models.qwen3_5.modeling_qwen3_5 as m; print(m.is_fast_path_available)"
+```
+
+On a Mac or a CPU neither package works. The pure-PyTorch fallback runs: correct, but slower.
+
+**What the kernels buy, measured** on an H100, Qwen3.5-0.8B-Base in bf16, one forward pass on a batch
+of 4. Our environment has `fla` but not `causal-conv1d`, so the convolution uses `nn.Conv1d`:
+
+| delta-rule implementation | first call, 512 tokens | repeat, 512 tokens | first call, 1024 tokens | repeat, 1024 tokens |
+|---|---:|---:|---:|---:|
+| `fla` Triton kernels | 27.4 s | **0.075 s** | 23.9 s | **0.14 s** |
+| pure PyTorch fallback | 0.39 s | 0.28 s | 0.46 s | 0.48 s |
+
+- **Once compiled, the Triton kernels are 3.4–3.7× faster** than the PyTorch fallback.
+- **The first call for each new input shape costs about 25 s.** Triton compiles and autotunes the
+  kernels for that shape. The compiled kernels are cached on disk (`~/.triton`), so a second run of the
+  same evaluation is fast.
+- Benchmark harnesses feed batches of many different padded lengths, and each new length pays the
+  compile cost once. Our first, naive estimate blamed the missing `causal-conv1d` for a slow evaluation.
+  The measurement shows that the compile cost was the main factor. (`causal-conv1d` replaces only the
+  short convolution; we did not measure its separate effect.) Two lessons: *measure before optimizing*,
+  and *JIT-compiled kernels are fast only after warm-up*. Padding inputs to a few fixed
+  lengths (multiples of 64 or 128) limits the number of compilations.
+- With everything warmed up, a full forward pass of Qwen3.5-0.8B costs about 2× that of Qwen2.5-0.5B
+  (0.05 s vs 0.025 s per 512-token sequence; 11.5 s vs 6.4 s for our 100-document bpb evaluation),
+  for a 1.5× larger model.
+
+The benchmark config for the Qwen3.5 models is `nanolm/configs/part3/B3_qwen35.yaml`. It writes into the
+same results directory as the other models, so `benchmarks summary` shows them together.
+
+## 3.4 Using a pretrained model: chat templates and thinking mode
+
+A **base** model continues text. An **instruct/chat** model has been post-trained (§3.8–3.9) to
+answer. It expects its input wrapped in a **chat template**: special tokens that mark who is speaking.
+The tokenizer applies the template; here is what the model actually sees (real output of
+`tok.apply_chat_template(messages, tokenize=False)`):
+
+```
+Qwen2.5-0.5B-Instruct                                  Qwen3.5-0.8B (non-thinking mode)
+<|im_start|>system                                     <|im_start|>user
+You are Qwen, created by Alibaba Cloud. You are a      Give three tips for staying healthy.<|im_end|>
+helpful assistant.<|im_end|>                           <|im_start|>assistant
+<|im_start|>user                                       <think>
+Give three tips for staying healthy.<|im_end|>
+<|im_start|>assistant                                  </think>
+1. Eat well. 2. Sleep. 3. Move.<|im_end|>
+                                                       1. Eat well. 2. Sleep. 3. Move.<|im_end|>
+```
+
+**Thinking models** (Qwen3, Qwen3.5) can write a chain of reasoning inside `<think> … </think>`
+before the answer. `apply_chat_template(..., enable_thinking=False)` inserts an empty think block
+instead, which is what you want for short answers and for most benchmarks below.
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+tok = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B-Instruct")
+ids = tok.apply_chat_template([{"role": "user", "content": "What is RoPE?"}],
+                              add_generation_prompt=True, return_tensors="pt")
+out = model.generate(ids, max_new_tokens=100, do_sample=False)
+print(tok.decode(out[0, ids.shape[1]:], skip_special_tokens=True))
+```
+
+## 3.5 Evaluating a model (1): perplexity and bits-per-byte
+
+The most direct evaluation of a language model is the one from Part 1: how well does it predict
+held-out text? `finetune.py` (method `eval_bpb`) decodes the first 200 FineWeb validation documents from
+Part 2 back into text (570,218 bytes). Each model tokenizes them with its own tokenizer and is scored
+in bits per byte, so the comparison is fair across tokenizers:
+
+```bash
+python -m nanolm.finetune -c nanolm/configs/part2/P1_eval_bpb.yaml                                   # Qwen2.5-0.5B
 python -m nanolm.finetune -c nanolm/configs/part2/P1_eval_bpb.yaml model.name=gpt2 name=P1_gpt2
-python -m nanolm.finetune -c nanolm/configs/part2/P1_eval_bpb.yaml model.name=HuggingFaceTB/SmolLM2-360M name=P1_smol
 ```
 
-How it stays comparable: `val_documents()` decodes the Parameter Golf validation shards back to text.
-Each model tokenizes that text with its *own* tokenizer, and bpb divides by the same UTF-8 byte count
-(570,218 bytes for the first 200 documents). Context is 1,024 tokens, non-overlapping windows, as in
-the golf baseline eval.
+| model | released | parameters | tokenizer vocabulary | bytes / token | **val bpb** |
+|---|---|---:|---:|---:|---:|
+| our L4 model (Part 2), 49M training tokens | — | 11M | 1,024 | 2.4 | 1.647 (first 4.2M val tokens) |
+| GPT-2 small | 2019 | 124M | 50,257 | 4.56 | 1.079 |
+| *Parameter Golf winner (16 MB artifact, full val set; Part 4)* | *2026* | | *8,192* | | *1.057* |
+| SmolLM2-135M | 2024 | 135M | 49,152 | 4.44 | 1.010 |
+| Qwen3.5-0.8B-Base | 2026 | 752M (language model) | 248,077 | 4.58 | 0.988 |
+| Qwen3-0.6B-Base | 2025 | 596M | 151,669 | 4.57 | 0.953 |
+| Qwen2.5-0.5B | 2024 | 494M | 151,665 | 4.57 | 0.951 |
+| **SmolLM2-360M** | 2024 | 362M | 49,152 | 4.44 | **0.928** |
 
-| model | year | parameters | weights (bf16) | val bpb (200 docs) |
-|---|---|---:|---:|---:|
-| GPT-2 small | 2019 | 124M | 0.25 GB | 1.079 |
-| *Parameter Golf winner (full val set)* | *2026* | *~35M (our estimate)* | *16 MB (int6)* | *1.057* |
-| Qwen2.5-0.5B | 2024 | 494M | 1.0 GB | 0.951 |
-| SmolLM2-360M | 2024 | 362M | 0.7 GB | **0.928** |
-| *our L4 laptop model (4M tokens of val)* | | *11M* | *44 MB* | *1.647* |
+How to read it:
+- **The 16 MB golf winner beats GPT-2 small**, a 2019 model with 15× the bytes. Five years of
+  architecture, optimizer, quantization and evaluation improvements are worth more than a 15×
+  larger model.
+- **Newer and bigger is not automatically better *on a given test*.** SmolLM2-360M is the best model
+  here, ahead of Qwen models up to twice its size. SmolLM2 was trained largely on FineWeb-Edu, the
+  same kind of text as this test. Qwen3.5 was trained for many languages, code, images and reasoning,
+  and spends a third of its parameters on a 248k-token vocabulary. Perplexity measures fit to *one*
+  distribution. Benchmarks (next section) measure other things.
+- The evaluation uses non-overlapping 1,024-token windows for every model, so long-context models get
+  no advantage. (Caveat: the golf number uses the full 50k-document set, the others the first 200
+  documents. Read the comparison to about ±0.02.)
 
-What to take from it:
-- **The golf winner beats GPT-2 small in about 1/15 of the bytes (16 MB vs. 250 MB).** Five years of better
-  architectures, optimizers, quantization and evaluation tricks are worth more than a 2019 model with ~3.5× the parameters and 15× the bytes.
-  (Caveat: the golf number is on the full 50k-document set and ours on the first 200, so
-  read this as a comparison to about ±0.02.)
-- **Training data matters as much as size.** SmolLM2-360M beats the larger Qwen2.5-0.5B on this
-  benchmark. A plausible reason is that SmolLM2 was pre-trained largely on FineWeb-Edu, the same
-  distribution as these documents. Benchmark numbers always carry a training-distribution footnote.
-- Our laptop model (1.647) is far from all of them. It saw 49M tokens; Qwen2.5 saw about 18 trillion.
+## 3.6 Evaluating a model (2): benchmarks
 
-## 2.3 Instruction tuning (SFT) with LoRA
+Model releases report scores on dozens of benchmarks. To read those tables you need to know three
+things about each benchmark: **what it asks**, **how an answer is scored**, and **what random
+guessing would score**.
 
-A *base* model only continues text. **Supervised fine-tuning (SFT)** on (instruction, answer) pairs
-teaches it to *answer*: to follow the instruction, then stop.
+### 3.6.1 What the common benchmarks measure
+
+| benchmark | what it asks | size | scoring | chance |
+|---|---|---|---|---:|
+| **MMLU** | 57 school/university subjects (law, medicine, physics, ...) | 14,042 questions, 4 choices | log-likelihood multiple choice | 25% |
+| **MMLU-Pro** | harder, reasoning-heavy MMLU successor | 12,032 questions, up to 10 choices | generated answer, usually with chain-of-thought | ~10% |
+| **MMLU-Redux** | 5,700 MMLU questions re-annotated; it estimates 6.5% of MMLU's labels are wrong | | | 25% |
+| **GPQA Diamond** | "Google-proof" graduate-level biology, physics, chemistry. Experts score 65%, skilled non-experts with web access 34% | 198 questions, 4 choices | log-likelihood or generated (CoT) | 25% |
+| **SuperGPQA** | graduate-level questions in 285 fields | 26,529 questions | multiple choice | low (many options) |
+| **HellaSwag** | pick the most plausible continuation of an everyday scenario | 10,042, 4 endings | log-likelihood (length-normalized) | 25% |
+| **ARC-Easy / Challenge** | grade-school science exam questions | 2,376 / 1,172 | log-likelihood multiple choice | 25% |
+| **WinoGrande**, **PIQA** | pronoun resolution; physical commonsense | 1,267 / 1,838, 2 options | log-likelihood | 50% |
+| **GSM8K** | grade-school math word problems | 1,319 | generated; exact match on the final number | ~0% |
+| **MATH-500**, **AIME** | competition mathematics (AIME: 30 problems per year) | 500 / 30 | generated; answer equivalence | ~0% |
+| **HumanEval**, **LiveCodeBench** | write a program that passes unit tests (LiveCodeBench uses problems released after a date, against contamination) | 164 / growing | pass@k by *executing* the code | 0% |
+| **IFEval** | follow verifiable format instructions ("answer in 3 bullet points, no commas") | 541 prompts | rule-checked, no judge | — |
+| **Arena-Hard**, **MT-Bench** | open-ended chat quality | 500 / 80 | **LLM-as-judge** (another model compares answers) | — |
+| **HLE** (Humanity's Last Exam) | 2,500 expert-written frontier questions | 2,500 | exact match + judge | ~0% |
+| **C-Eval**, **CMMLU** | Chinese-language exams | C-Eval: 13,948 questions | log-likelihood multiple choice | 25% |
+
+The GPQA authors ask that its questions **not be published in plain text online**, so that they do
+not leak into future training data. This tutorial shows no GPQA examples. The dataset is gated: accept
+its terms on HuggingFace before running it.
+
+### 3.6.2 How an answer is scored
+
+**Log-likelihood multiple choice** (MMLU, ARC, HellaSwag, GPQA zero-shot). The model never generates
+anything. For a question $q$ and choices $c_1 \dots c_K$, sum the log-probabilities of each choice's
+tokens:
+
+$$
+s_i = \sum_{t} \log p_\theta\big(c_i[t] \mid q, c_i[<t]\big), \qquad
+\hat\imath_{\text{acc}} = \arg\max_i s_i, \qquad
+\hat\imath_{\text{acc\_norm}} = \arg\max_i \frac{s_i}{|c_i|} .
+$$
+
+`acc_norm` divides by the length $|c_i|$ (characters of the choice text) so that long answers are not
+penalized for having more tokens. For
+ARC the prompt is literally `"Question: <question>\nAnswer:"`, and each choice is scored as
+`" <choice text>"`. `benchmarks.py: mc_accuracy` implements this in about 20 lines.
+
+**Checking our understanding against the standard tool.** We ran our scorer and
+lm-evaluation-harness on SmolLM2-360M, ARC-Easy, all 2,376 questions:
+
+| scorer (fp32, first 300 questions) | acc | acc_norm |
+|---|---:|---:|
+| lm-evaluation-harness 0.4.11 | 0.6833 | 0.6633 |
+| our `mc_accuracy`, first version | 0.6833 | 0.6867 |
+| our `mc_accuracy`, after the fix | **0.6833** | **0.6633** |
+
+The first version agreed on `acc` but not on `acc_norm`: 7 of 300 answers differed. Two
+explanations seemed natural. Precision was the first: lm_eval ran in bf16. A missing
+beginning-of-sequence token was the second. Both were tested and both were wrong:
+- our scorer gave the same result in bf16 and fp32;
+- adding the token made the gap larger;
+- the token ids fed to the model were identical.
+
+The cause was in the definition. lm_eval divides by the length of the choice text *without* the
+space that separates it from "Answer:". We had counted that space. Recomputing lm_eval's own logged
+log-likelihoods both ways reproduces both numbers exactly. **A one-character difference in a
+normalization changed 2.3 points of accuracy.** Benchmark numbers from different tools, or different
+versions of one tool, are only comparable when the scoring code is the same.
+
+**Generative exact match** (GSM8K, MATH). The model writes a solution, and a regular expression
+extracts the final answer, which must equal the reference. Scores therefore depend on the *answer
+format* as much as on the reasoning. A model that gets the right number in the wrong format scores 0.
+
+**pass@k** (code). Generate $n$ programs per problem, of which $c$ pass the unit tests. The unbiased
+estimate of "at least one of $k$ samples passes" is $1 - \binom{n-c}{k}\big/\binom{n}{k}$.
+
+**LLM-as-judge** (Arena-Hard, MT-Bench): a strong model compares or grades answers. It scales to
+open-ended tasks, but it inherits the judge's biases: it prefers longer answers, the first-shown
+answer, and answers in its own style.
+
+### 3.6.3 Running benchmarks
+
+The standard tool is EleutherAI's [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness).
+It is what most small-model numbers are computed with:
 
 ```bash
-python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml
+lm_eval --model hf --model_args pretrained=HuggingFaceTB/SmolLM2-360M,dtype=bfloat16 \
+        --tasks mmlu,arc_easy,arc_challenge,hellaswag --num_fewshot 0 --batch_size 32
+lm_eval --model hf --model_args pretrained=Qwen/Qwen3.5-0.8B,enable_thinking=False \
+        --tasks ifeval --apply_chat_template --batch_size 32          # chat models: use the chat template
+lm_eval --model hf --model_args pretrained=HuggingFaceTB/SmolLM2-360M,peft=<adapter dir> --tasks arc_easy   # a LoRA model
 ```
 
-How `finetune.py` does it (this replaces the old `experiments.py: run_qwen_finetune_experiment`, which
-unfroze the last two layers of a 3B model, and the TRL-based `rl_train_main.py`):
+`nanolm.benchmarks` wraps this in a config: models × task groups, run in parallel, resumable, with a
+summary table and a figure:
 
-1. **Format.** Each Alpaca example becomes a chat. The model's own chat template wraps the user turn
-   and the assistant turn (`chat_example`).
-2. **Loss on the answer only.** Prompt positions get label −100. The model is trained to produce
-   answers, not to reproduce questions.
-3. **LoRA.** Every attention and MLP projection W gets a trainable low-rank update W + (α/r)·B·A,
-   with A ∈ ℝ^{r×d} and B ∈ ℝ^{d×r}. B starts at 0, so training starts from the unchanged model.
-   With r = 16 that is **8.7M trainable parameters out of 370M (2.3%)**. Optimizer state and
-   gradients shrink by the same factor, which is what makes this fit on a laptop.
-4. **Memory.** Gradient checkpointing, plus computing the vocabulary softmax (49k for SmolLM2, 151k for
-   Qwen) only at answer positions, in chunks (`token_logprobs`). Peak memory: **1.97 GB in fp32**.
+```bash
+python -m nanolm.benchmarks run -c nanolm/configs/part3/B1_small_models.yaml --slots 4    # GPU: ~2 h for 11 models
+python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml                    # laptop: ~30-60 min
+python -m nanolm.benchmarks summary outputs/nanolm/benchmarks/small_models
+```
 
-Reference run (SmolLM2-360M base, LoRA r=16, 2,000 Alpaca examples, 250 steps × 16 examples, fp32):
+### 3.6.4 Results: small open models
+
+> **Results pending.** The benchmark runs for this section (`configs/part3/B1_small_models.yaml`) are
+> still in progress. The table and figure will be added here when they finish. Meanwhile you can run
+> `python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml` yourself.
+
+### 3.6.5 Reading a model-release table
+
+The Qwen3.5-0.8B [model card](https://huggingface.co/Qwen/Qwen3.5-0.8B) reports, among others
+(numbers copied from the card):
+
+| benchmark | Qwen3-1.7B | **Qwen3.5-0.8B** | Qwen3.5-2B | mode |
+|---|---:|---:|---:|---|
+| MMLU-Pro | 40.2 | **29.7** | 55.3 | non-thinking |
+| MMLU-Redux | 64.4 | **48.5** | 69.2 | non-thinking |
+| SuperGPQA | 21.0 | **16.9** | 30.4 | non-thinking |
+| IFEval | 68.2 | **52.1** | 61.2 | non-thinking |
+| MMLU-Pro | 56.5 | **42.3** | 66.5 | thinking |
+| GPQA | 40.1 | **11.9** | 51.6 | thinking |
+| IFEval | 72.5 | **44.0** | 78.6 | thinking |
+
+Questions to ask of any such table:
+1. **Under what settings?** Thinking vs. non-thinking, few-shot or zero-shot, chain-of-thought or
+   log-likelihood, sampling temperature. The same model's MMLU-Pro is 29.7 without thinking and 42.3
+   with it. Our §3.6.4 numbers use log-likelihood scoring, which is a *different measurement* from the
+   card's generated-answer scores. Compare like with like.
+2. **What is chance?** The card's GPQA score for Qwen3.5-0.8B in thinking mode is **11.9**, *below*
+   the 25% of random guessing on a 4-choice test. A score below chance usually means answers were not
+   produced in a parseable format (for example, the model ran out of tokens while thinking), not that
+   the model "knows less than nothing". This is our interpretation; the card does not explain it. Note
+   also that a small model's IFEval score is *lower* with thinking (44.0) than without (52.1).
+3. **Could the test data have leaked into training?** Benchmarks published years ago (MMLU 2020, GSM8K
+   2021) are on the web, and so possibly in pre-training data. Newer benchmarks fight this with
+   post-cutoff problems (LiveCodeBench, AIME by year) or by keeping test answers private.
+4. **Is it saturated?** When strong models all score above ~90% (MMLU-Redux 93.3 for Qwen3.5-35B-A3B),
+   the remaining errors are often label noise. The field moves to harder tests (MMLU-Pro, GPQA, HLE).
+
+## 3.7 Fine-tuning: full vs. LoRA
+
+Adapting a pretrained model means continuing to train it on new data. **Full fine-tuning** updates
+every weight. With AdamW in fp32 that costs 16 bytes per parameter:
+- 4 bytes for the weight;
+- 4 bytes for its gradient;
+- 8 bytes for Adam's two moment estimates.
+
+For a 360M model that is 5.8 GB before any activations, too much for many laptops.
+
+**LoRA** (Hu et al., 2021) freezes the pretrained weight $W_0$ and learns a low-rank correction:
+
+$$
+W = W_0 + \frac{\alpha}{r} B A, \qquad A \in \mathbb{R}^{r \times d_{in}},\; B \in \mathbb{R}^{d_{out} \times r},\; r \ll d .
+$$
+
+$B$ starts at zero, so training starts exactly from the pretrained model. With $r = 16$ on every
+attention and MLP projection of SmolLM2-360M, only **8.7M of 370M weights (2.3%)** are trained. Their
+gradients and optimizer state are tiny, and the saved "adapter" is a few MB. `finetune.py` uses the
+`peft` library for LoRA and adds two more memory savers:
+- gradient checkpointing;
+- computing the vocabulary softmax only at the answer positions, in chunks.
+
+## 3.8 Instruction tuning (SFT)
+
+A base model continues documents. Ask it a question and it may continue with more questions.
+**Supervised fine-tuning** on (instruction, answer) pairs teaches it to *answer, then stop*. The loss
+is the usual cross-entropy, but **only on the answer tokens**:
+
+$$
+\mathcal{L}_{\text{SFT}} = -\frac{1}{|\mathcal{A}|} \sum_{t \in \mathcal{A}} \log p_\theta(x_t \mid x_{<t}),
+\qquad \mathcal{A} = \text{positions of the answer (including the end-of-turn token)}.
+$$
+
+The prompt positions get label −100, which PyTorch ignores. The model is not trained to reproduce
+questions. The end-of-turn token *is* in $\mathcal{A}$: that is how the model learns to stop.
+
+```bash
+python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml     # 8 GB Mac: model.name=HuggingFaceTB/SmolLM2-135M
+```
+
+Reference run:
+- **Model:** SmolLM2-360M (base), with LoRA r = 16.
+- **Data:** 2,000 Alpaca instruction/answer pairs, 100 held out.
+- **Training:** 250 steps × 16 examples, fp32.
+- **Peak memory:** **1.97 GB**.
 
 | | before SFT | after SFT |
 |---|---:|---:|
-| held-out answer NLL (nats/token, 100 examples) | 1.556 | **1.321** |
+| held-out answer loss (nats/token) | 1.556 | **1.321** |
 | held-out answer perplexity | 4.74 | 3.75 |
 
-The samples (`samples_before.txt` / `samples_after.txt`, greedy decoding) say more than the numbers:
+![SFT and DPO curves](docs/nanolm_figs/p3_sft_dpo_curves.png)
+
+The before/after samples (greedy decoding, from `samples_before.txt` / `samples_after.txt`):
 
 ```
 ### Give three tips for staying healthy.
 BEFORE: • Eat a balanced diet. • Exercise regularly. • Get enough sleep. ...
         ### Question 2:  Give three tips for staying healthy.  ### Response: • Eat a balanced diet. ...
-        ### Question 3: ...                                  <- never stops: it continues a "document"
+        ### Question 3: ...                                   <- never stops: it continues a "document"
 AFTER:  1. Eat a balanced diet: A healthy diet is essential for maintaining good health. It should
         include a variety of fruits, vegetables, whole grains, ... 2. Stay active: ... 3. Get enough sleep: ...
 
@@ -622,71 +1303,88 @@ AFTER:  The capital of France is Paris, which is located in the region of Norman
 AFTER:  Good morning in Spanish: ¡Hola!   Good morning in Chinese: 你好！                  <- wrong
 ```
 
-**SFT teaches format and behaviour, not knowledge.** After two passes over 2,000 examples the model answers in the
-right shape and stops. But it states falsehoods (Paris is not in Normandy) and mistranslates
-("¡Hola!" and "你好" mean "hello", not "good morning") with the same fluent confidence. That is
-hallucination in its simplest form. A 360M model does not know enough, and SFT cannot add knowledge
-that pre-training did not put there. The haiku also does not count syllables: a sub-word model does
-not "see" syllables.
+**SFT teaches format and behaviour, not knowledge.** After two passes over 2,000 examples the model
+answers in the right shape and stops. But it states falsehoods with the same confidence: Paris is not
+in Normandy, and "¡Hola!" and "你好" mean "hello", not "good morning". This is hallucination in its
+simplest form. A 360M model does not know enough, and SFT cannot add what pre-training did not
+provide.
 
-## 2.4 Preference tuning (DPO)
+## 3.9 Preference tuning (DPO)
 
-SFT shows the model *what* an answer looks like. **Preference tuning** shows it which of two answers
-people prefer. **DPO** (Direct Preference Optimization, Rafailov et al. 2023) does this without
-training a separate reward model and without reinforcement learning. For a prompt x, a preferred
-answer y_w and a rejected answer y_l:
+SFT imitates given answers. **Preference tuning** learns from *comparisons*: for a prompt $x$, a
+person (or a model) preferred answer $y_w$ over $y_l$. The **Bradley–Terry** model says preferences
+follow a hidden reward $r$:
 
-```
-loss = -log σ( β · [ (log π(y_w|x) − log π_ref(y_w|x)) − (log π(y_l|x) − log π_ref(y_l|x)) ] )
-```
+$$
+P(y_w \succ y_l \mid x) = \sigma\big(r(x, y_w) - r(x, y_l)\big).
+$$
 
-The model π is pushed to raise the probability of y_w relative to y_l. The ratio to the frozen
-reference π_ref (the model before tuning) acts as an anchor: β controls how far the model may drift.
-The bracket, times β, is the **implicit reward margin**. In `finetune.py` the reference is the same
-network with the LoRA adapter switched off (`model.disable_adapter()`), so DPO needs **no second copy
-of the model**.
+Classic RLHF first fits a reward model, then optimizes the policy with reinforcement learning (PPO)
+under a KL penalty toward the original model. **DPO** (Rafailov et al., 2023) shows that the optimal
+policy of that objective satisfies $r(x,y) = \beta \log \frac{\pi_\theta(y\mid x)}{\pi_{\text{ref}}(y\mid x)} + \text{const}$.
+Substituting this into Bradley–Terry gives a loss that trains the policy *directly*, with no reward
+model and no sampling:
+
+$$
+\mathcal{L}_{\text{DPO}} = -\log \sigma\Big(\beta\Big[\log\frac{\pi_\theta(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)} - \log\frac{\pi_\theta(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}\Big]\Big).
+$$
+
+The bracket times $\beta$ is the **implicit reward margin**. In `finetune.py`, $\pi_{\text{ref}}$ is
+the same network with the LoRA adapter switched off. No second copy of the model is needed.
 
 ```bash
 python -m nanolm.finetune -c nanolm/configs/part2/P3_dpo.yaml
 ```
 
 Reference run:
-- Model: Qwen2.5-0.5B-Instruct with LoRA r=16 (8.8M trainable parameters).
-- Data: 800 UltraFeedback pairs whose quality scores differ by at least 2 points.
-- Training: 100 steps × 8 pairs, β = 0.1.
-- Evaluation: 100 held-out pairs from UltraFeedback's test split.
-- Peak memory: **2.85 GB in fp32**.
+- **Model:** Qwen2.5-0.5B-Instruct, with LoRA r = 16.
+- **Data:** 800 UltraFeedback pairs whose quality scores differ by at least 2 points.
+- **Training:** 100 steps × 8 pairs, β = 0.1.
+- **Evaluation:** 100 held-out pairs.
+- **Peak memory:** **2.85 GB in fp32**.
 
 | | before DPO | after DPO |
 |---|---:|---:|
 | implicit-reward accuracy (margin > 0) | 0.50 (policy = reference: all ties) | **0.68** |
 | mean implicit-reward margin | 0.00 | 0.63 |
-| policy alone prefers y_w (per-token log-prob) | 0.61 | 0.63 |
-| training-batch reward accuracy (last steps) | — | ~0.71–0.80 |
+| the model alone prefers $y_w$ (per-token log-probability) | 0.61 | 0.63 |
 
-How to read it honestly:
-- **0.68 on 100 pairs is real.** The standard error is about 0.047, so this is about 3.8 standard
-  errors above chance. The gap to the ~0.75–0.8 seen on training batches is the usual
-  small-data overfitting.
-- **The model's *own* preference barely moved** (0.61 → 0.63, within noise). DPO raised the
-  probability of preferred answers *relative to the reference*, a small, distributed change. It did
-  not turn the model into a better judge of answer quality.
-- **The samples changed in style more than in substance.** After DPO the model drops the opening
-  "Certainly!" and the markdown bold, and reorders some content. A factual error in the Chinese
-  answer survived unchanged: both versions give the pinyin of 早上好 as "Wǎng bù duì" (correct:
-  zǎo shang hǎo). Preference tuning shapes *how* a model answers; it does not fix what it does not know.
-- With one seed and 100 validation pairs, the tutorial claims only the reward-accuracy effect.
-  Exercise 11 asks you to vary β.
+- **0.68 is real.** The standard error on 100 pairs is about 0.047, so this is 3.8 standard errors
+  above chance.
+- **The model's own ranking of answers barely moved** (0.61 → 0.63). DPO shifted probabilities
+  *relative to the reference model*. It did not make the model a better judge.
+- **The samples changed mostly in style.** After DPO the model drops "Certainly!" and the markdown
+  bold. A factual error survived: both versions give the pinyin of 早上好 as "Wǎng bù duì"; the
+  correct pinyin is "zǎo shang hǎo".
 
-DPO is one of several preference-tuning methods. PPO and GRPO generate answers during training,
-which is far slower and impractical on a laptop. The TRL-based versions remain in
-`legacy/rl_train_main.py`.
+PPO and GRPO (the reinforcement-learning methods behind "reasoning" models) generate answers during
+training, so they are far slower. They are best run on a GPU server, not a laptop.
+
+## 3.10 Did post-training change the benchmark scores?
+
+> **Results pending.** This section compares the base models with our SFT and DPO models (§3.8–3.9)
+> on the §3.6 benchmarks. Those runs are in `configs/part3/B1_small_models.yaml` (models `+ourSFT`,
+> `+ourDPO`) and are still in progress.
 
 ---
 
-# Part 3 — Parameter Golf
+# Part 4 — Parameter Golf: exploring next-generation architectures
 
-## 3.1 The challenge
+Part 3 showed where the field's architectures came from. Part 4 asks how *new* ideas get found and
+tested. The setting is a 2026 competition in which hundreds of people raced to build the best
+language model under a hard size limit. It works as a laboratory for architecture research: every
+idea is scored on the same data, with the same metric, under the same budget.
+
+Several ideas that won here also appear in the newest production models:
+- **partial RoPE** (Qwen3.5 rotates 25% of each head; Golf's best setting was 16 of 64 dimensions);
+- **gated attention outputs** and **QK-norm** (Qwen3-Next/3.5);
+- **Muon** (Kimi K2);
+- **multi-token prediction** (DeepSeek-V3, Qwen3.5);
+- **parameter sharing through depth recurrence**.
+
+Part 4 shows how to tell which such ideas actually help.
+
+## 4.1 The challenge
 
 [OpenAI Parameter Golf](https://github.com/openai/parameter-golf) (March 18 – April 30, 2026, more than
 1,000 participants): train the language model with the lowest FineWeb validation bpb, subject to:
@@ -700,7 +1398,7 @@ NanoGPT *speedrun* (best time for a fixed loss). With a budget this tight, the w
 about **using every byte** (quantization, compression, weight sharing) and **using every FLOP of
 evaluation** (context, test-time training), as much as about architecture.
 
-## 3.2 Final leaderboard (10 min / 16 MB track)
+## 4.2 Final leaderboard (10 min / 16 MB track)
 
 From the [official README](https://github.com/openai/parameter-golf/blob/main/README.md) (final
 audited update, May 2026). Scores are 3-seed means.
@@ -728,9 +1426,9 @@ How to read this table:
    order is close to the seed noise.
 3. The audit **excluded** many submissions that leaked the target or counted bytes wrongly (n-gram
    channels that depend on the target token, unnormalized byte mixtures, wrong byte denominator).
-   Metric hygiene was a real part of the competition (§4.3).
+   Metric hygiene was a real part of the competition (§5.3).
 
-## 3.3 The techniques, grouped by lever
+## 4.3 The techniques, grouped by lever
 
 The impact numbers are quoted from the record write-ups. Most are single-seed and/or bundled with
 other changes, so treat them as rough.
@@ -782,7 +1480,7 @@ weak model and became useless once the model was stronger. An independent analys
 submissions (["Parameter Golf: What Really Works?", arXiv 2607.01517](https://arxiv.org/abs/2607.01517))
 reaches a similar conclusion, although its correlational method is weak evidence.
 
-## 3.4 The golf baseline in `nanolm`
+## 4.4 The golf baseline in `nanolm`
 
 `configs/04_golf_baseline.yaml` re-implements the challenge baseline with config switches:
 9 layers, d = 512, 8 heads / 4 KV heads (GQA), relu² MLP ×2, tied embeddings (init std 0.005),
@@ -795,7 +1493,7 @@ On one GPU, `04_golf_lab.yaml` keeps the same model and shrinks the budget to 20
 tokens = 131M tokens. That is about 2% of an official run, so absolute numbers are higher than the
 leaderboard. The *differences* between techniques are what we measure.
 
-## 3.5 Our ablation: each technique alone, two seeds
+## 4.5 Our ablation: each technique alone, two seeds
 
 ```bash
 python -m nanolm.sweep   --sweep nanolm/configs/sweeps/04_golf_ablation.yaml
@@ -825,7 +1523,7 @@ t-test (1 degree of freedom). Seed noise floor: **0.0017 bpb**.
 | "record stack" (10 tricks from records, see `stack`) | 1.4300 ± 0.0020 | +0.0013 | 0.75 | 22.4M | 19.6 MB | **nothing**: the harmful ones cancel the good ones |
 | **verified stack** (only the 5 that helped) + int6 | **1.3935 ± 0.0012** | **−0.0352** | 0.016 | 21.8M | **14.6 MB (int6)** ✓ | sum of the parts (−0.032 expected) |
 
-![golf ablation](docs/nanolm_figs/golf_ablation_bars.png)
+![golf ablation](docs/nanolm_figs/p4_golf_ablation.png)
 
 What this experiment teaches:
 1. **Ablate one thing at a time, then stack only what survived.** The "record stack" (everything a
@@ -840,12 +1538,12 @@ What this experiment teaches:
    claim about a regime, not a law.
 3. **Bytes are a currency.** 3× MLP is the largest single gain, but it breaks the 16 MB budget at int8
    (19.8 MB). It only "counts" because int6 brings it back to 14.6 MB for a +0.0016 bpb rounding cost
-   (§3.6). In golf, an architecture result without its artifact size is half a result, and that is
+   (§4.6). In golf, an architecture result without its artifact size is half a result, and that is
    why `metrics.json` always records both.
 4. **Two seeds is a minimum, not a luxury.** The noise floor (0.0017) is about the size of the
    XSA and QK-gain effects. We call those "within noise", not "helps".
 
-## 3.6 The free levers: evaluation stride and quantization (no retraining)
+## 4.6 The free levers: evaluation stride and quantization (no retraining)
 
 ```bash
 python -m nanolm.compress outputs/nanolm/sweeps/golf_ablation/baseline_s1337 --bits 8 6 5 4 --strides 0 256 64
@@ -879,13 +1577,13 @@ under-reports what the model can do, because a token at the start of a window ha
 
 - int8 is essentially free (+0.0001) but cannot fit a model of more than about 17M parameters into 16 MB.
 - **int6 costs about 0.002 bpb and saves 27% of the bytes.** That is how the 22M-parameter (MLP 3×)
-  model fits into 14.2 MB, and 3× MLP alone was worth −0.012 (§3.5). Every golf record made this trade.
+  model fits into 14.2 MB, and 3× MLP alone was worth −0.012 (§4.5). Every golf record made this trade.
 - int4 with simple rounding is too lossy (+0.03). The records that went below 6 bits used GPTQ
   (Hessian-aware rounding) or ternary/binary *training*, not post-hoc rounding.
 - lzma squeezes the unused high bits of int6/int5 values stored in int8 bytes (5.40 bits/param at
   "6 bits"). At int8 there is nothing to squeeze, and lzma is even slightly larger than zlib.
 
-## 3.7 Putting it together (lab scale, 131M training tokens, 2 seeds)
+## 4.7 Putting it together (lab scale, 131M training tokens, 2 seeds)
 
 | | val bpb | artifact |
 |---|---:|---:|
@@ -900,7 +1598,7 @@ techniques we did not implement, which make good exercises.
 
 ---
 
-## 3.8 Parameter Golf on a laptop
+## 4.8 Parameter Golf on a laptop
 
 Everything in this Part runs on a laptop at a smaller scale. `laptop/L5_golf_mini.yaml` is the golf
 baseline architecture at 6 layers × 384 (U-Net skips, x0 mixing, QK-norm with gain, relu² MLP, logit
@@ -924,7 +1622,7 @@ The laptop ablation (`sweeps/laptop_golf_ablation.yaml`) was run here with **two
 (`--seeds 1337 42 --set precision=fp32`). On a laptop you would run one seed overnight. Noise
 floor: 0.0018 bpb.
 
-| technique (alone, on L5) | val bpb | Δ vs. baseline | paired p | same technique at lab scale (§3.5) |
+| technique (alone, on L5) | val bpb | Δ vs. baseline | paired p | same technique at lab scale (§4.5) |
 |---|---:|---:|---:|---:|
 | depth recurrence (layers 2–3) | 1.6284 ± 0.0018 | **−0.0053** | 0.001 | −0.0049 |
 | LeakyReLU(0.5)² | 1.6285 ± 0.0022 | **−0.0053** | 0.04 | −0.0059 |
@@ -953,9 +1651,11 @@ What carries over from the server-scale results, and what does not:
 
 ---
 
-# Part 4 — Methodology: seeds, noise, and a post-mortem
+---
 
-## 4.1 One seed is an anecdote
+# Part 5 — Research methodology: seeds, noise, debug vs. negative result
+
+## 5.1 One seed is an anecdote
 
 Two runs that differ only in the random seed differ in val bpb. `analyze.py` prints the median
 within-experiment standard deviation (the **noise floor**). On the leaderboard, the seed std was
@@ -968,7 +1668,7 @@ about 0.0003–0.001 bpb, while many claimed improvements were 0.001–0.003. Ru
 - Decide the metric *before* looking at the results. Report `val_bpb`, `sliding_bpb` and
   `quant_val_bpb` separately; they answer different questions.
 
-## 4.2 Debug or negative result?
+## 5.2 Debug or negative result?
 
 When a variant does not help, check these **before** concluding that the idea is dead:
 1. Did the switch actually change the model? Compare `params` in `metrics.json`, and look for the
@@ -979,7 +1679,7 @@ When a variant does not help, check these **before** concluding that the idea is
 
 If all three check out, it is a genuine negative result at this scale. Write it down; it is a result.
 
-## 4.3 Post-mortem of our own 2026 submission (why this codebase looks the way it does)
+## 5.3 Post-mortem of our own 2026 submission (why this codebase looks the way it does)
 
 We entered Parameter Golf with a 3,400-line script (`mytrain_gpt_v6_1.py`) and a JSON →
 environment-variable launcher. A careful audit after the challenge found:
@@ -1001,43 +1701,60 @@ measurement pipeline we could not tell which ideas were good.
 
 ---
 
+---
+
 # Exercises
 
-1. **Context length.** Train `02b` with `train.seq_len=64, 128, 256, 512`. Plot bpb against context
-   for the Transformer and the LSTM. Where does the LSTM stop benefiting?
-2. **Scaling law in one afternoon.** Sweep `model.dim` × `model.n_layers` on `03_gpt_fineweb.yaml`
-   at a fixed token budget. Plot bpb against non-embedding parameters (`params_non_embedding`).
-3. **AdamW vs. Muon at equal tuning effort.** Give each optimizer the same 4-point LR grid
-   (use `grid:` in a sweep file). Is the gap larger or smaller than with default LRs?
-4. **The byte budget.** With `compress.py`, find the smallest bits/weight that costs less than
-   0.01 bpb. Then make the model wider until int6 + lzma reaches exactly 16 MB. Does it beat the int8
-   model of the same size?
-5. **Reproduce a record claim.** Pick one row of §3.3 and test it with 3 seeds in `04_golf_lab`.
-   Report the mean, std and paired p-value. Does the claimed gain survive at our scale?
-6. **Break it on purpose.** Remove `is_causal=True` from `Attention.forward` and run the tests.
-   Then train for 100 steps and look at the bpb. Explain why the number is meaningless.
-7. **Implement a new technique** as one config key in `models/gpt.py` (e.g. multi-token prediction,
-   or SwiGLU vs. relu² at equal parameters), add a causality test case, and run an ablation sweep.
+**Part 1: from scratch**
 
----
-**Part 2 and laptop exercises**
+1. **Context length.** Train `laptop/L2_char_gpt` with `train.seq_len=64, 128, 256, 512`, and the LSTM
+   with the same lengths. Plot bpb against context. Where does the LSTM stop benefiting?
+2. **Break it on purpose.** Remove `is_causal=True` from `Attention.forward` in `models/gpt.py` and
+   run the tests. Then train for 100 steps and look at the bpb. Explain why the number is meaningless.
+3. **Read your model's mind.** Run `python -m nanolm.viz attention --run <your run> --text "..."` on
+   three different kinds of text: dialogue, a name, a long word. Find one head whose behaviour you can
+   describe, and back the description with a number, as in §1.6.2.
 
-8. **Reproduce a reference.** Run `laptop/L2_char_gpt` and `laptop/L4q_gpt_fineweb_quick` on your
-   machine. Report your `bench` TFLOP/s, your wall-clock time, and your val bpb against the reference
-   (§0.2). If you are off by more than 0.01, find out why.
-9. **LoRA rank.** Run `part2/P2_sft_alpaca` with `model.lora_r=4`, `16` and `64`. Plot the after-SFT
-   response NLL against trainable parameters. Where does a larger rank stop helping?
-10. **LoRA vs. full fine-tuning.** Run P2 with `model.lora=false train.lr=2e-5`, using the 135M model
-    on a laptop. Compare memory (`peak_mem_mb`), time and quality. Is full fine-tuning worth it here?
-11. **How hard should DPO pull?** Sweep `train.dpo_beta` over 0.05, 0.1 and 0.5 in P3. Higher β keeps the
-    policy closer to the reference. Plot reward accuracy against how much the samples change.
-12. **The alignment tax.** Does instruction tuning make a model worse at plain web text? Extend
-    `finetune.py` so that `eval_bpb` can load a LoRA adapter (`peft.PeftModel.from_pretrained`). Then
-    measure FineWeb bpb before and after SFT.
-13. **Leave-one-out.** In the laptop golf ablation the stack (−0.033) beat the sum of its parts
-    (about −0.014). Add five runs to `sweeps/laptop_golf_ablation.yaml`, each equal to `stack_verified`
-    minus one technique. Which technique matters most *inside* the stack? Is 3× MLP still useless
-    there?
+**Part 2: pre-training**
+
+4. **The SwiGLU puzzle.** In §2.2.2 SwiGLU *hurt*. Test two hypotheses with 2 seeds each: (a) it needs a
+   larger learning rate (`train.lr=2e-3`); (b) it only helps with more training tokens
+   (`train.max_steps=9000`). Which one, if either, explains the result?
+5. **A scaling law in one afternoon.** Sweep `model.dim` × `model.n_layers` (use `grid:` in a sweep
+   file) at a fixed token budget. Plot bpb against non-embedding parameters (`params_non_embedding` in
+   `metrics.json`).
+6. **AdamW vs. Muon at equal tuning effort.** Give each optimizer the same 4-point learning-rate grid.
+   Is the gap larger or smaller than with the default learning rates?
+
+**Part 3: modern LLMs**
+
+7. **Benchmarks on a laptop.** Run `nanolm/configs/part3/B2_laptop.yaml`. Compare your numbers with
+   §3.6.4: the same model and the same tasks should agree to within the reported standard errors.
+8. **Scoring rules matter.** Run `arc_easy` for one model and compare `acc` with `acc_norm`. Then
+   change `mc_accuracy` to normalize by the number of *tokens* instead of bytes. How many answers change?
+9. **Thinking mode.** Run `ifeval` and `gsm8k_cot` for `Qwen/Qwen3.5-0.8B` with `enable_thinking=True`
+   and with `enable_thinking=False` (`extra_args` in the benchmark config; raise the generation limit
+   for thinking). Explain the card's "11.9 on GPQA" (§3.6.5) in light of what you see.
+10. **LoRA rank.** Run `part2/P2_sft_alpaca` with `model.lora_r=4`, `16` and `64`. Plot the after-SFT
+    answer loss against trainable parameters. Where does a larger rank stop helping?
+11. **LoRA vs. full fine-tuning.** Run the SFT config with `model.lora=false train.lr=2e-5` on the 135M
+    model. Compare memory (`peak_mem_mb`), time and quality.
+12. **How hard should DPO pull?** Sweep `train.dpo_beta` over 0.05, 0.1 and 0.5. Plot the reward accuracy
+    against how much the samples change.
+
+**Part 4: Parameter Golf**
+
+13. **Reproduce a record claim.** Pick one row of §4.3 and test it with 3 seeds in `04_golf_lab`. Does
+    the claimed gain survive at our scale?
+14. **The byte budget.** With `python -m nanolm.compress`, find the fewest bits per weight that cost
+    less than 0.01 bpb. Then widen the model until int6 + lzma fills exactly 16 MB. Does it beat the int8
+    model of the same size?
+15. **Leave-one-out.** In the laptop ablation (§4.8) the stack (−0.033) beat the sum of its parts
+    (about −0.014). Add five runs, each equal to `stack_verified` minus one technique. Which technique
+    matters most *inside* the stack?
+16. **Bring a modern idea to the golf course.** Implement one Part 3 component as a config key in
+    `models/gpt.py`, for example sliding-window attention on alternate layers, or a 2-expert MoE MLP.
+    Add it to the causality tests and run a 2-seed ablation against `L5_golf_mini`.
 
 ---
 
@@ -1048,11 +1765,13 @@ Start with [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md). The command reference
 ```bash
 python -m nanolm.bench    -c <config> [overrides]            # tokens/s, memory, projected time on THIS machine
 python -m nanolm.train    -c <config> [overrides]            # train from scratch (Parts 1, 2.1, 3)
-python -m nanolm.finetune -c <part2 config> [overrides]      # pretrained models: eval_bpb / sft / dpo
+python -m nanolm.finetune -c <part2 config> [overrides]      # pretrained models: eval_bpb / sft / dpo (Part 3)
 python -m nanolm.generate <run_dir> --prompt "..." [--top-p 0.9] [--interactive]
 python -m nanolm.sweep    --sweep <sweep.yaml> [--set device=cpu] [--only name ...]
 python -m nanolm.analyze  <sweep dir or outputs dir>
 python -m nanolm.compress <run_dir> --bits 8 6 4 --strides 0 64
+python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml   # MMLU, ARC, GSM8K, ... via lm-eval
+python -m nanolm.viz all                                    # regenerate every figure in this tutorial
 ```
 
 Memory knobs, from most to least effective:
@@ -1062,7 +1781,7 @@ Memory knobs, from most to least effective:
 | `train.batch_size=8 train.grad_accum=4` (keep the product) | halves activation memory; identical math |
 | `train.seq_len=256` | halves activation memory, but changes the experiment (shorter context) |
 | `eval.batch_size=4` | lower memory at evaluation time |
-| Part 2: `data.max_len=256`, `model.name=HuggingFaceTB/SmolLM2-135M`, `model.grad_checkpointing=true` | memory for pretrained models |
+| Part 3: `data.max_len=256`, `model.name=HuggingFaceTB/SmolLM2-135M`, `model.grad_checkpointing=true` | memory for pretrained models |
 | `precision=bf16` (Mac, macOS 14+) | about half the activation memory, often faster; less tested than fp32 |
 
 Device notes:
@@ -1094,9 +1813,3 @@ on each rank and all-reduces the updates. Under `max_time_sec`, the ranks agree 
 2. Implement it in `models/gpt.py` behind that key.
 3. Add it to `GOLF_FEATURES` in `tests/test_nanolm.py` and run the tests.
 4. Add a run to a sweep file. Do not edit the base config.
-
-## Appendix D. Where did the old code go?
-
-The previous course files (`transformer.py`, `train_lm.py`, `lm_dataset.py`, `tokenizer_utils.py`,
-`experiments.py`, `rl_*.py`, ...) now live in [`legacy/`](legacy/README.md). Its README maps every old
-class and function to its `nanolm` replacement.
