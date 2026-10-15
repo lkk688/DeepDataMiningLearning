@@ -1,0 +1,4 @@
+# Stage 2b -- the same model with the 2023+ "Llama recipe": RMSNorm + RoPE + SwiGLU, no biases.
+defaults: [02_char_transformer.yaml]
+name: char_gpt_modern
+model: {norm: rmsnorm, pos: rope, mlp: swiglu, bias: false}

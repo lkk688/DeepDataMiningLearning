@@ -1,0 +1,6 @@
+# 30-second sanity check on any machine (CPU is fine):  python -m nanolm.train -c nanolm/configs/00_smoke.yaml
+defaults: [base.yaml]
+name: smoke
+model: {arch: gpt, dim: 64, n_layers: 2, n_heads: 2}
+train: {seq_len: 64, batch_size: 16, max_steps: 60, lr: 3e-3, warmup_steps: 10, log_every: 20, eval_every: 30, eval_tokens: 8192}
+eval: {final_eval_tokens: 32768, sample_tokens: 100}

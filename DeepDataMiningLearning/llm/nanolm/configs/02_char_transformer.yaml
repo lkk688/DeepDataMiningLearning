@@ -1,0 +1,25 @@
+# Stage 2 -- the "textbook" (GPT-2 style) char-level Transformer:
+# LayerNorm, learned absolute positions, GELU MLP, multi-head attention, AdamW + cosine.
+# Same data, same budget, same metric as 01_char_rnn.yaml -> a fair RNN vs Transformer comparison.
+defaults: [base.yaml]
+name: char_gpt_textbook
+model:
+  arch: gpt
+  dim: 256
+  n_layers: 4
+  n_heads: 4
+  norm: layernorm
+  pos: learned
+  mlp: gelu
+  mlp_mult: 4
+  dropout: 0.1        # 1 MB of text overfits quickly
+  bias: true
+train:
+  seq_len: 256
+  batch_size: 32
+  max_steps: 2000
+  optimizer: adamw
+  lr: 1e-3
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 100

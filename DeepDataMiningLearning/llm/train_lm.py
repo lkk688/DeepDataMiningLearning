@@ -344,7 +344,12 @@ class Trainer:
         self.task = task
 
         # Device selection
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            self.device = torch.device("mps")   # Apple Silicon
+        else:
+            self.device = torch.device("cpu")
         self.model.to(self.device)
         
         # Keep reference to raw model for isinstance checks (in case of compilation)
@@ -365,7 +370,7 @@ class Trainer:
                 print("⚠️  PEFT library not found. Skipping PEFT wrapping.")
 
         # Optional: Compile model (PyTorch 2.0+)
-        if hasattr(torch, "compile") and os.name != "nt": # Skip on Windows if problematic
+        if hasattr(torch, "compile") and os.name != "nt" and self.device.type == "cuda":  # compile is unreliable on MPS/CPU
              print("🚀 Compiling model with torch.compile()...")
              try:
                  self.model = torch.compile(self.model)

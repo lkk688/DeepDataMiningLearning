@@ -1,0 +1,14 @@
+# Chapter 3: the same Transformer with three tokenizers. Compare `val_loss` (per token -- NOT
+# comparable) with `val_bpb` (per byte -- comparable). Watch the parameter count of gpt2: a
+# 50k-row embedding table on a 1 MB corpus.
+name: tokenizers
+base: ../02b_char_transformer_modern.yaml
+seeds: [1337]
+common:
+  train.max_steps: 2000
+runs:
+  - name: char
+  - name: byte
+    overrides: {data.tokenizer: byte}
+  - name: gpt2_bpe
+    overrides: {data.tokenizer: gpt2, train.batch_size: 8, train.grad_accum: 4}   # same tokens/step, less memory

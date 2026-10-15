@@ -364,10 +364,12 @@ class FullTransformer(nn.Module):
         # ------------------------------
         # 2. Encoder & Decoder Stacks
         # ------------------------------
-        encoder_layer = TransformerEncoderLayerClassic(dim, n_heads, ff_dim, dropout)
-        decoder_layer = TransformerDecoderLayerClassic(dim, n_heads, ff_dim, dropout)
-        self.encoder = nn.ModuleList([encoder_layer for _ in range(n_layers)])
-        self.decoder = nn.ModuleList([decoder_layer for _ in range(n_layers)])
+        # NOTE: build a NEW layer per depth. `[layer for _ in range(n)]` would repeat the SAME
+        # module n times (silent weight sharing across all layers).
+        self.encoder = nn.ModuleList([TransformerEncoderLayerClassic(dim, n_heads, ff_dim, dropout)
+                                      for _ in range(n_layers)])
+        self.decoder = nn.ModuleList([TransformerDecoderLayerClassic(dim, n_heads, ff_dim, dropout)
+                                      for _ in range(n_layers)])
 
         # ------------------------------
         # 3. Final LayerNorm and Output Projection
