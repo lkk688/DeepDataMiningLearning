@@ -1,0 +1,61 @@
+# Stage 4 -- faithful re-implementation of the parameter-golf NAIVE BASELINE (val_bpb 1.2244 on 8xH100,
+# 600 s). Architecture: 9 layers, d=512, 8 heads / 4 KV heads, relu^2 MLP x2, tied embeddings, U-Net
+# skips, x0 residual mixing, QK-norm with learnable gain 1.5, logit softcap 30, zero-init projections.
+# Optimizer: Muon (matrices) + Adam (embeddings, scalars), constant LR then linear warmdown to 0.
+# Official budget: 524,288 tokens/step, ~13k steps in 600 s on 8xH100:
+#     torchrun --nproc_per_node=8 -m nanolm.train -c nanolm/configs/04_golf_baseline.yaml
+# On one GPU use 04_golf_lab.yaml (same model, smaller budget).
+defaults: [base.yaml]
+name: golf_baseline
+data:
+  source: shards
+  shard_dir: data/golf/fineweb10B_sp1024
+  tokenizer: sp:data/golf/tokenizers/fineweb_1024_bpe.model
+  sampler: sequential
+model:
+  arch: gpt
+  dim: 512
+  n_layers: 9
+  n_heads: 8
+  n_kv_heads: 4
+  norm: rmsnorm
+  pos: rope
+  mlp: relu2
+  mlp_mult: 2
+  tie_embeddings: true
+  embed_init_std: 0.005
+  qk_norm: true
+  qk_gain_init: 1.5
+  logit_softcap: 30.0
+  zero_init_proj: true
+  embed_norm: true
+  layer_scales: true
+  resid_mix: true
+  unet_skips: true
+train:
+  seq_len: 1024
+  batch_size: 8             # per GPU micro-batch; 8 GPUs x 8 x 1024 x accum 8 = 524,288 tokens/step
+  grad_accum: 8
+  max_steps: 20000
+  max_time_sec: 600
+  optimizer: muon
+  matrix_lr: 0.04
+  lr: 0.04                  # Adam lr for scalars / gains / skip weights
+  embed_lr: 0.05            # tied embedding lr
+  muon_momentum: 0.95
+  weight_decay: 0.0
+  betas: [0.9, 0.95]
+  grad_clip: 0.0
+  schedule: wsd
+  warmup_steps: 0
+  warmdown_frac: 0.09       # ~1200 of ~13k steps
+  min_lr_frac: 0.0
+  compile: true
+  eval_every: 1000
+  eval_tokens: 1048576
+eval:
+  final_eval_tokens: 0
+  sample_tokens: 0
+export:
+  quant_bits: 8
+  compressor: zlib

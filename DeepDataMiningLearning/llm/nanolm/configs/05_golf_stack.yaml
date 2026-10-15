@@ -1,0 +1,18 @@
+# Stage 5 -- the VERIFIED parameter-golf stack on top of 04_golf_lab.yaml: only the techniques that
+# improved val bpb on both seeds when switched on alone (sweeps/04_golf_ablation.yaml, tutorial §6.5).
+# Measured: 1.3935 +- 0.0012 bpb vs 1.4287 baseline; 1.3558 with sliding eval; int6 artifact 14.6 MB.
+# (The un-verified "record stack" -- partial RoPE, LN-scale, EMA, Muon WD, SmearGate, BigramHash,
+#  QK-gain 4 -- is the `stack` run of the ablation sweep: no better than the baseline at this scale.)
+defaults: [04_golf_lab.yaml]
+name: golf_stack
+model:
+  mlp: leaky_relu2          # record 03-23                      (-0.006 alone)
+  mlp_mult: 3               # 3x MLP, paid for by int6 export   (-0.012 alone)
+  value_residual: true      # ResFormer                         (-0.007 alone)
+  recur_layers: [3, 4, 5]   # depth recurrence, records 03-31+  (-0.005 alone)
+  recur_start_frac: 0.35
+  xsa_last_n: 4             # record 03-20                      (-0.002 alone, ~noise)
+eval:
+  sliding_stride: 64        # sliding-window eval (record 03-19) (-0.037 at eval time)
+export:
+  quant_bits: 6             # int6 + lzma: 14.6 MB, +0.0016 bpb

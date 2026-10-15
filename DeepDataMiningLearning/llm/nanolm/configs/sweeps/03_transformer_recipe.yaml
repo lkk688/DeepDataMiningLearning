@@ -1,0 +1,17 @@
+# Chapter 4: from the 2018 GPT recipe to a 2025 recipe, one change at a time, on FineWeb (sp1024).
+name: transformer_recipe
+base: ../03_gpt_fineweb.yaml
+seeds: [1337, 42]
+runs:
+  - name: gpt2_textbook
+    overrides: {model.norm: layernorm, model.pos: learned, model.mlp: gelu, model.bias: true}
+  - name: plus_rmsnorm_rope
+    overrides: {model.norm: rmsnorm, model.pos: rope, model.mlp: gelu}
+  - name: plus_swiglu        # = 03_gpt_fineweb.yaml
+  - name: plus_swiglu_lr5e-4  # is the SwiGLU result an LR interaction?
+    overrides: {train.lr: 5e-4}
+  - name: plus_wsd_adamw      # control: the muon run also switches cosine -> WSD schedule
+    overrides: {train.schedule: wsd, train.warmdown_frac: 0.3, train.min_lr_frac: 0.0}
+  - name: plus_muon
+    overrides: {train.optimizer: muon, train.matrix_lr: 0.02, train.lr: 3e-3, train.embed_lr: 3e-3,
+                train.schedule: wsd, train.warmdown_frac: 0.3, train.min_lr_frac: 0.0}

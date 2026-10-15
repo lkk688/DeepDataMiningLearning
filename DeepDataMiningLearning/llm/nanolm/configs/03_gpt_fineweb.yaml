@@ -1,0 +1,36 @@
+# Stage 3 -- real Transformer pre-training on web text (FineWeb, the parameter-golf data).
+# Data:  python -m nanolm.prepare --golf-shards 1 --dest data/golf     (~300 MB: 100M train tokens + val)
+# Tokenizer: the golf SentencePiece BPE with 1024 tokens (sp1024). We report bits-per-byte, so the
+# numbers are directly comparable with the parameter-golf leaderboard (baseline 1.2244, winner 1.0565 --
+# those used 8xH100 x 10 min, i.e. ~7B tokens; we train on far fewer tokens).
+defaults: [base.yaml]
+name: gpt_fineweb
+data:
+  source: shards
+  shard_dir: data/golf/fineweb10B_sp1024
+  tokenizer: sp:data/golf/tokenizers/fineweb_1024_bpe.model
+  sampler: sequential       # stream the shard once, no repeats (like golf)
+model:
+  arch: gpt
+  dim: 384
+  n_layers: 6
+  n_heads: 6
+  norm: rmsnorm
+  pos: rope
+  mlp: swiglu
+  dropout: 0.0              # >1 pass is never reached: no dropout needed
+train:
+  seq_len: 512
+  batch_size: 32            # 16k tokens / step
+  max_steps: 3000           # ~49M tokens
+  optimizer: adamw
+  lr: 1e-3
+  weight_decay: 0.1
+  schedule: cosine
+  warmup_steps: 200
+  eval_every: 500
+  eval_tokens: 524288
+eval:
+  final_eval_tokens: 4194304   # first 4M val tokens (full val = 40.5M tokens; set 0 for the official number)
+  eval_seq_len: 512
+  sample_tokens: 200

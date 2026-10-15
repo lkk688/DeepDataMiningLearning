@@ -1,0 +1,19 @@
+# Shared defaults for every nanolm experiment. Experiment files say `defaults: [base.yaml]`
+# and override only what differs. Every key is documented in nanolm/config.py.
+seed: 1337
+device: auto          # cuda > mps (Apple Silicon) > cpu
+precision: auto       # bf16 on CUDA, fp32 on MPS/CPU
+out_dir: outputs/nanolm
+data:
+  source: tinyshakespeare
+  tokenizer: char
+  val_fraction: 0.1
+  cache_dir: data/nanolm
+train:
+  log_every: 50
+  eval_every: 250
+  eval_tokens: 131072
+eval:
+  final_eval_tokens: 0      # 0 = the whole validation split
+  batch_size: 32
+  sample_tokens: 400

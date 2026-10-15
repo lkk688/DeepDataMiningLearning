@@ -1,0 +1,19 @@
+# Stage 1 -- recurrent baselines on Tiny Shakespeare, one token per character.
+# Switch the cell with model.arch=rnn | gru | lstm | lstm_scratch (hand-written LSTM, slow but readable).
+defaults: [base.yaml]
+name: char_lstm
+model:
+  arch: lstm
+  dim: 256            # embedding size = hidden size (lets us tie input/output embeddings)
+  n_layers: 2
+  dropout: 0.1
+train:
+  seq_len: 128        # truncated BPTT length
+  batch_size: 64
+  max_steps: 2000
+  optimizer: adamw
+  lr: 2e-3
+  weight_decay: 0.0
+  schedule: cosine
+  warmup_steps: 50
+  grad_clip: 1.0      # RNNs need it (exploding gradients)

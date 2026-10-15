@@ -1,0 +1,22 @@
+# Chapter 1-2: RNN vs GRU vs LSTM vs Transformer on Tiny Shakespeare (characters).
+# Same data, same tokens seen (2000 steps x 32 x 256), same metric (val bits-per-byte).
+# Each architecture keeps its own sensible LR (RNNs like larger LRs); see the tutorial for caveats.
+name: char_models
+base: ../02_char_transformer.yaml
+seeds: [1337, 42]
+common:
+  train.max_steps: 2000
+  train.seq_len: 256
+  train.batch_size: 32
+runs:
+  - name: rnn
+    overrides: {model.arch: rnn, model.n_layers: 2, model.dim: 256, train.lr: 2e-3, train.weight_decay: 0.0}
+  - name: gru
+    overrides: {model.arch: gru, model.n_layers: 2, model.dim: 256, train.lr: 2e-3, train.weight_decay: 0.0}
+  - name: lstm
+    overrides: {model.arch: lstm, model.n_layers: 2, model.dim: 256, train.lr: 2e-3, train.weight_decay: 0.0}
+  - name: lstm_512           # ~parameter-matched to the 4-layer Transformer
+    overrides: {model.arch: lstm, model.n_layers: 2, model.dim: 512, train.lr: 2e-3, train.weight_decay: 0.0}
+  - name: gpt_textbook       # LayerNorm + learned positions + GELU
+  - name: gpt_modern         # RMSNorm + RoPE + SwiGLU, no bias
+    overrides: {model.norm: rmsnorm, model.pos: rope, model.mlp: swiglu, model.bias: false}

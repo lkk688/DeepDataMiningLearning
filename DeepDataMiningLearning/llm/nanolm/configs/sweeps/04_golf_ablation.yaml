@@ -1,0 +1,40 @@
+# Chapter 5: parameter-golf techniques, ONE AT A TIME, against the same golf baseline (04_golf_lab.yaml).
+# Two seeds each, so that analyze.py can report a paired p-value. Expect most effects to be small
+# (golf write-ups report 0.001-0.005 bpb) and some to vanish at our 131M-token scale.
+name: golf_ablation
+base: ../04_golf_lab.yaml
+seeds: [1337, 42]
+runs:
+  - name: baseline
+  - name: leaky_relu2
+    overrides: {model.mlp: leaky_relu2}
+  - name: mlp3x
+    overrides: {model.mlp_mult: 3}
+  - name: xsa_last4
+    overrides: {model.xsa_last_n: 4}
+  - name: partial_rope_lnscale
+    overrides: {model.rope_dims: 16, model.ln_scale: true}
+  - name: qk_gain4
+    overrides: {model.qk_gain_init: 4.0}
+  - name: smear_bigram
+    overrides: {model.smear_gate: true, model.bigram_buckets: 4096}
+  - name: value_residual
+    overrides: {model.value_residual: true}
+  - name: attn_gate
+    overrides: {model.attn_gate: true}
+  - name: parallel_from6
+    overrides: {model.parallel_from: 6}
+  - name: depth_recur
+    overrides: {model.recur_layers: [3, 4, 5], model.recur_start_frac: 0.35}
+  - name: ema
+    overrides: {train.ema_decay: 0.997}
+  - name: muon_wd
+    overrides: {train.muon_wd: 0.04}
+  - name: stack              # everything in 05_golf_stack.yaml except the eval/export changes
+    overrides: {model.mlp: leaky_relu2, model.mlp_mult: 3, model.xsa_last_n: 4, model.rope_dims: 16,
+                model.ln_scale: true, model.smear_gate: true, model.bigram_buckets: 4096,
+                model.qk_gain_init: 4.0, train.ema_decay: 0.997, train.muon_wd: 0.04}
+  - name: stack_verified     # only what the one-at-a-time ablation supported (both seeds better)
+    overrides: {model.mlp: leaky_relu2, model.mlp_mult: 3, model.value_residual: true,
+                model.recur_layers: [3, 4, 5], model.recur_start_frac: 0.35, model.xsa_last_n: 4,
+                export.quant_bits: 6}

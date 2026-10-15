@@ -1,3 +1,19 @@
+# LLM teaching code
+
+| Topic | Where |
+|---|---|
+| **Pre-training course: RNN → char Transformer → GPT on FineWeb → Parameter Golf** (config-driven, Mac/CUDA/CPU) | [`TUTORIAL_nanolm.md`](TUTORIAL_nanolm.md), code in [`nanolm/`](nanolm/README.md) |
+| HuggingFace fine-tuning, instruction tuning, seq2seq | `train_lm.py`, `lm_dataset.py`, `transformer.py`, `experiments.py` |
+| RL post-training (SFT / DPO / GRPO / PPO with TRL) | `rl_train_main.py`, `rl_dataset.py` |
+| tokenizers (char / word / SentencePiece / tiktoken / HF) | `tokenizer_utils.py` |
+
+For *pre-training* experiments, use `nanolm`. `TUTORIAL_nanolm.md` §1.4 lists the problems of the older
+pipeline: stride-1 windows, a sorted validation tail, and per-token loss compared across tokenizers.
+
+---
+
+## Legacy run log (char-level typing experiment with the old pipeline)
+
 
 
 (py312) lkk@newalienware:~/Developer/DeepDataMiningLearning$  cd /home/lkk/Developer/DeepDataMiningLearning ; /usr/bin/env /home/lkk/miniconda3/envs/py312/bin/python /home/lkk/.vscode-server/extensions/ms-python.debugpy-2025.14.0-linux-x64/bundled/libs/debugpy/adapter/../../debugpy/launcher 52291 -- /home/lkk/Developer/DeepDataMiningLearning/DeepDataMiningLearning/llm/train_lm.py 
