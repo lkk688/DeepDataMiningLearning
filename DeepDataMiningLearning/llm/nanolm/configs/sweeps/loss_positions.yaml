@@ -1,0 +1,9 @@
+# §1.6.6: why train on EVERY position? Same model, same data, same compute -- the only difference is
+# whether the loss uses all 256 next-token predictions of a window or only the last one.
+name: loss_positions
+base: ../laptop/L2_char_gpt.yaml
+seeds: [1337, 42]
+runs:
+  - name: loss_all_positions
+  - name: loss_last_position_only
+    overrides: {train.loss_on: last}

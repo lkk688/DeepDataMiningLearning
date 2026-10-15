@@ -314,6 +314,74 @@ def fig_recipe():
             "From the 2019 recipe to Muon + WSD on FineWeb (mean of 2 seeds)", "p2_recipe", (1.6, 2.3))
 
 
+
+def fig_positions():
+    """Three ways to tell a Transformer where a token is: sinusoidal (2017), learned (GPT-2), RoPE."""
+    from matplotlib.colors import LinearSegmentedColormap
+    div = LinearSegmentedColormap.from_list("div", ["#2a78d6", "#f0efec", "#e34948"])
+    # ---- figure 1: sinusoidal encoding + why sin/cos come in pairs
+    d, P = 64, 128
+    pos = np.arange(P)[:, None]
+    i = np.arange(d // 2)[None, :]
+    w = 1.0 / 10000 ** (2 * i / d)
+    pe = np.zeros((P, d))
+    pe[:, 0::2], pe[:, 1::2] = np.sin(pos * w), np.cos(pos * w)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 3.8), gridspec_kw={"width_ratios": [1.6, 1]})
+    ax = axes[0]
+    im = ax.imshow(pe.T, aspect="auto", cmap=div, vmin=-1, vmax=1)
+    ax.grid(False)
+    ax.set_xlabel("position p")
+    ax.set_ylabel("dimension (even = sin, odd = cos)")
+    ax.set_title("Sinusoidal encoding PE(p): fast-rotating pairs at the top, slow at the bottom", loc="left", fontsize=10)
+    fig.colorbar(im, ax=ax, fraction=0.03)
+    ax = axes[1]
+    ax.set_aspect("equal")
+    t = np.linspace(0, 2 * np.pi, 200)
+    ax.plot(np.cos(t), np.sin(t), color=AXIS, lw=1)
+    for k, (wk, col, lab) in enumerate([(w[0, 0], SERIES[0], "pair 0 (ω = 1)"), (w[0, 6], SERIES[1], "pair 6 (ω ≈ 0.075)")]):
+        pp = np.arange(0, 9)
+        r = 1 - 0.12 * k
+        xs, ys = r * np.cos(pp * wk), r * np.sin(pp * wk)
+        ax.plot(xs, ys, "o-", color=col, ms=5, lw=1, label=lab)
+        for j in ((0, 1, 2, 3) if k == 0 else (8,)):
+            ax.annotate(f"p={j}", (xs[j], ys[j]), fontsize=7, color=col, xytext=(5, 3 if k == 0 else -10),
+                        textcoords="offset points")
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
+    ax.legend(fontsize=7.5, loc="lower left")
+    ax.set_title("each (sin, cos) pair is a point on a circle;\n+k positions = rotation by kω", loc="left", fontsize=9.5)
+    save(fig, "p1_positions_sinusoidal")
+
+    # ---- figure 2: GPT-2's learned table and RoPE's relative-distance profile
+    from transformers import AutoModelForCausalLM
+    wpe = AutoModelForCausalLM.from_pretrained("gpt2").transformer.wpe.weight.detach().numpy()   # [1024, 768]
+    wn = wpe / np.linalg.norm(wpe, axis=1, keepdims=True)
+    sim = wn @ wn.T
+    fig, axes = plt.subplots(1, 2, figsize=(12.5, 4.2), gridspec_kw={"wspace": 0.45})
+    ax = axes[0]
+    im = ax.imshow(sim, cmap=div, vmin=-1, vmax=1)
+    ax.grid(False)
+    ax.set_xlabel("position")
+    ax.set_ylabel("position")
+    ax.set_title("GPT-2's LEARNED position table (1024 × 768):\ncosine similarity between positions", loc="left", fontsize=9.5)
+    fig.colorbar(im, ax=ax, fraction=0.04)
+    ax = axes[1]
+    dh = 128
+    delta = np.arange(0, 20001)
+    for k, (base, lab) in enumerate([(1e4, "base 10,000 (RoFormer, Llama 1/2)"), (5e5, "base 500,000 (Llama 3)"),
+                                      (1e7, "base 10,000,000 (Qwen3.5)")]):
+        om = base ** (-2 * np.arange(dh // 2) / dh)
+        f = np.cos(np.outer(delta, om)).mean(1)        # <q, R_delta k> for q = k = all-ones, normalised
+        ax.plot(delta, f, color=SERIES[k], lw=1.2, label=lab)
+    ax.set_xscale("symlog", linthresh=10)
+    ax.set_xlabel("relative distance Δ = n − m (tokens, log scale)")
+    ax.set_ylabel("score of identical q, k at distance Δ")
+    ax.axhline(0, color=AXIS, lw=0.8)
+    ax.legend(fontsize=7.5, loc="lower left")
+    ax.set_title("RoPE: the score depends only on Δ and decays with\ndistance; a larger base decays more slowly", loc="left", fontsize=9.5)
+    save(fig, "p1_positions_learned_rope")
+
+
 # =========================================================================== Part 3
 def _component_params(model):
     groups = {"embedding / output": 0, "attention (softmax)": 0, "linear attention": 0, "MLP / experts": 0, "norms & other": 0}
@@ -498,7 +566,7 @@ def fig_golf_ablation():
     save(fig, "p4_golf_ablation")
 
 
-FIGS = {"data_window": fig_data_window, "tokenization": fig_tokenization, "attention": fig_attention,
+FIGS = {"positions": fig_positions, "data_window": fig_data_window, "tokenization": fig_tokenization, "attention": fig_attention,
         "temperature": fig_temperature, "char_models": fig_char_models, "tokenizer_curves": fig_tokenizer_curves,
         "lr_schedules": fig_lr_schedules, "muon": fig_muon, "recipe": fig_recipe, "model_anatomy": fig_model_anatomy,
         "layer_pattern": fig_layer_pattern, "sft_dpo": fig_sft_dpo, "benchmarks": fig_benchmarks,
