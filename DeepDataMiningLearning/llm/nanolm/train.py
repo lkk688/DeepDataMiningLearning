@@ -200,7 +200,10 @@ def train(cfg) -> dict:
             with sync_ctx:
                 with autocast_ctx(dinfo):
                     logits = fwd(x)
-                loss = F.cross_entropy(logits.float().view(-1, logits.size(-1)), y.reshape(-1))
+                if tc.loss_on == "last":           # teaching contrast: one target per window
+                    loss = F.cross_entropy(logits[:, -1].float(), y[:, -1])
+                else:                              # standard: every position predicts its next token
+                    loss = F.cross_entropy(logits.float().view(-1, logits.size(-1)), y.reshape(-1))
                 scaler.scale(loss / A).backward()
             loss_acc += loss.detach()
             loss_n += 1

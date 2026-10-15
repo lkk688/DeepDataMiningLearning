@@ -54,7 +54,7 @@ directly; all device-specific choices are in `nanolm/device.py`:
 
 Every stage has a laptop-sized configuration: `nanolm/configs/laptop/` for training from scratch and
 `nanolm/configs/part2/` for pretrained models. The rules for sizing them:
-- at most about 4 PFLOP of training (FLOPs ≈ 6 × parameters × tokens, see §1.6.6);
+- at most about 4 PFLOP of training (FLOPs ≈ 6 × parameters × tokens, see §1.6.7);
 - a wall-clock cap (`train.max_time_sec`), so a slow machine finishes on time with a slightly weaker
   model instead of running all night;
 - measured peak memory of at most 2.9 GB in fp32.
@@ -148,7 +148,7 @@ of each possible next token?** For a vocabulary of $V$ tokens, the network outpu
 (the *logits* $z \in \mathbb{R}^V$), and a softmax turns them into a distribution:
 
 ```math
-p_\theta(x_t = v \mid x_{<t}) \;=\; \mathrm{softmax}(z)_v \;=\; \frac{e^{z_v}}{\sum_{u=1}^{V} e^{z_u}} .
+p_\theta(x_t = v \mid x_{\lt t}) \;=\; \mathrm{softmax}(z)_v \;=\; \frac{e^{z_v}}{\sum_{u=1}^{V} e^{z_u}} .
 ```
 
 Generating text means repeating this: compute the distribution, pick a token (§1.9), append it, and
@@ -174,7 +174,7 @@ This is 0 if it was certain and right, and it grows without bound as the probabi
 The **loss** is the average surprise over all $N$ predicted tokens:
 
 ```math
-\mathcal{L}(\theta) \;=\; -\frac{1}{N} \sum_{t=1}^{N} \ln p_\theta(x_t \mid x_{<t}) \qquad \text{(nats per token)}
+\mathcal{L}(\theta) \;=\; -\frac{1}{N} \sum_{t=1}^{N} \ln p_\theta(x_t \mid x_{\lt t}) \qquad \text{(nats per token)}
 ```
 
 In code it is one line (`train.py`; `y` is the input shifted left by one position):
@@ -200,7 +200,7 @@ loss = F.cross_entropy(logits.float().view(-1, V), y.reshape(-1))      # natural
 ### 1.2.2 Perplexity: the same number, made intuitive
 
 ```math
-\mathrm{PPL} \;=\; e^{\mathcal{L}} \;=\; \exp\!\Big(-\frac{1}{N}\sum_{t} \ln p_\theta(x_t \mid x_{<t})\Big)
+\mathrm{PPL} \;=\; e^{\mathcal{L}} \;=\; \exp\!\Big(-\frac{1}{N}\sum_{t} \ln p_\theta(x_t \mid x_{\lt t})\Big)
 ```
 
 - **Meaning.** Perplexity is the *effective number of equally likely choices* the model is torn
@@ -218,7 +218,7 @@ loss = F.cross_entropy(logits.float().view(-1, V), y.reshape(-1))      # natural
 ### 1.2.3 Bits-per-byte: the fair comparison
 
 ```math
-\text{bpb} \;=\; \frac{\sum_{t} -\log_2 p_\theta(x_t \mid x_{<t})}{\text{number of UTF-8 bytes of the evaluated text}}
+\text{bpb} \;=\; \frac{\sum_{t} -\log_2 p_\theta(x_t \mid x_{\lt t})}{\text{number of UTF-8 bytes of the evaluated text}}
 \;=\; \underbrace{\frac{\mathcal{L}}{\ln 2}}_{\text{bits per token}} \;\times\; \underbrace{\frac{N_{\text{tokens}}}{N_{\text{bytes}}}}_{\text{tokens per byte}}
 ```
 
@@ -276,7 +276,7 @@ tokenizer: bytes per token, a "has a leading space" flag (SentencePiece's ▁), 
 boundary" flag. With them,
 
 ```math
-\text{bytes}(y_t) = \text{base}[y_t] + \mathbb{1}\{\text{leading-space}[y_t] \wedge \neg\,\text{boundary}[x_t]\}
+\text{bytes}(y_t) = \text{base}[y_t] + \mathbb{1}\left[\text{leading-space}[y_t] \wedge \neg\,\text{boundary}[x_t]\right]
 ```
 
 This is the exact rule of the Parameter Golf challenge. A unit test checks that the counted bytes equal
@@ -421,7 +421,7 @@ the same function.
 
 Each training window starts from $h_0 = 0$ (*truncated* back-propagation over `seq_len` steps).
 That way RNNs and Transformers use exactly the same data and evaluation, and the comparison in
-§1.6.7 is fair.
+§1.6.8 is fair.
 
 ```bash
 python -m nanolm.train -c nanolm/configs/laptop/L1_char_lstm.yaml                   # LSTM, ~2 min
@@ -455,21 +455,95 @@ flowchart LR
 ### 1.6.1 Embeddings and positions
 
 The input is $X^{(0)} = E[x_{1..T}] \in \mathbb{R}^{T\times d}$: one learned vector per token.
-Attention by itself is order-blind; shuffling the tokens would shuffle its output in the same way.
-So the model must be told where each token sits. There are two common ways:
-- **Learned absolute positions** (GPT-2): add a learned vector $P_t$ to position $t$. Simple, but it
-  does not extend beyond the maximum training length.
-- **Rotary position embedding (RoPE)** (Llama, Qwen; `model.pos: rope`). Rotate each pair of query/key
-  coordinates $(q_{2i}, q_{2i+1})$ by an angle that grows with position, $m\,\omega_i$, where
-  $\omega_i = \text{base}^{-2i/d_h}$:
+**Attention by itself is blind to order.** It computes a weighted average over a *set* of positions,
+so if you shuffled the input tokens, each output would be shuffled the same way. "dog bites man" and
+"man bites dog" would look identical. The model must therefore be *told* where each token is. Three
+generations of solutions:
+
+**(1) Sinusoidal encodings (original Transformer, 2017).** Add a fixed vector to each token embedding:
 
 ```math
-\begin{pmatrix} q'_{2i} \\ q'_{2i+1} \end{pmatrix} = \begin{pmatrix} \cos m\omega_i & -\sin m\omega_i \\ \sin m\omega_i & \cos m\omega_i \end{pmatrix}\begin{pmatrix} q_{2i} \\ q_{2i+1} \end{pmatrix}.
+\mathrm{PE}(p, 2i) = \sin(p\,\omega_i), \qquad \mathrm{PE}(p, 2i+1) = \cos(p\,\omega_i), \qquad \omega_i = 10000^{-2i/d}.
 ```
 
-  Because rotations compose, $\langle R_m q, R_n k\rangle = \langle q, R_{n-m} k\rangle$: the attention
-  score depends only on the **relative** offset $n-m$. There are no extra parameters.
-  (`model.rope_dims` rotates only part of each head: "partial RoPE", used in Part 4 and by Qwen3.5.)
+![sinusoidal positional encoding](docs/nanolm_figs/p1_positions_sinusoidal.png)
+
+- **Why many frequencies?** They work like the hands of a clock, or the digits of a binary counter.
+  High-frequency pairs (top of the heatmap) change quickly and tell neighbouring positions apart.
+  Low-frequency pairs (bottom) change slowly and encode coarse position. Together they give every
+  position a unique code, and all values stay within $[-1, 1]$.
+- **Why sin *and* cos, side by side?** Each $(\sin p\omega_i,\, \cos p\omega_i)$ pair is a point on
+  a circle (right panel). Moving $k$ positions forward *rotates* that point by the angle $k\omega_i$:
+
+```math
+\begin{pmatrix} \sin (p+k)\omega \\ \cos (p+k)\omega \end{pmatrix}
+= \begin{pmatrix} \cos k\omega & \sin k\omega \\ -\sin k\omega & \cos k\omega \end{pmatrix}
+\begin{pmatrix} \sin p\omega \\ \cos p\omega \end{pmatrix}
+```
+
+  The rotation matrix depends only on the offset $k$, not on $p$. So "the token $k$ steps back" is
+  the same linear transformation at every position, which a layer can learn once. A sine alone could
+  not do this: $\sin((p+k)\omega)$ cannot be computed from $\sin(p\omega)$ without its cosine partner.
+- **Limitations.**
+  - The encoding is *added* to the content embedding, so position and meaning share the same dimensions.
+  - Relative offsets are only *implicitly* available, through what the layers learn.
+
+**(2) Learned absolute positions (BERT, GPT-2).** Simply learn a table $P \in \mathbb{R}^{T_{\max}
+\times d}$ (GPT-2: 1,024 × 768) and add $P_p$ to the token embedding. The motivation is "let the data
+decide". The left panel below shows the cosine similarity between GPT-2's *learned* position vectors,
+from its real weights:
+
+![GPT-2 learned positions and RoPE](docs/nanolm_figs/p1_positions_learned_rope.png)
+
+Without being told to, GPT-2 learned a **smooth, wave-like code**. Nearby positions are similar, and
+the stripes parallel to the diagonal mean the similarity depends mainly on the *distance* between two
+positions. It largely rediscovered what the sinusoids hard-code. The costs:
+- $T_{\max} \times d$ extra parameters;
+- **no extrapolation**: position 1,025 has no row, so a model trained on 1,024 tokens cannot read 1,025;
+- still additive and absolute.
+
+**(3) Rotary position embedding, RoPE** (Su et al., 2021; used by Llama, Qwen, Mistral, Gemma, and
+in `nanolm` with `model.pos: rope`). Instead of adding anything to the embedding, *rotate the query
+and key vectors inside attention*. Each pair of coordinates $(q_{2i}, q_{2i+1})$ at position $m$ is
+rotated by the angle $m\,\omega_i$, with $\omega_i = \text{base}^{-2i/d_h}$; the same is done to the
+keys at position $n$:
+
+```math
+R_m = \bigoplus_{i} \begin{pmatrix} \cos m\omega_i & -\sin m\omega_i \\ \sin m\omega_i & \cos m\omega_i \end{pmatrix},
+\qquad q_m' = R_m q_m, \quad k_n' = R_n k_n .
+```
+
+Rotations are orthogonal, and they compose ($R_m^\top R_n = R_{n-m}$). The attention score therefore becomes
+
+```math
+\langle q_m', k_n' \rangle = q_m^\top R_m^\top R_n\, k_n = q_m^\top R_{\,n-m}\, k_n ,
+```
+
+which depends on the content ($q, k$) and **only on the relative offset $n - m$**. This solves the
+problems of (1) and (2):
+- position enters exactly where it is used: the query–key comparison, not the value or embedding;
+- relative distance is built in;
+- there are no parameters;
+- any position can be encoded.
+
+The right panel above shows a useful side effect. Compute the score of identical $q$ and $k$ as the
+distance grows: it **decays with distance** (on average), a mild built-in preference for nearby tokens.
+
+RoPE has its own long-context problem. A model trained on 4k tokens has never seen the large rotation
+angles of position 100k. Two fixes:
+- **A larger base.** Lower frequencies rotate more slowly, so the decay is slower (Llama 3 uses 500,000;
+  Qwen3.5 uses $10^7$).
+- **Rescaling the frequencies after training** (Position Interpolation, NTK scaling, YaRN) to stretch a
+  trained model to longer contexts.
+
+**Partial RoPE** (Qwen3.5, and in `nanolm` via `model.rope_dims`) rotates only part of each head,
+leaving some dimensions position-free for purely content-based matching.
+
+| method | where position enters | parameters | relative distance | longer than training | used today |
+|---|---|---|---|---|---|
+| sinusoidal (2017) | added to the embedding | 0 | implicit | in principle | rarely, in new LLMs |
+| learned absolute (GPT-2, BERT) | added to the embedding | $T_{\max} d$ | implicit (learned) | **no** | rarely, in new LLMs |
+| **RoPE** (2021–) | rotates $q$, $k$ | 0 | **exact** | with base scaling / YaRN | **almost all open LLMs** |
 
 ### 1.6.2 Causal self-attention
 
@@ -482,7 +556,7 @@ Q = XW_Q,\quad K = XW_K,\quad V = XW_V \qquad (\in \mathbb{R}^{T\times d_h}),
 
 ```math
 \mathrm{Attention}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_h}} + M\right)V, \qquad
-M_{ts} = \begin{cases} 0 & s \le t \\ -\infty & s > t \end{cases}
+M_{ts} = \begin{cases} 0 & s \le t \\ -\infty & s \gt  t \end{cases}
 ```
 
 - The score $q_t\cdot k_s$ measures how relevant position $s$ is to position $t$.
@@ -548,7 +622,60 @@ The final hidden state is normalized and multiplied by the transposed embedding 
 $z = \mathrm{Norm}(h_t)\,E^\top$. This *weight tying* (`model.tie_embeddings`) reuses the input
 table as the output layer and saves $V \times d$ parameters.
 
-### 1.6.6 Counting parameters and compute
+### 1.6.6 The training objective: next-token loss at every position
+
+A Transformer LM is trained with the loss of §1.2, applied to **every position of every sequence at
+once**. For a batch of $B$ windows of length $T$:
+
+```math
+\mathcal{L} = -\frac{1}{BT}\sum_{b=1}^{B}\sum_{t=1}^{T} \log p_\theta\big(x^{(b)}_{t+1} \,\big|\, x^{(b)}_{1..t}\big)
+```
+
+This works because of the causal mask (§1.6.2): the output at position $t$ has seen only tokens
+$1..t$. A *single* forward pass therefore produces $T$ honest next-token predictions per sequence.
+This is called *teacher forcing*: at every position the model is given the true prefix, not its own
+earlier guesses.
+
+**In code: the shift.** The target sequence is the input sequence shifted by one token. In `nanolm`
+the shift happens when the batch is cut from the token stream (`data.py: TokenData.train_batch`):
+
+```python
+window = tokens[i : i + T + 1]          # T+1 consecutive tokens
+x, y = window[:-1], window[1:]          # input = first T, target = last T (shifted by one)
+logits = model(x)                       # [B, T, V]: position t predicts y[t] = x[t+1]
+loss = F.cross_entropy(logits.view(-1, V), y.view(-1))     # mean over all B*T positions
+```
+
+HuggingFace models do the same shift *inside* the loss. You pass `labels = input_ids` and the
+library moves the labels one step left (`transformers/loss/loss_utils.py: ForCausalLMLoss`):
+
+```python
+labels = F.pad(labels, (0, 1), value=-100)    # append an "ignore" label at the end
+shift_labels = labels[..., 1:]                # position t is scored against token t+1
+loss = F.cross_entropy(logits.view(-1, V), shift_labels.view(-1), ignore_index=-100)
+```
+
+The label −100 means "do not score this position". It marks padding, and in fine-tuning (§3.8) it
+also marks prompt tokens.
+
+**Why every position, and not just the last one?** One could score only the final prediction of
+each window ("given 256 characters, predict the next one"). That is a valid objective, and it is how
+a sequence *classifier* is trained, but it wastes almost all the computation. Our experiment
+(`sweeps/loss_positions.yaml`) uses the same model, data, steps, seeds and FLOPs, and changes only
+`train.loss_on`:
+
+| loss computed on | targets per step | val bpb (2 seeds) | val bpb, long context only (stride 16) |
+|---|---:|---:|---:|
+| **every position** (`loss_on: all`) | 32 × 256 = 8,192 | **2.105 ± 0.002** | **2.085** |
+| last position only (`loss_on: last`) | 32 | 3.459 ± 0.061 | 3.346 |
+
+The last-position model gets **256× fewer training targets** for the same compute, and is still
+far behind after 2,000 steps. It is not an evaluation artifact: the gap remains when we score only
+tokens that have ≥ 240 characters of context, the situation the last-position model was trained for.
+Per-token training also teaches every context length from 1 to $T$. That is exactly what generation
+needs, since text is produced one token at a time from a growing prefix.
+
+### 1.6.7 Counting parameters and compute
 
 A block with width $d$ has $4d^2$ attention weights ($W_Q, W_K, W_V, W_O$) and $8d^2$ MLP weights.
 A model with $L$ layers therefore has
@@ -563,7 +690,7 @@ pass. For our 4-layer, 256-wide character model, $12 \cdot 4 \cdot 256^2 = 3.1$M
 3.16M that `train.py` prints. Training it on 16.4M tokens costs about $6 \times 3.1\text{M} \times
 16.4\text{M} \approx 3 \times 10^{14}$ FLOPs. That is the number used to size the laptop configs.
 
-### 1.6.7 Results: RNNs vs. Transformers
+### 1.6.8 Results: RNNs vs. Transformers
 
 ```bash
 python -m nanolm.sweep   --sweep nanolm/configs/sweeps/01_char_models.yaml        # 12 runs (6 models x 2 seeds)
@@ -830,30 +957,88 @@ are *adapted* (LoRA, SFT, DPO). Every code path runs on a laptop with models of 
 
 ## 3.1 Seven years of architecture changes
 
-The 2026 decoder-only Transformer is still recognizably GPT-2: embeddings, a stack of
-attention + MLP blocks with residual connections, and a softmax over the vocabulary. Almost every
-change since then targets one of three costs:
-- **quality per FLOP** (normalization, activations, optimizers);
-- **memory and speed at inference** (fewer KV heads, sparse experts, linear attention);
-- **context length** (position encodings, local attention).
+The 2026 decoder-only Transformer is still recognizably GPT-2: embeddings, a stack of attention +
+MLP blocks with residual connections, and a softmax over the vocabulary. Almost every change since
+then attacks one of four problems:
+1. **training stability** at depth and scale;
+2. **quality per FLOP**;
+3. **memory and speed at inference**, above all the KV cache;
+4. **context length**.
 
-| year | model | what changed | source |
+Each change below is listed with the problem it solved, the idea, and whether models still use it in
+2026.
+
+### 3.1.1 The timeline
+
+| year | model | headline change | source |
 |---|---|---|---|
-| 2018 | GPT-1 | decoder-only Transformer, 12 layers × 768, BPE (40k merges), 512 tokens | [paper](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf) |
-| 2019 | GPT-2 | **pre-norm** (LayerNorm moved to the input of each sub-block), vocab 50,257, 1,024 tokens | [paper](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) |
-| 2020 | GPT-3 | same design scaled to 175B; alternating dense and locally banded sparse attention; 2,048 tokens | [arXiv 2005.14165](https://arxiv.org/abs/2005.14165) |
-| 2022 | PaLM | **SwiGLU**, parallel attention+MLP blocks, **multi-query attention**, RoPE, no biases, 256k vocab | [arXiv 2204.02311](https://arxiv.org/abs/2204.02311) |
-| 2023 | Llama 1 / 2 | the "standard recipe": pre-RMSNorm + SwiGLU + RoPE; Llama 2 adds **GQA** (34B/70B) | [2302.13971](https://arxiv.org/abs/2302.13971), [2307.09288](https://arxiv.org/abs/2307.09288) |
-| 2023 | Mistral 7B | GQA + **sliding-window attention** (W = 4,096) | [2310.06825](https://arxiv.org/abs/2310.06825) |
-| 2024 | Mixtral 8×7B | **mixture of experts**: 8 MLP experts per layer, 2 active (47B total / 13B active) | [2401.04088](https://arxiv.org/abs/2401.04088) |
-| 2024 | Llama 3 | GQA (8 KV heads) at all sizes, 128k vocab, RoPE base 500k, up to 128k context | [2407.21783](https://arxiv.org/abs/2407.21783) |
-| 2024 | DeepSeek-V2 / V3 | **multi-head latent attention** (low-rank KV cache), fine-grained MoE (256 routed + 1 shared expert, 8 active), auxiliary-loss-free load balancing, **multi-token prediction**, FP8 training | [2405.04434](https://arxiv.org/abs/2405.04434), [2412.19437](https://arxiv.org/abs/2412.19437) |
-| 2025 | Qwen3 | **QK-norm** replaces QKV bias; MoE with 128 experts / 8 active; thinking and non-thinking modes; 36T training tokens | [2505.09388](https://arxiv.org/abs/2505.09388) |
-| 2025 | Gemma 3 | 5 local (sliding-window 1,024) : 1 global attention layers; QK-norm replaces logit soft-capping | [2503.19786](https://arxiv.org/abs/2503.19786) |
-| 2025 | Kimi K2 | trained with **MuonClip** (Muon + QK-clip) on 15.5T tokens "with zero loss spike"; 1T total / 32B active | [2507.20534](https://arxiv.org/abs/2507.20534) |
-| 2025 | gpt-oss | alternating banded (128-token) / dense attention, learned **attention sinks**, MoE in 4-bit MXFP4 | [2508.10925](https://arxiv.org/abs/2508.10925) |
-| 2025 | Qwen3-Next | **hybrid linear attention**: 3 Gated DeltaNet layers per gated full-attention layer; 512 experts, 10 + 1 shared active | [model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct) |
-| 2026 | **Qwen3.5** | the Qwen3-Next design across a whole family (0.8B–397B), natively multimodal, 248k vocab, 262k context (§3.3) | [model cards](https://huggingface.co/Qwen/Qwen3.5-0.8B) |
+| 2017 | Transformer | attention-only encoder–decoder, sinusoidal positions, post-norm | [1706.03762](https://arxiv.org/abs/1706.03762) |
+| 2018 | GPT-1 | decoder-only LM pre-training, 12 layers × 768, BPE, 512 tokens | [paper](https://cdn.openai.com/research-covers/language-unsupervised/language_understanding_paper.pdf) |
+| 2019 | GPT-2 | pre-norm, learned positions, 50,257-token byte-level BPE, 1,024 tokens | [paper](https://cdn.openai.com/better-language-models/language_models_are_unsupervised_multitask_learners.pdf) |
+| 2020 | GPT-3 | scale to 175B; alternating dense and locally banded sparse attention; 2,048 tokens | [2005.14165](https://arxiv.org/abs/2005.14165) |
+| 2022 | PaLM | SwiGLU, parallel blocks, multi-query attention, RoPE, no biases | [2204.02311](https://arxiv.org/abs/2204.02311) |
+| 2023 | Llama 1 / 2 | the "standard recipe" (pre-RMSNorm + SwiGLU + RoPE); GQA (Llama 2, 34B/70B) | [2302.13971](https://arxiv.org/abs/2302.13971), [2307.09288](https://arxiv.org/abs/2307.09288) |
+| 2023 | Mistral 7B | sliding-window attention (4,096) | [2310.06825](https://arxiv.org/abs/2310.06825) |
+| 2024 | Mixtral 8×7B | mixture of experts: 8 experts, 2 active per token | [2401.04088](https://arxiv.org/abs/2401.04088) |
+| 2024 | Llama 3 | GQA at all sizes, 128k vocabulary, RoPE base 500k | [2407.21783](https://arxiv.org/abs/2407.21783) |
+| 2024 | DeepSeek-V2/V3 | multi-head latent attention, fine-grained MoE, multi-token prediction, FP8 training | [2405.04434](https://arxiv.org/abs/2405.04434), [2412.19437](https://arxiv.org/abs/2412.19437) |
+| 2025 | Qwen3 | QK-norm instead of QKV bias; 128-expert MoE; thinking modes | [2505.09388](https://arxiv.org/abs/2505.09388) |
+| 2025 | Gemma 3 | 5 local : 1 global attention layers; QK-norm replaces logit soft-capping | [2503.19786](https://arxiv.org/abs/2503.19786) |
+| 2025 | Kimi K2 | Muon at 1T scale (MuonClip) | [2507.20534](https://arxiv.org/abs/2507.20534) |
+| 2025 | gpt-oss | alternating banded/dense attention, attention sinks, 4-bit MoE weights | [2508.10925](https://arxiv.org/abs/2508.10925) |
+| 2025 | Qwen3-Next | hybrid: 3 Gated DeltaNet : 1 gated-attention layers; 512-expert MoE | [model card](https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct) |
+| 2026 | Qwen3.5 | that hybrid design across a whole family (0.8B–397B), natively multimodal | [model card](https://huggingface.co/Qwen/Qwen3.5-0.8B) |
+
+### 3.1.2 Each change: problem, idea, status in 2026
+
+**Block structure and normalization**
+
+| change | problem it solved | idea | status (2026) |
+|---|---|---|---|
+| **post-norm → pre-norm** (GPT-2) | the original "add, then normalize" ($x \leftarrow \mathrm{Norm}(x + f(x))$) made deep models unstable to train; they needed careful warm-up | normalize the *input* of each sub-block, and leave the residual path untouched (§1.6.4) | **universal** |
+| **LayerNorm → RMSNorm** (Llama) | LayerNorm's mean subtraction and bias cost time and add little | divide by the root-mean-square only | **near-universal** |
+| **encoder–decoder → decoder-only** (GPT) | two stacks, and a task-specific input/output split | one causal stack; every task becomes "continue the text" | **dominant** for LLMs |
+| **biases removed** (PaLM, Llama) | extra parameters with little benefit; they can hurt stability | `bias=False` everywhere | mostly removed. Qwen2.5 still had a QKV bias, which Qwen3 replaced by QK-norm |
+| **parallel attention + MLP** (GPT-J, PaLM) | sequential sub-blocks are slower to run | compute both from the same input and add both | **not standard**; sequential blocks remain the default (it reappears in Part 4) |
+| **weight tying** (GPT-2) | the output layer duplicates the $V \times d$ embedding | share them | **small models only** (Qwen3.5 ties at 0.8B–4B, not at 9B and above) |
+
+**Feed-forward and activations**
+
+| change | problem | idea | status |
+|---|---|---|---|
+| **ReLU/GELU → SwiGLU** (PaLM, Llama) | better quality for the same parameters and FLOPs | gated MLP $W_2(\mathrm{SiLU}(W_1x)\odot W_3x)$ (§1.6.3) | **standard** in open LLMs |
+| **dense MLP → mixture of experts** (Mixtral, DeepSeek, Qwen3, gpt-oss, Kimi K2) | knowledge capacity grows with parameters, but dense compute grows with them too | route each token to $k$ of $E$ expert MLPs (§3.2.5) | **dominant among the largest open models** (DeepSeek-V3, Kimi K2, Qwen3.5-397B: 256–512 experts); smaller models are often dense (Qwen3.5 is dense up to 27B) |
+
+**Positions and context length**
+
+| change | problem | idea | status |
+|---|---|---|---|
+| **sinusoidal → learned absolute** (GPT-2) | let the data choose the code | a learned table $P \in \mathbb{R}^{T_{\max}\times d}$ | **abandoned** for new LLMs: it cannot go beyond $T_{\max}$ |
+| **→ RoPE** (PaLM, Llama, Qwen, ...) | relative offsets and longer contexts | rotate $q$, $k$ by position (§1.6.1) | **near-universal** |
+| **larger RoPE base, YaRN** | reach 128k–1M tokens | slower rotations; rescale frequencies after training | **standard**: Qwen3.5 uses base $10^7$, 262k context natively, YaRN beyond |
+| **partial RoPE** | some dimensions should compare content only | rotate only part of each head | **in use** (Qwen3.5: 25% of each head) |
+
+**Attention: the KV cache and long contexts**
+
+| change | problem | idea | status |
+|---|---|---|---|
+| **MHA → MQA → GQA** (PaLM; Llama 2/3) | the KV cache dominates inference memory (§3.2.1) | share K/V heads among groups of query heads | **GQA is the default** |
+| **multi-head latent attention** (DeepSeek-V2/V3, Kimi K2) | an even smaller KV cache (DeepSeek-V2 reports −93% vs. its predecessor) | cache one low-rank latent vector per token | **in use** in the DeepSeek line and models derived from it |
+| **sparse / sliding-window attention** (GPT-3 bands, Mistral) | $O(T^2)$ compute and an $O(T)$ cache | attend only to the last $W$ tokens | **in use, usually interleaved** with global layers (Gemma 3: 5 local : 1 global; gpt-oss alternates) |
+| **attention sinks** (gpt-oss) | a head may need to attend to "nothing" | a learned per-head term in the softmax denominator | **in use** in gpt-oss |
+| **linear attention / Gated DeltaNet hybrids** (Qwen3-Next, Qwen3.5) | even sliding windows leave some layers with a growing cache | most layers keep a fixed-size recurrent state; every 4th layer keeps full attention (§3.2.2, §3.3) | **new and spreading** (the whole Qwen3.5 family) |
+| **QK-norm** (Qwen3, Gemma 3) | attention logits blowing up, causing training loss spikes | RMSNorm on $q$ and $k$ | **widespread**; it replaced Gemma 2's logit soft-capping |
+| **gated attention output** (Qwen3-Next, Qwen3.5) | a head cannot easily output "nothing" | multiply by $\sigma(xW_g)$ | **in use** in Qwen's hybrid models |
+
+**Training and inference efficiency**
+
+| change | problem | idea | status |
+|---|---|---|---|
+| **AdamW → Muon** (Kimi K2) | AdamW under-updates rare directions (§2.2.1) | orthogonalized matrix updates | **emerging**: used at 1T scale by Kimi K2 (MuonClip) and in Parameter Golf (Part 4); AdamW remains the common default |
+| **multi-token prediction** (DeepSeek-V3, Qwen3.5) | one target per position is a thin training signal; decoding is sequential | extra heads predict token $t+2$ (and beyond), and are reused for speculative decoding | **in use** in the DeepSeek-V3 and Qwen3.5 lines |
+| **fp32 → bf16 → FP8 training; 4-bit weights** (DeepSeek-V3; gpt-oss MXFP4) | memory and bandwidth | lower-precision formats with per-block scaling | bf16 is **standard**; FP8 training and 4-bit weights are **in use at the frontier** |
+| **bigger vocabularies** (50k → 128k → 248k) | non-English text and code split into too many tokens | larger BPE vocabularies | **trend continues** (Qwen3.5: 248k) |
+| **native multimodality** (Qwen3.5) | separate vision and language models | a vision encoder trained jointly with the LM | **in use**: every Qwen3.5 checkpoint is a vision-language model |
 
 ## 3.2 The modern components, with their math
 
@@ -1195,7 +1380,7 @@ anything. For a question $q$ and choices $c_1 \dots c_K$, sum the log-probabilit
 tokens:
 
 ```math
-s_i = \sum_{t} \log p_\theta\big(c_i[t] \mid q, c_i[<t]\big), \qquad
+s_i = \sum_{t} \log p_\theta\big(c_i[t] \mid q, c_i[\lt t]\big), \qquad
 \hat\imath = \arg\max_i s_i, \qquad
 \hat\imath_{\mathrm{norm}} = \arg\max_i \frac{s_i}{|c_i|} .
 ```
@@ -1327,7 +1512,7 @@ A base model continues documents. Ask it a question and it may continue with mor
 is the usual cross-entropy, but **only on the answer tokens**:
 
 ```math
-\mathcal{L}_{\text{SFT}} = -\frac{1}{|\mathcal{A}|} \sum_{t \in \mathcal{A}} \log p_\theta(x_t \mid x_{<t}),
+\mathcal{L}_{\text{SFT}} = -\frac{1}{|\mathcal{A}|} \sum_{t \in \mathcal{A}} \log p_\theta(x_t \mid x_{\lt t}),
 \qquad \mathcal{A} = \text{positions of the answer (including the end-of-turn token)}.
 ```
 
@@ -1903,12 +2088,12 @@ Required:
    the matching `lm_eval` command. Show that the two agree. Then change the normalization in
    `mc_accuracy` from characters to tokens: how many answers flip, and why?
 3. **Instruction tuning.** Run one SFT study, 2 seeds per setting. Either:
-   - LoRA rank $r \in \{4, 16, 64\}$, or
-   - training-set size $\in \{500, 2000, 8000\}$.
+   - LoRA rank $r \in \lbrace 4, 16, 64 \rbrace$, or
+   - training-set size $\in \lbrace 500, 2000, 8000 \rbrace$.
 
    Report the held-out answer loss, show before/after samples for the same prompts, and measure
    whether SFT changed the scores of task 1 (the "alignment tax").
-4. **Preference tuning.** Sweep the DPO $\beta \in \{0.05, 0.1, 0.5\}$. Plot the held-out reward
+4. **Preference tuning.** Sweep the DPO $\beta \in \lbrace 0.05, 0.1, 0.5 \rbrace$. Plot the held-out reward
    accuracy and margin, and judge the qualitative changes in the samples.
 5. **Read an architecture.** For one modern model (e.g. Qwen3.5-2B or a model of your choice), compute
    from its `config.json` the parameters per component and the KV-cache size at 32k and 262k context.

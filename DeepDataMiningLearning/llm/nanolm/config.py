@@ -119,6 +119,7 @@ class TrainConfig:
     qat_bits: int = 0                    # >0: fake-quantize matrices (STE) during training
     qat_start_frac: float = 0.0
     compile: bool = False                # torch.compile (CUDA only; ignored elsewhere)
+    loss_on: str = "all"                 # all = next-token loss at every position | last = final position only
     log_every: int = 50
     eval_every: int = 250
     eval_tokens: int = 262_144           # tokens used by the *periodic* (cheap) val estimate
