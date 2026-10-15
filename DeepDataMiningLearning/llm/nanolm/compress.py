@@ -1,10 +1,10 @@
 """Post-training analysis of a saved run -- no retraining needed.
 
-    python -m nanolm.posttrain outputs/nanolm/sweeps/golf_ablation/baseline_s1337 \
+    python -m nanolm.compress outputs/nanolm/sweeps/golf_ablation/baseline_s1337 \
         --bits 8 6 5 4 --strides 0 256 64 --eval-tokens 4194304
 
 For every (quantization bits x compressor) it reports compressed size and round-trip bpb; for every
-sliding-window stride it reports bpb and eval cost. Results go to <run_dir>/posttrain.json.
+sliding-window stride it reports bpb and eval cost. Results go to <run_dir>/compress.json.
 These are exactly the two "free" levers of parameter golf: how you EVALUATE and how you STORE.
 """
 from __future__ import annotations
@@ -69,8 +69,8 @@ def main(argv=None):
             out["quant"].append(row)
             print(f"int{bits} + {comp:4s}: {len(blob) / 1e6:7.3f} MB ({row['bits_per_param']:.2f} bits/param) "
                   f"| round-trip bpb {r['bpb']:.4f} (gap {row['gap']:+.4f})")
-    (run / "posttrain.json").write_text(json.dumps(out, indent=1))
-    print(f"-> {run / 'posttrain.json'}")
+    (run / "compress.json").write_text(json.dumps(out, indent=1))
+    print(f"-> {run / 'compress.json'}")
 
 
 if __name__ == "__main__":

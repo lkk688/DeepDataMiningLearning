@@ -1,0 +1,21 @@
+# Laptop golf ablation (overnight: 7 runs x ~40-60 min). One seed -- read §7 before trusting
+# differences below ~0.005 bpb; add `seeds: [1337, 42]` if you have two nights.
+name: laptop_golf_ablation
+base: ../laptop/L5_golf_mini.yaml
+seeds: [1337]
+runs:
+  - name: baseline
+  - name: mlp3x
+    overrides: {model.mlp_mult: 3}
+  - name: leaky_relu2
+    overrides: {model.mlp: leaky_relu2}
+  - name: value_residual
+    overrides: {model.value_residual: true}
+  - name: depth_recur
+    overrides: {model.recur_layers: [2, 3], model.recur_start_frac: 0.35}
+  - name: partial_rope_lnscale     # hurt at our lab scale -- does it hurt here too?
+    overrides: {model.rope_dims: 16, model.ln_scale: true}
+  - name: stack_verified
+    overrides: {model.mlp: leaky_relu2, model.mlp_mult: 3, model.value_residual: true,
+                model.recur_layers: [2, 3], model.recur_start_frac: 0.35, model.xsa_last_n: 3,
+                export.quant_bits: 6}

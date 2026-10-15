@@ -1,0 +1,16 @@
+# Laptop track L6 (~50-70 min): L5 + the techniques that survived the tutorial's ablation
+# (3x MLP, LeakyReLU^2, value residual, depth recurrence, XSA) + int6 export + sliding-window eval.
+defaults: [L5_golf_mini.yaml]
+name: L6_golf_mini_stack
+model:
+  mlp: leaky_relu2
+  mlp_mult: 3
+  value_residual: true
+  recur_layers: [2, 3]
+  recur_start_frac: 0.35
+  xsa_last_n: 3
+eval:
+  sliding_stride: 128        # 4x eval cost instead of 16x (stride 64); most of the gain
+export:
+  quant_bits: 6
+train: {max_time_sec: 6300}  # 105 min cap: recurrence + 3x MLP cost ~45% more compute per token than L5

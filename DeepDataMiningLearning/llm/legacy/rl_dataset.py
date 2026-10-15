@@ -289,7 +289,7 @@ class RLDataModule:
     def _setup_tokenizer(self):
         try:
             # Try importing the custom factory
-            from DeepDataMiningLearning.llm.tokenizer_utils import TokenizerFactory
+            from DeepDataMiningLearning.llm.legacy.tokenizer_utils import TokenizerFactory
             print(f"🔤 Setting up tokenizer via Factory: {self.cfg.tokenizer_name}")
             self.tok = TokenizerFactory.build(
                 tokenizer=self.cfg.tokenizer_name,

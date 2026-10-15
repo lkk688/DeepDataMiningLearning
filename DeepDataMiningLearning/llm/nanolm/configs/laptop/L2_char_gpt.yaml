@@ -1,0 +1,5 @@
+# Laptop track L2 (~10-20 min; ~1.5 GB): the modern character Transformer (RMSNorm + RoPE + SwiGLU).
+# Reference (2 seeds, same config): val 2.105 bpb.  Textbook variant: model.norm=layernorm model.pos=learned model.mlp=gelu model.bias=true
+defaults: [../02b_char_transformer_modern.yaml]
+name: L2_char_gpt
+train: {compile: false, max_time_sec: 2700}

@@ -83,21 +83,46 @@ def evaluate(model, val_tokens, seq_len: int, batch_size: int, luts, dinfo,
     }
 
 
+def sample_next(logits: torch.Tensor, temperature: float = 0.8, top_k: int = 0, top_p: float = 1.0,
+                generator: torch.Generator | None = None) -> torch.Tensor:
+    """Pick the next token from logits [B, V].
+
+    temperature : < 1 sharpens the distribution, > 1 flattens it, 0 = greedy (argmax)
+    top_k       : keep only the k most likely tokens
+    top_p       : nucleus sampling -- keep the smallest set of tokens whose total probability >= p
+    """
+    logits = logits.float()
+    if temperature <= 0:
+        return logits.argmax(-1, keepdim=True)
+    logits = logits / temperature
+    if top_k:
+        v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+        logits = logits.masked_fill(logits < v[:, [-1]], -float("inf"))
+    if top_p < 1.0:
+        sorted_logits, idx = torch.sort(logits, descending=True)
+        cum = torch.softmax(sorted_logits, -1).cumsum(-1)
+        drop = cum - torch.softmax(sorted_logits, -1) >= top_p     # tokens entirely beyond the nucleus
+        sorted_logits = sorted_logits.masked_fill(drop, -float("inf"))
+        logits = torch.full_like(logits, -float("inf")).scatter(-1, idx, sorted_logits)
+    probs = torch.softmax(logits, -1).cpu()
+    return torch.multinomial(probs, 1, generator=generator).to(logits.device)
+
+
 @torch.no_grad()
 def generate(model, tok, dinfo, prompt: str, max_new: int, ctx_len: int,
-             temperature: float = 0.8, top_k: int = 50, seed: int = 0) -> str:
+             temperature: float = 0.8, top_k: int = 50, seed: int = 0, top_p: float = 1.0,
+             stream=None) -> str:
+    """Autoregressive sampling. The model only ever sees the last `ctx_len` tokens."""
     model.eval()
     g = torch.Generator(device="cpu").manual_seed(seed)
     ids = tok.encode(prompt) if prompt else [tok.eot_id if tok.eot_id is not None else 0]
     idx = torch.tensor([ids], dtype=torch.long, device=dinfo.device)
+    n0 = idx.size(1)
     for _ in range(max_new):
         with autocast_ctx(dinfo):
-            logits = model(idx[:, -ctx_len:])[:, -1, :].float()
-        logits = logits / max(temperature, 1e-5)
-        if top_k:
-            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-            logits[logits < v[:, [-1]]] = -float("inf")
-        probs = torch.softmax(logits, -1).cpu()
-        nxt = torch.multinomial(probs, 1, generator=g).to(dinfo.device)
+            logits = model(idx[:, -ctx_len:])[:, -1, :]
+        nxt = sample_next(logits, temperature, top_k, top_p, g)
         idx = torch.cat([idx, nxt], dim=1)
+        if stream is not None:
+            stream(tok.decode(idx[0, n0:].tolist()))
     return tok.decode(idx[0].tolist())

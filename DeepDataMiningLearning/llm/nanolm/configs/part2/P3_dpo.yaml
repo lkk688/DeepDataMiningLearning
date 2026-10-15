@@ -1,0 +1,9 @@
+# Part 2, step 3 (target ~30-90 min on a 16 GB Mac, ~3 PFLOP): preference tuning (DPO) with LoRA on
+# the Instruct model, using UltraFeedback pairs whose quality scores differ by >= 2 points.
+# The reference model is the same network with the LoRA adapter switched off (no 2nd copy).
+name: P3_dpo_ultrafeedback
+model: {name: "Qwen/Qwen2.5-0.5B-Instruct", lora: true, lora_r: 16}
+data: {format: ultrafeedback, dataset: "trl-lib/ultrafeedback_binarized", split: train, val_split: test,
+       n_train: 800, n_val: 100, max_len: 512, min_score_gap: 2.0}
+train: {method: dpo, steps: 100, batch_size: 2, grad_accum: 4, lr: 5e-5, warmup_steps: 10, dpo_beta: 0.1,
+        eval_every: 25, max_time_sec: 6300}

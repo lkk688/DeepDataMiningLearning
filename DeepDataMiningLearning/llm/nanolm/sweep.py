@@ -49,12 +49,13 @@ def expand_runs(spec: dict) -> list[dict]:
     return runs
 
 
-def plan(sweep_path: str, only: list[str] | None = None) -> tuple[dict, list[dict]]:
+def plan(sweep_path: str, only: list[str] | None = None, extra: list[str] | None = None,
+         seeds: list[int] | None = None) -> tuple[dict, list[dict]]:
     sweep_path = Path(sweep_path)
     spec = yaml.safe_load(sweep_path.read_text())
     base = str((sweep_path.parent / spec["base"]).resolve())
     common = spec.get("common") or {}
-    seeds = spec.get("seeds") or [1337]
+    seeds = seeds or spec.get("seeds") or [1337]
     probe = load_config(base)
     root = (Path(spec.get("out_dir") or probe.out_dir) / "sweeps" / spec["name"]).resolve()
     jobs = []
@@ -64,7 +65,7 @@ def plan(sweep_path: str, only: list[str] | None = None) -> tuple[dict, list[dic
         for seed in seeds:
             ov = {**common, **(run.get("overrides") or {})}
             run_dir = root / f"{run['name']}_s{seed}"
-            args = [f"{k}={json.dumps(v)}" for k, v in ov.items()]
+            args = [f"{k}={json.dumps(v)}" for k, v in ov.items()] + list(extra or [])
             args += [f"name={run['name']}", f"seed={seed}", f"run_dir={run_dir}",
                      f"tags={json.dumps([spec['name']])}"]
             load_config(base, args)          # validate every config BEFORE launching anything
@@ -108,19 +109,22 @@ def main(argv=None):
     ap.add_argument("--gpus", default="", help="comma list, e.g. 0,1,2,3 (one run per GPU at a time)")
     ap.add_argument("--only", nargs="*", default=None, help="run only these run names")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--set", nargs="*", default=[], metavar="KEY=VAL",
+                    help="extra overrides for every run, e.g. --set device=cpu precision=fp32")
+    ap.add_argument("--seeds", type=int, nargs="*", default=None, help="override the sweep file's seeds")
     ap.add_argument("--reclaim", action="store_true",
                     help="ignore CLAIM files left by a killed sweep (only if no other sweep is running!)")
     args = ap.parse_args(argv)
 
     sys.stdout.reconfigure(line_buffering=True)     # progress visible in `nohup ... > log`
-    info, jobs = plan(args.sweep, args.only)
+    info, jobs = plan(args.sweep, args.only, args.set, args.seeds)
     todo = [j for j in jobs if not (j["run_dir"] / "metrics.json").exists()]
     if args.reclaim and not args.dry_run:
         for j in todo:
             (j["run_dir"] / "CLAIM").unlink(missing_ok=True)
     print(f"[sweep] {info['spec']['name']}: {len(jobs)} runs ({len(jobs) - len(todo)} already done) -> {info['root']}")
     for j in todo:
-        print(f"   {j['name']:<28s} seed={j['seed']:<6d} {' '.join(j['args'][:-4])}")
+        print(f"   {j['name']:<28s} seed={j['seed']:<6d} {' '.join(j['args'][:-4 - len(args.set)])}")
     if args.dry_run or not todo:
         return
     # a GPU id may be listed twice ("0,0") to run two small jobs on one GPU
@@ -129,30 +133,37 @@ def main(argv=None):
     failed = []
     queue = list(todo)
     t0 = time.time()
-    while queue or running:
-        for slot in slots:
-            while slot not in running and queue:
-                job = queue.pop(0)
-                if (job["run_dir"] / "metrics.json").exists() or not claim(job):
-                    continue                  # finished or taken by another sweep process
-                running[slot] = (job, launch(job, slot[1]))
-                print(f"[sweep] start {job['name']} s{job['seed']} on "
-                      f"{'gpu ' + slot[1] if slot[1] is not None else 'default device'}")
-        time.sleep(2)
-        for slot, (job, proc) in list(running.items()):
-            if proc.poll() is not None:
-                del running[slot]
-                ok = proc.returncode == 0 and (job["run_dir"] / "metrics.json").exists()
-                if ok:
-                    m = json.loads((job["run_dir"] / "metrics.json").read_text())
-                    extra = f" | quant_bpb {m['quant_val_bpb']:.4f}" if "quant_val_bpb" in m else ""
-                    print(f"[sweep] done  {job['name']} s{job['seed']} | val_bpb {m['val_bpb']:.4f}{extra} "
-                          f"| {(time.time() - t0) / 60:.1f} min elapsed")
-                else:
-                    failed.append(job)
-                    (job["run_dir"] / "CLAIM").unlink(missing_ok=True)   # let a later resume retry it
-                    print(f"[sweep] FAIL  {job['name']} s{job['seed']} (rc={proc.returncode}) -> "
-                          f"{job['run_dir'] / 'stdout.log'}")
+    try:
+        while queue or running:
+            for slot in slots:
+                while slot not in running and queue:
+                    job = queue.pop(0)
+                    if (job["run_dir"] / "metrics.json").exists() or not claim(job):
+                        continue                  # finished or taken by another sweep process
+                    running[slot] = (job, launch(job, slot[1]))
+                    print(f"[sweep] start {job['name']} s{job['seed']} on "
+                          f"{'gpu ' + slot[1] if slot[1] is not None else 'default device'}")
+            time.sleep(2)
+            for slot, (job, proc) in list(running.items()):
+                if proc.poll() is not None:
+                    del running[slot]
+                    ok = proc.returncode == 0 and (job["run_dir"] / "metrics.json").exists()
+                    if ok:
+                        m = json.loads((job["run_dir"] / "metrics.json").read_text())
+                        extra = f" | quant_bpb {m['quant_val_bpb']:.4f}" if "quant_val_bpb" in m else ""
+                        print(f"[sweep] done  {job['name']} s{job['seed']} | val_bpb {m['val_bpb']:.4f}{extra} "
+                              f"| {(time.time() - t0) / 60:.1f} min elapsed")
+                    else:
+                        failed.append(job)
+                        (job["run_dir"] / "CLAIM").unlink(missing_ok=True)   # let a later resume retry it
+                        print(f"[sweep] FAIL  {job['name']} s{job['seed']} (rc={proc.returncode}) -> "
+                              f"{job['run_dir'] / 'stdout.log'}")
+    except KeyboardInterrupt:                 # Ctrl-C: stop children and release their claims
+        for job, proc in running.values():
+            proc.terminate()
+            (job["run_dir"] / "CLAIM").unlink(missing_ok=True)
+        print("\n[sweep] interrupted -- run the same command again to resume")
+        raise SystemExit(130)
     print(f"[sweep] finished ({len(failed)} failed in this process). Analyze with:\n"
           f"   python -m {__package__}.analyze {info['root']}")
 

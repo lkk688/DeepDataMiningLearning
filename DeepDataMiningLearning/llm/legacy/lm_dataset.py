@@ -21,7 +21,7 @@ import re
 import unicodedata
 from typing import List
 from pathlib import Path
-from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS
+from DeepDataMiningLearning.llm.legacy.tokenizer_utils import EN_WORDS
 
 
 
@@ -1092,7 +1092,7 @@ class DataModule:
         - "custom:sp-unigram"     → SentencePiece (LLaMA / Gemma)
         - "custom:tiktoken-bpe"   → Tiktoken / GPT / Qwen style
         """
-        from DeepDataMiningLearning.llm.tokenizer_utils import TokenizerFactory  # adjust import path
+        from DeepDataMiningLearning.llm.legacy.tokenizer_utils import TokenizerFactory  # adjust import path
 
         tokenizer_spec = self.cfg.tokenizer
         print(f"🔤 Setting up tokenizer via TokenizerFactory: {tokenizer_spec}")

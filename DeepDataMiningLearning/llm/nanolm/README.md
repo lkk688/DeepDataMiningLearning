@@ -1,8 +1,12 @@
 # nanolm: config-driven language-model lab (Mac, CUDA, or CPU)
 
-The full course is in [`../TUTORIAL_nanolm.md`](../TUTORIAL_nanolm.md). It runs from an RNN to a
-character-level Transformer, then to GPT pre-training on FineWeb, and finally to Parameter Golf
-techniques, with measured results at each step.
+The full course is in [`../TUTORIAL_nanolm.md`](../TUTORIAL_nanolm.md); the step-by-step laptop guide is
+[`../LAPTOP_QUICKSTART.md`](../LAPTOP_QUICKSTART.md). The course runs:
+- Part 1: RNN → char Transformer → tokenizers → sampling;
+- Part 2: GPT pre-training on FineWeb, then evaluating / SFT / DPO on pretrained LLMs;
+- Part 3: Parameter Golf.
+
+Every part has measured results.
 
 ```bash
 cd DeepDataMiningLearning/llm
@@ -13,7 +17,10 @@ python -m nanolm.train -c nanolm/configs/02b_char_transformer_modern.yaml model.
 python -m nanolm.prepare --golf-shards 1 --dest data/golf          # FineWeb sp1024 (Parameter Golf data)
 python -m nanolm.sweep   --sweep nanolm/configs/sweeps/04_golf_ablation.yaml --gpus 0,1
 python -m nanolm.analyze outputs/nanolm/sweeps/golf_ablation       # mean±std over seeds, paired tests, plots
-python -m nanolm.posttrain <run_dir> --bits 8 6 4 --strides 0 64   # quantization / eval-stride study
+python -m nanolm.compress <run_dir> --bits 8 6 4 --strides 0 64   # quantization / eval-stride study
+python -m nanolm.bench    -c nanolm/configs/laptop/L4_gpt_fineweb.yaml   # will it fit / how long, on THIS machine
+python -m nanolm.generate <run_dir> --prompt "ROMEO:" --top-p 0.9   # sampling
+python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml # LoRA SFT of a pretrained LLM (also eval_bpb, dpo)
 ```
 
 | config | what it trains |
@@ -25,7 +32,9 @@ python -m nanolm.posttrain <run_dir> --bits 8 6 4 --strides 0 64   # quantizatio
 | `04_golf_baseline.yaml` | the Parameter Golf baseline (8×H100, 600 s) |
 | `04_golf_lab.yaml` | the same model with a single-GPU budget (the ablation baseline) |
 | `05_golf_stack.yaml` | the ablation-verified golf stack + int6 export + sliding eval (1.356 bpb at lab scale) |
-| `sweeps/*.yaml` | the studies behind every table in the tutorial |
+| `laptop/L1-L6*.yaml` | laptop-sized versions of every stage (≤ ~4 PFLOP, ≤ 2 GB, wall-clock capped) |
+| `part2/P1-P3.yaml` | pretrained LLMs: bits-per-byte eval, LoRA SFT, LoRA DPO |
+| `sweeps/*.yaml` | the studies behind every table in the tutorial (`laptop_*` ones run on a laptop) |
 
 Each run writes `outputs/nanolm/<date>_<name>/` containing:
 - `config.yaml`

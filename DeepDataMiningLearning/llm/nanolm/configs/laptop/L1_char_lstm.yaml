@@ -1,0 +1,5 @@
+# Laptop track L1 (~5 min on a recent Mac; ~1 GB): character LSTM on Tiny Shakespeare.
+# Same as ../01_char_rnn.yaml; try model.arch=rnn | gru | lstm_scratch.
+defaults: [../01_char_rnn.yaml]
+name: L1_char_lstm
+train: {compile: false, max_time_sec: 1800}

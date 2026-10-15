@@ -6,8 +6,8 @@ from typing import Optional, List, Tuple, Dict
 import torch
 from dataclasses import dataclass
 import gc
-from DeepDataMiningLearning.llm.lm_dataset import build_dataset #, test_tokenizer, inspect_dataset
-from DeepDataMiningLearning.llm.transformer import build_model, TransformerLM, PyTorchTransformer, TraditionalTransformerLM, FullTransformer, RNNLanguageModel, LSTMLanguageModel
+from DeepDataMiningLearning.llm.legacy.lm_dataset import build_dataset #, test_tokenizer, inspect_dataset
+from DeepDataMiningLearning.llm.legacy.transformer import build_model, TransformerLM, PyTorchTransformer, TraditionalTransformerLM, FullTransformer, RNNLanguageModel, LSTMLanguageModel
 
 # ============================================================
 # EVALUATOR — Unified Evaluation for All Model Types

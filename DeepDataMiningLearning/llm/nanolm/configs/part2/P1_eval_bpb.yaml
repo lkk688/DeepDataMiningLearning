@@ -1,0 +1,7 @@
+# Part 2, step 1 (~5-15 min on a laptop): how good is a real pretrained model in OUR metric?
+# Scores Qwen2.5-0.5B (494M params, trained on ~18T tokens) on the same FineWeb validation documents
+# the golf models are scored on. Try model.name=gpt2 (124M, 2019) for a historical comparison.
+name: P1_eval_bpb_qwen05b
+model: {name: "Qwen/Qwen2.5-0.5B"}
+data: {format: golf_val, eval_docs: 200}
+train: {method: eval_bpb, ctx_len: 1024}

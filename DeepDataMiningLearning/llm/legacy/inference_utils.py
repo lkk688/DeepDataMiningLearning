@@ -15,11 +15,11 @@ import torch
 # ------------------------------------------------------------
 # Import your framework utilities
 # ------------------------------------------------------------
-from DeepDataMiningLearning.llm.train_lm import build_model           # model builder
-from DeepDataMiningLearning.llm.train_lm import TransformerLM, TraditionalTransformerLM
-from DeepDataMiningLearning.llm.transformer import ModelConfig
+from DeepDataMiningLearning.llm.legacy.train_lm import build_model           # model builder
+from DeepDataMiningLearning.llm.legacy.train_lm import TransformerLM, TraditionalTransformerLM
+from DeepDataMiningLearning.llm.legacy.transformer import ModelConfig
 
-from DeepDataMiningLearning.llm.tokenizer_utils import CharTokenizer          # or whatever tokenizer you used
+from DeepDataMiningLearning.llm.legacy.tokenizer_utils import CharTokenizer          # or whatever tokenizer you used
 #from inference_utils import run_inference     # the independent inference function
 
 # ------------------------------------------------------------
@@ -347,9 +347,9 @@ def simple_inference_from_checkpoint(
 # ------------------------------------------------------------
 if __name__ == "__main__":
     import torch
-    from DeepDataMiningLearning.llm.train_lm import TransformerLM
-    from DeepDataMiningLearning.llm.transformer import ModelConfig
-    from DeepDataMiningLearning.llm.tokenizer_utils import CharTokenizer  # adjust if your tokenizer class differs
+    from DeepDataMiningLearning.llm.legacy.train_lm import TransformerLM
+    from DeepDataMiningLearning.llm.legacy.transformer import ModelConfig
+    from DeepDataMiningLearning.llm.legacy.tokenizer_utils import CharTokenizer  # adjust if your tokenizer class differs
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 

@@ -1,0 +1,22 @@
+# Laptop track L4 (target ~1 h on an M2/M3-class Mac -- run `python -m nanolm.bench -c <this>` first;
+# peak memory ~3 GB): GPT pre-training on real web text (FineWeb, sp1024), the "plus_muon" recipe
+# from the tutorial: RMSNorm + RoPE + SwiGLU, Muon + WSD schedule. 6 layers x 384, 11M params,
+# 3000 steps x 16k tokens = 49M tokens (~3.8 PFLOP).
+# Data first:  python -m nanolm.prepare --golf-shards 1 --dest data/golf      (~330 MB)
+defaults: [../03_gpt_fineweb.yaml]
+name: L4_gpt_fineweb
+train:
+  batch_size: 16
+  grad_accum: 2              # 16k tokens/step in two 8k micro-batches (halves activation memory)
+  optimizer: muon
+  matrix_lr: 0.02
+  lr: 3e-3
+  embed_lr: 3e-3
+  schedule: wsd
+  warmdown_frac: 0.3
+  min_lr_frac: 0.0
+  compile: false
+  max_time_sec: 7200         # safety cap (2 h): the schedule shrinks to fit if your machine is slow
+eval:
+  final_eval_tokens: 2097152
+  batch_size: 8

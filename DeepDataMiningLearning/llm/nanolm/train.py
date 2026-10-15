@@ -64,7 +64,7 @@ def make_run_dir(cfg) -> Path:
 
 class JsonlLogger:
     def __init__(self, path: Path, enabled: bool):
-        self.f = open(path, "a") if enabled else None
+        self.f = open(path, "w") if enabled else None     # a restarted run starts a fresh log
 
     def log(self, **kv):
         if self.f:
@@ -282,7 +282,7 @@ def train(cfg) -> dict:
                   f"(gap {metrics['quant_gap_bpb']:+.4f})")
         if ev.sample_tokens > 0:
             txt = generate(model, tok, dinfo, ev.sample_prompt, ev.sample_tokens, eT, ev.temperature, ev.top_k,
-                           seed=cfg.seed)
+                           seed=cfg.seed, top_p=ev.top_p)
             (run_dir / "sample.txt").write_text(txt)
             print(f"[sample]\n{txt[:600]}\n")
         if cfg.train.save_checkpoint:

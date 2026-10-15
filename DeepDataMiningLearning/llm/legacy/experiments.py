@@ -7,10 +7,10 @@ from torch.utils.data import DataLoader
 import os   
 import json
 from datetime import datetime
-from DeepDataMiningLearning.llm.tokenizer_utils import EN_WORDS, test_tokenizers, TokenizerFactory
-from DeepDataMiningLearning.llm.lm_dataset import build_dataset, inspect_dataset
-from DeepDataMiningLearning.llm.train_lm import TrainConfig, build_model, Trainer, Evaluator
-from DeepDataMiningLearning.llm.inference_utils import run_inference
+from DeepDataMiningLearning.llm.legacy.tokenizer_utils import EN_WORDS, test_tokenizers, TokenizerFactory
+from DeepDataMiningLearning.llm.legacy.lm_dataset import build_dataset, inspect_dataset
+from DeepDataMiningLearning.llm.legacy.train_lm import TrainConfig, build_model, Trainer, Evaluator
+from DeepDataMiningLearning.llm.legacy.inference_utils import run_inference
 
 def test_charmodel():
     # ------------------------------------------------------------

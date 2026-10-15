@@ -1,0 +1,10 @@
+# Part 2, step 2 (target ~30-60 min on a 16 GB Mac): instruction tuning (SFT) with LoRA.
+# SmolLM2-360M (base) only continues text: it rambles, repeats the prompt and never stops.
+# After SFT on 2,000 Alpaca examples it answers and ends its turn. Compare samples_before.txt and
+# samples_after.txt in the run directory. 8 GB Mac: model.name=HuggingFaceTB/SmolLM2-135M.
+# (Qwen2.5-0.5B "base" already follows instructions -- modern base models have seen
+#  instruction-style data during pre-training, so the before/after contrast is small.)
+name: P2_sft_alpaca
+model: {name: "HuggingFaceTB/SmolLM2-360M", lora: true, lora_r: 16}
+data: {format: alpaca, dataset: "yahma/alpaca-cleaned", n_train: 2000, n_val: 100, max_len: 384}
+train: {method: sft, steps: 250, batch_size: 4, grad_accum: 4, lr: 2e-4, warmup_steps: 20, eval_every: 50, max_time_sec: 5400}
