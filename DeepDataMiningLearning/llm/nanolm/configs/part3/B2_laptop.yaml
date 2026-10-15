@@ -1,0 +1,21 @@
+# Part 3 on a laptop (~30-60 min on a recent Mac, est.): three small models, subsampled benchmarks.
+#   python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml
+# `limit` caps the questions per task (per MMLU subject), so the numbers are noisier than §3.6.4:
+# with n questions the standard error of an accuracy p is sqrt(p(1-p)/n) (~1.5 points at n=1000).
+name: laptop
+out_dir: outputs/nanolm/benchmarks
+batch_size: 8
+device: auto            # cuda / mps / cpu
+models:
+  - {name: SmolLM2-135M,   hf: HuggingFaceTB/SmolLM2-135M, dtype: float32}
+  - {name: SmolLM2-360M,   hf: HuggingFaceTB/SmolLM2-360M, dtype: float32}
+  - {name: Qwen2.5-0.5B,   hf: Qwen/Qwen2.5-0.5B,          dtype: float32}
+task_groups:
+  knowledge:
+    tasks: [arc_easy, arc_challenge, hellaswag, mmlu]
+    num_fewshot: 0
+    limit: 300            # 300 per task; MMLU: 300 per subject (most subjects have fewer)
+  math:
+    tasks: [gsm8k]
+    num_fewshot: 5
+    limit: 100

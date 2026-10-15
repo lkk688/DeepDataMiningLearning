@@ -2,9 +2,11 @@
 
 The full course is in [`../TUTORIAL_nanolm.md`](../TUTORIAL_nanolm.md); the step-by-step laptop guide is
 [`../LAPTOP_QUICKSTART.md`](../LAPTOP_QUICKSTART.md). The course runs:
-- Part 1: RNN → char Transformer → tokenizers → sampling;
-- Part 2: GPT pre-training on FineWeb, then evaluating / SFT / DPO on pretrained LLMs;
-- Part 3: Parameter Golf.
+- Part 1: language models from scratch (loss, data, tokenizers, RNN → LSTM → Transformer, sampling);
+- Part 2: GPT pre-training on FineWeb;
+- Part 3: from GPT to modern LLMs (Qwen3.5 inside, benchmarks such as MMLU/GPQA, LoRA, SFT, DPO);
+- Part 4: Parameter Golf;
+- Part 5: research methodology.
 
 Every part has measured results.
 
@@ -21,6 +23,8 @@ python -m nanolm.compress <run_dir> --bits 8 6 4 --strides 0 64   # quantization
 python -m nanolm.bench    -c nanolm/configs/laptop/L4_gpt_fineweb.yaml   # will it fit / how long, on THIS machine
 python -m nanolm.generate <run_dir> --prompt "ROMEO:" --top-p 0.9   # sampling
 python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml # LoRA SFT of a pretrained LLM (also eval_bpb, dpo)
+python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml   # MMLU/ARC/GSM8K/... via lm-evaluation-harness
+python -m nanolm.viz all                                           # regenerate every tutorial figure
 ```
 
 | config | what it trains |
@@ -34,6 +38,7 @@ python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml # LoRA SFT 
 | `05_golf_stack.yaml` | the ablation-verified golf stack + int6 export + sliding eval (1.356 bpb at lab scale) |
 | `laptop/L1-L6*.yaml` | laptop-sized versions of every stage (≤ ~4 PFLOP, ≤ 2 GB, wall-clock capped) |
 | `part2/P1-P3.yaml` | pretrained LLMs: bits-per-byte eval, LoRA SFT, LoRA DPO |
+| `part3/B1-B3.yaml` | benchmarks for small open models (B2 = laptop subset, B3 = Qwen3.5) |
 | `sweeps/*.yaml` | the studies behind every table in the tutorial (`laptop_*` ones run on a laptop) |
 
 Each run writes `outputs/nanolm/<date>_<name>/` containing:

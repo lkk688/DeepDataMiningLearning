@@ -1,0 +1,31 @@
+# Part 3: the benchmarks that model releases report, run on small (<= 0.8B) models with lm-evaluation-harness.
+#   python -m nanolm.benchmarks run -c nanolm/configs/part3/B1_small_models.yaml --slots 4    (GPU, ~1-2 h)
+# Every (model, group) is a separate lm_eval process; finished ones are skipped on re-run.
+name: small_models
+out_dir: outputs/nanolm/benchmarks
+batch_size: 32
+models:
+  - {name: gpt2-124M,              hf: gpt2,                              skip_groups: [gpqa]}
+  - {name: SmolLM2-360M,           hf: HuggingFaceTB/SmolLM2-360M}
+  - {name: SmolLM2-360M+ourSFT,    hf: HuggingFaceTB/SmolLM2-360M, peft: outputs/nanolm/part2_ref/P2_sft_smollm2_360m/adapter}
+  - {name: SmolLM2-360M-Instruct,  hf: HuggingFaceTB/SmolLM2-360M-Instruct, chat: true}
+  - {name: Qwen2.5-0.5B,           hf: Qwen/Qwen2.5-0.5B}
+  - {name: Qwen2.5-0.5B-Instruct,  hf: Qwen/Qwen2.5-0.5B-Instruct, chat: true}
+  - {name: Qwen2.5-0.5B-Inst+ourDPO, hf: Qwen/Qwen2.5-0.5B-Instruct, peft: outputs/nanolm/part2_ref/P3_dpo_qwen05b_instruct/adapter, chat: true}
+  - {name: Qwen3-0.6B-Base,        hf: Qwen/Qwen3-0.6B-Base}
+  - {name: Qwen3-0.6B,             hf: Qwen/Qwen3-0.6B, chat: true, extra_args: enable_thinking=False}
+  # Qwen3.5 (hybrid Gated DeltaNet) models are in B3_qwen35.yaml -- see tutorial §3.3.1
+task_groups:
+  knowledge:                     # log-likelihood multiple choice, 0-shot
+    tasks: [mmlu, arc_easy, arc_challenge, hellaswag, winogrande, piqa]
+    num_fewshot: 0
+  gpqa:                          # graduate-level science MC (gated dataset: accept terms on HF first)
+    tasks: [gpqa_diamond_zeroshot]
+    batch_size: 4                # long questions x 150k-token vocabularies: logits need a small batch
+  math:                          # generative, exact match on the final number, 5-shot (base-model prompting)
+    tasks: [gsm8k]
+    num_fewshot: 5
+  ifeval:                        # verifiable instruction following; chat models only, with their chat template
+    tasks: [ifeval]
+    chat_only: true
+    use_chat_template: true
