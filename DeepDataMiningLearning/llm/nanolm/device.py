@@ -86,7 +86,9 @@ def memory_mb(info: DeviceInfo) -> float:
     if info.type == "cuda":
         return torch.cuda.max_memory_allocated(info.device) / 2**20
     if info.type == "mps":
-        return torch.mps.current_allocated_memory() / 2**20
+        # MPS has no peak counter. current_allocated_memory() is ~0 once a step's activations are
+        # freed; the driver total also counts the allocator's cached blocks, so it tracks the peak.
+        return torch.mps.driver_allocated_memory() / 2**20
     return 0.0
 
 

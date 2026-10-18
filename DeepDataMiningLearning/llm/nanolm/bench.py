@@ -75,7 +75,7 @@ def main(argv=None):
     if dinfo.type == "cuda":
         print(f"[bench] peak GPU memory {mem / 1024:.2f} GB")
     elif dinfo.type == "mps":
-        print(f"[bench] MPS memory in use {mem / 1024:.2f} GB (Activity Monitor shows the true peak)")
+        print(f"[bench] MPS memory (Metal driver, incl. cache) {mem / 1024:.2f} GB")
     print(f"[bench] projected training time for max_steps={tc.max_steps}: {total / 60:.1f} min "
           f"(+ periodic eval)" + (f"; capped at max_time_sec={tc.max_time_sec:.0f}s" if tc.max_time_sec else ""))
     if tc.max_time_sec and total > tc.max_time_sec:

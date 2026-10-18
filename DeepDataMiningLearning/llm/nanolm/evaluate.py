@@ -47,10 +47,14 @@ def evaluate(model, val_tokens, seq_len: int, batch_size: int, luts, dinfo,
             jobs.append((s, last_end - s))
     jobs = jobs[rank::world]
 
-    nats = torch.zeros((), device=dev, dtype=torch.float64)
-    n_tok = torch.zeros((), device=dev, dtype=torch.float64)
-    n_byte = torch.zeros((), device=dev, dtype=torch.float64)
-    n_correct = torch.zeros((), device=dev, dtype=torch.float64)
+    # Accumulate in float64 for exact totals. MPS has no float64, so on a Mac the per-batch values
+    # are moved to the CPU first (a few hundred KB per batch, negligible next to the forward pass).
+    acc_dev = torch.device("cpu") if dev.type == "mps" else dev
+    sum64 = lambda t: t.to(acc_dev).double().sum()
+    nats = torch.zeros((), device=acc_dev, dtype=torch.float64)
+    n_tok = torch.zeros((), device=acc_dev, dtype=torch.float64)
+    n_byte = torch.zeros((), device=acc_dev, dtype=torch.float64)
+    n_correct = torch.zeros((), device=acc_dev, dtype=torch.float64)
     for b in range(0, len(jobs), batch_size):
         chunk = jobs[b: b + batch_size]
         win = torch.stack([toks[s: s + T + 1] for s, _ in chunk]).to(dev)
@@ -62,10 +66,10 @@ def evaluate(model, val_tokens, seq_len: int, batch_size: int, luts, dinfo,
         mask = torch.zeros_like(y, dtype=torch.bool)
         for r, (_, off) in enumerate(chunk):
             mask[r, off:] = True
-        nats += loss[mask].double().sum()
-        n_tok += mask.sum()
-        n_byte += count_bytes(x, y, luts)[mask].double().sum()
-        n_correct += (logits.argmax(-1) == y)[mask].double().sum()
+        nats += sum64(loss[mask])
+        n_tok += sum64(mask)
+        n_byte += sum64(count_bytes(x, y, luts)[mask])
+        n_correct += sum64((logits.argmax(-1) == y)[mask])
     if world > 1:
         for t in (nats, n_tok, n_byte, n_correct):
             dist.all_reduce(t)
