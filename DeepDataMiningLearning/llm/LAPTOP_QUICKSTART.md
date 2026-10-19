@@ -25,6 +25,7 @@ machine, following this page:
 | 4 | Part 1: tokenizers study (optional) | — | 31.3 min (8 runs) | 2.2–3.5 GB; GPT-2 BPE 8.5 GB‡ |
 | 5 | Part 2: GPT on real web text (FineWeb) | 309 MB | 18 s + 3.1 min + 26.7 min | 2.8–3.9 GB |
 | 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b) 20.2 min; (c) 11.9 min; (d) 31.3 min | 4.9–13.8 GB |
+| 6e | Part 3: serve Qwen3.8-27B: MLX vs lithos-metal (32 GB+ Mac) | 36 GB | 17 tok/s; 37–44 tok/s with speculative decoding | 15–18 GB |
 | 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | 23.3 min + 35.3 min | 4.0–6.2 GB |
 | 7b | Part 4: the same golf model on Apple MLX (Mac only) | — | 4.9 min (4.8× faster than PyTorch MPS) | 4.7 GB |
 | 8 | Part 4: golf ablation (optional, overnight) | — | *not measured* (est. 3–4 h) | — |
@@ -428,6 +429,115 @@ a standard error of about ±0.03 (±0.05 for GSM8K). The pattern is the interest
 common-sense tasks (ARC, HellaSwag). Qwen2.5-0.5B, trained on about 18T tokens with much more
 exam-style and math data, is far ahead on MMLU (0.50 vs 0.26, where 0.25 is random guessing) and GSM8K
 (0.34 vs 0.05). Tutorial §3.6 explains how to read these tables.
+
+## Step 6e. Serve a 27B model on the Mac: MLX vs lithos-metal (optional, Mac with 32 GB+)
+
+How fast can a laptop *run* a model that is 50× larger than anything we train? This step serves
+**Qwen3.8-27B** (4-bit, about 15 GB) with three Apple-Silicon engines and measures them all with the same client:
+
+- [**MLX-LM**](https://github.com/ml-explore/mlx-lm): Apple's reference LLM runner;
+- [**mlx-vlm**](https://github.com/Blaizzy/mlx-vlm): MLX runner that also does speculative decoding
+  with Qwen's own multi-token-prediction (MTP) head;
+- [**lithos-metal**](https://github.com/lithos-ai/lithos-metal): an engine that generates its own Metal "megakernels"
+  (one fused kernel per attention / DeltaNet mixer), keeps the whole decode loop on the GPU
+  (a pre-encoded indirect command buffer), and drafts 7 tokens per round with its **DSpark** head.
+
+Everything was measured on the M5 Pro (64 GB) described at the top of this page.
+
+### Setup
+
+Each engine goes in its own venv. lithos-metal builds from source with the Command Line Tools;
+it compiles its Metal shaders at run time, so the full Xcode is not needed.
+
+```bash
+uv python install 3.12
+$(uv python find 3.12) -m venv ~/venvs/mlxlm  && ~/venvs/mlxlm/bin/pip install mlx-lm            # mlx-lm 0.32.2
+$(uv python find 3.12) -m venv ~/venvs/mlxvlm && ~/venvs/mlxvlm/bin/pip install mlx-vlm          # mlx-vlm 0.7.8
+git clone https://github.com/lithos-ai/lithos-metal.git ~/src/lithos-metal                        # tested: 5485ad6
+$(uv python find 3.12) -m venv ~/venvs/lithos && ~/venvs/lithos/bin/pip install "$HOME/src/lithos-metal[serve]"   # 22 s build
+
+hf download mlx-community/Qwen3.8-27B-4bit          # 15 GB: the target, used by all three engines
+hf download mlx-community/Qwen3.8-27B-MTP-4bit      # 0.27 GB: Qwen's MTP head, for mlx-vlm
+hf download LithosAI/Qwen3.8-27B-DSpark-NVFP4       # 1.1 GB: DSpark head, for lithos-metal
+hf download nvidia/Qwen3.8-27B-NVFP4                # 20 GB: optional, lithos-metal's other target format
+```
+
+The three model downloads took about 9 min.
+
+### Measure
+
+[`mac_inference/serve_bench.sh`](mac_inference/serve_bench.sh) starts a server, waits until it
+answers, runs [`mac_inference/bench_client.py`](mac_inference/bench_client.py), and stops it. The
+client sends 3 prompts (Python code, a prose explanation, a word problem) twice each. The requests
+are streamed, greedy, with thinking off, for 512 tokens. It records the time to first token and decode
+tok/s, using the token count the server reports.
+
+```bash
+cd mac_inference
+bash serve_bench.sh mlx_4bit ~/venvs/mlxlm mlx-community/Qwen3.8-27B-4bit -- \
+  mlx_lm.server --model mlx-community/Qwen3.8-27B-4bit --port 8000 --chat-template-args '{"enable_thinking": false}'
+bash serve_bench.sh mlxvlm_4bit_mtp ~/venvs/mlxvlm mlx-community/Qwen3.8-27B-4bit -- \
+  python -m mlx_vlm server --model mlx-community/Qwen3.8-27B-4bit \
+    --draft-model mlx-community/Qwen3.8-27B-MTP-4bit --draft-kind mtp --port 8000
+bash serve_bench.sh lithos_4bit_nodraft ~/venvs/lithos mlx-community/Qwen3.8-27B-4bit -- \
+  lithos-metal serve --model mlx-community/Qwen3.8-27B-4bit --no-draft --max-context 8192
+bash serve_bench.sh lithos_4bit_dspark ~/venvs/lithos mlx-community/Qwen3.8-27B-4bit -- \
+  lithos-metal serve --model mlx-community/Qwen3.8-27B-4bit --max-context 8192
+```
+
+lithos-metal always serves with thinking off, so MLX-LM gets `enable_thinking: false` to match. mlx-vlm
+has thinking off unless `--enable-thinking` is given.
+
+### Results, measured on Mac
+
+Decode tok/s, the mean of 2 runs (each pair agreed within 2 %):
+
+| engine | weights | speculative | code | explain | math | **mean** | vs MLX-LM | start-up |
+|---|---|---|---:|---:|---:|---:|---:|---:|
+| MLX-LM | 4-bit | — | 17.4 | 17.4 | 17.4 | **17.4** | 1.0× | 2 s |
+| mlx-vlm | 4-bit | — | 17.8 | 17.6 | 17.6 | **17.6** | 1.0× | 4 s |
+| mlx-vlm | 4-bit | MTP (Qwen's head) | 40.2 | **32.5** | 37.4 | **36.7** | 2.1× | 7 s |
+| lithos-metal | 4-bit | — | 13.0 | 12.9 | 12.9 | **12.9** | 0.74× | 40 s |
+| lithos-metal | 4-bit | DSpark, 7 drafts | **51.6** | 29.6 | **51.7** | **44.3** | **2.5×** | 37 s |
+| lithos-metal | NVFP4 | — | 13.8 | 13.5 | 13.8 | **13.7** | 0.79× | 71 s |
+| lithos-metal | NVFP4 | DSpark, 7 drafts | 46.6 | 29.5 | 46.7 | **40.9** | 2.4× | 53 s |
+
+Time to first token was 0.23–0.53 s for every engine (the prompts are only 40–70 tokens). Raw rows:
+[`mac_inference/results_m5pro_qwen3.8-27b.jsonl`](mac_inference/results_m5pro_qwen3.8-27b.jsonl).
+
+**What this shows**
+
+1. **Without speculation, the Mac is limited by memory bandwidth, and MLX is already close to that limit.**
+   Each new token reads all 15 GB of weights once. 17.4 tok/s × 15 GB ≈ 260–270 GB/s, while lithos-metal's
+   own probe of this chip measured about 290 GB/s peak read bandwidth. No kernel trick can make
+   one-token-at-a-time decoding much faster than about 19 tok/s here.
+2. **lithos-metal's kernels are slower than MLX on this chip when it decodes one token at a time.** It takes
+   77 ms per token versus 57 ms. Its log says why: `Serving backend=m5_pro ... recipe contexts=[]`. There are
+   no tuned 27B recipes for the M5 Pro. The project tunes its 27B kernels on a 40-core M5 Max, and its
+   README lists the M5 Pro as measured "for smaller models".
+3. **Speculative decoding is the real win: 2–3×.** It verifies several drafted tokens in one target pass, so the
+   15 GB of weights is read once for several tokens. A DSpark round, drafting 7 tokens and verifying 8,
+   takes about 105 ms, against 77 ms for a single plain step. It accepts on average **5.4 tokens per round on code
+   and math** (94 rounds for 512 tokens) but only **3.1 on prose** (163 rounds). The speed-up is
+   therefore set by how predictable the text is. Qwen's own MTP head proposes fewer tokens per round but is
+   steadier. It wins on prose (32.5 vs 29.6 tok/s), and DSpark wins on code and math (51.6 vs 40.2).
+4. **Same weights, same answer.** Greedy outputs from MLX-LM and lithos-metal without speculation were identical
+   (first 300 characters, all 3 prompts). With DSpark, 2 of 3 matched. On the word problem the output
+   diverged after 195 characters, which is expected: batched verification rounds BF16 differently, and the
+   project documents this.
+5. **Read the headline numbers carefully.** lithos-metal's README quotes about 168 tok/s for this model. That
+   figure is for a **40-core M5 Max** (about twice the bandwidth and GPU cores of an M5 Pro). It is also a
+   *projection*: it assumes 6 of 8 drafts are accepted and leaves out drafting time, as the README says.
+   On the M5 Pro, measured end to end, we got 29–52 tok/s.
+6. **Costs.** lithos-metal builds a weight "pack" per model and mode (with or without draft), about 15–19 GB each:
+   **70 GB** in `~/.cache/lithos-metal` for the four runs above. Its start-up includes kernel compilation
+   (37–71 s, against 2–7 s for MLX). The process memory footprint (MLX 17–18 GB, lithos-metal 8–14 GB) is
+   not directly comparable: lithos-metal memory-maps its pack files, and file-backed pages are not counted.
+
+For this course, use **MLX-LM** to run a large model, and **mlx-vlm with the MTP head** for a free 2× that
+needs no extra model. lithos-metal shows how far engine-level tricks (megakernels, a GPU-resident decode loop,
+a trained 7-token drafter) can go, and it is the fastest here on code. But it supports only a few target
+models and is not tuned for every chip.
 
 ## Step 7. Part 4: Parameter Golf on a laptop
 
