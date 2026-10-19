@@ -22,15 +22,18 @@ machine, following this page:
 | 1 | install + sanity check | ~1 GB (PyTorch) | 2–3 min | — |
 | 2 | measure your machine | — | 1 min | — |
 | 3 | Part 1: char LSTM, Transformer, RNN on Shakespeare | 1 MB | 44 s / 2.7 min / 1.2 min | 0.5–2.7 GB |
-| 4 | Part 1: tokenizers study (optional) | — | *not yet measured* (est. 20–40 min) | — |
+| 4 | Part 1: tokenizers study (optional) | — | 31.3 min (8 runs) | 2.2–3.5 GB; GPT-2 BPE 8.5 GB‡ |
 | 5 | Part 2: GPT on real web text (FineWeb) | 309 MB | 18 s + 3.1 min + 26.7 min | 2.8–3.9 GB |
-| 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b) 20.2 min; (c) 11.9 min; (d) *running* | 4.9–13.8 GB |
+| 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b) 20.2 min; (c) 11.9 min; (d) 31.3 min | 4.9–13.8 GB |
 | 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | 23.3 min + 35.3 min | 4.0–6.2 GB |
+| 7b | Part 4: the same golf model on Apple MLX (Mac only) | — | 4.9 min (4.8× faster than PyTorch MPS) | 4.7 GB |
 | 8 | Part 4: golf ablation (optional, overnight) | — | *not measured* (est. 3–4 h) | — |
 
 † "peak memory footprint" of the whole process from `/usr/bin/time -l`. On Apple Silicon the CPU
 and GPU share memory, so this includes the model, activations, the MPS allocator cache, and about
 1–1.5 GB of Metal/PyTorch overhead. It is an upper bound; the same run on a 16 GB Mac caches less.
+
+‡ MPS driver memory (`peak_mem_mb` in `metrics.json`), measured per run inside the sweep.
 
 An M5 Pro is fast: it reached **2.4–3.0 TFLOP/s** in fp32 (Step 2). An M1/M2 base model is
 roughly 3–6× slower. Run Step 2 on your own machine to get your numbers. Every config also has a
@@ -239,8 +242,23 @@ vocabularies you train yourself, and GPT-2's BPE. `analyze` writes `summary.md`,
 `bars.png` into the sweep directory. Look at `curves.png`: the large vocabularies get *worse* after a
 few hundred steps. Tutorial §1.8 explains why.
 
-*Not yet measured on the Mac.* Each run is the size of L2 (2.7 min on the M5 Pro), so expect
-about 20–40 min here and 1–2 h on an M1/M2.
+**Measured on Mac: 8 runs in 31.3 min** (`summary.md`, final val bpb), next to the tutorial's reference
+(§1.8):
+
+| tokenizer | params | train time | val bpb (Mac) | val bpb (reference) |
+|---|---:|---:|---:|---:|
+| word, 2048 | 3.67M | 2.9 min | **2.0838** | 2.080 |
+| byte | 3.21M | 2.6 min | **2.0924** | 2.092 |
+| char | 3.16M | 2.6 min | **2.0987** | 2.105 |
+| BPE, 512 | 3.28M | 2.7 min | **2.1599** | 2.163 |
+| word, 8192 | 5.24M | 3.6 min | **2.3193** | 2.318 |
+| unigram, 2048 | 3.67M | 2.9 min | **2.3460** | 2.340 |
+| BPE, 2048 | 3.67M | 2.9 min | **2.3651** | 2.368 |
+| GPT-2 BPE | 16.0M | 10.3 min | **2.8796** | 2.825 |
+
+All but GPT-2 BPE are within 0.007 of the reference, and the ranking is the same. GPT-2 BPE overfits
+the most (its best checkpoint is around step 500), so its final number is the noisiest. It also takes
+the longest: the 50,257-entry embedding and output layer make up most of its 16M parameters.
 
 ## Step 5. Part 2: pre-train a GPT on real web text
 
@@ -307,7 +325,7 @@ python -m nanolm.finetune -c nanolm/configs/part2/P2_sft_alpaca.yaml
 # (c) preference tuning (DPO) with LoRA   ~30-90 min
 python -m nanolm.finetune -c nanolm/configs/part2/P3_dpo.yaml
 
-# (d) the benchmarks model releases report (ARC, HellaSwag, MMLU, GSM8K), subsampled   ~30-60 min
+# (d) the benchmarks model releases report (ARC, HellaSwag, MMLU, GSM8K), subsampled
 pip install lm-eval langdetect immutabledict
 python -m nanolm.benchmarks run -c nanolm/configs/part3/B2_laptop.yaml
 python -m nanolm.benchmarks summary outputs/nanolm/benchmarks/laptop
@@ -393,8 +411,23 @@ DPO log, measured on Mac:
 segfault) and no error message. The cause: transformers 5.x loads weights with a thread pool, and
 that crashes when loading straight onto `mps` (`device_map={'': 'mps'}`, which is what lm-eval
 uses). `nanolm.benchmarks` now sets `HF_DEACTIVATE_ASYNC_LOAD=1` for MPS jobs, which fixes it. If you
-run `lm_eval` yourself on a Mac, set that variable too. *The benchmark numbers on the Mac are
-still running.*
+run `lm_eval` yourself on a Mac, set that variable too.
+
+**Measured on Mac: 6 jobs (3 models × 2 task groups) in 31.3 min.** The jobs took 1.3–9.7 min each;
+Qwen's GSM8K job was the longest, at 9.7 min, because it generates up to 256 tokens per answer. The
+output of `python -m nanolm.benchmarks summary outputs/nanolm/benchmarks/laptop`:
+
+| model | ARC-C acc_norm | ARC-E acc_norm | HellaSwag acc_norm | MMLU acc | GSM8K (5-shot, flexible) |
+|---|---:|---:|---:|---:|---:|
+| SmolLM2-135M | 0.277 | 0.553 | 0.437 | 0.243 | 0.02 |
+| SmolLM2-360M | **0.363** | **0.663** | **0.553** | 0.262 | 0.05 |
+| Qwen2.5-0.5B | 0.327 | 0.570 | 0.497 | **0.495** | **0.34** |
+
+These are subsampled: 300 questions per task (per MMLU subject) and 100 for GSM8K. So each number has
+a standard error of about ±0.03 (±0.05 for GSM8K). The pattern is the interesting part. SmolLM2-360M wins the
+common-sense tasks (ARC, HellaSwag). Qwen2.5-0.5B, trained on about 18T tokens with much more
+exam-style and math data, is far ahead on MMLU (0.50 vs 0.26, where 0.25 is random guessing) and GSM8K
+(0.34 vs 0.05). Tutorial §3.6 explains how to read these tables.
 
 ## Step 7. Part 4: Parameter Golf on a laptop
 
@@ -436,6 +469,95 @@ token with at least 384 tokens of context, which is worth 0.047 bpb here for fre
 ```
 
 Both fit the laptop "golf budget" of 6.5 MB. Tutorial §4.8 has the full ablation.
+
+## Step 7b. The same golf model on Apple MLX (Mac only, optional)
+
+The Parameter Golf organizers ship an Apple-Silicon trainer,
+[`train_gpt_mlx.py`](https://github.com/openai/parameter-golf/blob/main/train_gpt_mlx.py). It is
+written in [MLX](https://github.com/ml-explore/mlx), Apple's own array framework, instead of PyTorch.
+An unmodified copy is in [`parameter_golf_mlx/`](parameter_golf_mlx/), together with two helpers:
+- `run_mlx.sh` sets up an exact twin of L5: the same 6 × 384 baseline architecture, the same batch
+  (16 × 512 × 2), the same sequential data, learning rates and 625-step warmdown.
+- `make_val_subset.py` lets the MLX script score exactly the 2,097,152 val tokens nanolm scores. That
+  makes the bpb numbers directly comparable, and the eval takes 3 s instead of minutes.
+
+```bash
+pip install mlx
+python parameter_golf_mlx/make_val_subset.py      # data/golf_val2m: symlinked train shard + 4 MB val
+bash parameter_golf_mlx/run_mlx.sh L5             # ~5 min on the M5 Pro; logs in outputs/mlx/
+```
+
+The end of the log, measured on Mac:
+
+```text
+model_params:6596772 vocab_size:1024 layers:6 dim:384 heads:6 kv_heads:3 seq_len:512 tie_embeddings:True
+compute_dtype:mlx.core.bfloat16 compile:True
+step:500/2500 train_loss:3.5309 train_time:56226ms step_avg:112.45ms tok_s:144482
+step:2500/2500 train_loss:2.9056 train_time:284532ms step_avg:113.81ms tok_s:143278
+step:2500/2500 val_loss:2.7469 val_bpb:1.6478 train_time:284533ms step_avg:113.81ms
+serialized_model_int8_zlib:6078473 bytes (payload:6657680 raw_pickle:6663955 payload_ratio:3.85x)
+final_int8_zlib_roundtrip val_loss:2.7490 val_bpb:1.6490 eval_time:2927ms
+```
+
+**Speed, measured on Mac** (steady-state training throughput, nothing else running):
+
+| model | MLX (bf16, `mx.compile`) | nanolm PyTorch MPS fp32 | nanolm PyTorch MPS bf16 | MLX speed-up |
+|---|---:|---:|---:|---:|
+| L5: 6 × 384, seq 512, 16k tokens/step | **154k tok/s** (109 ms/step) | 32.2k (508 ms) | 35.8k (457 ms) | 4.3–4.8× |
+| official baseline: 9 × 512, seq 1024, 64k tokens/step | **66k tok/s** (992 ms/step) | 13.3k (4942 ms) | 14.8k (4433 ms) | 4.5–5.0× |
+
+**Full L5 training run, same data, same 41M tokens, same eval tokens:**
+
+| trainer | wall time (training) | peak memory† | val bpb | after int8 export |
+|---|---:|---:|---:|---:|
+| nanolm, PyTorch MPS fp32 (Step 7) | 23.3 min (22.6 min) | 4.0 GB | **1.6336** | 1.6337 (6.11 MB) |
+| nanolm, PyTorch MPS bf16 | 19.7 min (19.2 min) | 4.0 GB | **1.6338** | 1.6339 (6.11 MB) |
+| official MLX script | **4.9 min** (4.7 min) | 4.7 GB | **1.6478** | 1.6490 (6.08 MB) |
+
+What this shows:
+- **MLX is about 4.8× faster** for the same model on the same Mac. Both trainers use a fused attention kernel.
+  The likely difference is `mx.compile`, which fuses the many small element-wise operations of this
+  model (RMSNorm, RoPE, relu², logit softcap, residual mixing, layer scales) into a few GPU kernels.
+  PyTorch on MPS runs eagerly, because `torch.compile` does not support MPS well, so it launches
+  every operation separately. bf16 alone gives PyTorch only 1.1×. (We did not profile this, so
+  treat it as the likely explanation, not a measured one.)
+- **The MLX model is 0.014 bpb worse** at the same step count. We ruled out three explanations:
+  bf16 compute (nanolm in bf16 gets 1.6338, the same as fp32), the MLX script storing the tied
+  embedding in bf16 (an fp32-embedding copy got 1.6477), and the Muon momentum warmup (300 instead of
+  500 steps: 1.6527). One known difference remains. nanolm's RMSNorm layers have learnable gains,
+  which are its 4,992 extra parameters (13 × 384); both official scripts use RMSNorm without weights.
+  Pinning down the cause is a good open exercise: change one difference at a time and measure, as in §4.8.
+- **`MLX_EAGER_EVAL=0` did not help on this 64 GB Mac.** The script's comment recommends it for 32 GB+
+  machines. Here it was not faster (153k vs 154k tok/s at L5 size, 63k vs 66k at baseline size), and it
+  used far more memory (process peak 5.9 vs 4.8 GB at L5 size, **20.9 vs 6.8 GB** at baseline size).
+  Keep the default `MLX_EAGER_EVAL=1`.
+
+**What the speed buys you.** In the same time budget MLX can see more data. The run below uses
+4× the tokens per step, 1500 steps × 64k = 98M tokens, which is one full pass over the downloaded shard:
+
+```bash
+TRAIN_BATCH_TOKENS=65536 GRAD_ACCUM_STEPS=8 ITERATIONS=1500 WARMDOWN_ITERS=375 RUN_ID=L5_mlx_4x \
+  bash parameter_golf_mlx/run_mlx.sh L5
+```
+
+Measured on Mac: **10.8 min** (10.5 min of training, 154k tok/s), 4.4 GB peak memory†, **val bpb 1.5578**
+(int8 round-trip 1.5589, 5.96 MB):
+
+```text
+step:500/1500 train_loss:2.8674 train_time:208381ms step_avg:416.76ms tok_s:156353
+step:1500/1500 val_loss:2.5969 val_bpb:1.5578 train_time:631249ms step_avg:420.83ms
+final_int8_zlib_roundtrip val_loss:2.5988 val_bpb:1.5589 eval_time:2750ms
+```
+
+That is 0.076 better than PyTorch L5 (1.6336), in less than half its time, from the same 6.6M-parameter model.
+It even comes close to L6 with all the verified tricks and sliding-window eval (1.5536). On a laptop the
+golf model is limited by data and compute, not by its size, and a faster trainer turns directly
+into a better model.
+
+nanolm stays the main code of this tutorial. It runs on CUDA, MPS and CPU, has every technique of
+Parts 1–4 behind a config key, and its Muon, quantization and evaluation code is what the tutorial
+explains. Use the MLX script when you want to iterate on the golf baseline quickly on a Mac. Its model
+and optimizer are the same ideas in about 1,100 lines.
 
 ## Step 8. Your own ablation (optional, overnight)
 

@@ -1863,6 +1863,10 @@ python -m nanolm.train -c nanolm/configs/laptop/L6_golf_mini_stack.yaml    # ver
 python -m nanolm.sweep --sweep nanolm/configs/sweeps/laptop_golf_ablation.yaml   # overnight: one technique at a time
 ```
 
+On a Mac, the official MLX trainer (`parameter_golf_mlx/`) trains the same L5 model about 4.8× faster
+than nanolm on PyTorch MPS: 4.9 vs 23.3 min on an M5 Pro. Measurements and caveats are in
+[`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md), Step 7b.
+
 Reference runs (fp32, as on a Mac):
 
 | | params | val bpb | + sliding eval (stride 128) | artifact | fits 6.5 MB? | peak memory |
