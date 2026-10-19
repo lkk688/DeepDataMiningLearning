@@ -23,7 +23,11 @@ until curl -sf http://127.0.0.1:8000/v1/models > /dev/null 2>&1; do
 done
 echo "$label: ready after $(( $(date +%s) - t0 ))s"
 python "${CLIENT:-bench_client.py}" --model "$model" --label "$label" --out "$OUT" ${CLIENT_ARGS:-}
+# The process that actually serves port 8000 (oMLX's launcher forks a detached `omlx-server`).
+LP=$(lsof -t -nP -iTCP:8000 -sTCP:LISTEN | head -1)
+peak=$(footprint -p "$LP" 2>/dev/null | awk '/phys_footprint_peak/ {print $2, $3}')
 SP=$(pgrep -P $TP)
 kill -INT $SP 2>/dev/null; sleep 5; kill -TERM $SP 2>/dev/null   # mlx_lm.server ignores SIGINT
+kill -TERM "$LP" 2>/dev/null; sleep 3; kill -KILL "$LP" 2>/dev/null
 wait $TP
-echo "$label: done; peak memory $(grep 'peak memory footprint' "logs/$label.server.log" | awk '{printf "%.1f GB", $1/1e9}')"
+echo "$label: done; peak memory footprint of the serving process: ${peak:-n/a}"

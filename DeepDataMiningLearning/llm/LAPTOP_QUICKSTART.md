@@ -25,7 +25,7 @@ machine, following this page:
 | 4 | Part 1: tokenizers study (optional) | — | 31.3 min (8 runs) | 2.2–3.5 GB; GPT-2 BPE 8.5 GB‡ |
 | 5 | Part 2: GPT on real web text (FineWeb) | 309 MB | 18 s + 3.1 min + 26.7 min | 2.8–3.9 GB |
 | 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b) 20.2 min; (c) 11.9 min; (d) 31.3 min | 4.9–13.8 GB |
-| 6e | Part 3: serve Qwen3.8-27B: MLX vs lithos-metal (32 GB+ Mac) | 36 GB | 17 tok/s; 37–44 tok/s with speculative decoding | 15–18 GB |
+| 6e | Part 3: serve Qwen3.8-27B: MLX-LM, mlx-vlm, oMLX, lithos-metal (32 GB+ Mac) | 36–53 GB | 17 tok/s; 37–44 tok/s with speculative decoding; 16K prompt 37–74 s | 15–23 GB |
 | 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | 23.3 min + 35.3 min | 4.0–6.2 GB |
 | 7b | Part 4: the same golf model on Apple MLX (Mac only) | — | 4.9 min (4.8× faster than PyTorch MPS) | 4.7 GB |
 | 8 | Part 4: golf ablation (optional, overnight) | — | *not measured* (est. 3–4 h) | — |
@@ -430,14 +430,16 @@ common-sense tasks (ARC, HellaSwag). Qwen2.5-0.5B, trained on about 18T tokens w
 exam-style and math data, is far ahead on MMLU (0.50 vs 0.26, where 0.25 is random guessing) and GSM8K
 (0.34 vs 0.05). Tutorial §3.6 explains how to read these tables.
 
-## Step 6e. Serve a 27B model on the Mac: MLX vs lithos-metal (optional, Mac with 32 GB+)
+## Step 6e. Serve a 27B model on the Mac: MLX-LM, mlx-vlm, oMLX and lithos-metal (optional, Mac with 32 GB+)
 
 How fast can a laptop *run* a model that is 50× larger than anything we train? This step serves
-**Qwen3.8-27B** (4-bit, about 15 GB) with three Apple-Silicon engines and measures them all with the same client:
+**Qwen3.8-27B** (4-bit, about 15 GB) with four Apple-Silicon engines and measures them all with the same client:
 
 - [**MLX-LM**](https://github.com/ml-explore/mlx-lm): Apple's reference LLM runner;
 - [**mlx-vlm**](https://github.com/Blaizzy/mlx-vlm): MLX runner that also does speculative decoding
-  with Qwen's own multi-token-prediction (MTP) head;
+  with Qwen's own multi-token-prediction (MTP) head, and serves the vision part of the model;
+- [**oMLX**](https://github.com/jundot/omlx): a server built on mlx-lm and mlx-vlm, with continuous batching, a
+  RAM + SSD prefix cache, its own "oQ" quantization, native MTP, vision, and OpenAI- and Anthropic-compatible APIs;
 - [**lithos-metal**](https://github.com/lithos-ai/lithos-metal): an engine that generates its own Metal "megakernels"
   (one fused kernel per attention / DeltaNet mixer), keeps the whole decode loop on the GPU
   (a pre-encoded indirect command buffer), and drafts 7 tokens per round with its **DSpark** head.
@@ -453,6 +455,8 @@ it compiles its Metal shaders at run time, so the full Xcode is not needed.
 uv python install 3.12
 $(uv python find 3.12) -m venv ~/venvs/mlxlm  && ~/venvs/mlxlm/bin/pip install mlx-lm            # mlx-lm 0.32.2
 $(uv python find 3.12) -m venv ~/venvs/mlxvlm && ~/venvs/mlxvlm/bin/pip install mlx-vlm          # mlx-vlm 0.7.8
+$(uv python find 3.12) -m venv ~/venvs/omlx && ~/venvs/omlx/bin/pip install \
+  https://github.com/jundot/omlx/releases/download/v0.7.1rc1/omlx-0.7.1rc1-cp312-cp312-macosx_15_0_universal2.whl
 git clone https://github.com/lithos-ai/lithos-metal.git ~/src/lithos-metal                        # tested: 5485ad6
 $(uv python find 3.12) -m venv ~/venvs/lithos && ~/venvs/lithos/bin/pip install "$HOME/src/lithos-metal[serve]"   # 22 s build
 
@@ -460,9 +464,26 @@ hf download mlx-community/Qwen3.8-27B-4bit          # 15 GB: the target, used by
 hf download mlx-community/Qwen3.8-27B-MTP-4bit      # 0.27 GB: Qwen's MTP head, for mlx-vlm
 hf download LithosAI/Qwen3.8-27B-DSpark-NVFP4       # 1.1 GB: DSpark head, for lithos-metal
 hf download nvidia/Qwen3.8-27B-NVFP4                # 20 GB: optional, lithos-metal's other target format
+hf download Jundot/Qwen3.8-27B-oQ4e-mtp             # 17 GB: oMLX's own quantization, keeps the MTP layer
 ```
 
-The three model downloads took about 9 min.
+The model downloads took 4–5 min each. Install oMLX from the release **wheel** (or the DMG app), not from
+source. The Qwen3.5/3.8 family needs oMLX's native Metal kernels, and the wheel ships them precompiled. A source
+install without the full Xcode skips them and silently falls back to a slow path. Check with
+`python -c "from omlx.custom_kernels import native_kernel_status; print(native_kernel_status())"`.
+
+oMLX serves every model found in subdirectories of `--model-dir`; per-model options go in `model_settings.json`.
+We used an isolated base directory, so nothing touches a default `~/.omlx`:
+
+```bash
+mkdir -p ~/omlx_bench/models
+ln -s ~/.cache/huggingface/hub/models--Jundot--Qwen3.8-27B-oQ4e-mtp/snapshots/* ~/omlx_bench/models/Qwen3.8-27B-oQ4e-mtp
+cat > ~/omlx_bench/model_settings.json <<'EOF'
+{"version": 1, "models": {"Qwen3.8-27B-oQ4e-mtp":
+  {"mtp_enabled": true, "chat_template_kwargs": {"enable_thinking": false}}}}
+EOF
+OMLX_BASE_PATH=~/omlx_bench omlx serve --model-dir ~/omlx_bench/models --port 8000
+```
 
 ### Measure
 
@@ -483,6 +504,7 @@ bash serve_bench.sh lithos_4bit_nodraft ~/venvs/lithos mlx-community/Qwen3.8-27B
   lithos-metal serve --model mlx-community/Qwen3.8-27B-4bit --no-draft --max-context 8192
 bash serve_bench.sh lithos_4bit_dspark ~/venvs/lithos mlx-community/Qwen3.8-27B-4bit -- \
   lithos-metal serve --model mlx-community/Qwen3.8-27B-4bit --max-context 8192
+bash run_omlx.sh Qwen3.8-27B-oQ4e-mtp          # oMLX: decode and prefill tests for one model id of ~/omlx_bench
 ```
 
 lithos-metal always serves with thinking off, so MLX-LM gets `enable_thinking: false` to match. mlx-vlm
@@ -496,13 +518,19 @@ Decode tok/s, the mean of 2 runs (each pair agreed within 2 %):
 |---|---|---|---:|---:|---:|---:|---:|---:|
 | MLX-LM | 4-bit | — | 17.4 | 17.4 | 17.4 | **17.4** | 1.0× | 2 s |
 | mlx-vlm | 4-bit | — | 17.8 | 17.6 | 17.6 | **17.6** | 1.0× | 4 s |
-| mlx-vlm | 4-bit | MTP (Qwen's head) | 40.2 | **32.5** | 37.4 | **36.7** | 2.1× | 7 s |
+| mlx-vlm | 4-bit | MTP (Qwen's head) | 40.2 | 32.5 | 37.4 | **36.7** | 2.1× | 7 s |
+| oMLX | 4-bit | — | 17.3 | 17.0 | 17.3 | **17.2** | 1.0× | 2 s* |
+| oMLX | oQ4e | — | 17.2 | 17.1 | 17.0 | **17.1** | 1.0× | 2 s* |
+| oMLX | oQ4e | native MTP | 42.0 | **34.3** | 44.9 | **40.4** | 2.3× | 2 s* |
 | lithos-metal | 4-bit | — | 13.0 | 12.9 | 12.9 | **12.9** | 0.74× | 40 s |
 | lithos-metal | 4-bit | DSpark, 7 drafts | **51.6** | 29.6 | **51.7** | **44.3** | **2.5×** | 37 s |
 | lithos-metal | NVFP4 | — | 13.8 | 13.5 | 13.8 | **13.7** | 0.79× | 71 s |
 | lithos-metal | NVFP4 | DSpark, 7 drafts | 46.6 | 29.5 | 46.7 | **40.9** | 2.4× | 53 s |
 
-Time to first token was 0.23–0.53 s for every engine (the prompts are only 40–70 tokens). Raw rows:
+\* oMLX loads the model on the first request (about 3 s for this model), not at start-up.
+"oQ4e" is oMLX's mixed-precision 4-bit quantization (4.9 bits/weight, 17 GB). It is not bit-identical to the affine
+4-bit checkpoint (4.5 bits/weight, 15 GB) the other rows use, but it decodes at the same 17 tok/s. Time to first token
+was 0.23–0.53 s for every engine (the prompts are only 40–70 tokens). Raw rows:
 [`mac_inference/results_m5pro_qwen3.8-27b.jsonl`](mac_inference/results_m5pro_qwen3.8-27b.jsonl).
 
 **What this shows**
@@ -520,7 +548,9 @@ Time to first token was 0.23–0.53 s for every engine (the prompts are only 40�
    takes about 105 ms, against 77 ms for a single plain step. It accepts on average **5.4 tokens per round on code
    and math** (94 rounds for 512 tokens) but only **3.1 on prose** (163 rounds). The speed-up is
    therefore set by how predictable the text is. Qwen's own MTP head proposes fewer tokens per round but is
-   steadier. It wins on prose (32.5 vs 29.6 tok/s), and DSpark wins on code and math (51.6 vs 40.2).
+   steadier. It wins on prose, DSpark wins on code and math. oMLX's native MTP, which uses MTPLX's verification
+   kernels and picks the draft depth adaptively, is faster than mlx-vlm's MTP on every prompt: 40.4 vs 36.7 tok/s
+   on average, and 34.3 tok/s on prose, the best of all engines there.
 4. **Same weights, same answer.** Greedy outputs from MLX-LM and lithos-metal without speculation were identical
    (first 300 characters, all 3 prompts). With DSpark, 2 of 3 matched. On the word problem the output
    diverged after 195 characters, which is expected: batched verification rounds BF16 differently, and the
@@ -554,19 +584,22 @@ CLIENT=prefill_client.py OUT=prefill.jsonl bash serve_bench.sh pf_mlx_lm ~/venvs
 
 **Cold prefill, measured on Mac.** Time to first token (TTFT) and prefill speed:
 
-| prompt tokens | MLX-LM | mlx-vlm (+MTP) | lithos-metal (no draft) | lithos-metal (+DSpark) | lithos-metal (+DSpark, 512-token chunks) |
-|---:|---:|---:|---:|---:|---:|
-| 1K | **2.4 s** (437 tok/s) | **2.2 s** (491) | 3.2 s (334) | 3.3 s (320) | 3.3 s (320) |
-| 4K | **8.7 s** (475) | **8.4 s** (495) | 13.5 s (306) | 13.8 s (300) | 13.4 s (308) |
-| 16K | **37 s** (441) | **36 s** (454) | 73 s (225) | 74 s (223) | 71 s (232) |
-| 32K | **82 s** (402) | **78 s** (419) | 202 s (162) | 204 s (161) | 198 s (166) |
+| prompt tokens | MLX-LM | mlx-vlm (+MTP) | oMLX, 4-bit | oMLX, oQ4e (+MTP) | lithos-metal (no draft) | lithos-metal (+DSpark) | lithos-metal (+DSpark, 512-token chunks) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1K | **2.4 s** (437 tok/s) | **2.2 s** (491) | 2.3 s (458) | 2.7 s (399) | 3.2 s (334) | 3.3 s (320) | 3.3 s (320) |
+| 4K | **8.7 s** (475) | **8.4 s** (495) | 8.9 s (467) | 11.7 s (354) | 13.5 s (306) | 13.8 s (300) | 13.4 s (308) |
+| 16K | **37 s** (441) | **36 s** (454) | 38 s (428) | 47 s (347) | 73 s (225) | 74 s (223) | 71 s (232) |
+| 32K | **82 s** (402) | **78 s** (419) | 85 s (387) | 103 s (319) | 202 s (162) | 204 s (161) | 198 s (166) |
 
 **Agent pattern (16K-token system prompt), TTFT of each turn:**
 
 | | turn 1 (cold) | turn 2 | turn 3 | prefix reuse |
 |---|---:|---:|---:|---|
 | MLX-LM | 39.6 s | **0.48 s** | **0.49 s** | yes (prompt cache) |
-| mlx-vlm (+MTP) | 36.8 s | 37.5 s | 38.0 s | **no**: re-reads all 16K tokens every turn |
+| mlx-vlm (+MTP), default | 36.8 s | 37.5 s | 38.0 s | **off by default**: re-reads all 16K tokens every turn |
+| mlx-vlm (+MTP), `APC_ENABLED=1` | **33.9 s** | 0.68 s | 0.75 s | yes (automatic prefix caching, RAM + disk) |
+| oMLX, 4-bit | 40.6 s | 0.78 s | 0.53 s | yes (paged RAM + SSD cache) |
+| oMLX, oQ4e (+MTP) | 49.7 s | 0.81 s | 0.59 s | yes |
 | lithos-metal (no draft) | 76.2 s | 0.87 s | 0.81 s | yes (prefix checkpoints) |
 | lithos-metal (+DSpark) | 77.8 s | 0.96 s | 0.92 s | yes: the log shows `cached_prompt_tokens: 16417` |
 
@@ -587,20 +620,57 @@ What this shows:
    so a 16K-token prompt would take about 2 s instead of 37 s. Decode is a different story: it is limited by bandwidth,
    so the gap there is "only" the bandwidth ratio (about 3.35 TB/s vs about 0.3 TB/s).
 3. **For agents, prefix caching matters more than raw prefill speed.** Turn 1 is slow on every Mac engine (37–78 s
-   for 16K tokens). After that, an engine that reuses the prefix only has to read the new turn's tokens: below 1 s for MLX-LM
-   and lithos-metal. mlx-vlm's server re-reads the whole conversation on every turn (37 s each), so its 2× faster decode does not pay off
-   for agents. Qwen3.8 is a hybrid model: most layers are Gated DeltaNet, whose recurrent state cannot simply be
-   truncated like a KV cache. A cache therefore has to store state *checkpoints* at token boundaries, which is
-   what lithos-metal does explicitly.
+   for 16K tokens). After that, an engine that reuses the prefix only has to read the new turn's tokens: below 1 s for
+   every engine *with its cache on*. **mlx-vlm's prefix cache is off by default.** Without `APC_ENABLED=1` its server
+   re-reads the whole conversation on every turn (37 s each); with it, turns 2–3 take 0.7 s and MTP keeps its 2× decode
+   (36.3 tok/s, measured with APC on). Qwen3.8 is a hybrid model: 48 of its 64 layers are Gated DeltaNet, whose
+   recurrent state cannot simply be truncated like a KV cache. A cache therefore has to store state *checkpoints* at
+   token boundaries. lithos-metal, mlx-vlm's APC and oMLX all do this.
+5. **oQ4e prefills about 20 % more slowly than the affine 4-bit checkpoint** in oMLX (347 vs 428 tok/s at 16K), probably
+   because of its mixed-bit dequantization. oMLX's INT8-activation prefill (`qwen35_oq_a8_enabled`, M5 only) is meant to
+   win this back. But its kernels are not in the pip wheel (`oq_a8_available()` returned `False`), and oMLX silently
+   ignored the setting, so we could not measure it.
 4. **A rough per-turn budget (estimated from the rates above).** Say an agent turn appends 2K tokens of tool output and
    writes 300 tokens. MLX-LM: about 4.5 s prefill + 17 s decode ≈ **22 s**. lithos-metal + DSpark: about 7 s prefill +
    6–10 s decode ≈ **13–17 s**. lithos-metal's faster decode outweighs its slower prefill here. But with a large new
    chunk per turn (a whole file, 16K tokens), MLX-LM wins (37 s vs 74 s before the first token).
 
-For this course, use **MLX-LM** to run a large model, and **mlx-vlm with the MTP head** for a free 2× that
-needs no extra model (for single requests; it re-reads the prompt every turn). lithos-metal shows how far engine-level tricks (megakernels, a GPU-resident decode loop,
-a trained 7-token drafter) can go, and it is the fastest here on code. But it supports only a few target
-models and is not tuned for every chip.
+### Vision
+
+Qwen3.8-27B is a vision-language model. The `mlx-community/Qwen3.8-27B-4bit` checkpoint keeps its vision tower
+(333 tensors), and oQ4e keeps it too. [`mac_inference/vision_client.py`](mac_inference/vision_client.py) sends one
+of this course's figures (`docs/nanolm_figs/laptop_golf_ablation_bars.png`, 477 prompt tokens including the
+image) and asks which bar is lowest. It sends the same request twice.
+
+| engine | TTFT, 1st | TTFT, repeat | answer |
+|---|---:|---:|---|
+| mlx-vlm (+MTP, APC on) | 2.6 s | 0.17 s | "stack_verified … approximately 1.60" ✓ |
+| oMLX, oQ4e (+MTP) | 6.7 s | 0.31 s | "stack_verified … approximately 1.60" ✓ |
+| MLX-LM | — | — | HTTP 404: `mlx_lm.server` is text-only |
+| lithos-metal | — | — | text-only (serves the language model only) |
+
+Both answers are right; each misread the axis label slightly ("val_pbp", "val_ppl" instead of `val_bpb`). Both
+servers cache the image: oMLX hashes image content into its prefix cache, and mlx-vlm keeps a vision-feature cache
+plus APC. Two other routes exist but were not tested here:
+- **llama.cpp** loads the vision part from a separate `mmproj` file. Reports say its MTP and vision do not yet
+  combine well on Apple Silicon.
+- **Ollama** reportedly has a `qwen3.8:27b-mlx` tag.
+
+### Which engine for an agent on a Mac?
+
+| need | best choice measured here | why |
+|---|---|---|
+| text agent, many turns | **oMLX** (oQ4e + MTP), or **mlx-vlm** + MTP with `APC_ENABLED=1` | 2.1–2.3× faster decode, prefix reuse (< 1 s per turn), Anthropic/OpenAI APIs (oMLX) |
+| vision (screenshots, figures) | **mlx-vlm** (+ APC) or **oMLX** | the only two here that serve images; both cache them |
+| largest single new chunk per turn (e.g. a 16K-token file) | **mlx-vlm** / **MLX-LM** / oMLX with the affine 4-bit checkpoint | fastest prefill (440–455 tok/s); oQ4e and lithos-metal are 20–50 % slower |
+| short, code-heavy turns | **lithos-metal** + DSpark | 51.6 tok/s on code, but slow prefill, text only, few supported models, no tuned M5 Pro recipes |
+| simplest, reference numbers | **MLX-LM** | Apple's reference; no speculative decoding for this model (it drops the MTP weights) |
+
+So MLX-LM is not the most efficient choice for agents, because it cannot use Qwen3.8's MTP head. On this Mac the best
+all-round setup was **oMLX with the oQ4e-mtp checkpoint**: 40 tok/s decode, sub-second follow-up turns, vision,
+and Claude-Code-compatible APIs. Second was **mlx-vlm with MTP and `APC_ENABLED=1`**: 36 tok/s, the fastest cold
+prefill, vision. lithos-metal shows how far engine-level tricks can go: megakernels, a GPU-resident decode loop,
+a trained 7-token drafter. But on this chip it pays for them with slow prefill.
 
 ## Step 7. Part 4: Parameter Golf on a laptop
 
