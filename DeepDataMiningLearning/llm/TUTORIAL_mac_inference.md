@@ -28,6 +28,7 @@ chip fast enough?".
 | mlx-vlm + MTP (`APC_ENABLED=1`) | 40 / 32 / 37 | 34–36 s | 0.7 s | ✓ |
 | **oMLX**, oQ4e + MTP | 42 / **34** / 45 | 47 s | 0.6–0.8 s | ✓ |
 | lithos-metal + DSpark | **52** / 30 / **52** | 74 s | 0.9 s | — |
+| *Qwen3.8-Flash-Next* (125B MoE, 106 GB) on oMLX with SSD expert offload (§9) | 18 / 16 / 17 | 34 s | 1.3 s | supported, not tested |
 
 ---
 
@@ -41,9 +42,10 @@ chip fast enough?".
 6. [Measurements](#6-measurements)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
-9. [Reproduce it](#9-reproduce-it)
-10. [Research directions](#10-research-directions)
-11. [Exercises](#11-exercises)
+9. [A model that does not fit in memory: Qwen3.8-Flash-Next](#9-a-model-that-does-not-fit-in-memory-qwen38-flash-next)
+10. [Reproduce it](#10-reproduce-it)
+11. [Research directions](#11-research-directions)
+12. [Exercises](#12-exercises)
 
 ---
 
@@ -802,10 +804,259 @@ tool output, then write 300 tokens.
 | short, code-heavy turns | **lithos-metal** + DSpark | 52 tok/s on code, but slow prefill, text only, few models |
 | learning, reference numbers, scripting | **MLX-LM** | simplest; the baseline every other engine builds on |
 
-On this Mac the best all-round setup was **oMLX with the oQ4e-mtp checkpoint**: 40 tok/s, sub-second follow-up turns,
+For a larger MoE model that does not fit in memory, see §9. On this Mac the best all-round setup for the 27B was **oMLX with the oQ4e-mtp checkpoint**: 40 tok/s, sub-second follow-up turns,
 vision, and Anthropic/OpenAI APIs. **mlx-vlm with MTP and `APC_ENABLED=1`** was a close second, with the fastest prefill.
 
-## 9. Reproduce it
+## 9. A model that does not fit in memory: Qwen3.8-Flash-Next
+
+Everything so far used a 27B model that fits in RAM. **Qwen3.8-Flash-Next** is a different kind of model, the
+"experimental preview of the architecture that will underpin Qwen4" (model card):
+- **125B parameters, of which only 6B are active per token**;
+- plus a **51B-parameter n-gram embedding**, a 4B MTP head and a vision encoder.
+
+In BF16 it is 360 GB, and every 4-bit build is 70–113 GB. That is more than this 64 GB Mac's memory. It still
+runs here, at 15–28 tok/s, because most of its parameters are needed only rarely and can stay on the SSD.
+This section explains the architecture and how SSD offload works, measures it on this Mac, collects what others
+report with llama.cpp and MLX engines, and compares it with Qwen3.8-27B for local agents.
+
+### 9.1 The architecture
+
+From `config.json`, the model card and the technical report
+([`tech_report.pdf`](https://github.com/QwenLM/Qwen3.8-Flash-Next)):
+
+| | Qwen3.8-Flash-Next | Qwen3.8-27B (§2) |
+|---|---|---|
+| parameters | 125B total, **6B active** + 51B n-gram embedding + 4B MTP | 27B, all active |
+| layers | 48 = 12 × (3 × [Gated DeltaNet → MoE] + 1 × [**QSA** → MoE]) | 64 = 16 × (3 × DeltaNet + 1 × full attention), dense MLP |
+| hidden size | 2,560, carried in **4 parallel residual streams** | 5,120, one residual stream |
+| MLP | **MoE**: 512 experts (intermediate 640), **10 routed + 1 shared** per token | dense SwiGLU, 17,408 |
+| attention layers | **Qwen Sparse Attention**: 24 Q / 2 KV heads of 256, attends to ≤ 2,048 selected tokens | full attention, 24 Q / 4 KV heads of 256 |
+| extra | **n-gram embedding** at layer 2 (bigrams and trigrams, about 320M rows) | — |
+| context | 262,144 (extensible to 1M) | 262,144 |
+
+Where the 99 GiB of the 4-bit `Jundot/Qwen3.8-Flash-Next-oQ4e-mtp` checkpoint go (read from its safetensors headers):
+
+| part | size | share | needed per token |
+|---|---:|---:|---|
+| routed experts (48 layers × 512) | 63.3 GiB | 64 % | only the 10 routed per layer, about 1.3 GiB |
+| n-gram embedding table | 29.8 GiB | 30 % | 16 rows of about 90 bytes, about 1.4 KB |
+| everything else: MTP head 1.4, DeltaNet 1.3, vision 0.8, LM head 0.6, token embedding 0.6, QSA 0.4, shared experts 0.2, norms and routers 0.5 | 5.9 GiB | 6 % | all of it |
+
+This table is the key to everything below. **94 % of the bytes are rarely touched.**
+
+**Qwen Sparse Attention (QSA).** Full attention reads every previous token. QSA first decides *which* context is worth
+reading, using a cheap indexer. The steps, from the report's equations and mlx-vlm's `Qwen4ExpQSAIndexer`:
+
+1. A small indexer (MQA: 4 query heads, 1 shared key head, dim 128) projects each token.
+2. Its keys are cut into **micro-blocks of r = 4 tokens** and average-pooled, so there is one key per block. Each
+   block gets one position (its start) for RoPE.
+3. Each query scores every complete block: I(i, b) = Σ over heads of ReLU(⟨q_i, k̄_b⟩).
+4. It keeps the top K/r = **512 blocks (2,048 tokens)** plus the unfinished last block, and the real attention runs
+   over only those tokens.
+
+Pooling makes the indexer about 4× cheaper than token-level selection (DeepSeek's DSA): the report measures 3.8×/4.4×
+faster indexer prefill/decode at compression ratio 4, and **7.6× / 4.9× faster attention** than dense GQA at 1M tokens. The indexer is
+trained by distilling the full attention distribution into the block scores (a KL loss), then fine-tuned sparsely.
+
+**Gated Residual.** The residual is widened to 4 streams H ∈ ℝ^{4×2560}, in the style of Hyper-Connections and AltUp.
+Each block reads and writes the streams through gates (`Qwen4ExpGatedResidual`):
+
+```math
+n = \mathrm{RMSNorm}(H),\quad
+g = \sigma\!\big(W_{up}\,\mathrm{SiLU}(W_{down}\, n / 4)\big),\quad
+x = \tfrac14 \textstyle\sum_{s} g_s \odot n_s,\quad
+y = \mathrm{Block}(x),\quad
+H_s \leftarrow H_s + 2\,\sigma(w_s^{\top} n / 4)\; y .
+```
+
+The read gate g is element-wise and data-dependent, through a 320-rank bottleneck. The write gate is one scalar
+per stream. The report finds that widening alone already lowers loss, and the gates decide how the extra capacity
+is used.
+
+**N-gram embedding.** A normal embedding looks up one row per *token*. Flash-Next additionally looks up rows for the
+**bigram and the trigram ending at each token**, a kind of memory of short phrases. Step by step (from
+`Qwen4ExpNGramEmbedding` and `Qwen4ExpPLELayer`):
+
+1. **Hash** the n-gram: multiply each token id by a fixed odd 64-bit multiplier and XOR the products. The
+   multipliers are generated per layer from a seed with splitmix64.
+2. **Use 16 hash heads**: 2 orders (bigram, trigram) × 8 heads. Head h reduces the hash modulo its **own prime
+   p_h ≈ 20,000,000**, so two n-grams that collide in one head almost never collide in all 16.
+3. **Look up** one row of 160 values per head, and concatenate the 16 rows into a 2,560-dim vector e. The table holds
+   about 16 × 20M rows × 160 = **51B parameters**.
+4. **Inject at layer 2 with a gate.** The model's hidden state is the query, and e provides a key and a value. A gate
+   σ(signed-√(⟨k_s, q_s⟩/√d)) decides, per residual stream, how much of the value to add. A short dilated depthwise
+   convolution (kernel 4, dilation 3) then mixes neighbouring positions. The model can therefore ignore memory
+   that does not fit the context.
+
+The report's ablations:
+- one n-gram layer is enough, and layer 2 works well;
+- loss falls monotonically as the table grows from 20× to 200× the base vocabulary;
+- Chinese benchmarks improve the most.
+
+It places the layer at 2 so that **host-memory prefetching overlaps with layer 1**. It also notes that deterministic
+addressing allows offloading and asynchronous prefetching. The same idea, hashed n-gram memory gated by the
+hidden state, appears as "Engram" in recent DeepSeek models (oMLX's `deepseek_v41_engram_ssd_offload`).
+
+### 9.2 How SSD offload works
+
+Two different things live on the SSD, and they are read differently.
+
+**The n-gram table** (29.8 GiB): each token needs 16 rows of about 90 bytes at known addresses. mlx-vlm's
+`QuantizedMMapNGramEmbedding` maps the safetensors byte ranges and materializes only the selected rows. oMLX turns
+this on with `qwen4_ple_ssd_offload`, and forces it on when a resident load cannot fit. One detail matters here: with
+plain `mmap` every lookup can page-fault, so the llama.cpp fork described below switched to direct file reads for
+this table.
+
+**The routed experts** (63.3 GiB): oMLX's MoE expert offload (`docs/experimental/MoE_Expert_Offload.md`) works like this:
+
+1. **Slots.** Each layer keeps a fixed fraction of its 512 experts resident in a slot tensor (the *residency*). The full
+   expert tables are never loaded: the lazy references are dropped before anything materializes them.
+2. **Exact routing.** The router runs as shipped. A miss changes *when* an expert's weights are read, never *which*
+   expert runs, so the output is identical to a resident run: bit-identical in decode, up to kernel rounding in long
+   prefills.
+3. **Reads.** Missing experts are read with `pread` straight from the original safetensors shards, with 12 threads and
+   at most 48 experts in flight. There is no converted copy and no extra disk.
+4. **Eviction.** A miss evicts the expert with the lowest *decayed routing count* (+1 per use, ×0.7 every 4 calls).
+   On Flash-Next routing traces this misses 5–7 % less often than LRU. Predicting the next layer's experts and
+   prefetching them was tried and rejected: it covered 59 % of misses, but the wrong guesses competed with real reads
+   and made decode 2–15 % slower.
+5. **Overlap.** If a read has not arrived within 0.5 ms, the GPU first computes the routes whose experts are
+   resident, then the rest. That keeps the GPU from idling, which on Apple GPUs also lowers the clock.
+6. **Prefill.** A long prompt routes to almost every expert, so prefill is chunked *by expert* (8,192-token steps for
+   this model) and each expert is read at most once per layer per call.
+7. **The MTP head stays resident** while the backbone's experts stream, so speculative decoding still works.
+
+**What it costs.** A decode step reads the resident 5.9 GiB, plus the experts that miss. With hit rate h, the SSD
+traffic per token is about (1 − h) × 480 expert uses × about 2.8 MB. Our runs logged exactly that:
+
+| residency | resident experts | hit rate | read from SSD per 512-token answer | per token |
+|---:|---:|---:|---:|---:|
+| 25 % | 17 GB | 78–85 % | 104–130 GB | about 230 MB |
+| 50 % | 34 GB | 91–96 % | 24–48 GB | about 70 MB |
+
+The internal SSD reads several GB/s, so at 25 % residency decode is limited by the SSD, not the GPU. Reading does not
+wear an SSD the way writing does, so this traffic is harmless for the drive. oMLX's own measurements show the curve on
+a smaller MoE model: decode throughput falls roughly as memory^0.5.
+
+### 9.3 Running it on this Mac
+
+```bash
+hf download Jundot/Qwen3.8-Flash-Next-oQ4e-mtp          # 106 GB (99 GiB), 25 min here
+sudo sysctl iogpu.wired_limit_mb=59392                  # optional: GPU may wire 58 GiB (default about 51.8 GB on 64 GB)
+ln -s ~/.cache/huggingface/hub/models--Jundot--Qwen3.8-Flash-Next-oQ4e-mtp/snapshots/* ~/omlx_bench/models/Flash-Next-off25
+```
+
+Then add the model's entry to `~/omlx_bench/model_settings.json` (the file from §10), and serve it with oMLX as
+before (`OMLX_BASE_PATH=~/omlx_bench omlx serve --model-dir ~/omlx_bench/models`):
+
+```json
+"Flash-Next-off25": {"moe_expert_offload_enabled": true, "moe_expert_offload_resident_fraction": 0.25,
+                     "qwen4_ple_ssd_offload": true, "mtp_enabled": true,
+                     "chat_template_kwargs": {"enable_thinking": false}}
+```
+
+The log confirms the setup: `wrapped 48 layers at 25.0% residency`, `Qwen4-Exp PLE mode: mmap`,
+`keeping MTP head resident`, and `Lightning MTP enabled`. **Measured on Mac** with the same clients as §6. These runs
+used the raised 58 GiB limit:
+
+| | 25 % resident | 50 % resident | 60 % resident |
+|---|---:|---:|---:|
+| decode tok/s: code / prose / math | 17.8 / 15.5 / 16.8 | 27.5 / 23.3 / 27.1 | — |
+| TTFT, 1K / 4K / 16K prompt | 6.7 / 11.4 / **34 s** | 9.9 / 19.4 / 51 s | — |
+| prefill, 16K | **482 tok/s** | 323 tok/s | — |
+| agent turn 1 / turns 2–3 (16K prefix) | 34.7 s / **1.3 s** | 45.2 s / rejected | — |
+| peak memory of the server | 31 GB | 42 GB | — |
+| outcome | works for agents | short prompts only | does not load |
+
+Why 50 % and 60 % fail:
+- **oMLX's memory guard sets a dynamic ceiling.** In its default "balanced" tier it subtracts a reserve for macOS
+  and other apps from the 58.9 GB static cap, which left **43.5 GB**.
+- **60 % does not load.** It needs 46 GB resident and is refused with HTTP 507.
+- **50 % loads but cannot serve long sessions.** A 16K agent session pushed it to 42 GB, so the second turn was
+  refused (HTTP 400), to protect the system from swapping.
+
+25 % leaves room for the KV cache and prefill buffers. It also prefills *faster*: its expert-major prefill reads each
+expert once, without working near the ceiling. Reports from the llama.cpp side agree that pushing the expert cache to
+the limit backfires: decode collapsed to 3.7 tok/s at a 38 GiB cache once the server started swapping.
+Raw rows: [`mac_inference/results_m5pro_flashnext.jsonl`](mac_inference/results_m5pro_flashnext.jsonl),
+[`results_m5pro_flashnext_prefill.jsonl`](mac_inference/results_m5pro_flashnext_prefill.jsonl).
+
+### 9.4 What others report: llama.cpp, MLX engines and more
+
+There is no controlled cross-engine benchmark for this model yet. The figures below are self-reported, with
+different quantizations, prompts and settings, so compare them with care.
+
+**Macs that cannot hold the model (offload from SSD):**
+
+| engine | machine | setup | decode | prefill | source |
+|---|---|---|---:|---:|---|
+| **llama.cpp fork** (npanj) | **M5 Pro, 64 GB** (same as ours) | 95.5 GiB Q4_0 GGUF, `--moe-stream --moe-stream-cache 36`, MTP draft head, wired limit 58 GiB | 18–18.6 tok/s; **27.6** with MTP; 20.6 at 29K context | about 367 tok/s at 4K | [prismix.dev](https://prismix.dev/news/ad3aaa720620), [npanj/llama.cpp](https://github.com/npanj/llama.cpp) |
+| **oMLX** (this tutorial) | M5 Pro, 64 GB | oQ4e, 25 % / 50 % resident, PLE on SSD, Lightning MTP | 16.7 / 26 tok/s | 482 / 323 tok/s at 16K | §9.3 |
+| oMLX (author's tests) | 24 GB host emulated on an M3 Ultra; M4 Air 32 GB + USB4 SSD | oQ4e, 10–19 % resident | 6–8 tok/s; 3.6–5 tok/s | 19.7 s TTFT at 4.3K | [oMLX MoE offload doc](https://github.com/jundot/omlx/blob/main/docs/experimental/MoE_Expert_Offload.md) |
+| slotstream (Swift + MLX) | 48 GB Mac | streams experts, caches the busiest | about 12 tok/s | — | [Show HN](https://www.libhunt.com/posts/1535805-show-hn-running-104gb-qwen3-8-flash-next-on-48gb-mac-with-at-~12-tok-s) |
+| Whallm | about 20 GB used | streams weights from SSD | about 8 tok/s | about 60 tok/s | a Reddit post (unverified) |
+
+**Macs that hold it resident (≥ 128 GB):**
+
+| engine | machine | decode, MTP off | decode, MTP on | source |
+|---|---|---:|---:|---|
+| MTPLX (MLX) | M5 Max, 128 GB | 44–47 tok/s | **74–76** | [LLMCheck](https://llmcheck.net/blog/qwen3-8-flash-next-on-mac/) |
+| oMLX 0.6.3 | M5 Max, 128 GB | 28.5 tok/s | — | LLMCheck |
+| oMLX, oQ4e-mtp | Mac Studio | — | 83 peak (code prompt), prefill 215 tok/s | [Context Studios](https://www.contextstudios.ai/local-ai/weschera--qwen38-flash-next-omlx-mtp6-mac-studio-m4-max) |
+| llama.cpp, IQ4_NL | M5 Ultra | 57 tok/s | **100** | LLMCheck |
+| Rapid-MLX, 4-bit | — | 23 tok/s, prefill 868 tok/s at 8K | — | [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) |
+
+**Which is best on a Mac?** There is no single winner. The pattern in these reports:
+- **Below 128 GB, SSD offload is required.** The llama.cpp fork and oMLX reach similar speeds on the same 64 GB M5 Pro:
+  about 18 tok/s plain, and 26–28 tok/s with MTP at the largest cache that fits. The llama.cpp fork depends on six
+  unmerged pull requests and a manual wired-limit setting. oMLX is a supported release with a memory guard, at the cost
+  of the conservative ceiling we hit.
+- **With 128 GB or more**, the model fits at 4-bit. MLX engines with MTP (MTPLX, oMLX) report about 75–83 tok/s on
+  M5 Max-class machines, and llama.cpp with MTP about 100 tok/s on an M5 Ultra.
+- **Support status** (LLMCheck): the architecture is in llama.cpp (merged 27 August, MTP drafting 1 October) and in
+  mlx-vlm ≥ 0.7, but stock mlx-lm support is still an open pull request, and Ollama needs ≥ 0.33.1.
+
+### 9.5 Flash-Next or Qwen3.8-27B for a local agent?
+
+**Quality.** Qwen's own table (Flash-Next model card, BF16 weights) compares the two directly:
+
+| benchmark | Flash-Next | 27B | | benchmark | Flash-Next | 27B |
+|---|---:|---:|---|---|---:|---:|
+| DeepSWE 1.1 (agentic coding) | **58.7** | 42.2 | | Toolathlon Verified (tool use) | **73.5** | 67.1 |
+| SWE-bench Pro | **62.5** | 61.7 | | CoWorkBench (office work) | **73.9** | 70.7 |
+| SWE-bench Multilingual | **81.0** | 73.8 | | JobBench (professional tasks) | **55.7** | 33.4 |
+| NL2Repo-Bench | **48.1** | 42.3 | | Agents' Last Exam (score) | **51.2** | 42.9 |
+| OSWorld 2.0 (partial) | **52.3** | 48.0 | | AndroidWorld | **84.5** | 81.9 |
+| GPQA Diamond | **91.7** | 89.2 | | HLE | **35.9** | 30.8 |
+
+Flash-Next is ahead on every agent benchmark, by a lot on long tasks (JobBench +22, DeepSWE +16). These are BF16
+results. The 4-bit oQ4e build adds some error: its card reports KL divergence for the 27B, not measured here for
+Flash-Next. Expert offload itself adds none.
+
+**Speed and cost on this 64 GB M5 Pro** (best configuration of each, measured):
+
+| | Qwen3.8-27B, oMLX oQ4e + MTP | Qwen3.8-27B, mlx-vlm + MTP + APC | Flash-Next, oMLX, 25 % resident |
+|---|---:|---:|---:|
+| decode (code / prose / math) | 42 / 34 / 45 tok/s | 40 / 32 / 37 tok/s | 18 / 16 / 17 tok/s |
+| TTFT, 16K prompt | 47 s | 34–36 s | **34 s** |
+| agent follow-up turn | 0.6–0.8 s | 0.7 s | 1.3 s |
+| server memory | 19–23 GB | 18–28 GB | 31 GB, plus heavy SSD reads |
+| download | 17 GB | 16 GB | 106 GB |
+| license | Apache 2.0 | Apache 2.0 | Qwen Community 1.0 |
+
+On the license, LLMCheck's summary says local and internal use is unrestricted, but serving the model as a product
+(model-as-a-service, or a coding or office "AI work assistant" for third parties) needs a separate commercial license.
+Read the license yourself before building on it.
+
+**Verdict for local agents:**
+- **Interactive, fast loops** (edit, run, fix; many short turns) on a 32–64 GB Mac: **Qwen3.8-27B** with MTP.
+  It is about 2.4× faster to decode, leaves RAM for the rest of the machine, and is Apache 2.0.
+- **Harder, longer tasks where answer quality matters more than speed** (multi-step coding, long tool chains):
+  **Flash-Next with 25 % residency**. It is a markedly stronger agent model and runs at 16–18 tok/s with sub-2-second
+  follow-up turns. Its prefill matches the 27B, thanks to QSA and its small active size.
+- **On a 128 GB Mac**, Flash-Next fits resident and reports 75–100 tok/s with MTP. Then it is the better choice outright.
+
+## 10. Reproduce it
 
 Everything runs from `DeepDataMiningLearning/llm`. Each engine gets its own venv (Python 3.12 via `uv`, see
 [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md) Step 1a).
@@ -874,10 +1125,10 @@ venvs and `~/omlx_bench`.
   launcher exits; `serve_bench.sh` stops whatever listens on port 8000.
 - oMLX also auto-discovers every model in the Hugging Face cache.
 
-## 10. Research directions
+## 11. Research directions
 
 The measurements point to open problems. Each one below is a possible course project. Each can be measured with
-the scripts of §9 on a single Mac.
+the scripts of §10 on a single Mac.
 
 1. **Faster prefill on Apple Silicon.** This is the agent bottleneck (§6.2): about 26 TFLOP/s against an H100's about 990.
    - INT8 or FP8 activation matmuls on the M5's tensor units (oMLX's `qwen35_oq_a8` exists but was not in the wheel).
@@ -916,7 +1167,7 @@ the scripts of §9 on a single Mac.
     publish a reproducible end-to-end benchmark for local agents: TTFT, follow-up latency, decode speed and memory,
     on agent traces.
 
-## 11. Exercises
+## 12. Exercises
 
 1. **Bandwidth ceiling.** Measure MLX-LM's decode with the 8-bit checkpoint (`mlx-community/Qwen3.8-27B-8bit`). Predict
    the speed from §1 before running it. How close is the result to bandwidth ÷ bytes?
