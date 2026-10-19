@@ -24,8 +24,8 @@ machine, following this page:
 | 3 | Part 1: char LSTM, Transformer, RNN on Shakespeare | 1 MB | 44 s / 2.7 min / 1.2 min | 0.5–2.7 GB |
 | 4 | Part 1: tokenizers study (optional) | — | *not yet measured* (est. 20–40 min) | — |
 | 5 | Part 2: GPT on real web text (FineWeb) | 309 MB | 18 s + 3.1 min + 26.7 min | 2.8–3.9 GB |
-| 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b)–(d) *not yet measured* | 4.9–8.7 GB |
-| 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | L5 23.3 min; L6 *running* (~35 min) | 4.0 GB |
+| 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b) 20.2 min; (c) 11.9 min; (d) *running* | 4.9–13.8 GB |
+| 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | 23.3 min + 35.3 min | 4.0–6.2 GB |
 | 8 | Part 4: golf ablation (optional, overnight) | — | *not measured* (est. 3–4 h) | — |
 
 † "peak memory footprint" of the whole process from `/usr/bin/time -l`. On Apple Silicon the CPU
@@ -139,7 +139,7 @@ All laptop configs, measured on Mac (M5 Pro, fp32, and with `precision=bf16` for
 | L4q_gpt_fineweb_quick | 3.41M | 97k | 2.44 | 2.8 min | 3.1 min | — |
 | L4_gpt_fineweb | 11.0M | 38k | 2.98 | 21.4 min | 26.7 min | 52k (1.36×) |
 | L5_golf_mini | 6.60M | 32k | 1.65 | 21.2 min | 23.3 min | — |
-| L6_golf_mini_stack | 8.37M | 21k | 1.27 | 33.3 min | *running* | 23k (1.12×) |
+| L6_golf_mini_stack | 8.37M | 21k | 1.27 | 33.3 min | 35.3 min | 23k (1.12×) |
 
 The "actual" time is the whole command: data loading, periodic evals, the final eval, export.
 It is 10–25 % above the projection.
@@ -331,18 +331,70 @@ for every 1,024-token window, and the MPS allocator keeps those buffers cached o
 On an 8–16 GB Mac it caches less. If it runs out of memory, add `train.ctx_len=512`.
 The bpb will then be slightly higher, because each token sees less context.
 
-**(b)–(d): not yet measured on the Mac** (these runs are queued). Until then, here are the reference results
-(details in tutorial §3.5 and §3.8–§3.9). Open `samples_before.txt` and `samples_after.txt` in the run
+**(b) SFT and (c) DPO, measured on Mac.** Open `samples_before.txt` and `samples_after.txt` in the run
 directory: they show the same 5 prompts, before and after tuning. `metrics.json` has the measured
-before/after numbers.
+before/after numbers. Details are in tutorial §3.5 and §3.8–§3.9.
 
-| run | reference result | peak memory (fp32) |
-|---|---|---:|
-| (b) SFT, SmolLM2-360M | held-out answer NLL 1.556 → 1.321; the "after" samples answer and stop | 2.0 GB |
-| (c) DPO, Qwen2.5-0.5B-Instruct | held-out reward accuracy 0.50 → 0.68 | 2.9 GB |
+| run | wall time (train) | memory: MPS driver / process† | result (Mac) | reference |
+|---|---:|---:|---|---|
+| (b) SFT, SmolLM2-360M, 250 steps | 20.2 min (12.5 min) | 3.8 / 9.2 GB | answer NLL **1.556 → 1.3205** | 1.556 → 1.321 |
+| (c) DPO, Qwen2.5-0.5B-Instruct, 100 steps | 11.9 min (7.4 min) | 7.1 / 13.8 GB | reward accuracy **0.50 → 0.68**, margin 0 → 0.64 | 0.50 → 0.68 |
 
-The "after" samples are fluent but not always correct. For example, the SFT model puts Paris in
-Normandy. SFT and DPO change *how* a model answers, not what it knows (tutorial §3.8).
+The rest of the wall time is model loading, evaluating before and after, and generating the samples.
+The reference memory (2.0 / 2.9 GB) was measured on CUDA, which counts only live tensors. On a Mac
+the allocator cache adds a lot. On an **8–16 GB Mac**, run SFT with `model.name=HuggingFaceTB/SmolLM2-135M`.
+For DPO, add `train.batch_size=1 train.grad_accum=8`, which is the same math with half the
+activations. These two low-memory settings were not tested on this 64 GB machine.
+
+SFT log, measured on Mac:
+
+```text
+[model] 371M params, 8.68M trainable (2.34% LoRA)
+[data] 2000 train / 100 val examples (alpaca, max_len 384)
+[eval] before: {'val_response_nll': 1.556, 'val_response_ppl': 4.74}
+  eval: {'val_response_nll': 1.3528, 'val_response_ppl': 3.8683}
+  ...
+[eval] after: {'val_response_nll': 1.3205, 'val_response_ppl': 3.7453}
+```
+
+`samples_before.txt` vs `samples_after.txt` (shortened). Before tuning, the base model writes
+prose instead of a haiku and goes on to invent a "### Discussion:" section. After 12 minutes of LoRA, it answers and stops:
+
+```text
+### Write a haiku about autumn.                         (before)
+Autumn is a time of change. Leaves fall from trees, and the air becomes crisp and cool. ...
+### Discussion:
+Discuss the importance of appreciating na
+
+### Write a haiku about autumn.                         (after)
+Autumn's golden hues
+Shimmer in the breeze,
+Nature's silent symphony.
+
+### What is the capital of France, and why is it famous?   (after)
+The capital of France is Paris, which is located in the region of Normandy in the north of the country. ...
+```
+
+The "after" samples are fluent but not always correct: the SFT model puts Paris in Normandy, as it
+did in the reference run. SFT and DPO change *how* a model answers, not what it knows (tutorial §3.8).
+
+DPO log, measured on Mac:
+
+```text
+[model] 503M params, 8.80M trainable (1.75% LoRA)
+[data] 800 train / 100 val examples (ultrafeedback, max_len 512)
+[eval] before: {'val_reward_acc': 0.5, 'val_reward_margin': 0.0, 'val_policy_prefers_chosen': 0.61}
+  eval: {'val_reward_acc': 0.6, 'val_reward_margin': 0.4892, 'val_policy_prefers_chosen': 0.61}
+  eval: {'val_reward_acc': 0.68, 'val_reward_margin': 0.5136, 'val_policy_prefers_chosen': 0.61}
+[eval] after: {'val_reward_acc': 0.68, 'val_reward_margin': 0.638, 'val_policy_prefers_chosen': 0.63}
+```
+
+**(d) Benchmarks.** On the Mac, every lm-eval job first died within seconds with exit code 139 (a
+segfault) and no error message. The cause: transformers 5.x loads weights with a thread pool, and
+that crashes when loading straight onto `mps` (`device_map={'': 'mps'}`, which is what lm-eval
+uses). `nanolm.benchmarks` now sets `HF_DEACTIVATE_ASYNC_LOAD=1` for MPS jobs, which fixes it. If you
+run `lm_eval` yourself on a Mac, set that variable too. *The benchmark numbers on the Mac are
+still running.*
 
 ## Step 7. Part 4: Parameter Golf on a laptop
 
@@ -370,7 +422,18 @@ L6 adds the techniques that survived our ablation, exports in int6 (the "artifac
 | run | val bpb (Mac) | val bpb (reference) | artifact size |
 |---|---:|---:|---:|
 | L5 | **1.6336** (int8 round-trip 1.6337) | 1.633 | 6.11 MB (int8) |
-| L6 | *running* | 1.601, then 1.554 with sliding-window eval | 5.6 MB (int6, reference) |
+| L6 | **1.6002**, sliding-window **1.5536** (int6 round-trip 1.5552) | 1.601, sliding 1.554 | 5.59 MB (int6) |
+
+**L6 measured on Mac:** 35.3 min, 6.2 GB peak memory†. Sliding-window evaluation scores every
+token with at least 384 tokens of context, which is worth 0.047 bpb here for free:
+
+```text
+[model] gpt: 8,371,246 params (7,978,030 non-embedding)
+  eval step   2500 | val_loss 2.6511 | val_bpb 1.5699 | acc 41.2% | 1898s
+[final] val_loss 2.6676 | val_bpb 1.6002 | ppl 14.41 | acc 41.20% | 2,097,152 tokens, 2.41 bytes/token
+[final] sliding(stride=128) val_bpb 1.5536
+[export] int6+lzma: 5.564 MB model + 22 KB code | round-trip val_bpb 1.5552 (gap +0.0015)
+```
 
 Both fit the laptop "golf budget" of 6.5 MB. Tutorial §4.8 has the full ablation.
 
@@ -397,6 +460,7 @@ to close the terminal.
 | problem | fix |
 |---|---|
 | `python: command not found`, or Python 3.9 | a fresh Mac has only `/usr/bin/python3` 3.9; install 3.11 (Step 1a) and activate the venv |
+| lm-eval / `nanolm.benchmarks` job dies with exit code 139 (segfault) on a Mac | `export HF_DEACTIVATE_ASYNC_LOAD=1` (`nanolm.benchmarks` now sets it); a transformers 5.x loader bug on MPS |
 | `TypeError: Cannot convert a MPS Tensor to float64 dtype` | old code; `git pull` (fixed in the evaluator) |
 | `AttributeError: module 'pyarrow' has no attribute 'PyExtensionType'` | `datasets` is too old: `pip install -U datasets transformers peft huggingface_hub` |
 | `RuntimeError: MPS backend out of memory` / CUDA OOM | `train.batch_size=8 train.grad_accum=4` (same math, half the memory); for step 6 also `data.max_len=256` |

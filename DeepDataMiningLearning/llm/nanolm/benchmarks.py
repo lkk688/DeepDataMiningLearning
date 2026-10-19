@@ -96,6 +96,8 @@ def run(cfg_path: str, slots: int, dry: bool):
             j["dir"].mkdir(parents=True, exist_ok=True)
             log = open(j["dir"] / "stdout.log", "w")
             env = dict(os.environ, TOKENIZERS_PARALLELISM="false")
+            if j["cmd"][-1] == "mps":        # transformers 5.x threaded weight loading segfaults on MPS
+                env.setdefault("HF_DEACTIVATE_ASYNC_LOAD", "1")
             j["proc"], j["t0"] = subprocess.Popen(j["cmd"], stdout=log, stderr=subprocess.STDOUT, env=env), time.time()
             running.append(j)
             print(f"[bench] start {j['model']} / {j['group']}")
