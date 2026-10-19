@@ -36,13 +36,14 @@ chip fast enough?".
 1. [How LLM inference uses the chip](#1-how-llm-inference-uses-the-chip)
 2. [The model: Qwen3.8-27B](#2-the-model-qwen38-27b)
 3. [Memory: where every gigabyte goes](#3-memory-where-every-gigabyte-goes)
-4. [Optimization techniques](#4-optimization-techniques)
-5. [The four engines and what each optimizes](#5-the-four-engines-and-what-each-optimizes)
+4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step) and [prefix caching in detail](#45-prefix-caching-in-detail)
+5. [The four engines and what each optimizes](#5-the-four-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal)
 6. [Measurements](#6-measurements)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
 9. [Reproduce it](#9-reproduce-it)
-10. [Exercises](#10-exercises)
+10. [Research directions](#10-research-directions)
+11. [Exercises](#11-exercises)
 
 ---
 
@@ -291,21 +292,83 @@ Metal **indirect command buffer**, and replays it. The token position, accepted 
 "rewind" of the DeltaNet state all live in GPU memory, so the host only collects finished tokens. MLX reduces
 host overhead differently: lazy evaluation builds a graph and submits it in large batches.
 
-### 4.4 Speculative decoding
+### 4.4 Speculative decoding, step by step
 
-Decode reads all weights to produce one token. **Verifying** k proposed tokens in one pass costs almost the same
-as producing one, because the weight reads dominate (§1). So:
+Speculative decoding is the only technique in this tutorial that makes decoding 2–4× faster, so it is worth going
+through it slowly.
 
-1. a cheap **drafter** proposes k tokens;
-2. the big **target** model scores all k positions in one pass;
-3. the longest prefix the target agrees with is accepted, plus one token from the target itself.
+#### Step 1: why checking k tokens costs about as much as producing one
 
-With greedy decoding the output is the same as without speculation, up to rounding (§6.5). If each draft token is
-accepted with probability α independently, the expected number of tokens per round is
+A decode step reads all 15 GB of weights to turn **one** input vector into one output token (§1). Arithmetic is
+almost idle: the GPU waits for memory. Now give the same step **k + 1 input vectors** instead of one. The weights
+are still read once, because every row is multiplied by the same weight tile while it sits in on-chip memory. The
+extra arithmetic is nearly free, since it was idle anyway. On the M5 Pro, lithos-metal measured:
+
+| pass | rows | time |
+|---|---:|---:|
+| plain decode step | 1 | 77 ms |
+| a DSpark round: draft 7 tokens, then verify anchor + 7 | 8 | 105 ms |
+
+So evaluating 8 positions costs only 1.36× one position. Each extra row, including its share of the drafting,
+costs about **5 %** of a plain step. This is the whole trick: if we can *guess* the next tokens, the big model can
+*check* several guesses for almost the price of one ordinary step.
+
+#### Step 2: the greedy algorithm
+
+Let the last committed token be the **anchor** a. One round:
+
+1. **Draft.** A cheap drafter proposes k tokens d₁ … d_k that it thinks follow a.
+2. **Verify.** The target model runs once on the k + 1 rows [a, d₁, …, d_k]. A causal mask lets row i see only
+   the tokens before it, so row i yields the target's own prediction for position i + 1:
+   t₁ = argmax p(· | …, a), t₂ = argmax p(· | …, a, d₁), and so on, up to t_{k+1}.
+3. **Accept.** Walk left to right. Accept d₁ if d₁ = t₁, then d₂ if d₂ = t₂, and so on. Stop at the first mismatch, at m.
+4. **Commit.** Output the m accepted drafts **plus** t_{m+1}. That is either the target's correction at the first
+   mismatch, or, if all k were accepted, a free "bonus" token. Every round therefore produces at least 1 token and
+   at most k + 1.
+5. **Roll back.** The verify pass wrote state for all k + 1 rows, but only m + 1 of them are real. KV caches drop the
+   last k − m entries. For a Gated DeltaNet layer that is not possible, because its state has already absorbed the
+   rejected tokens (§2). The engine must restore a snapshot taken before the verify pass and replay the m + 1 kept
+   tokens (see Step 7).
+
+An illustrative example (not a logged run), with the target's greedy continuation `def parse(s: str) -> date:` and k = 4:
+
+| row | input | target's prediction tᵢ | draft dᵢ | result |
+|---:|---|---|---|---|
+| 1 | anchor `def` | `parse` | `parse` | ✓ accept |
+| 2 | `parse` | `(` | `(` | ✓ accept |
+| 3 | `(` | `s` | `date` | ✗ reject: stop here |
+| 4 | `date` | (ignored) | `_str` | — |
+| 5 | `_str` | (ignored) | — | — |
+
+The round commits `parse`, `(` and the target's correction `s`: **3 tokens for one target pass**. The next round
+starts from the anchor `s`. Because every committed token is one the target itself would have chosen, **greedy
+speculative decoding produces exactly the target's greedy output**, up to floating-point rounding (§6.5).
+
+#### Step 3: sampling at temperature > 0
+
+With sampling, "the target would have chosen it" becomes "the output must have the target's distribution p".
+Let the drafter propose d with probability q(d). Then:
+
+1. Accept d with probability min(1, p(d) / q(d)).
+2. If rejected, sample a replacement from the leftover mass, renormalized:
 
 ```math
-E[\text{tokens per round}] = \frac{1 - \alpha^{k+1}}{1 - \alpha}, \qquad
-\text{speed-up} = E[\text{tokens}] \cdot \frac{t_{\text{plain step}}}{t_{\text{round}}} .
+p_{\text{residual}}(x) = \frac{\max(0,\; p(x) - q(x))}{\sum_y \max(0,\; p(y) - q(y))} .
+```
+
+The probability that x is emitted is q(x)·min(1, p(x)/q(x)) + P(reject)·p_residual(x) = **p(x)**, exactly. So
+speculation never changes *what* the model says, only how fast. lithos-metal implements both variants. By default
+the drafter proposes its argmax, which is a point-mass q, so a draft is kept only if it equals the token the target
+samples. With `--draft-sampling sample` it uses the full rule above.
+
+#### Step 4: how many tokens per round, and how many drafts to make
+
+If each draft is accepted with probability α, independently, the number of committed tokens per round is
+1 + (the number of leading accepts). Its expectation is a geometric sum:
+
+```math
+E[\text{tokens per round}] = \sum_{i=0}^{k} \alpha^{i} = \frac{1 - \alpha^{k+1}}{1 - \alpha}, \qquad
+\text{speed-up} = E[\text{tokens}] \cdot \frac{t_{\text{plain step}}}{t_{\text{round}}(k)} .
 ```
 
 Measured for lithos-metal's DSpark drafter (k = 7):
@@ -315,38 +378,203 @@ Measured for lithos-metal's DSpark drafter (k = 7):
 | code, math | 94 | 5.45 | 0.89 | 105 ms / 77 ms | 5.45 × 77 / 105 = **4.0×** (measured 51.6 / 12.9 = 4.0×) |
 | prose | 163 | 3.14 | 0.70 | 105 ms / 77 ms | **2.3×** (measured 29.6 / 12.9 = 2.3×) |
 
-The formula predicts the measurement exactly. Code and math are predictable: the drafter guesses syntax and
-arithmetic right. Prose has many equally good continuations, so fewer guesses survive. Three kinds of drafters
-appear in this tutorial:
+The formula predicts the measurement exactly. Code and math are predictable: a drafter gets syntax and arithmetic
+right. Prose has many equally good continuations, so fewer guesses survive.
 
-| drafter | what it is | engines |
+**Choosing k.** More drafts give more chances, but each costs about 5 % more round time, and the chance that draft i
+survives decays as αⁱ. With the fitted cost model t_round(k) ≈ t_plain · (1 + 0.052 k), the speed-up is:
+
+| α | k = 1 | k = 3 | k = 7 | k = 15 | best k |
+|---:|---:|---:|---:|---:|---|
+| 0.50 | 1.43× | **1.62×** | 1.46× | 1.12× | 3 (1.62×) |
+| 0.70 (prose) | 1.62× | 2.19× | **2.30×** | 1.87× | 5 (2.33×) |
+| 0.89 (code) | 1.80× | 2.93× | 4.04× | 4.32× | 12 (4.37×) |
+
+The best draft length depends on α, and α changes with the text. That is why engines adapt the verification length
+instead of fixing it:
+- oMLX's Lightning MTP picks a depth between 1 and its maximum for each sequence, from rolling acceptance and latency
+  estimates.
+- DSpark's confidence head predicts which prefix of the block will survive (Step 6).
+
+#### Step 5: MTP, a drafter built into the model
+
+Qwen3.8 was trained with **one extra layer** that predicts the token *two* positions ahead (multi-token prediction,
+MTP). The layer is small (0.27 GB in 4-bit), and it is trained on the same data as the model, so its guesses are
+well calibrated to the model's own style. Its forward pass is in the oMLX/mlx-lm source
+(`patches/mlx_lm_mtp/qwen35_model.py`). Here h_t is the target's last hidden state at position t, and x_{t+1} is
+the token just chosen:
+
+```math
+u = W_{fc}\,\big[\,\mathrm{RMSNorm}(\mathrm{embed}(x_{t+1}))\;;\;\mathrm{RMSNorm}(h_t)\,\big], \qquad
+h'_{t+1} = \mathrm{RMSNorm}\big(\mathrm{Layer}_{\text{attn}}(u)\big), \qquad
+\hat x_{t+2} = \arg\max \mathrm{LMHead}(h'_{t+1}) .
+```
+
+Here Layer_attn is one ordinary full-attention transformer layer with its own small KV cache, and LMHead is the
+target's own output head. Step by step:
+
+1. The target produces h_t and the next token x_{t+1}, as in a normal decode step.
+2. The MTP layer combines "what the model was thinking" (h_t) with "what it just said" (x_{t+1}), and guesses x̂_{t+2}.
+3. **Chaining:** feed the MTP layer its *own* output h′ and its guess x̂_{t+2}, to guess x̂_{t+3}, and so on. Each
+   link costs one pass through one layer, about 1/64 of the model, so a chain of k drafts is cheap. Quality falls
+   along the chain, because the layer was trained for one step ahead.
+4. Verify the chain with the target (Step 2). The accepted tokens' hidden states become the next round's h_t.
+
+Two engineering details matter a lot in practice (both from oMLX's source):
+- **Prompt priming.** The MTP layer has its own KV cache. If it starts generation empty, its first drafts have no
+  context. oMLX fills it during prefill from the (hidden state, next token) pairs the prefill computes anyway. MTPLX
+  measured 0.90 acceptance with priming against 0.26 without, on depth-1 code prompts.
+- **Depth.** mlx-vlm drafts a fixed block of 3 (the head's model card). oMLX chooses 1 to 4 adaptively for dense
+  Qwen3.5-family models on M5; its global ceiling is 8.
+
+#### Step 6: DSpark, a block drafter with a Markov head
+
+[DSpark](https://arxiv.org/abs/2607.05147) (DeepSeek, 2026; used in DeepSeek-V4 serving, where it is reported 60–85 %
+faster per user than the MTP-1 baseline at matched throughput) attacks the two weaknesses of a chained MTP head:
+- drafting k tokens takes k *sequential* steps;
+- quality decays along the chain.
+
+Its structure, from lithos-metal's implementation (`monolith/spec/dspark/model.py`) and design notes:
+
+1. **Read the target's mind.** After each verify, take the target's residual stream after a few chosen layers
+   ("feature taps"), concatenate them, project them to the drafter's width, and normalize. Their keys and values are
+   appended to the **drafter's own KV cache**, so the drafter attends to a rich summary of every committed position.
+   This is "KV injection".
+2. **Draft a whole block in one pass.** The input is [anchor, MASK, MASK, …, MASK]: γ = 8 positions, 7 of them
+   placeholders. It goes through the drafter's few transformer layers *in parallel*, with **bidirectional** attention
+   inside the block (no causal mask), so every position sees the whole block. One drafter pass yields a hidden state
+   for each of the 7 positions.
+3. **Restore dependencies with a Markov head.** Parallel drafting guesses each position without knowing what was
+   guessed before it, so the block can contradict itself (like "New York York"). The Markov head adds a cheap
+   sequential correction: the logits at position k get a bias that depends on the token chosen at position k − 1,
+   W₂·W₁[prev_k]. The tokens are picked left to right, each one conditioning the next. That costs one small matrix
+   lookup per position, not a transformer pass.
+4. **Estimate confidence.** A confidence head, σ(w·[h_k ; W₁[prev_k]] + b), estimates the chance that each position
+   survives verification. A scheduler can then verify only the confident prefix, or pick the length that maximizes
+   expected tokens per unit of cost, using a measured cost table. That is the "confidence-scheduled verification" of
+   the paper's title. lithos-metal's server verifies a fixed 7 + 1 by default; its lower-level API also offers
+   threshold and cost-aware selection.
+5. **Verify and commit** as in Step 2. Only committed positions feed new features into the drafter's cache. Rejected
+   ones are discarded from both the target's and the drafter's state.
+
+MTP and DSpark compared, on this Mac (§6.1):
+
+| | Qwen MTP head | DSpark |
 |---|---|---|
-| **MTP head** | the model's own extra layer, trained with it (0.27 GB) | mlx-vlm (block of 3), oMLX "Lightning MTP" (draft depth chosen adaptively, up to 8) |
-| **DSpark** | a separately trained drafter that reads the target's hidden states and proposes a block of 7, with a Markov head for dependencies between proposals (1.1 GB) | lithos-metal |
-| **separate small model** | e.g. a 0.8B model with the same tokenizer (`--draft-model`) | mlx-lm (not tested here); oMLX also supports DFlash block-diffusion drafters |
+| trained by | Qwen, together with the model | separately (LithosAI checkpoint), on the target's features |
+| size | 0.27 GB | 1.1 GB |
+| drafting k tokens | k sequential passes of one layer | one parallel pass + a Markov chain of lookups |
+| tokens per round | ≤ 4 (mlx-vlm block 3; oMLX depth ≤ 4) | ≤ 8 (7 + anchor) |
+| measured, code / prose | 42 / 34 tok/s (oMLX) | **52** / 30 tok/s (lithos-metal) |
 
-### 4.5 Prefix caching
+DSpark's long blocks pay off when text is predictable (code: 5.4 tokens per round). On prose the long tail of a
+7-token block is mostly rejected, and the cheaper, steadier MTP chain wins.
+
+#### Step 7: the hybrid-model complication, rolling back a recurrent state
+
+Item 5 of Step 2 is easy for a KV cache (drop entries) but hard for Gated DeltaNet. During verification of k + 1 rows, the
+recurrent state S passes through all of them, including the rejected ones. Three ways engines handle this:
+
+- **Snapshot and replay.** Save (conv state, S) before the verify pass. If m < k drafts are accepted, restore the
+  snapshot and run the m + 1 kept tokens through the layer again (mlx-vlm's cache transactions; oMLX's
+  `rollback_state`). This costs a little extra work, but only on rejection.
+- **Per-position states.** Store S after every verified row and keep the right one. This is simple but expensive:
+  oMLX notes that on the 27B the stored states alone are about **1 GB per verify** pass.
+- **Deferred commit** (oMLX's fused GDN verify kernel). Run the recurrence for the block without storing states, keep
+  only the block's small k/v/gate rows, and replay the accepted rows *lazily* at the start of the next verify, in
+  registers. That removes both the 1 GB of writes and the extra kernel launch. lithos-metal's GPU control state does
+  the same bookkeeping on the GPU: attention cache lengths, convolution history and recurrent state must always agree
+  with the committed prefix.
+
+#### Step 8: other drafters
+
+- **A separate small model** with the same tokenizer (mlx-lm `--draft-model`). It needs no training, but runs as
+  a second full model.
+- **EAGLE-3:** a light drafter on the target's features (mlx-vlm `--draft-kind eagle3`).
+- **DFlash:** block *diffusion*. The drafter denoises a whole block at once (mlx-vlm, oMLX).
+- **Draft trees** (mlx-vlm's DDTree). Verify a *tree* of alternatives instead of one chain, picking the nodes with
+  the largest probability of being accepted under the drafter's distribution. Tree attention verifies all branches
+  in one pass.
+- **Prompt lookup / context copy** (oMLX): when the output repeats text already in the context (editing a file,
+  quoting code), propose the tokens that followed the earlier occurrence. It is free, and very effective for coding
+  agents. oMLX matches at least 12 tokens of context tail and proposes 7.
+
+### 4.5 Prefix caching in detail
 
 An agent sends the same long prefix (system prompt, tools, files, earlier turns) with every request. If the server
 keeps the model state for that prefix, a follow-up request only needs to prefill the new tokens. On a Mac, where
-prefill costs about 2.3 ms per token (§1), that is the difference between 37 s and 0.5 s.
+prefill costs about 2.3 ms per token (§1), that is the difference between 37 s and 0.5 s (§6.3).
 
-How engines store it:
+**What has to be saved.** For an attention layer, the K/V rows of the prefix (64 KiB per token for Qwen3.8, §3.2).
+For a Gated DeltaNet layer, the recurrent state S and the convolution window *at the exact end of the prefix* (0.154 GB
+for all 48 layers, §3.3). Here is the difficulty: a KV cache for 16K tokens also contains the cache for every shorter
+prefix (just use the first n rows), but a DeltaNet state for 16K tokens says nothing about the state at 12K. So the
+engines differ mainly in *where* they keep DeltaNet snapshots.
 
-- **Whole-cache LRU (MLX-LM).** It keeps up to 10 complete caches, keyed by their token sequence in a trie. A new
-  prompt reuses an exact match or the longest cached prefix. A KV cache could also be *trimmed* back to a shorter
-  common prefix, but a DeltaNet state cannot (`is_trimmable()` returns False). For Qwen3.8, MLX-LM therefore reuses a
-  cache only when the new prompt *extends* the cached one. That covers append-only agent turns, but not edited history.
-- **Paged blocks + state checkpoints (mlx-vlm APC, oMLX, lithos-metal).** KV entries are stored in fixed blocks of
-  16 tokens, each identified by a chained hash of all tokens up to it. That is the vLLM design; mlx-vlm's `apc.py`
-  documents it. Identical prefixes share blocks, with copy-on-write in oMLX. For the recurrent layers they store
-  **checkpoints** of the state at boundaries: mlx-vlm every 2,048 tokens by default, lithos-metal at chunk boundaries.
-  A new prompt can then resume from the last checkpoint inside the shared prefix. Image content is hashed into the key,
-  so the same tokens with a different image never collide.
-- **Tiers.** oMLX writes cold blocks to SSD in safetensors format and restores them even after a restart. mlx-vlm also has
-  a disk tier, and lithos-metal can persist checkpoints with `--prefix-cache-dir`.
+**MLX-LM: a trie of whole caches.**
+- It keeps up to 10 complete caches, keyed by their token sequences in a trie.
+- A new prompt reuses an exact match, or the longest cached entry that is a prefix of the new prompt, and prefills only
+  the rest. Entries are deep-copied on use.
+- A pure-KV cache could also be *trimmed* back to a shorter common prefix. Qwen3.8's DeltaNet caches cannot
+  (`is_trimmable()` returns False).
 
-**mlx-vlm's prefix cache is off by default.** Its server reads `APC_ENABLED` from the environment, default `0`.
+So MLX-LM reuses a cache only if the new prompt *extends* a cached one. Append-only agent turns hit; an edited system
+prompt or a truncated history misses. There is no byte limit by default, which is why MLX-LM reached 36 GB (§3.5).
+
+**mlx-vlm APC: hashed blocks + checkpoints.**
+- KV is stored in pageable **16-token blocks**. Each block is identified by a chained hash,
+  h_i = H(h_{i−1}, tokens of block i, extra_i), so equal hashes mean equal *prefixes*, not just equal blocks.
+  extra_i carries an image content hash for multimodal prompts.
+- Recurrent layers get restorable **checkpoints at a common prefix boundary**, by default every 2,048 tokens.
+- Blocks are LRU-evicted with reference counts, and there is a disk tier (20 GB default).
+- **Off unless `APC_ENABLED=1`.**
+
+**lithos-metal: exact-token prefix checkpoints.**
+- A checkpoint is taken only after an intermediate prefill pass that neither samples nor drafts. It holds exactly the
+  committed prefix and leaves at least one token to prefill, which produces the logits.
+- It contains:
+  - the live rows of every attention KV cache;
+  - DSpark's injected-context KV;
+  - both DeltaNet slots (convolution and recurrent);
+  - the GPU control state (position, committed lengths).
+- Checkpoints are kept at message and text-block boundaries. The in-memory tier is bounded by a fraction of the
+  Metal working set.
+- An optional disk tier (`--prefix-cache-dir`, quota 32 GB) writes a checkpoint on eviction once it has served a
+  restore. Each file holds a JSON header plus 4 KiB-aligned blobs, each with its SHA-256. Files are written to a
+  temporary name and renamed, so a crash never leaves a half-written entry.
+- Every file carries an **identity digest**: engine sources, device and OS, weight packs, tokenizer, chat template,
+  chunking and numerics options. A checkpoint is only ever restored into an identical engine.
+
+**oMLX: paged KV blocks on a RAM + SSD hierarchy.** This is the most complete design, adapted from vLLM's block pool
+(`omlx/cache/paged_cache.py`, `paged_ssd_cache.py`):
+
+1. **Paged blocks.** KV is split into fixed blocks: 256 tokens by default, and **2,048 for hybrid models like
+   Qwen3.8**. Each block has a chained hash, so equal hashes mean equal prefixes. A hash table maps hash → block.
+2. **Sharing.** Requests with a common prefix point at the same blocks (reference counts). A request that extends a
+   shared block gets its own copy first (**copy-on-write**). Free blocks sit in an O(1) doubly linked LRU list.
+3. **Recurrent snapshots per block.** For DeltaNet layers, the state at each block boundary is stored with the block.
+   These "boundary snapshots" are written to SSD during prefill to free GPU memory right away, and read back one block
+   at a time. That is why hybrid models use 2,048-token blocks: fewer snapshot stops during prefill. The cost is a
+   coarser hit granularity, since a 2,048-token block cannot serve a 1,500-token prefix. Snapshots can be compressed:
+   fp32, bf16, int8, or **int8 after a randomized Hadamard rotation**, which spreads outliers before quantizing.
+4. **The SSD tier.** When the hot (RAM) tier fills, blocks are written to SSD as **safetensors files** in hash-named
+   subdirectories:
+   - Tensors are converted to raw bytes on the inference thread, which is Metal-safe.
+   - The bytes go into a pending-write queue, bounded at about 10–30 % of RAM, that also serves immediate reads.
+   - A **background thread** writes them, using temporary files renamed into place.
+   - At start-up oMLX scans the directory and **reuses blocks from earlier runs**, so a long system prompt stays
+     cheap even after a restart.
+   - The SSD budget defaults to half of the free disk.
+5. **Vision.** Images are hashed (SHA-256) into the prefix key. A separate vision-feature cache, with an in-memory
+   LRU plus SSD, stores the vision encoder's output, so the same screenshot in a later turn skips the encoder. That
+   is the 6.7 s → 0.31 s in §6.4.
+
+How big SSD blocks get for Qwen3.8: one 2,048-token block holds 2,048 × 64 KiB = **128 MiB of KV**, plus a DeltaNet
+snapshot of up to **154 MB** in fp32. That is about 0.28 GB per block, so about 2.3 GB for a 16K-token prefix. Our
+benchmark sessions, with dozens of distinct 1K–32K-token prompts, left **56 GB** of SSD cache behind. SSD reads at
+several GB/s, so restoring a 16K prefix from disk should take about half a second (an estimate; our measured follow-up
+turns were probably served from the RAM tier), against 37 s of prefill. But the cache needs a disk budget and an
+occasional clean-up.
 
 ### 4.6 Chunked prefill and batching
 
@@ -376,6 +604,73 @@ Other options exist but were not measured here:
   combine well on Apple Silicon.
 - **Ollama:** reportedly has a `qwen3.8:27b-mlx` tag.
 - **LM Studio:** its MLX engine builds on mlx-lm and mlx-vlm.
+
+### 5.1 A closer look at lithos-metal
+
+lithos-metal is the most radical of the four engines. It does not use MLX at all. It compiles the model into its own
+Metal programs. It is worth studying for its ideas even where it is not the fastest choice here.
+
+**How it works** (from its design docs, `docs/design/*.md`):
+
+1. **Compile the model into a task graph.** A model package lowers each layer into a typed graph of operations, values
+   and state updates. A coverage guard rejects any operation that has no kernel on the selected chip.
+2. **Choose fusion regions per chip.** The chip backend picks operand layouts, tile sizes, which regions to fuse, scratch
+   storage and synchronization points. It chooses from recipes measured on that chip. A fused version is used only
+   when its *complete-region* latency beats the separate kernels; saving dispatches is not enough by itself.
+3. **Layer-level megakernels.** In the selected configurations, one layer's whole **mixer**, Gated DeltaNet or full
+   attention, becomes **one Metal kernel**. The MLP stays separate. Inside the kernel, persistent threadgroups
+   ("workers") take tasks from bounded queues and keep values they own in registers and threadgroup memory. Values
+   shared between workers go through device memory with explicit ordering and barriers. The two mixers are split
+   differently:
+   - **DeltaNet:** split the recurrent state by value columns. A task keeps its slice of S across a whole input block,
+     so S is not read and written for every token. The output-gate projection runs in parallel with the recurrence.
+   - **Attention:** split the K/V context into ranges. Each task computes a partial softmax with running statistics
+     (maximum m, denominator l, weighted sum o), and a final reduction merges the partitions. This is the split-K
+     "flash-decoding" idea.
+4. **Use the M5's neural accelerators.** Metal 4 TensorOps let a shader do matrix arithmetic on the M5 GPU's
+   neural accelerators, *inside* the same shader as the surrounding normalization and gating.
+5. **Tune for the chip's on-chip memory.** From M3 on, Apple GPUs share on-chip storage dynamically between registers,
+   threadgroup memory and caches. Keeping more data local leaves room for fewer concurrent workers, so tile sizes,
+   lifetimes and worker counts are tuned *together*. A probe suite measures each chip. For this M5 Pro it found about
+   290 GB/s of streaming bandwidth, saturated by 6 of its 20 GPU cores.
+6. **Keep the decode loop on the GPU.** The whole step, including speculative rounds, is pre-encoded into a Metal
+   **indirect command buffer** and replayed. Position, accepted counts, recurrent-state checkpoints, the random-number
+   state and stop flags live in a GPU "StepState" buffer. The host only submits batches of work and reads finished
+   tokens from a ring buffer.
+7. **Repack the weights.** Checkpoint weights (affine 4-bit or NVFP4) are rearranged into "packs" laid out for the
+   exact lanes and tiles that read them. No requantization is done. Packs are memory-mapped and shared between
+   programs.
+8. **DSpark speculative decoding** with 7 drafts per round (§4.4 Step 6), with the draft's own mixers fused by the
+   same compiler.
+9. **Input-normalization fusion** (§4.2) and **exact-token prefix checkpoints** with an identity-checked disk tier (§4.5).
+
+**Effect, measured on the M5 Pro:**
+
+| | lithos-metal | best MLX engine | ratio |
+|---|---:|---:|---:|
+| decode, one token per pass | 12.9 tok/s (77 ms) | 17.4 tok/s (57 ms) | **0.74×** |
+| decode with its drafter | 44.3 tok/s mean, **51.6 on code** | 40.4 (oMLX + MTP) | **1.1×**; 1.2× on code, 0.86× on prose |
+| prefill, 16K tokens | 223 tok/s (74 s) | 454 tok/s (36 s) | **0.49×** |
+| agent follow-up turn | 0.9 s | 0.5–0.8 s | similar |
+| start-up | 37–71 s | 2–7 s | |
+| disk for weight packs | 15–19 GB per model and mode (101 GB after our tests) | none | |
+
+**Limitations:**
+- **Recipes are chip-specific.** The 27B recipes were measured on a 40-core M5 Max. On the M5 Pro the log shows
+  `recipe contexts=[]`, so it runs its default geometry. That is why its one-token decode and its prefill are slower
+  than MLX here. Other backends (M3 Max, M4 Max, …) are "unmeasured native fallbacks" with fusion and the tensor
+  accelerator disabled.
+- **Few models:** validated target/draft pairs only (Qwen3.8-27B in NVFP4 or affine 4-bit, Qwen3.6-35B-A3B). Each new
+  model needs a model package, a trained DSpark head, and tuned recipes.
+- **Text only, one generation at a time** (no batching), and no vision.
+- **Prefill is not its focus.** Its kernels are built for decode and verification, which handle 1–8 rows at a time.
+  For a 16K prompt it is half as fast as MLX.
+- **Costs:** compile and warm-up time at every start, and large pack files on disk.
+- **Headline numbers are projections.** The README's about 168 tok/s is for an M5 Max. It assumes 6 of 8 drafts are
+  accepted and excludes drafting time. The project's own docs say this is "a projection", not an end-to-end rate.
+
+lithos-metal shows what engine-level work *can* buy on the right chip: GPU-resident control, megakernels and a trained
+long-block drafter. It also shows that such tuning does not transfer automatically from one Apple GPU to another.
 
 ## 6. Measurements
 
@@ -579,7 +874,49 @@ venvs and `~/omlx_bench`.
   launcher exits; `serve_bench.sh` stops whatever listens on port 8000.
 - oMLX also auto-discovers every model in the Hugging Face cache.
 
-## 10. Exercises
+## 10. Research directions
+
+The measurements point to open problems. Each one below is a possible course project. Each can be measured with
+the scripts of §9 on a single Mac.
+
+1. **Faster prefill on Apple Silicon.** This is the agent bottleneck (§6.2): about 26 TFLOP/s against an H100's about 990.
+   - INT8 or FP8 activation matmuls on the M5's tensor units (oMLX's `qwen35_oq_a8` exists but was not in the wheel).
+   - Splitting prefill between the GPU and the Neural Engine (oMLX has experimental `qwen35_ane_prefill_*` options).
+   - Better tile shapes for long chunks.
+   - Sparse prefill that skips unimportant prompt tokens (oMLX's experimental SpecPrefill, for MoE models).
+2. **Speculative decoding for hybrid models.**
+   - Cheaper rollback of recurrent state (§4.4 Step 7): what is the minimal state to store, and can the replay be
+     fused into the next verify everywhere?
+   - Draft *trees* for DeltaNet layers, which cannot branch a state cheaply.
+3. **Adaptive verification.**
+   - Predict α per position: DSpark's confidence head, oMLX's depth controller.
+   - Choose k to maximize E[tokens]/t_round(k) from a per-chip cost table (§4.4 Step 4). How close does a simple
+     controller get to the best k for each prompt?
+4. **Drafters for agents.**
+   - Combine prompt lookup (copying from files in the context) with MTP or DSpark.
+   - Train a DSpark-style block drafter for a model that has none, using the target's own outputs.
+   - Measure acceptance on real agent traces, not chat prompts.
+5. **Prefix caches for hybrid models.**
+   - Where should DeltaNet snapshots be placed (every message? every 2,048 tokens?) to maximize hits per gigabyte?
+   - How much can snapshots be compressed? oMLX offers int8 and Hadamard-rotated int8. What does each cost in output
+     agreement?
+   - When does an SSD restore beat recomputation?
+6. **Memory at long context.**
+   - KV-cache quantization (TurboQuant, Affine4/8) and its effect on quality at 128K–256K tokens.
+   - The trade-off between the attention and DeltaNet layer ratio and the cache size (§3.2).
+7. **Quantization quality vs speed.**
+   - Mixed precision (oQ), NVFP4 and affine 4-bit have different prefill costs (§6.2) and different KL divergences.
+     Measure the Pareto front of accuracy against TTFT and decode speed.
+   - Design a format whose dequantization is cheap in *prefill*.
+8. **Portable kernel tuning.** lithos-metal's recipes do not transfer between chips (§5.1). Can autotuning on a new
+   chip find good megakernel geometries in minutes, and how close can it get to hand-measured recipes?
+9. **Batching on a laptop.** Continuous batching (oMLX) raises total throughput, but costs per-user latency. For a
+   multi-agent setup on one Mac, which schedule minimizes the total task time?
+10. **Honest benchmarking.** Engines report different scopes: projections, single-layer minima, end-to-end. Define and
+    publish a reproducible end-to-end benchmark for local agents: TTFT, follow-up latency, decode speed and memory,
+    on agent traces.
+
+## 11. Exercises
 
 1. **Bandwidth ceiling.** Measure MLX-LM's decode with the 8-bit checkpoint (`mlx-community/Qwen3.8-27B-8bit`). Predict
    the speed from §1 before running it. How close is the result to bandwidth ÷ bytes?
