@@ -1,2 +1,4 @@
 logs/
 results.jsonl
+prefill.jsonl
+__pycache__/

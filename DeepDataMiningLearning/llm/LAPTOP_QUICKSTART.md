@@ -534,8 +534,71 @@ Time to first token was 0.23–0.53 s for every engine (the prompts are only 40�
    (37–71 s, against 2–7 s for MLX). The process memory footprint (MLX 17–18 GB, lithos-metal 8–14 GB) is
    not directly comparable: lithos-metal memory-maps its pack files, and file-backed pages are not counted.
 
+### Prefill and time to first token (what an agent waits for)
+
+Decode speed is only half the story. A coding agent sends a long prompt: instructions, tool definitions,
+files, and earlier turns. The model has to read that whole prompt (the **prefill**) before the first
+token appears. [`mac_inference/prefill_client.py`](mac_inference/prefill_client.py) measures this in two ways:
+
+- **cold**: a fresh prompt of 1K–32K tokens, starting with a random session id so no cache can help;
+- **agent**: a 16K-token system prompt, then three user turns. Each request carries the whole
+  conversation so far, as an agent does. Turn 1 pays the full prefill; turns 2–3 show whether the
+  engine reuses the shared prefix.
+
+```bash
+cd mac_inference
+CLIENT=prefill_client.py OUT=prefill.jsonl bash serve_bench.sh pf_mlx_lm ~/venvs/mlxlm mlx-community/Qwen3.8-27B-4bit -- \
+  mlx_lm.server --model mlx-community/Qwen3.8-27B-4bit --port 8000 --chat-template-args '{"enable_thinking": false}'
+# same for mlx-vlm and lithos-metal (lithos-metal: add --max-context 40960); see mac_inference/run_prefill_all.sh
+```
+
+**Cold prefill, measured on Mac.** Time to first token (TTFT) and prefill speed:
+
+| prompt tokens | MLX-LM | mlx-vlm (+MTP) | lithos-metal (no draft) | lithos-metal (+DSpark) | lithos-metal (+DSpark, 512-token chunks) |
+|---:|---:|---:|---:|---:|---:|
+| 1K | **2.4 s** (437 tok/s) | **2.2 s** (491) | 3.2 s (334) | 3.3 s (320) | 3.3 s (320) |
+| 4K | **8.7 s** (475) | **8.4 s** (495) | 13.5 s (306) | 13.8 s (300) | 13.4 s (308) |
+| 16K | **37 s** (441) | **36 s** (454) | 73 s (225) | 74 s (223) | 71 s (232) |
+| 32K | **82 s** (402) | **78 s** (419) | 202 s (162) | 204 s (161) | 198 s (166) |
+
+**Agent pattern (16K-token system prompt), TTFT of each turn:**
+
+| | turn 1 (cold) | turn 2 | turn 3 | prefix reuse |
+|---|---:|---:|---:|---|
+| MLX-LM | 39.6 s | **0.48 s** | **0.49 s** | yes (prompt cache) |
+| mlx-vlm (+MTP) | 36.8 s | 37.5 s | 38.0 s | **no**: re-reads all 16K tokens every turn |
+| lithos-metal (no draft) | 76.2 s | 0.87 s | 0.81 s | yes (prefix checkpoints) |
+| lithos-metal (+DSpark) | 77.8 s | 0.96 s | 0.92 s | yes: the log shows `cached_prompt_tokens: 16417` |
+
+Raw rows: [`mac_inference/results_m5pro_qwen3.8-27b_prefill.jsonl`](mac_inference/results_m5pro_qwen3.8-27b_prefill.jsonl).
+
+What this shows:
+
+1. **lithos-metal does not speed up prefill on the M5 Pro; it is 1.4–2.5× slower than MLX.** Its prefill
+   speed also drops faster as the context grows: from 334 to 162 tok/s between 1K and 32K tokens, while MLX
+   goes from 437 to 402. The cause is the same as for its one-token decode: its prefill kernels are tuned for the M5 Max.
+   Its serving docs qualify 512-token prefill chunks only for the 27B model on the 40-core M5 Max, and use 128 elsewhere.
+   Forcing `--prefill-chunk-size 512` made each request use fewer, larger passes but gained only about 3 %, because nearly all
+   the time is GPU arithmetic. DSpark adds nothing to prefill: 223 vs 225 tok/s at 16K.
+2. **Prefill is limited by compute, not memory.** Each prompt token costs about 2 × 27B ≈ 54 GFLOP, and all tokens of a chunk
+   share one read of the weights. MLX's 475 tok/s at 4K is therefore about **26 TFLOP/s**, and lithos-metal's 306 tok/s is
+   about 17 TFLOP/s. That is why Macs are slow here and NVIDIA GPUs are not. As a *rough estimate, not measured here*:
+   an H100 has about 990 TFLOP/s of dense BF16. At a typical 40–50 % utilization it would prefill this model at about 7–9K tok/s,
+   so a 16K-token prompt would take about 2 s instead of 37 s. Decode is a different story: it is limited by bandwidth,
+   so the gap there is "only" the bandwidth ratio (about 3.35 TB/s vs about 0.3 TB/s).
+3. **For agents, prefix caching matters more than raw prefill speed.** Turn 1 is slow on every Mac engine (37–78 s
+   for 16K tokens). After that, an engine that reuses the prefix only has to read the new turn's tokens: below 1 s for MLX-LM
+   and lithos-metal. mlx-vlm's server re-reads the whole conversation on every turn (37 s each), so its 2× faster decode does not pay off
+   for agents. Qwen3.8 is a hybrid model: most layers are Gated DeltaNet, whose recurrent state cannot simply be
+   truncated like a KV cache. A cache therefore has to store state *checkpoints* at token boundaries, which is
+   what lithos-metal does explicitly.
+4. **A rough per-turn budget (estimated from the rates above).** Say an agent turn appends 2K tokens of tool output and
+   writes 300 tokens. MLX-LM: about 4.5 s prefill + 17 s decode ≈ **22 s**. lithos-metal + DSpark: about 7 s prefill +
+   6–10 s decode ≈ **13–17 s**. lithos-metal's faster decode outweighs its slower prefill here. But with a large new
+   chunk per turn (a whole file, 16K tokens), MLX-LM wins (37 s vs 74 s before the first token).
+
 For this course, use **MLX-LM** to run a large model, and **mlx-vlm with the MTP head** for a free 2× that
-needs no extra model. lithos-metal shows how far engine-level tricks (megakernels, a GPU-resident decode loop,
+needs no extra model (for single requests; it re-reads the prompt every turn). lithos-metal shows how far engine-level tricks (megakernels, a GPU-resident decode loop,
 a trained 7-token drafter) can go, and it is the fastest here on code. But it supports only a few target
 models and is not tuned for every chip.
 

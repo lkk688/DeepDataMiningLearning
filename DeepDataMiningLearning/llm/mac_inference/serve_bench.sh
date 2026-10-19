@@ -22,7 +22,7 @@ until curl -sf http://127.0.0.1:8000/v1/models > /dev/null 2>&1; do
   kill -0 $TP 2>/dev/null || { echo "$label: server exited"; tail -20 "logs/$label.server.log"; exit 1; }
 done
 echo "$label: ready after $(( $(date +%s) - t0 ))s"
-python bench_client.py --model "$model" --label "$label" --out "$OUT"
+python "${CLIENT:-bench_client.py}" --model "$model" --label "$label" --out "$OUT" ${CLIENT_ARGS:-}
 SP=$(pgrep -P $TP)
 kill -INT $SP 2>/dev/null; sleep 5; kill -TERM $SP 2>/dev/null   # mlx_lm.server ignores SIGINT
 wait $TP
