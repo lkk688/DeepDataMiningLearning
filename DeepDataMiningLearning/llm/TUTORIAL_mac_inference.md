@@ -37,7 +37,7 @@ chip fast enough?".
 1. [How LLM inference uses the chip](#1-how-llm-inference-uses-the-chip)
 2. [The model: Qwen3.8-27B](#2-the-model-qwen38-27b)
 3. [Memory: where every gigabyte goes](#3-memory-where-every-gigabyte-goes)
-4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step) and [prefix caching in detail](#45-prefix-caching-in-detail)
+4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step) and [prefix caching in detail](#45-prefix-caching-in-detail) (with [block KV reuse](#beyond-prefix-caching-reusing-blocks-at-any-position))
 5. [The four engines and what each optimizes](#5-the-four-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal)
 6. [Measurements](#6-measurements)
 7. [What the measurements teach](#7-what-the-measurements-teach)
@@ -109,6 +109,12 @@ Qwen3.8-27B uses the Qwen3.5 architecture (`Qwen3_5ForConditionalGeneration`). I
 | vocabulary | 248,320 tokens; input embedding and output head are **not** tied |
 | context | 262,144 tokens natively |
 | extras | a 27-layer vision encoder (hidden 1,152, 16-pixel patches); **one MTP layer** for multi-token prediction |
+
+![Qwen3.8-27B architecture](docs/mac_inference_figs/arch_qwen38_27b.svg)
+
+*Figure: Qwen3.8-27B. Three of every four layers are Gated DeltaNet layers, which keep a fixed-size state (green);
+every fourth is full attention, which keeps a growing KV cache (orange). Every layer has a dense MLP, so all 27B
+parameters are read for every token.*
 
 Two parts of this design matter most for serving:
 
@@ -578,6 +584,80 @@ several GB/s, so restoring a 16K prefix from disk should take about half a secon
 turns were probably served from the RAM tier), against 37 s of prefill. But the cache needs a disk budget and an
 occasional clean-up.
 
+#### What lives on the SSD: weights or KV?
+
+This tutorial uses the SSD for three different things. They are easy to confuse:
+
+| what | written when | read when | example here |
+|---|---|---|---|
+| **KV / state of past prompts** (prefix cache, cold tier) | after a request, once | on a later request with the same prefix | oMLX's SSD tier (§4.5), mlx-vlm's APC disk tier, lithos-metal's `--prefix-cache-dir` |
+| **model weights that do not fit** (offload) | never: read straight from the checkpoint | every token, for the parts it needs | Flash-Next's routed experts and n-gram table (§9.2) |
+| converted weight packs | once, at first start | at start-up (memory-mapped) | lithos-metal's 15–19 GB packs |
+
+Prefix caching saves *prefill compute*: it skips recomputing a prompt. Weight offload saves *memory*: it runs a model
+larger than RAM. They can be combined, and on the 106 GB Flash-Next oMLX uses both.
+
+#### Beyond prefix caching: reusing blocks at any position
+
+Every engine in this tutorial does **prefix caching**, and so does the Anthropic API. Their caches are organized in
+blocks: 16 tokens in mlx-vlm, 256 or 2,048 in oMLX, message boundaries in lithos-metal. But each block is keyed by a
+*chained* hash of everything before it, so a block hits only if **the entire prefix up to it** matches. This is still
+prefix semantics. An agent's prompt, however, is assembled from parts that change independently:
+- fixed tool descriptions;
+- a system prompt;
+- files or documents it read earlier;
+- the conversation history;
+- the new message.
+
+When one part in the middle changes, everything after it is recomputed, even unchanged parts.
+
+![prefix vs block KV reuse](docs/mac_inference_figs/kv_reuse.svg)
+
+**Why reusing a block at a new position is hard.** Suppose the "history" segment's KV was computed when it started at
+position p, and now it starts at p′.
+
+1. **Position.** With RoPE, a key at position p is stored rotated: k̃ = R(p)·k. Rotations compose, R(p′) = R(p′ − p)·R(p),
+   so moving the block is one extra rotation of its keys. The position problem is therefore **solved exactly** for
+   RoPE. Values carry no position at all. Some systems store keys *unrotated* and apply RoPE inside attention, which
+   makes relocation free.
+2. **Context.** This is the hard part. The block's keys and values at layer ℓ ≥ 2 were computed while it attended to
+   *its old left context* (docs A), not the new one (docs B). No re-rotation can fix that. The KV is simply
+   different from what a full prefill would produce, and the error grows with depth. It matters most for tokens that
+   depended strongly on the context, such as references to the document.
+3. **Recurrent layers.** A Gated DeltaNet layer has no per-token KV to move. Its state after "history" is a summary of
+   *everything before it*, so it cannot be reused after a different prefix at all. For hybrid models like Qwen3.8, block
+   reuse would only help the full-attention layers, and the DeltaNet layers would still need to run over the segment.
+   This is an open problem.
+
+**What exists.** Methods differ in how they fix the context error:
+
+| approach | fix for the context error | trade-off |
+|---|---|---|
+| **Prompt Cache** (Gim et al., MLSys 2024) | prompts follow a *schema* of reusable modules with reserved positions | requires structured prompts; modules do not see each other |
+| **CacheBlend** (EuroSys 2025, best paper) | per layer, recompute the small set of tokens whose KV deviates most | reported TTFT 2.2–3.3× lower, throughput 2.8–5× higher than full recompute at similar quality; shipped in **LMCache** for vLLM |
+| **EPIC** (position-independent context caching) | recompute the first few tokens of each chunk (attention sinks), "AttnLink" | cheaper selection, static choice |
+| **KVLink**, **Block-Attention** | *train* the model so that blocks are encoded independently, with learned link tokens or block-wise attention | needs fine-tuning; exact reuse afterwards |
+| recent preprints (2026): RelaxKV, Kamera, SparseX, … | query-guided recompute, low-rank patches, segment-level paging | not yet peer-reviewed |
+
+In production, vLLM's and SGLang's own caches are prefix-only (hashed blocks or a radix tree). Non-prefix reuse comes
+from add-ons like LMCache with CacheBlend, mainly for RAG, where the same documents appear in different orders.
+None of the Mac engines here implements it.
+
+**Anthropic's prompt caching is prefix-based.** Its documentation says the cache key is "a hash of the prefix ending
+at" a marked block, that "cache hits require 100% identical prompt segments", and that the prefix order is
+`tools` → `system` → `messages`. A request may set up to 4 `cache_control` breakpoints. At each, the lookup walks back
+at most 20 blocks to find an earlier cached prefix. So the API is *block-structured*: you mark where segments end, and
+any of up to four earlier breakpoints can hit. But a segment is only reused **behind an identical prefix**, not at an
+arbitrary new position. How it is implemented internally is not public.
+
+**Practical advice for agent prompts** (on any engine with prefix caching):
+- order the prompt from the most stable to the least stable: tools → system prompt → long reference documents →
+  conversation history → new message;
+- keep tool definitions and their order fixed; put changing values (dates, IDs) at the end, not in the system prompt;
+- append to the history, never edit or reorder earlier turns. With hybrid models (Qwen3.8), MLX-LM can only reuse a
+  cache that the new prompt *extends* (§4.5);
+- when a document changes, put it after the parts that do not.
+
 ### 4.6 Chunked prefill and batching
 
 Prefill runs in chunks (MLX: 2,048 tokens; lithos-metal: 128 on this chip, 512 qualified only on the M5 Max).
@@ -844,22 +924,63 @@ Where the 99 GiB of the 4-bit `Jundot/Qwen3.8-Flash-Next-oQ4e-mtp` checkpoint go
 
 This table is the key to everything below. **94 % of the bytes are rarely touched.**
 
-**Qwen Sparse Attention (QSA).** Full attention reads every previous token. QSA first decides *which* context is worth
-reading, using a cheap indexer. The steps, from the report's equations and mlx-vlm's `Qwen4ExpQSAIndexer`:
+![Qwen3.8-Flash-Next architecture](docs/mac_inference_figs/arch_qwen38_flash_next.svg)
 
-1. A small indexer (MQA: 4 query heads, 1 shared key head, dim 128) projects each token.
-2. Its keys are cut into **micro-blocks of r = 4 tokens** and average-pooled, so there is one key per block. Each
-   block gets one position (its start) for RoPE.
-3. Each query scores every complete block: I(i, b) = Σ over heads of ReLU(⟨q_i, k̄_b⟩).
-4. It keeps the top K/r = **512 blocks (2,048 tokens)** plus the unfinished last block, and the real attention runs
-   over only those tokens.
+*Figure: Qwen3.8-Flash-Next. Compared with the 27B: the MLP becomes a 512-expert MoE; every fourth layer becomes
+sparse attention (QSA); the hidden state is carried in four residual streams; and an n-gram memory is added at layer 2.
+Blue parts are always needed; orange parts are large but read sparsely, so they can live on SSD.*
 
-Pooling makes the indexer about 4× cheaper than token-level selection (DeepSeek's DSA): the report measures 3.8×/4.4×
-faster indexer prefill/decode at compression ratio 4, and **7.6× / 4.9× faster attention** than dense GQA at 1M tokens. The indexer is
-trained by distilling the full attention distribution into the block scores (a KL loss), then fine-tuned sparsely.
+The next three subsections explain the three new mechanisms. Each one changes a different cost:
+- **QSA** reduces attention work at long context;
+- **the gated residual** adds expressiveness cheaply;
+- **the n-gram embedding** adds 51B parameters for almost no compute.
 
-**Gated Residual.** The residual is widened to 4 streams H ∈ ℝ^{4×2560}, in the style of Hyper-Connections and AltUp.
-Each block reads and writes the streams through gates (`Qwen4ExpGatedResidual`):
+#### QSA: sparse attention at micro-block granularity
+
+**The problem.** Full attention compares each query with *every* earlier key: O(n) work per token and O(n²) per
+prompt. At 256K–1M tokens that dominates. Sparse attention attends to only the K most relevant keys. Then
+the problem becomes *finding* them cheaply. DeepSeek's DSA uses a small "indexer" that scores every token, but that
+indexer is itself O(n) per query. QSA makes the indexer cheaper by scoring **blocks of 4 tokens** instead of tokens.
+
+![Qwen Sparse Attention](docs/mac_inference_figs/qsa.svg)
+
+The steps, from the report's equations (12)–(16) and mlx-vlm's `Qwen4ExpQSAIndexer`:
+
+1. **Indexer projection.** A tiny MQA indexer (4 query heads, 1 shared key head, dim 128) computes a query q̂ⁱ for the
+   current token and a key kⱼ for every earlier token. It is much smaller than the real attention: 24 Q heads of 256.
+2. **Compress keys into micro-blocks.** Keys are cut into non-overlapping blocks of r = 4 tokens, average-pooled and
+   normalized: k̂_b = RMSNorm(AvgPool(k_{4b … 4b+3})). RoPE is applied *after* pooling, at the block's start position.
+   Averaging rotated keys would mix four different phases.
+3. **Score blocks.** For query i and every *complete* block b (block-causal, so no peeking):
+   I(i, b) = Σ over the 4 indexer heads of ReLU(⟨qʰᵢ, k̄_b⟩).
+4. **Select.** Keep the top K/r = 2,048/4 = **512 blocks**, expand them back to their tokens, and always include the
+   unfinished last block.
+5. **Core attention** runs only over those ≤ 2,048 + 3 tokens, with the full 24 Q / 2 KV heads.
+
+Cost per query becomes O(n/4) for the indexer plus O(2,048) for attention, instead of O(n). The report measures this at
+1M tokens: indexer prefill/decode 3.8×/4.4× faster than token-level indexing, and attention including the indexer
+**7.6× faster than dense GQA in prefill and 4.9× in decode**. The indexer is trained in two stages:
+1. **Distillation:** it learns to predict the dense model's attention distribution. That distribution is summed over
+   heads and max-pooled to blocks, and the loss is KL(teacher ‖ softmax(I)).
+2. **Sparse training:** it is then trained with the sparse attention switched on.
+
+Only 12 of the 48 layers are QSA layers. The other 36 are Gated DeltaNet, which has no attention cost growth at all.
+
+**What it means on a Mac.** The KV cache still stores every token: 12 layers × 2 × 2 KV heads × 256 × 2 B = 24 KiB per
+token, against 64 KiB for the 27B. But each decode step *reads* only about 2K of them. That is why prefill stays fast at
+16K (§9.3) even though the model is much larger.
+
+#### Gated residual: four streams with read and write gates
+
+**The problem.** In a standard pre-norm transformer every block reads the same single residual vector and adds its
+output to it. Features written early must compete with everything written later, and every block sees the same
+mixture. Hyper-Connections and AltUp widen the residual into several parallel streams. The report finds that widening
+alone, with fixed read weights and round-robin writes, already lowers the loss of a 25B MoE by about 0.01.
+
+![Gated residual](docs/mac_inference_figs/gated_residual.svg)
+
+Flash-Next keeps **4 streams of 2,560** values: a 10,240-value residual for a model whose blocks are only 2,560 wide.
+Around every mixer and every MoE block (`Qwen4ExpGatedResidual`):
 
 ```math
 n = \mathrm{RMSNorm}(H),\quad
@@ -869,33 +990,53 @@ y = \mathrm{Block}(x),\quad
 H_s \leftarrow H_s + 2\,\sigma(w_s^{\top} n / 4)\; y .
 ```
 
-The read gate g is element-wise and data-dependent, through a 320-rank bottleneck. The write gate is one scalar
-per stream. The report finds that widening alone already lowers loss, and the gates decide how the extra capacity
-is used.
+- **Read gate g** (element-wise, data-dependent): each of the 10,240 values gets its own weight in (0, 1), computed
+  through a rank-320 bottleneck, so it is cheap. The block reads a *learned, token-dependent mixture* of the streams.
+- **Write gate** (one scalar per stream, in (0, 2)): the block's output is added to each stream with its own strength.
+  For example, an attention block can write mostly to one stream that later blocks read.
 
-**N-gram embedding.** A normal embedding looks up one row per *token*. Flash-Next additionally looks up rows for the
-**bigram and the trigram ending at each token**, a kind of memory of short phrases. Step by step (from
-`Qwen4ExpNGramEmbedding` and `Qwen4ExpPLELayer`):
+The cost is small: the blocks still compute on 2,560 values, and the extra work is the gate projections plus
+carrying 4× the residual memory traffic. The report traces how the gates route one block's output to different
+"readers" near and far with different strengths.
 
-1. **Hash** the n-gram: multiply each token id by a fixed odd 64-bit multiplier and XOR the products. The
-   multipliers are generated per layer from a seed with splitmix64.
-2. **Use 16 hash heads**: 2 orders (bigram, trigram) × 8 heads. Head h reduces the hash modulo its **own prime
-   p_h ≈ 20,000,000**, so two n-grams that collide in one head almost never collide in all 16.
-3. **Look up** one row of 160 values per head, and concatenate the 16 rows into a 2,560-dim vector e. The table holds
-   about 16 × 20M rows × 160 = **51B parameters**.
-4. **Inject at layer 2 with a gate.** The model's hidden state is the query, and e provides a key and a value. A gate
-   σ(signed-√(⟨k_s, q_s⟩/√d)) decides, per residual stream, how much of the value to add. A short dilated depthwise
-   convolution (kernel 4, dilation 3) then mixes neighbouring positions. The model can therefore ignore memory
-   that does not fit the context.
+#### N-gram embedding: 51B parameters of memory for almost no compute
 
-The report's ablations:
-- one n-gram layer is enough, and layer 2 works well;
-- loss falls monotonically as the table grows from 20× to 200× the base vocabulary;
-- Chinese benchmarks improve the most.
+**The idea.** An MoE adds parameters but still does matrix work for every active expert. An *embedding* adds
+parameters with no matrix work at all: a lookup. A unigram embedding only knows the current token. An **n-gram
+embedding** looks up a vector for the *phrase* ending at this token, such as "New York" or "def __init__". It works
+like a huge, sparse memory of local context.
 
-It places the layer at 2 so that **host-memory prefetching overlaps with layer 1**. It also notes that deterministic
-addressing allows offloading and asynchronous prefetching. The same idea, hashed n-gram memory gated by the
-hidden state, appears as "Engram" in recent DeepSeek models (oMLX's `deepseek_v41_engram_ssd_offload`).
+![N-gram embedding](docs/mac_inference_figs/ngram_embedding.svg)
+
+Step by step (`Qwen4ExpNGramEmbedding`, `Qwen4ExpPLELayer`):
+
+1. **Collect the n-grams** ending at position t: the bigram (x_{t−1}, x_t) and the trigram (x_{t−2}, x_{t−1}, x_t).
+   N-grams do not cross document boundaries: positions before an end-of-text token are filled with that token.
+2. **Hash each n-gram** to a 64-bit number: multiply each token id by a fixed odd multiplier and XOR the products,
+   h = (x_t · m₀) ⊕ (x_{t−1} · m₁) ⊕ (x_{t−2} · m₂). The multipliers come from a seeded splitmix64 generator.
+3. **Split into 16 hash heads**: 8 for the bigram and 8 for the trigram. Head h takes the hash **modulo its own prime
+   p_h**, a distinct prime just above 20,000,000, and adds the head's offset in the table. With 20M slots per head,
+   unrelated n-grams do collide in one head. But because every head uses a different prime, two n-grams that collide
+   in one head almost never collide in another. Together the 16 heads give each n-gram a near-unique 16-row
+   signature. This is the same trick as a count-min sketch or a Bloom filter.
+4. **Look up 16 rows** of 160 values each and concatenate them into e ∈ ℝ^2560. The table has about 16 × 20M =
+   320M rows: **51B parameters, 29.8 GiB at 4-bit**, of which each token touches 16 rows, about 1.4 KB.
+5. **Gate it into the model at layer 2.** The hidden state of each residual stream is a *query* q_s; the n-gram vector
+   gives a key W_k e and a value W_v e. The gate σ(sign(a)·√|a|), with a = ⟨W_k e, q_s⟩/√d, decides how much of the
+   value each stream takes. So the model can ignore a memory that does not fit the context, for example a hash
+   collision. A short depthwise convolution (kernel 4, dilation 3 = the n-gram size) then mixes neighbouring positions.
+
+**Why it can live on SSD.** The addresses depend only on the *token ids*, not on any activation. They are known the
+moment the tokens are, before layer 1 even runs. The report places the lookup at layer 2 deliberately, so the rows
+can be **prefetched from host memory while layer 1 computes**. The report's ablations:
+- one n-gram layer is enough; its placement matters little, and layer 2 is among the best;
+- loss falls monotonically as the table grows from 20× to 200× the 250K base vocabulary;
+- Chinese benchmarks gain the most;
+- under a *fixed* total budget, moving parameters from experts into n-grams did not help downstream. The two play
+  different roles, so the n-gram table is added on top.
+
+The same idea, a hashed n-gram memory gated by the hidden state, appears as "Engram" in recent DeepSeek models
+(oMLX's `deepseek_v41_engram_ssd_offload`).
 
 ### 9.2 How SSD offload works
 
@@ -926,17 +1067,50 @@ this table.
    this model) and each expert is read at most once per layer per call.
 7. **The MTP head stays resident** while the backbone's experts stream, so speculative decoding still works.
 
-**What it costs.** A decode step reads the resident 5.9 GiB, plus the experts that miss. With hit rate h, the SSD
-traffic per token is about (1 − h) × 480 expert uses × about 2.8 MB. Our runs logged exactly that:
+![expert offload](docs/mac_inference_figs/expert_offload.svg)
 
-| residency | resident experts | hit rate | read from SSD per 512-token answer | per token |
-|---:|---:|---:|---:|---:|
-| 25 % | 17 GB | 78–85 % | 104–130 GB | about 230 MB |
-| 50 % | 34 GB | 91–96 % | 24–48 GB | about 70 MB |
+#### Doesn't per-token expert switching make SSD traffic explode? Measured latency
 
-The internal SSD reads several GB/s, so at 25 % residency decode is limited by the SSD, not the GPU. Reading does not
-wear an SSD the way writing does, so this traffic is harmless for the drive. oMLX's own measurements show the curve on
-a smaller MoE model: decode throughput falls roughly as memory^0.5.
+Each token routes to a different set of 10 experts in each of the 48 layers, so this is a natural worry. The
+measurements answer it. All counters below are from oMLX's per-request logs on this Mac; the SSD probe is
+[`mac_inference/ssd_probe.py`](mac_inference/ssd_probe.py): random reads of 2.76 MB, the size of one expert, with the
+page cache bypassed.
+
+| per generated token | 25 % resident | 50 % resident |
+|---|---:|---:|
+| expert uses | 340–460 | 335–470 |
+| hit rate | 78–85 % | 91–96 % |
+| misses (SSD reads) | 74–92 | 17–34 |
+| bytes read from SSD | 200–250 MB | 47–93 MB |
+| decode speed | 15.5–17.8 tok/s, **about 60 ms per token** | 23–28 tok/s, **about 38 ms per token** |
+
+Five reasons it does not explode:
+
+1. **Routing is skewed and local, not random.** If every token picked 10 random experts out of 512, a cache holding 25 %
+   of them would hit only 25 % of the time. We measured **about 80 %**. A few experts are used far more than others,
+   and consecutive tokens of the same text tend to reuse experts. The decayed-count eviction keeps exactly those.
+2. **Speculation shares expert reads.** A Lightning MTP verify pass runs several tokens through each layer together,
+   and they share the experts they route to. That is why uses per committed token are 340–460, not the naive
+   10 × 48 = 480, and why misses are paid once per pass rather than once per token.
+3. **The SSD is fast and parallel.** We measured random 2.76 MB reads at **7.3 GB/s with one thread** (0.36 ms per
+   expert) and **17–18 GB/s with 12–24 threads** (1.9 ms per read, but 12 at a time). 230 MB per token at 17 GB/s is
+   only about 14 ms of transfer.
+4. **It is latency, not bandwidth, that sets the pace.** A layer's experts are only known after its router runs, so
+   the reads cannot start earlier. Prefetching the next layer's experts was tried and rejected (§9.2). Each layer
+   therefore waits for its own few misses, about 0.4–1 ms, 48 times per pass. That puts roughly 20–45 ms of
+   the 60 ms per token at 25 % residency in waiting for the SSD. Our *average* read rate was only about 4 GB/s
+   (230 MB × 17 tok/s), far below the drive's 17 GB/s. The overlap trick (compute resident routes first) hides part
+   of each wait.
+5. **Reads only.** Nothing is written during inference. Reading does not wear an SSD the way writing does.
+
+Prefill is different: a long prompt routes to nearly every expert in every layer. oMLX therefore processes it in
+8,192-token chunks *in expert order*, reading each missing expert once per layer per chunk. That is up to
+63 GiB × (1 − residency) per chunk, about 47 GiB at 25 %, or roughly 3 s at 17 GB/s. That is part of the 34 s TTFT
+for 16K tokens.
+
+**The design rule** that follows: the more RAM you can give the expert cache, the fewer SSD waits per token. Decode
+time falls roughly as memory^0.5 (oMLX's measurement). But the cache must leave room for the KV cache and prefill
+buffers, or the memory guard refuses requests (§9.3).
 
 ### 9.3 Running it on this Mac
 
@@ -1152,6 +1326,9 @@ the scripts of §10 on a single Mac.
    - How much can snapshots be compressed? oMLX offers int8 and Hadamard-rotated int8. What does each cost in output
      agreement?
    - When does an SSD restore beat recomputation?
+   - Block (non-prefix) KV reuse for agents: segments such as tools, documents and history change independently.
+     CacheBlend-style selective recompute works for attention layers, but how do you reuse anything for Gated DeltaNet
+     layers, whose state summarizes everything before a segment (§4.5)?
 6. **Memory at long context.**
    - KV-cache quantization (TurboQuant, Affine4/8) and its effect on quality at 128K–256K tokens.
    - The trade-off between the attention and DeltaNet layer ratio and the cache size (§3.2).
@@ -1193,5 +1370,7 @@ the scripts of §10 on a single Mac.
   [`Jundot/Qwen3.8-27B-oQ4e-mtp`](https://huggingface.co/Jundot/Qwen3.8-27B-oQ4e-mtp),
   [`mlx-community/Qwen3.8-27B-MTP-4bit`](https://huggingface.co/mlx-community/Qwen3.8-27B-MTP-4bit).
 - Megakernels: [Mirage Persistent Kernel](https://arxiv.org/abs/2512.22219). DSpark: [arXiv 2607.05147](https://arxiv.org/abs/2607.05147).
+- Qwen3.8-Flash-Next: [model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next), [technical report](https://github.com/QwenLM/Qwen3.8-Flash-Next), [oMLX MoE expert offload](https://github.com/jundot/omlx/blob/main/docs/experimental/MoE_Expert_Offload.md), [npanj/llama.cpp](https://github.com/npanj/llama.cpp), [LLMCheck](https://llmcheck.net/blog/qwen3-8-flash-next-on-mac/).
+- KV reuse: [CacheBlend](https://arxiv.org/abs/2405.16444) and [its LMCache write-up](https://blog.lmcache.ai/2025-03-31-eurosys), [LMCache](https://github.com/LMCache/LMCache), [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), [Kamera](https://arxiv.org/pdf/2606.23581), [SparseX](https://arxiv.org/pdf/2606.01751).
 - llama.cpp and Apple Silicon: [MTP on Metal issue](https://github.com/ggml-org/llama.cpp/issues/23752),
   [MTP and mmproj](https://github.com/unslothai/unsloth/issues/5534).
