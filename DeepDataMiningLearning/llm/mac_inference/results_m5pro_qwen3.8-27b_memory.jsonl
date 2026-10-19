@@ -1,0 +1,5 @@
+{"model": "mlx-community/Qwen3.8-27B-4bit", "size": 0, "weights_gb": 15.133, "active_gb": 15.134}
+{"model": "mlx-community/Qwen3.8-27B-4bit", "size": 1024, "prefill_s": 1.9, "prefill_tok_s": 529.8, "active_gb": 15.355, "peak_gb": 17.028, "cache_ArraysCache_gb": 0.1539, "cache_KVCache_gb": 0.0671, "kv_bytes_per_token": 65536}
+{"model": "mlx-community/Qwen3.8-27B-4bit", "size": 4096, "prefill_s": 7.8, "prefill_tok_s": 527.5, "active_gb": 15.556, "peak_gb": 18.264, "cache_ArraysCache_gb": 0.1539, "cache_KVCache_gb": 0.2684, "kv_bytes_per_token": 65536}
+{"model": "mlx-community/Qwen3.8-27B-4bit", "size": 16384, "prefill_s": 34.2, "prefill_tok_s": 478.8, "active_gb": 16.362, "peak_gb": 19.07, "cache_ArraysCache_gb": 0.1539, "cache_KVCache_gb": 1.0737, "kv_bytes_per_token": 65536}
+{"model": "mlx-community/Qwen3.8-27B-4bit", "size": 32768, "prefill_s": 77.9, "prefill_tok_s": 420.4, "active_gb": 17.435, "peak_gb": 20.143, "cache_ArraysCache_gb": 0.1539, "cache_KVCache_gb": 2.1475, "kv_bytes_per_token": 65536}

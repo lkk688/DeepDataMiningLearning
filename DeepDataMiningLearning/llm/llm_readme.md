@@ -4,6 +4,7 @@
 |---|---|
 | **Students with a laptop / Mac** | [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md): download, run, expected time / memory / results |
 | **The course** | [`TUTORIAL_nanolm.md`](TUTORIAL_nanolm.md). Part 1: LM basics, RNN → LSTM → Transformer, tokenizers, sampling. Part 2: pre-training on web text, using / SFT / DPO-tuning pretrained LLMs. Part 3: Parameter Golf. Part 4: methodology |
+| **Serving big models on a Mac** | [`TUTORIAL_mac_inference.md`](TUTORIAL_mac_inference.md): Qwen3.8-27B on Apple Silicon with MLX-LM, mlx-vlm, oMLX and lithos-metal; memory, prefill vs decode, speculative decoding, prefix caching, vision |
 | **The code** | [`nanolm/`](nanolm/README.md): one config-driven package for every part (CUDA / Apple MPS / CPU) |
 | the previous course code | [`legacy/`](legacy/README.md), with a map from each old function to its replacement |
 
