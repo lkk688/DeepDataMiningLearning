@@ -25,7 +25,7 @@ machine, following this page:
 | 4 | Part 1: tokenizers study (optional) | — | 31.3 min (8 runs) | 2.2–3.5 GB; GPT-2 BPE 8.5 GB‡ |
 | 5 | Part 2: GPT on real web text (FineWeb) | 309 MB | 18 s + 3.1 min + 26.7 min | 2.8–3.9 GB |
 | 6 | Part 3: evaluate / instruction-tune / preference-tune a real LLM | 3.4 GB | (a) 35 s; (b) 20.2 min; (c) 11.9 min; (d) 31.3 min | 4.9–13.8 GB |
-| 6e | Part 3: serve Qwen3.8-27B (→ [`TUTORIAL_mac_inference.md`](TUTORIAL_mac_inference.md)) | 36–53 GB | 17 tok/s; 37–44 tok/s with speculative decoding; 16K prompt 37–74 s | 15–23 GB |
+| 6e | Part 3: serve Qwen3.8-27B (→ [`TUTORIAL_mac_inference.md`](TUTORIAL_mac_inference.md)) | 36–53 GB | 17 tok/s; 37–75 tok/s with speculative decoding; 16K prompt 28–74 s | 15–23 GB |
 | 7 | Part 4: Parameter Golf mini (baseline + verified stack) | — | 23.3 min + 35.3 min | 4.0–6.2 GB |
 | 7b | Part 4: the same golf model on Apple MLX (Mac only) | — | 4.9 min (4.8× faster than PyTorch MPS) | 4.7 GB |
 | 8 | Part 4: golf ablation (optional, overnight) | — | *not measured* (est. 3–4 h) | — |
@@ -433,9 +433,10 @@ exam-style and math data, is far ahead on MMLU (0.50 vs 0.26, where 0.25 is rand
 ## Step 6e. Serve a 27B model on the Mac (optional, Mac with 32 GB+)
 
 How fast can a laptop *run* a model 2,500× larger than anything we train? This step has moved to its own tutorial,
-**[`TUTORIAL_mac_inference.md`](TUTORIAL_mac_inference.md)**. It serves **Qwen3.8-27B** with MLX-LM, mlx-vlm, oMLX and
-lithos-metal, measures decode, prefill, agent multi-turn and vision, works out where every gigabyte goes, and explains
-each engine's optimizations. The scripts are in [`mac_inference/`](mac_inference/). Results measured on this M5 Pro:
+**[`TUTORIAL_mac_inference.md`](TUTORIAL_mac_inference.md)**. It serves **Qwen3.8-27B** with MLX-LM, mlx-vlm, oMLX,
+lithos-metal and Splash, measures decode, prefill, agent multi-turn and vision, works out where every gigabyte goes, and explains
+each engine's optimizations. It also compares the Mac with an NVIDIA Jetson Thor. The scripts are in
+[`mac_inference/`](mac_inference/). Results measured on this M5 Pro:
 
 | engine | decode tok/s (code / prose / math) | TTFT, 16K-token prompt | agent follow-up turn | vision |
 |---|---:|---:|---:|:---:|
@@ -443,6 +444,7 @@ each engine's optimizations. The scripts are in [`mac_inference/`](mac_inference
 | mlx-vlm + MTP (`APC_ENABLED=1`) | 40 / 32 / 37 | 34–36 s | 0.7 s | ✓ |
 | oMLX, oQ4e + MTP | 42 / 34 / 45 | 47 s | 0.6–0.8 s | ✓ |
 | lithos-metal + DSpark | 52 / 30 / 52 | 74 s | 0.9 s | — |
+| **Splash** + DFlash2 (GPU + Neural Engine prefill) | **86 / 50 / 90** | **28 s** | **0.24 s** | ✓ |
 
 Memory, measured with MLX:
 - **Weights:** 15.1 GB in 4-bit (16.05 GB with the vision encoder).

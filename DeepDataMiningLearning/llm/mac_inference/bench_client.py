@@ -36,10 +36,10 @@ def run(url, model, prompt, max_tokens, extra):
                     t_first = t_first or now; t_last = now; chunks += 1; text.append(piece)
     n = (usage or {}).get("completion_tokens")
     if not n and text:                       # server sent no usage: count with the model's own tokenizer
-        import glob
+        import glob, os
         from tokenizers import Tokenizer
-        tj = glob.glob(__import__("os").path.expanduser(
-            "~/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/*/tokenizer.json"))[0]
+        tj = os.environ.get("TOKENIZER_JSON") or sorted(glob.glob(os.path.expanduser(
+            "~/.cache/huggingface/hub/models--*Qwen3.8*/snapshots/*/tokenizer.json")))[0]
         n = len(Tokenizer.from_file(tj).encode("".join(text), add_special_tokens=False).ids)
     return {"ttft_s": round(t_first - t0, 3), "total_s": round(t_last - t0, 3), "completion_tokens": n,
             "prompt_tokens": (usage or {}).get("prompt_tokens"), "chunks": chunks,
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     ap.add_argument("--url", default="http://127.0.0.1:8000"); ap.add_argument("--model", required=True)
     ap.add_argument("--label", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--max-tokens", type=int, default=512); ap.add_argument("--repeats", type=int, default=2)
-    ap.add_argument("--extra", default="{}", help="extra JSON fields for the request body")
+    ap.add_argument("--extra", default=__import__("os").environ.get("EXTRA_JSON", "{}"), help="extra JSON fields for the request body (default: $EXTRA_JSON)")
     a = ap.parse_args()
     run(a.url, a.model, "Say hi.", 16, json.loads(a.extra))                     # warm-up
     for name, p in PROMPTS.items():

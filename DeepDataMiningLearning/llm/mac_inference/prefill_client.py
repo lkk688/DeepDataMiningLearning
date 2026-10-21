@@ -14,8 +14,17 @@ from pathlib import Path
 from tokenizers import Tokenizer
 
 HERE = Path(__file__).resolve().parent
-TOK = Tokenizer.from_file(glob.glob(os.path.expanduser(
-    "~/.cache/huggingface/hub/models--mlx-community--Qwen3.8-27B-4bit/snapshots/*/tokenizer.json"))[0])
+def _tokenizer_path():
+    """TOKENIZER_JSON, else any Qwen3.8 checkpoint's tokenizer in the Hugging Face cache (Mac or Jetson)."""
+    if os.environ.get("TOKENIZER_JSON"):
+        return os.environ["TOKENIZER_JSON"]
+    hits = sorted(glob.glob(os.path.expanduser("~/.cache/huggingface/hub/models--*Qwen3.8*/snapshots/*/tokenizer.json")))
+    if not hits:
+        raise SystemExit("no Qwen3.8 tokenizer.json found; set TOKENIZER_JSON")
+    return hits[0]
+
+
+TOK = Tokenizer.from_file(_tokenizer_path())
 CORPUS_IDS = TOK.encode("\n\n".join(p.read_text() for p in sorted(HERE.parent.glob("*.md"))) * 4,
                         add_special_tokens=False).ids        # this course's own docs, repeated as needed
 
@@ -24,9 +33,12 @@ def text_of(n, offset=0):
     return TOK.decode(CORPUS_IDS[offset: offset + n])
 
 
+EXTRA = {}
+
+
 def request(url, model, messages, max_tokens=16):
     body = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": 0.0,
-            "stream": True, "stream_options": {"include_usage": True}}
+            "stream": True, "stream_options": {"include_usage": True}, **EXTRA}
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"})
     t0 = time.perf_counter(); ttft = None; usage = None; out = []
@@ -55,7 +67,9 @@ def main():
     ap.add_argument("--label", required=True); ap.add_argument("--out", required=True)
     ap.add_argument("--sizes", type=int, nargs="+", default=[1024, 4096, 16384, 32768])
     ap.add_argument("--agent-size", type=int, default=16384)
+    ap.add_argument("--extra", default=os.environ.get("EXTRA_JSON", "{}"), help="extra JSON fields for every request body (default: $EXTRA_JSON)")
     a = ap.parse_args()
+    EXTRA.update(json.loads(a.extra))
     rng = random.Random(0)
     log = lambda r: (print(json.dumps(r), flush=True), open(a.out, "a").write(json.dumps(r) + "\n"))
     request(a.url, a.model, [{"role": "user", "content": "Say hi."}])                     # warm-up

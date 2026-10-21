@@ -1,11 +1,12 @@
 # Serving a 27B LLM on a Mac: memory, speed and inference engines
 
 This tutorial serves **Qwen3.8-27B**, a 27-billion-parameter vision-language model, on one Apple-Silicon laptop.
-It compares four engines: **MLX-LM**, **mlx-vlm**, **oMLX** and **lithos-metal**. It works out where every gigabyte
+It compares five engines: **MLX-LM**, **mlx-vlm**, **oMLX**, **lithos-metal** and **Splash**. It works out where every gigabyte
 of memory goes and why decoding and prompt reading (prefill) are limited by different hardware resources. It also
 explains the optimization each engine uses: quantization, kernel fusion, speculative decoding, prefix caching,
-GPU-resident decoding. Every number below was measured on the machine described next, and every measurement can
-be reproduced with the scripts in [`mac_inference/`](mac_inference/).
+GPU-resident decoding, Neural Engine prefill. Every number below was measured on the machine described next, and every
+measurement can be reproduced with the scripts in [`mac_inference/`](mac_inference/). §10 runs the same tests on an
+NVIDIA Jetson Thor, to compare the Mac with an edge computer built around an NVIDIA GPU.
 
 It is the inference companion to [`TUTORIAL_nanolm.md`](TUTORIAL_nanolm.md), where we *train* models up to about 11M
 parameters. Part 3 of that tutorial uses pretrained models of 0.1–0.5B. Here the model is 2,500× larger than our largest
@@ -16,9 +17,9 @@ chip fast enough?".
 |---|---|
 | machine | MacBook Pro, **Apple M5 Pro** (20-core GPU), **64 GB** unified memory |
 | OS | macOS 26.5.2 |
-| engines | mlx-lm 0.32.2, mlx-vlm 0.7.8, oMLX 0.7.1rc1, lithos-metal 0.1.2 (`5485ad6`); MLX 0.32.4 |
+| engines | mlx-lm 0.32.2, mlx-vlm 0.7.8, oMLX 0.7.1rc1, lithos-metal 0.1.2 (`5485ad6`), Splash 1.4.0; MLX 0.32.4 |
 | model | Qwen3.8-27B: affine 4-bit (`mlx-community/Qwen3.8-27B-4bit`), oQ4e (`Jundot/Qwen3.8-27B-oQ4e-mtp`), NVFP4 (`nvidia/Qwen3.8-27B-NVFP4`) |
-| date | 2026-10-18/19 |
+| date | 2026-10-18/20 |
 
 **Results in one table** (details in §6):
 
@@ -27,8 +28,11 @@ chip fast enough?".
 | MLX-LM | 17 / 17 / 17 | 37 s | 0.5 s | — |
 | mlx-vlm + MTP (`APC_ENABLED=1`) | 40 / 32 / 37 | 34–36 s | 0.7 s | ✓ |
 | **oMLX**, oQ4e + MTP | 42 / **34** / 45 | 47 s | 0.6–0.8 s | ✓ |
-| lithos-metal + DSpark | **52** / 30 / **52** | 74 s | 0.9 s | — |
+| lithos-metal + DSpark | 52 / 30 / 52 | 74 s | 0.9 s | — |
+| **Splash** + DFlash2, ANE prefill (§5.2) | **86** / **50** / **90** | **28 s** | **0.24 s** | ✓ |
 | *Qwen3.8-Flash-Next* (125B MoE, 106 GB) on oMLX with SSD expert offload (§9) | 18 / 16 / 17 | 34 s | 1.3 s | supported, not tested |
+| *Qwen3.8-Flash-Next*, 2-bit GGUF (67 GB) on **Splash**, n-gram table on SSD (§9.3) | **163 / 89 / 139** | **12 s** | **0.15 s** | ✓ |
+| *for comparison:* Qwen3.8-27B on a **Jetson Thor**, vLLM NVFP4 + MTP (§10) | 29 / 23 / 34 | 7 s | 0.5–0.6 s | not tested |
 
 ---
 
@@ -38,14 +42,15 @@ chip fast enough?".
 2. [The model: Qwen3.8-27B](#2-the-model-qwen38-27b)
 3. [Memory: where every gigabyte goes](#3-memory-where-every-gigabyte-goes)
 4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step) and [prefix caching in detail](#45-prefix-caching-in-detail) (with [block KV reuse](#beyond-prefix-caching-reusing-blocks-at-any-position))
-5. [The four engines and what each optimizes](#5-the-four-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal)
+5. [The five engines and what each optimizes](#5-the-five-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal) and [at Splash](#52-a-closer-look-at-splash)
 6. [Measurements](#6-measurements)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
 9. [A model that does not fit in memory: Qwen3.8-Flash-Next](#9-a-model-that-does-not-fit-in-memory-qwen38-flash-next)
-10. [Reproduce it](#10-reproduce-it)
-11. [Research directions](#11-research-directions)
-12. [Exercises](#12-exercises)
+10. [The same models on an NVIDIA Jetson Thor](#10-the-same-models-on-an-nvidia-jetson-thor)
+11. [Reproduce it](#11-reproduce-it)
+12. [Research directions](#12-research-directions)
+13. [Exercises](#13-exercises)
 
 ---
 
@@ -665,21 +670,21 @@ Larger chunks reuse each weight read for more tokens but need more scratch (§3.
 interleaves several requests' decode steps in one batch, which raises total throughput when more than one client is
 active. Our tests send one request at a time.
 
-## 5. The four engines and what each optimizes
+## 5. The five engines and what each optimizes
 
-| | **MLX-LM** | **mlx-vlm** | **oMLX** | **lithos-metal** |
-|---|---|---|---|---|
-| what it is | Apple's reference LLM runner on MLX | MLX runner for vision-language models | a server on top of mlx-lm + mlx-vlm, with a menu-bar app | its own engine that generates Metal megakernels |
-| kernels | MLX quantized matmul, fused SDPA, `mx.compile` | MLX | MLX + native Qwen3.5-family prefill/decode kernels | generated per-layer megakernels, per-chip tuned recipes |
-| weights | affine 2–8-bit | affine | affine, **oQ mixed precision** | affine 4-bit (`mlx-community`), **NVFP4** |
-| speculative decoding | separate draft model only; **drops Qwen3.8's MTP weights** | **MTP**, EAGLE-3, DFlash drafters | **Lightning MTP** (adaptive depth), DFlash | **DSpark** (7 drafts + anchor) |
-| prefix cache | LRU of whole caches (no trimming for DeltaNet) | APC: hashed 16-token blocks + state checkpoints, RAM + disk (**opt-in**) | paged blocks, copy-on-write, RAM + **SSD** tiers | exact-token prefix checkpoints, RAM (+ optional disk) |
-| GPU-resident decode loop | — | — | — | **yes** (indirect command buffer) |
-| batching | sequential | sequential | **continuous batching** | one generation at a time |
-| vision | — (404 on image input) | **yes** | **yes** (images, video) | — |
-| APIs | OpenAI | OpenAI | OpenAI + **Anthropic**; admin UI; integrations for OpenCode, Codex, … | OpenAI, Responses, Anthropic, Ollama |
-| install | `pip install mlx-lm` | `pip install mlx-vlm` | release wheel or DMG (precompiled kernels) | build from source (22 s) or Homebrew |
-| models | almost every MLX checkpoint | most VLMs | mlx-lm + mlx-vlm models | a few validated pairs (Qwen3.8-27B, Qwen3.6-35B-A3B) |
+| | **MLX-LM** | **mlx-vlm** | **oMLX** | **lithos-metal** | **Splash** |
+|---|---|---|---|---|---|
+| what it is | Apple's reference LLM runner on MLX | MLX runner for vision-language models | a server on top of mlx-lm + mlx-vlm, with a menu-bar app | its own engine that generates Metal megakernels | its own C++/Metal engine, one draft and kernel set per model family |
+| kernels | MLX quantized matmul, fused SDPA, `mx.compile` | MLX | MLX + native Qwen3.5-family prefill/decode kernels | generated per-layer megakernels, per-chip tuned recipes | precompiled Metal kernels per GPU family; M5 path feeds the neural accelerators; FFN on the **Neural Engine** in prefill |
+| weights | affine 2–8-bit | affine | affine, **oQ mixed precision** | affine 4-bit (`mlx-community`), **NVFP4** | GGUF 1–8-bit, MLX affine, NVFP4; repacked at load, no requantization |
+| speculative decoding | separate draft model only; **drops Qwen3.8's MTP weights** | **MTP**, EAGLE-3, DFlash drafters | **Lightning MTP** (adaptive depth), DFlash | **DSpark** (7 drafts + anchor) | **DFlash2** (8-row block: anchor + 7 proposals) |
+| prefix cache | LRU of whole caches (no trimming for DeltaNet) | APC: hashed 16-token blocks + state checkpoints, RAM + disk (**opt-in**) | paged blocks, copy-on-write, RAM + **SSD** tiers | exact-token prefix checkpoints, RAM (+ optional disk) | 32-token pages, RAM + **SSD** tiers, deduplication, optional persistent |
+| GPU-resident decode loop | — | — | — | **yes** (indirect command buffer) | — |
+| batching | sequential | sequential | **continuous batching** | one generation at a time | **continuous batching** with priorities |
+| vision | — (404 on image input) | **yes** | **yes** (images, video) | — | **yes** |
+| APIs | OpenAI | OpenAI | OpenAI + **Anthropic**; admin UI; integrations for OpenCode, Codex, … | OpenAI, Responses, Anthropic, Ollama | OpenAI (Chat, Responses, Completions) + **Anthropic**; launchers for Claude Code, Codex, OpenCode |
+| install | `pip install mlx-lm` | `pip install mlx-vlm` | release wheel or DMG (precompiled kernels) | build from source (22 s) or Homebrew | Homebrew or release tarball (precompiled); macOS 26.4+, M3 or newer |
+| models | almost every MLX checkpoint | most VLMs | mlx-lm + mlx-vlm models | a few validated pairs (Qwen3.8-27B, Qwen3.6-35B-A3B) | three families (Qwen3.8-27B, Qwen3.6-35B-A3B, Qwen3.8-Flash-Next) |
 
 Other options exist but were not measured here:
 - **llama.cpp** (GGUF, with the vision part in a separate `mmproj` file): reports say its MTP and vision do not yet
@@ -754,6 +759,69 @@ Metal programs. It is worth studying for its ideas even where it is not the fast
 lithos-metal shows what engine-level work *can* buy on the right chip: GPU-resident control, megakernels and a trained
 long-block drafter. It also shows that such tuning does not transfer automatically from one Apple GPU to another.
 
+### 5.2 A closer look at Splash
+
+[Splash](https://github.com/incoai/splash) (Inco AI, Apache 2.0) takes the same "built around the model" approach as
+lithos-metal, but for a production server. It supports only three model families. For each it ships a trained draft
+and Metal kernels for that model's exact shapes. It was the fastest engine we measured, both for decoding and
+for prefill.
+
+**How it works** (from its `DEVELOPMENT.md` and our server logs):
+
+1. **DFlash2 drafts.** Each family has a small trained draft (3.85 GB in BF16 for the 27B, quantized to 4-bit at load).
+   One decode *cycle* drafts a whole block of 8 rows, the anchor plus 7 proposals. The target verifies the whole block in
+   one pass, as in §4.4. The draft attends to features from up to 8 of the target's layers, so it sees what the target
+   "knows", not just the tokens. On the 27B, our log shows 6.2 tokens per cycle on code and math, and 3.3–3.5 on prose
+   (lithos-metal's DSpark: 5.4 and 3.1, §7).
+2. **Adaptive verification for MoE models.** On a dense model, verifying 8 rows costs little more than verifying 1:
+   the weights are read once either way. On a MoE model, every verified row routes its own experts. A Flash-Next cycle reads
+   about 43 experts per layer with 8 rows, and 17 with 2. So `--verify-rows auto` fits an acceptance model
+   (refit every 64 cycles) and a cost line, and verifies only the rows worth their cost.
+3. **Weights repacked at load, no requantization.** GGUF and MLX checkpoints are both rewritten in memory into one layout
+   for its kernels. That takes 2.4–2.9 s for the 27B, and nothing extra is written to disk.
+4. **Kernels per GPU family.** M3/M4 use register tiles; on the M5, a "staged tile" dequantizes into threadgroup memory
+   and feeds the GPU's neural accelerators. The kernels ship precompiled, with no tuning at start-up.
+5. **Prefill on the GPU *and* the Neural Engine** (dense models only). Each FFN is split by channel. The GPU computes
+   some channels, and the ANE computes the rest as an INT8 (W8A8) program; the two partial outputs are added. At its first
+   start Splash calibrates the split. Ours logged *"Neural Engine FFN split at share 0.38 … 25.0 ms per 2048-row
+   FFN layer against 36.8 on the GPU alone"*. That is the first engine here to attack the compute limit of §1 with a
+   second processor. The cost is a little context: the split's buffers come out of the KV budget.
+6. **Memory planned once.** One planner sizes weights, routed experts, the n-gram table, KV pages and states to the
+   machine. The KV cache is **INT8 by default**, with 32-token pages and an SSD tier (up to 32 GiB). Identical blocks are
+   deduplicated (`deduplicated 544` in our log), and `--persistent-cache` keeps the cache across restarts.
+7. **For Flash-Next:** QSA sparse attention in Metal (top-512 blocks of 4 tokens). It can stream routed experts from the SSD
+   (`--expert-memory`, with ARC replacement) and stream the 28.8 GB n-gram table row by row (`--ple-memory`). Long requests
+   can spill KV to the SSD and keep only the index in memory (§9.3).
+
+**Effect, measured on the M5 Pro** (Qwen3.8-27B, `mlx-community` 4-bit, the same clients as §6):
+
+| | Splash | best other engine | ratio |
+|---|---:|---:|---:|
+| decode with its drafter (code / prose / math) | **86 / 50 / 90 tok/s** | 52 / 34 / 52 (best of oMLX, lithos-metal) | **1.5–1.7×** |
+| prefill, 16K tokens | **27.6 s (595 tok/s)** | 36 s (454, mlx-vlm) | **1.3×** |
+| agent follow-up turn (16K prefix) | **0.24 s** | 0.48 s (MLX-LM) | 2× |
+| memory, loaded / peak at 32K | 19.0 / 20.8 GB | 15.1 / 20.1 GB (MLX-LM) | |
+| start-up (first / later) | 154 s (draft download, ANE calibration) / 12 s | 2–7 s | |
+
+Why the decode is so much faster: a cycle costs about 68 ms (91 tok/s ÷ 6.2 tokens), only 1.2× MLX-LM's single-token
+step of 57 ms. Splash still reads the weights once per cycle, but it gets 6 tokens instead of 1 on code. The per-cycle
+cost stays close to the bandwidth floor, and the draft is accurate enough to fill most of the block.
+
+**Correctness.** Greedy answers to 8 checkable questions
+([`quality_probe.py`](mac_inference/quality_probe.py)) were *identical* to MLX-LM's with the same weights. Splash
+reports 99.3–99.45 % top-1 agreement with llama.cpp on the 27B. On MoE models, `--verify-rows auto` makes greedy outputs vary
+slightly from run to run; `--verify-rows all` makes them repeat.
+
+**Limitations:**
+- **Three model families.** Each new model needs a trained DFlash2 draft and kernels for its shapes.
+- **macOS 26.4+ and M3 or newer.** The ANE split uses a private framework, computes in FP16, and only helps dense models.
+- **Its headline numbers have reasoning on.** The README's 74 tok/s for the 27B was measured with reasoning at "medium" on
+  coding prompts, which draft well. Our 50 tok/s on prose is the other end of the range.
+- **Per-process memory tools under-report it.** Its weights are memory-mapped into Metal buffers. `/usr/bin/time` and
+  `footprint` showed about 0.6 GB; the system-wide wired-memory delta ([`sysmem.sh`](mac_inference/sysmem.sh)) gives the
+  real 19–21 GB.
+- **SSD wear.** The SSD cache writes a lot; Splash's docs mention about 50 GB/hour in one test. `--max-cache-disk 0` turns it off.
+
 ## 6. Measurements
 
 Every engine was measured with the same clients. Requests are streamed, greedy (`temperature 0`), with thinking off.
@@ -781,9 +849,11 @@ last token), using the server-reported token count. Each pair of runs agreed wit
 | lithos-metal | 4-bit | DSpark | **51.6** | 29.6 | **51.7** | **44.3** | **2.5×** | 37 s |
 | lithos-metal | NVFP4 | — | 13.8 | 13.5 | 13.8 | **13.7** | 0.79× | 71 s |
 | lithos-metal | NVFP4 | DSpark | 46.6 | 29.5 | 46.7 | **40.9** | 2.4× | 53 s |
+| **Splash** | 4-bit | DFlash2 | **85.7** | **49.7** | **90.4** | **75.3** | **4.3×** | 12 s‡ |
 
 † oMLX loads a model on its first request (about 3 s), not at start-up. lithos-metal's start-up includes building its
-weight pack the first time, and compiling and warming up kernels every time.
+weight pack the first time, and compiling and warming up kernels every time. ‡ Splash's first start took 154 s
+(downloading its 3.85 GB draft and calibrating the Neural Engine split); later starts take 12 s.
 
 ### 6.2 Prefill and time to first token
 
@@ -793,12 +863,12 @@ TTFT is the time until the first content token arrives.
 
 ![TTFT vs prompt length](docs/mac_inference_figs/ttft_vs_prompt.png)
 
-| prompt | MLX-LM | mlx-vlm | oMLX 4-bit | oMLX oQ4e | lithos-metal | lithos-metal, 512-token chunks |
-|---:|---:|---:|---:|---:|---:|---:|
-| 1K | 2.4 s (437 tok/s) | **2.2 s** (491) | 2.3 s (458) | 2.7 s (399) | 3.3 s (320) | 3.3 s (320) |
-| 4K | 8.7 s (475) | **8.4 s** (495) | 8.9 s (467) | 11.7 s (354) | 13.8 s (300) | 13.4 s (308) |
-| 16K | 37 s (441) | **36 s** (454) | 38 s (428) | 47 s (347) | 74 s (223) | 71 s (232) |
-| 32K | 82 s (402) | **78 s** (419) | 85 s (387) | 103 s (319) | 204 s (161) | 198 s (166) |
+| prompt | MLX-LM | mlx-vlm | oMLX 4-bit | oMLX oQ4e | lithos-metal | lithos-metal, 512-token chunks | **Splash** (GPU + ANE) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1K | 2.4 s (437 tok/s) | 2.2 s (491) | 2.3 s (458) | 2.7 s (399) | 3.3 s (320) | 3.3 s (320) | **1.6 s** (678) |
+| 4K | 8.7 s (475) | 8.4 s (495) | 8.9 s (467) | 11.7 s (354) | 13.8 s (300) | 13.4 s (308) | **6.3 s** (660) |
+| 16K | 37 s (441) | 36 s (454) | 38 s (428) | 47 s (347) | 74 s (223) | 71 s (232) | **28 s** (596) |
+| 32K | 82 s (402) | 78 s (419) | 85 s (387) | 103 s (319) | 204 s (161) | 198 s (166) | **59 s** (554) |
 
 The lithos-metal columns are with DSpark. Without a draft it is the same: 73 s at 16K and 202 s at 32K.
 
@@ -815,6 +885,7 @@ so far (append-only), as a coding agent does.
 | oMLX, 4-bit | 40.6 s | 0.78 s | 0.53 s | paged RAM/SSD cache |
 | oMLX, oQ4e + MTP | 49.7 s | 0.81 s | 0.59 s | paged RAM/SSD cache |
 | lithos-metal + DSpark | 77.8 s | 0.96 s | 0.92 s | prefix checkpoints (`cached_prompt_tokens: 16417`) |
+| **Splash** + DFlash2 | **27.0 s** | **0.24 s** | **0.25 s** | 32-token pages, RAM + SSD |
 
 ### 6.4 Vision
 
@@ -825,12 +896,13 @@ It asks which bar is lowest, and sends the same request twice.
 | engine | TTFT, first | TTFT, repeat | answer |
 |---|---:|---:|---|
 | mlx-vlm (MTP, APC) | 2.6 s | 0.17 s | "stack_verified … approximately 1.60" ✓ |
+| Splash | **1.6 s** | **0.11 s** | "stack_verified … approximately 1.60" ✓ |
 | oMLX (oQ4e, MTP) | 6.7 s | 0.31 s | "stack_verified … approximately 1.60" ✓ |
 | MLX-LM | — | — | HTTP 404: `mlx_lm.server` serves text only |
 | lithos-metal | — | — | text-only |
 
-Both answers are correct. Each misread the axis label slightly ("val_pbp", "val_ppl" instead of `val_bpb`).
-Both servers cache the image; the repeat request skips the vision encoder.
+All three answers are correct. mlx-vlm and oMLX misread the axis label slightly ("val_pbp", "val_ppl" instead of
+`val_bpb`). All three servers cache the image; the repeat request skips the vision encoder.
 
 ### 6.5 Correctness
 
@@ -840,17 +912,26 @@ after 195 characters. That is expected: batched verification of 8 positions roun
 decoding, and both lithos-metal and mlx-vlm document this "batch non-invariance". Exact equality would need
 batch-invariant kernels.
 
+A second check uses [`quality_probe.py`](mac_inference/quality_probe.py): 8 short questions with checkable answers
+(arithmetic, facts, Python), greedy, thinking off. MLX-LM and Splash, with the same 4-bit weights, gave
+**identical answers** and both scored 6/8. Both missed the same two mental-arithmetic questions ("400" for 17 × 23 + 12,
+"27" for the discount question), which a model asked for "a number only" without thinking often gets wrong. Splash's 2-bit
+Flash-Next scored 7/8 (§9.3). Raw rows: [`results_m5pro_quality.jsonl`](mac_inference/results_m5pro_quality.jsonl).
+
 ## 7. What the measurements teach
 
 1. **Decode is a bandwidth problem, and MLX is already near the ceiling.** MLX-LM reaches 91 % of the chip's
    measured bandwidth. Kernel work can only take a single-token decode from 17 to at most 19 tok/s. lithos-metal's
    megakernels are *slower* here (12.9 tok/s, 77 vs 57 ms per token), because the project has no tuned 27B recipes for
    the M5 Pro: its log shows `recipe contexts=[]`. Its 27B kernels are tuned on a 40-core M5 Max.
-2. **Speculative decoding is the only large decode win: 2–3×.** It reads the weights once for several tokens. Its benefit
+2. **Speculative decoding is the only large decode win: 2–5×.** It reads the weights once for several tokens. Its benefit
    depends on the text: DSpark accepts 5.4 tokens per round on code but 3.1 on prose (α = 0.89 vs 0.70). Qwen's own MTP head
-   in oMLX's Lightning MTP is the most even (34–45 tok/s), and the best on prose.
-3. **Prefill is a compute problem, and that is the Mac's real limit for agents.** About 26 TFLOP/s means 37 s for a 16K-token
-   prompt with the fastest engine. Neither kernel fusion nor speculation helps here:
+   in oMLX's Lightning MTP is the most even (34–45 tok/s). Splash's DFlash2 is the strongest: 6.2 tokens per cycle on code
+   and 3.3–3.5 on prose, at a cycle cost only 1.2× a single-token step. That gives 4.3× over MLX-LM, and it is the best on
+   prose too (50 tok/s). **A better-trained draft matters more than faster kernels.**
+3. **Prefill is a compute problem, and that is the Mac's real limit for agents.** About 26 TFLOP/s means 36–37 s for a
+   16K-token prompt on the GPU alone. Neither kernel fusion nor speculation helps here, but **a second processor does**:
+   Splash runs part of every FFN on the Neural Engine in INT8 and reaches 28 s (1.3×). Among GPU-only engines:
    - lithos-metal is 2× slower (its prefill kernels are untuned on this chip). Larger chunks gained 3 %, and DSpark adds nothing.
    - oQ4e is 20 % slower than affine 4-bit, because of the more expensive dequantization.
    - oMLX's INT8-activation prefill for M5 (`qwen35_oq_a8_enabled`) is designed for exactly this, but its kernels were
@@ -873,19 +954,23 @@ tool output, then write 300 tokens.
 | mlx-vlm + MTP (APC) | about 4.1 s | 8–9 s | **about 13 s** |
 | oMLX oQ4e + MTP | about 5.6 s | 7–9 s | **about 13–15 s** |
 | lithos-metal + DSpark | about 6.6 s | 6–10 s | **about 13–17 s** |
+| **Splash** + DFlash2 | about 3.0 s | 3.5–6 s | **about 7–9 s** |
 
 ## 8. Choosing an engine
 
 | need | choice | why |
 |---|---|---|
-| text agent with many turns | **oMLX** (oQ4e + MTP) or **mlx-vlm** + MTP with `APC_ENABLED=1` | 2.1–2.3× decode, prefix reuse under 1 s, Anthropic API (oMLX) for Claude Code |
-| vision (screenshots, figures, video) | **mlx-vlm** (+ APC) or **oMLX** | the only two here that serve images; both cache them |
-| large new chunks every turn (a whole file) | **mlx-vlm**, **MLX-LM**, or oMLX with affine 4-bit | the fastest prefill (430–495 tok/s) |
-| short, code-heavy turns | **lithos-metal** + DSpark | 52 tok/s on code, but slow prefill, text only, few models |
+| text or vision agent with many turns, on a supported model | **Splash** | fastest decode (75 tok/s mean), fastest prefill (GPU + ANE), 0.24 s follow-up turns, vision, Anthropic API |
+| any other model, or a pip-installable server | **oMLX** (oQ4e + MTP) or **mlx-vlm** + MTP with `APC_ENABLED=1` | 2.1–2.3× decode, prefix reuse under 1 s, Anthropic API (oMLX) |
+| vision with a model Splash does not support | **mlx-vlm** (+ APC) or **oMLX** | both serve images and cache them |
+| a Mac older than M3, or macOS before 26.4 | **mlx-vlm**, **MLX-LM**, or **oMLX** | Splash needs M3+ and macOS 26.4 |
+| studying engine design | **lithos-metal** (megakernels, GPU-resident loop) and **Splash** (drafts, ANE prefill) | both are open source and documented |
 | learning, reference numbers, scripting | **MLX-LM** | simplest; the baseline every other engine builds on |
 
-For a larger MoE model that does not fit in memory, see §9. On this Mac the best all-round setup for the 27B was **oMLX with the oQ4e-mtp checkpoint**: 40 tok/s, sub-second follow-up turns,
-vision, and Anthropic/OpenAI APIs. **mlx-vlm with MTP and `APC_ENABLED=1`** was a close second, with the fastest prefill.
+On this Mac the best all-round setup for the 27B was **Splash**: 86 / 50 / 90 tok/s, a 28 s TTFT for a 16K prompt, 0.24 s
+follow-up turns, and vision. Before Splash, the best were **oMLX with the oQ4e-mtp checkpoint** (40 tok/s) and
+**mlx-vlm with MTP and `APC_ENABLED=1`**. They remain the choice for models outside Splash's three families. For a larger
+MoE model that does not fit in memory, see §9.
 
 ## 9. A model that does not fit in memory: Qwen3.8-Flash-Next
 
@@ -1120,7 +1205,7 @@ sudo sysctl iogpu.wired_limit_mb=59392                  # optional: GPU may wire
 ln -s ~/.cache/huggingface/hub/models--Jundot--Qwen3.8-Flash-Next-oQ4e-mtp/snapshots/* ~/omlx_bench/models/Flash-Next-off25
 ```
 
-Then add the model's entry to `~/omlx_bench/model_settings.json` (the file from §10), and serve it with oMLX as
+Then add the model's entry to `~/omlx_bench/model_settings.json` (the file from §11), and serve it with oMLX as
 before (`OMLX_BASE_PATH=~/omlx_bench omlx serve --model-dir ~/omlx_bench/models`):
 
 ```json
@@ -1155,6 +1240,48 @@ the limit backfires: decode collapsed to 3.7 tok/s at a 38 GiB cache once the se
 Raw rows: [`mac_inference/results_m5pro_flashnext.jsonl`](mac_inference/results_m5pro_flashnext.jsonl),
 [`results_m5pro_flashnext_prefill.jsonl`](mac_inference/results_m5pro_flashnext_prefill.jsonl).
 
+**The same model on Splash: offload the n-gram table, not the experts.** Splash (§5.2) serves a 2-bit GGUF,
+`ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0` (67 GB, a 2-bit GGUF from IST Austria's DAS Lab). With
+`--expert-memory auto` and `--ple-memory auto`, its memory planner chose an unusual split on this 64 GB Mac:
+
+```
+Routed experts load with their layers: memory holds their 32402 MiB (--expert-memory auto).
+Table per_layer_token_embd.weight streams from its file: 27465 MiB stay on the SSD;
+  row cache of 4427535 rows in 511 MiB ... 32 readers.
+```
+
+At 2 bits **all routed experts fit in RAM** (32.4 GB), so decode never waits for the SSD to deliver an expert. What
+stays on the SSD is the 27.5 GB **n-gram embedding table** (§9.1). It is the ideal thing to stream: each token reads only
+16 rows of about 90 bytes, its hashed n-gram rows, and a 511 MiB row cache absorbs repeats. This is the reverse of oMLX's
+choice (experts on the SSD, the table mmapped): streaming experts moves megabytes per token, streaming the table
+moves about 1.5 KB.
+
+```bash
+splash serve --model ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0 --default-reasoning-effort none --idle-release off
+```
+
+| Flash-Next on this M5 Pro | Splash, Q2_0, table on SSD | oMLX, oQ4e, 25 % experts resident |
+|---|---:|---:|
+| decode tok/s: code / prose / math | **162.5 / 88.9 / 139.3** | 17.8 / 15.5 / 16.8 |
+| tokens per verify cycle (code / prose / math) | 6.0 / 3.0 / 5.0 | MTP |
+| TTFT, 1K / 4K / 16K / 32K | **0.86 / 3.1 / 12.3 / 25.6 s** | 6.7 / 11.4 / 34 / — s |
+| prefill, 16K | **1,337 tok/s** | 482 tok/s |
+| agent turn 1 / turns 2–3 (16K prefix) | 12.7 s / **0.15 s** | 34.7 s / 1.3 s |
+| vision, TTFT first / repeat | 0.57 / 0.08 s ✓ | not tested |
+| quality probe (8 questions, §6.5) | 7/8 | — |
+| download | 67 GB (+ 3.9 GB draft) | 106 GB |
+| memory (system-wide wired delta) | 40.6 GB loaded, 41.3 GB at 32K | 31 GB |
+| first start | 1,178 s, mostly the download | |
+
+Splash is **9× faster at decoding and nearly 3× faster at prefill** than oMLX with this model, and it beats every 27B
+setup on this Mac (§6). Three effects multiply: the 2-bit weights halve the bytes per token; with all experts resident
+there are no SSD stalls; and DFlash2 accepts 5–6 tokens per cycle on code and math. With only about 6B active parameters
+per token, a cycle takes about 37 ms. Prefill is fast for the same reasons plus QSA (§9.1); MoE models do not use the ANE split.
+
+The price is the **2-bit quantization**. Our 8-question probe cannot measure a small quality loss. It only shows that
+the model is not broken: 7/8, one more than the 4-bit 27B. Before relying on it for agent work, measure the 2-bit build on
+your own tasks against a 4-bit one; a 4-bit build would need expert streaming on a 64 GB Mac.
+
 ### 9.4 What others report: llama.cpp, MLX engines and more
 
 There is no controlled cross-engine benchmark for this model yet. The figures below are self-reported, with
@@ -1166,6 +1293,8 @@ different quantizations, prompts and settings, so compare them with care.
 |---|---|---|---:|---:|---|
 | **llama.cpp fork** (npanj) | **M5 Pro, 64 GB** (same as ours) | 95.5 GiB Q4_0 GGUF, `--moe-stream --moe-stream-cache 36`, MTP draft head, wired limit 58 GiB | 18–18.6 tok/s; **27.6** with MTP; 20.6 at 29K context | about 367 tok/s at 4K | [prismix.dev](https://prismix.dev/news/ad3aaa720620), [npanj/llama.cpp](https://github.com/npanj/llama.cpp) |
 | **oMLX** (this tutorial) | M5 Pro, 64 GB | oQ4e, 25 % / 50 % resident, PLE on SSD, Lightning MTP | 16.7 / 26 tok/s | 482 / 323 tok/s at 16K | §9.3 |
+| **Splash** (this tutorial) | M5 Pro, 64 GB | 2-bit GGUF (Q2_0), all experts resident, n-gram table on SSD, DFlash2 | **89–163 tok/s** (mean 130) | **1,337 tok/s** at 16K | §9.3 |
+| Splash (its README) | M5 Pro, 64 GB | the same Q2_0, reasoning on | 95 tok/s | 1,312 tok/s at 32K | [incoai/splash](https://github.com/incoai/splash) |
 | oMLX (author's tests) | 24 GB host emulated on an M3 Ultra; M4 Air 32 GB + USB4 SSD | oQ4e, 10–19 % resident | 6–8 tok/s; 3.6–5 tok/s | 19.7 s TTFT at 4.3K | [oMLX MoE offload doc](https://github.com/jundot/omlx/blob/main/docs/experimental/MoE_Expert_Offload.md) |
 | slotstream (Swift + MLX) | 48 GB Mac | streams experts, caches the busiest | about 12 tok/s | — | [Show HN](https://www.libhunt.com/posts/1535805-show-hn-running-104gb-qwen3-8-flash-next-on-48gb-mac-with-at-~12-tok-s) |
 | Whallm | about 20 GB used | streams weights from SSD | about 8 tok/s | about 60 tok/s | a Reddit post (unverified) |
@@ -1180,7 +1309,8 @@ different quantizations, prompts and settings, so compare them with care.
 | llama.cpp, IQ4_NL | M5 Ultra | 57 tok/s | **100** | LLMCheck |
 | Rapid-MLX, 4-bit | — | 23 tok/s, prefill 868 tok/s at 8K | — | [Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) |
 
-**Which is best on a Mac?** There is no single winner. The pattern in these reports:
+**Which is best on a Mac?** On a 64 GB Mac, **Splash** with the 2-bit GGUF is far ahead of everything else we measured
+or found, at the price of 2-bit weights. The pattern in the other reports:
 - **Below 128 GB, SSD offload is required.** The llama.cpp fork and oMLX reach similar speeds on the same 64 GB M5 Pro:
   about 18 tok/s plain, and 26–28 tok/s with MTP at the largest cache that fits. The llama.cpp fork depends on six
   unmerged pull requests and a manual wired-limit setting. oMLX is a supported release with a memory guard, at the cost
@@ -1209,28 +1339,125 @@ Flash-Next. Expert offload itself adds none.
 
 **Speed and cost on this 64 GB M5 Pro** (best configuration of each, measured):
 
-| | Qwen3.8-27B, oMLX oQ4e + MTP | Qwen3.8-27B, mlx-vlm + MTP + APC | Flash-Next, oMLX, 25 % resident |
-|---|---:|---:|---:|
-| decode (code / prose / math) | 42 / 34 / 45 tok/s | 40 / 32 / 37 tok/s | 18 / 16 / 17 tok/s |
-| TTFT, 16K prompt | 47 s | 34–36 s | **34 s** |
-| agent follow-up turn | 0.6–0.8 s | 0.7 s | 1.3 s |
-| server memory | 19–23 GB | 18–28 GB | 31 GB, plus heavy SSD reads |
-| download | 17 GB | 16 GB | 106 GB |
-| license | Apache 2.0 | Apache 2.0 | Qwen Community 1.0 |
+| | Qwen3.8-27B, Splash (4-bit) | Qwen3.8-27B, oMLX oQ4e + MTP | Flash-Next, oMLX, 25 % resident (4-bit) | Flash-Next, Splash (2-bit) |
+|---|---:|---:|---:|---:|
+| decode (code / prose / math) | 86 / 50 / 90 tok/s | 42 / 34 / 45 tok/s | 18 / 16 / 17 tok/s | **163 / 89 / 139 tok/s** |
+| TTFT, 16K prompt | 28 s | 47 s | 34 s | **12 s** |
+| agent follow-up turn | 0.24 s | 0.6–0.8 s | 1.3 s | **0.15 s** |
+| server memory | 19–21 GB | 19–23 GB | 31 GB, plus heavy SSD reads | 41 GB wired (+0.7 GB at 32K), light SSD reads |
+| download | 16 GB + 3.9 GB draft | 17 GB | 106 GB | 67 GB + draft |
+| license | Apache 2.0 | Apache 2.0 | Qwen Community 1.0 | Qwen Community 1.0 |
 
 On the license, LLMCheck's summary says local and internal use is unrestricted, but serving the model as a product
 (model-as-a-service, or a coding or office "AI work assistant" for third parties) needs a separate commercial license.
 Read the license yourself before building on it.
 
 **Verdict for local agents:**
-- **Interactive, fast loops** (edit, run, fix; many short turns) on a 32–64 GB Mac: **Qwen3.8-27B** with MTP.
-  It is about 2.4× faster to decode, leaves RAM for the rest of the machine, and is Apache 2.0.
-- **Harder, longer tasks where answer quality matters more than speed** (multi-step coding, long tool chains):
-  **Flash-Next with 25 % residency**. It is a markedly stronger agent model and runs at 16–18 tok/s with sub-2-second
-  follow-up turns. Its prefill matches the 27B, thanks to QSA and its small active size.
-- **On a 128 GB Mac**, Flash-Next fits resident and reports 75–100 tok/s with MTP. Then it is the better choice outright.
+- **On a 64 GB Mac with Splash**, Flash-Next at 2 bits is *both* the stronger agent model (by Qwen's BF16 benchmarks)
+  and the faster one: 130 tok/s mean, a 12 s TTFT at 16K, 0.15 s follow-up turns. It is the first choice, provided its
+  2-bit quality holds on your tasks. Check that first.
+- **When 2-bit is not acceptable, or the license matters:** **Qwen3.8-27B** on Splash (75 tok/s mean) or oMLX
+  (40 tok/s). It leaves more RAM for the rest of the machine and is Apache 2.0.
+- **4-bit Flash-Next on 64 GB** (oMLX, 25 % resident) only makes sense where answer quality matters far more than speed:
+  16–18 tok/s.
+- **On a 128 GB Mac**, 4-bit Flash-Next fits resident and reports 75–100 tok/s with MTP. Then it is the better choice outright.
 
-## 10. Reproduce it
+## 10. The same models on an NVIDIA Jetson Thor
+
+How does the Mac compare with an NVIDIA edge machine that has as much unified memory? We ran the same clients
+(`bench_client.py`, `prefill_client.py`, thinking off) against Qwen3.8-27B on a **Jetson AGX Thor developer kit**.
+We used the recipes from NVIDIA's Jetson AI Lab
+([Qwen3.8-27B](https://www.jetson-ai-lab.com/models/qwen3-8-27b/), [Qwen3.8-Flash-Next](https://www.jetson-ai-lab.com/models/qwen3-8-flash-next/)).
+
+| | Jetson AGX Thor | MacBook Pro M5 Pro (this tutorial) |
+|---|---|---|
+| memory | 128 GB LPDDR5X unified (122 GiB visible), about **273 GB/s** | 64 GB unified, about 307 GB/s |
+| GPU | Blackwell, 2,560 CUDA cores, 96 tensor cores with **FP4**; NVIDIA quotes 2,070 FP4 TFLOP/s (sparse) | 20-core GPU with neural accelerators, about 26 TFLOP/s used in prefill (§1) |
+| software | JetPack 7.1 (L4T R38.4), CUDA 13, 120 W mode; engines in containers | macOS 26.5 |
+| engines | llama.cpp (`ghcr.io/nvidia-ai-iot/llama_cpp:latest-jetson-thor`, build 10373), vLLM 0.28.1rc1 (`…/vllm:qwen3.8-next-jetson-thor`) | §5 |
+
+**The runs.** Each configuration gets one fresh container. [`jetson_run_one.sh`](mac_inference/jetson_run_one.sh) and [`jetson_run_rest.sh`](mac_inference/jetson_run_rest.sh)
+start the server, wait for `/v1/models`, run both clients, then stop it:
+
+```bash
+# llama.cpp, Q4_K_M GGUF, with Qwen's MTP head as the draft (the AI Lab recipe)
+docker run --runtime=nvidia --network host -v ~/.cache/huggingface:/root/.cache/huggingface \
+  ghcr.io/nvidia-ai-iot/llama_cpp:latest-jetson-thor \
+  llama-server -hf unsloth/Qwen3.8-27B-GGUF:Q4_K_M -ngl all --spec-type draft-mtp --port 8000
+# vLLM, NVIDIA's NVFP4 checkpoint, MTP with 3 speculative tokens
+docker run --runtime=nvidia --network host --ipc=host -v ~/.cache/huggingface:/root/.cache/huggingface \
+  ghcr.io/nvidia-ai-iot/vllm:qwen3.8-next-jetson-thor nvidia/Qwen3.8-27B-NVFP4 --gpu-memory-utilization 0.4 \
+  --max-num-seqs 1 --max-model-len 65536 --mamba-ssm-cache-dtype bfloat16 \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+```
+
+### 10.1 Results: Qwen3.8-27B
+
+| | decode tok/s, code / prose / math (mean) | TTFT 1K / 4K / 16K / 32K | prefill tok/s | agent turns 2–3 | memory in use |
+|---|---:|---:|---:|---:|---:|
+| Thor, llama.cpp Q4_K_M | 12.0 / 12.0 / 12.0 (12.0) | 3.3 / 12.3 / 50 / 107 s | 310–335 | 0.51–0.56 s | not recorded |
+| Thor, llama.cpp Q4_K_M + MTP | 19.9 / 16.2 / 19.0 (18.4) | 3.5 / 12.8 / 52 / 111 s | 295–320 | 0.67–0.71 s | not recorded |
+| Thor, vLLM NVFP4 | 11.7 / 12.4 / 12.4 (12.2) | 0.5 / 1.9 / 8.1 / 18.7 s | 1,760–2,200 | 0.28–0.34 s | 79 GB (pre-allocated) |
+| **Thor, vLLM NVFP4 + MTP** | 28.7 / 22.6 / 33.5 (**28.3**) | **0.5 / 1.7 / 7.0 / 16.7 s** | **1,960–2,500** | 0.50–0.63 s | 76 GB (pre-allocated) |
+| Mac, MLX-LM 4-bit (§6) | 17.4 / 17.4 / 17.4 (17.4) | 2.4 / 8.7 / 37 / 82 s | 400–475 | 0.48 s | 15–20 GB |
+| **Mac, Splash + DFlash2 (§5.2)** | **85.7 / 49.7 / 90.4 (75.3)** | 1.6 / 6.3 / 28 / 59 s | 554–680 | **0.24 s** | 19–21 GB |
+
+Raw rows: [`results_thor_qwen3.8.jsonl`](mac_inference/results_thor_qwen3.8.jsonl). An earlier vLLM + MTP run with
+`--gpu-memory-utilization 0.55` gave 33.9 / 26.6 / 33.9 tok/s; MTP acceptance varies with the prompt.
+
+**What this shows:**
+
+1. **Decode is bandwidth-bound on both machines, and Thor has less bandwidth.** Without speculation the NVFP4 27B (about
+   22 GB read per token) decodes at 12.2 tok/s, exactly 273 GB/s ÷ 22 GB. The Mac reads 15 GB of 4-bit weights over 307 GB/s
+   and gets 17.4 tok/s. Blackwell's tensor cores cannot help a step that is limited by reading weights.
+2. **Prefill is compute-bound, and there Thor wins by 4–5×.** FP4 tensor cores give vLLM 2,000–2,500 tok/s: a 16K-token
+   prompt takes **7 s on Thor** against 28 s (Splash) to 37 s (MLX-LM) on the Mac. This is the gap that §7 calls the Mac's real
+   limit for agents. llama.cpp on Thor does not use the FP4 path and prefills at Mac speed (about 320 tok/s).
+3. **The engine matters as much as the chip.** On the same Thor, vLLM prefills 7× faster than llama.cpp. On the same Mac,
+   Splash decodes 4.3× faster than MLX-LM. Thor's best decode (28 tok/s with MTP, three draft tokens) is far behind
+   Splash's 75 tok/s, because DFlash2 accepts about 6 tokens per cycle against MTP's 2–3.
+4. **Prefix caching works everywhere.** Every engine answers a follow-up turn of a 16K session in 0.24–0.7 s.
+
+**Per agent turn** (append 2K tokens of tool output, write 300 tokens; estimated from the measured rates):
+
+| | prefill 2K | decode 300 | per turn |
+|---|---:|---:|---:|
+| Thor, vLLM NVFP4 + MTP | about 0.9 s | 9–13 s | **about 10–14 s** |
+| Mac, Splash + DFlash2 | about 3.0 s | 3.5–6 s | **about 7–9 s** |
+| Mac, oMLX oQ4e + MTP | about 5.6 s | 7–9 s | about 13–15 s |
+
+For **short turns** the Mac with Splash is faster, because the answer dominates. For turns that add a lot of **new
+context** (reading a 16K-token file: 7 s on Thor against 28 s on the Mac) Thor is faster. Thor also has twice the memory,
+but vLLM on Jetson reserves it up front (`--gpu-memory-utilization`).
+
+### 10.2 Qwen3.8-Flash-Next on Thor: three pitfalls
+
+The AI Lab recipe serves `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` with vLLM, `--gpu-memory-utilization 0.93`, and an MTP
+head baked into the image at `/opt/qwen38-mtp-model`. We have not yet completed a measured run. Getting it to start
+taught three lessons that apply to any large model on Jetson:
+
+1. **The checkpoint revision must match the image.** The image's MTP head symlinks point to revision `ada4da32…` of the
+   repository (34 shards). The repository was later re-published (41 shards, MXFP8 attention). Pass
+   `--revision ada4da32a583a78aa47299f45a70603c950490b8`, and set `-e HF_HUB_OFFLINE=1` so the container never downloads.
+2. **A container that downloads runs as root and can fill the disk.** Without a revision, vLLM inside the container
+   started downloading `main` (another 106 GB) into the shared Hugging Face cache. That filled the 937 GB disk to 100 %
+   and the start-up failed. The files it left were owned by root, so they could only be deleted as root.
+3. **Jetson keeps freed GPU memory in a driver pool.** After a CUDA process exits, tens of GB stay out of `MemFree`. vLLM's
+   start-up check asks CUDA for free memory, which on Jetson reports only `MemFree`, so a 0.93 utilization fails with
+   `Free memory on device cuda:0 (69.82/122.82 GiB) on startup is less than desired GPU memory utilization (0.93, 114.23 GiB)`.
+   - A container that stopped too fast is *not* the cause. A graceful stop (SIGTERM, 1–2 s) left 69 GB held as well.
+   - After a **clean** stop, memory pressure gets it back. [`memory_balloon.py`](mac_inference/memory_balloon.py) allocates
+     and touches memory until `MemAvailable` is low, then exits. That recovered 115 GiB in 9–16 s without root.
+   - After a **failed** vLLM start, about 49 GB stayed held even under pressure. Only root can recover it:
+     `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`, or a reboot.
+   - Our course's Jetson scripts ([edgeAI](https://github.com/lkk688/edgeAI)) do the same before every vLLM start
+     (`sudo -n sysctl -w vm.drop_caches=3`), and kill stray `VLLM::EngineCore` processes.
+
+What to expect once it runs: the model card's recipe uses MTP with 3 tokens. Flash-Next activates about 6B parameters
+per token, so decode reads about 4–5 GB of NVFP4 weights per token and should be much faster than the 27B's 12 tok/s.
+That is an estimate, not a measurement.
+
+## 11. Reproduce it
 
 Everything runs from `DeepDataMiningLearning/llm`. Each engine gets its own venv (Python 3.12 via `uv`, see
 [`LAPTOP_QUICKSTART.md`](LAPTOP_QUICKSTART.md) Step 1a).
@@ -1289,6 +1516,18 @@ CLIENT=vision_client.py  OUT=vision.jsonl  bash serve_bench.sh ...   # vision te
 
 [`run_prefill_all.sh`](mac_inference/run_prefill_all.sh) lists every prefill configuration we ran.
 
+**Splash** ships as a precompiled release (or `brew install incoai/tap/splash`). We used the release tarball, checked
+against its published SHA-256, and unpacked it to `~/opt/splash-1.4.0-arm64-macos26`.
+[`run_splash.sh`](mac_inference/run_splash.sh) runs the decode and prefill clients against it. Splash downloads the
+model and its DFlash2 draft on the first start:
+
+```bash
+zsh run_splash.sh mlx-community/Qwen3.8-27B-4bit splash_27b
+zsh run_splash.sh ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0 splash_fn
+zsh splash_footprint.sh mlx-community/Qwen3.8-27B-4bit 32768    # memory via sysmem.sh (wired delta)
+~/venvs/mlxlm/bin/python quality_probe.py --model <id> --label <label> --out quality.jsonl
+```
+
 **Clean-up.** This uses about 36 GB of models in `~/.cache/huggingface`, plus 17 GB for oQ4e. lithos-metal's packs take
 70 GB in `~/.cache/lithos-metal`, and mlx-vlm's APC disk tier up to 20 GB in `~/.cache/mlx-vlm/apc`. There are also four
 venvs and `~/omlx_bench`.
@@ -1298,15 +1537,18 @@ venvs and `~/omlx_bench`.
 - oMLX's launcher starts a detached `omlx-server` process. It renames its process title, and it keeps running when the
   launcher exits; `serve_bench.sh` stops whatever listens on port 8000.
 - oMLX also auto-discovers every model in the Hugging Face cache.
+- `/usr/bin/time -l` on Splash's launcher measures the launcher, not the `engine/splash` child process. Even the
+  child's `footprint` misses its memory-mapped Metal buffers, so use the system-wide wired-memory delta.
 
-## 11. Research directions
+## 12. Research directions
 
 The measurements point to open problems. Each one below is a possible course project. Each can be measured with
-the scripts of §10 on a single Mac.
+the scripts of §11 on a single Mac.
 
 1. **Faster prefill on Apple Silicon.** This is the agent bottleneck (§6.2): about 26 TFLOP/s against an H100's about 990.
    - INT8 or FP8 activation matmuls on the M5's tensor units (oMLX's `qwen35_oq_a8` exists but was not in the wheel).
-   - Splitting prefill between the GPU and the Neural Engine (oMLX has experimental `qwen35_ane_prefill_*` options).
+   - Splitting prefill between the GPU and the Neural Engine. Splash does this for dense FFNs (1.3× end to end, §5.2);
+     oMLX has experimental `qwen35_ane_prefill_*` options. Can attention or MoE experts go to the ANE too?
    - Better tile shapes for long chunks.
    - Sparse prefill that skips unimportant prompt tokens (oMLX's experimental SpecPrefill, for MoE models).
 2. **Speculative decoding for hybrid models.**
@@ -1317,7 +1559,7 @@ the scripts of §10 on a single Mac.
    - Predict α per position: DSpark's confidence head, oMLX's depth controller.
    - Choose k to maximize E[tokens]/t_round(k) from a per-chip cost table (§4.4 Step 4). How close does a simple
      controller get to the best k for each prompt?
-4. **Drafters for agents.**
+4. **Drafters for agents.** Splash's DFlash2 shows that the draft is the biggest lever (6 tokens per cycle on code, §5.2).
    - Combine prompt lookup (copying from files in the context) with MTP or DSpark.
    - Train a DSpark-style block drafter for a model that has none, using the target's own outputs.
    - Measure acceptance on real agent traces, not chat prompts.
@@ -1344,7 +1586,7 @@ the scripts of §10 on a single Mac.
     publish a reproducible end-to-end benchmark for local agents: TTFT, follow-up latency, decode speed and memory,
     on agent traces.
 
-## 12. Exercises
+## 13. Exercises
 
 1. **Bandwidth ceiling.** Measure MLX-LM's decode with the 8-bit checkpoint (`mlx-community/Qwen3.8-27B-8bit`). Predict
    the speed from §1 before running it. How close is the result to bandwidth ÷ bytes?
@@ -1356,16 +1598,25 @@ the scripts of §10 on a single Mac.
    engines still answer in under 1 s, and why (§4.5)?
 5. **Prefill chunk.** Vary MLX-LM's `--prefill-step-size` (512, 1024, 2048, 4096). Plot TTFT and peak memory against chunk
    size and explain the trade-off with §3.4.
-6. **Quality vs speed.** Write 20 short questions with known answers, and send them through the same OpenAI API
-   (adapt `bench_client.py`). Use oMLX serving the affine 4-bit checkpoint and the oQ4e checkpoint. Count how many
+6. **Quality vs speed.** Extend [`quality_probe.py`](mac_inference/quality_probe.py) to 20 or more questions with known
+   answers. Use oMLX serving the affine 4-bit checkpoint and the oQ4e checkpoint. Count how many
    greedy answers differ and how many are wrong. Is the gap consistent with the KL divergences on the oQ4e model card (§4.1)?
 
+7. **Neural Engine prefill.** Run `prefill_client.py` against Splash with and without `--disable-ane`. How much of the
+   1.3× gain over MLX does the ANE split explain? Splash logs the context it gives up for the split's buffers: compare
+   the maximum context in both runs.
+8. **Mac vs Jetson per agent turn.** Using §10.1's measured rates, find the size of new context per turn at which Thor
+   (fast prefill, slower decode) overtakes the Mac with Splash (slower prefill, fast decode). Plot the per-turn time
+   against new tokens for answers of 100, 300 and 1,000 tokens.
 ---
 
 **Sources.**
 - Engines: [mlx-lm](https://github.com/ml-explore/mlx-lm), [mlx-vlm](https://github.com/Blaizzy/mlx-vlm),
   [oMLX](https://github.com/jundot/omlx), [lithos-metal](https://github.com/lithos-ai/lithos-metal)
-  (its design docs: `docs/design/*.md`).
+  (its design docs: `docs/design/*.md`), [Splash](https://github.com/incoai/splash) (its `DEVELOPMENT.md`, and
+  [the DFlash 2 post](https://inco.ai/blog/dflash2/)).
+- Jetson Thor: [Jetson AI Lab model pages](https://www.jetson-ai-lab.com/models/qwen3-8-27b/),
+  [edgeAI course scripts](https://github.com/lkk688/edgeAI).
 - Model and checkpoints: [Qwen3.8 guide (Unsloth)](https://unsloth.ai/docs/models/qwen3.8),
   [`Jundot/Qwen3.8-27B-oQ4e-mtp`](https://huggingface.co/Jundot/Qwen3.8-27B-oQ4e-mtp),
   [`mlx-community/Qwen3.8-27B-MTP-4bit`](https://huggingface.co/mlx-community/Qwen3.8-27B-MTP-4bit).

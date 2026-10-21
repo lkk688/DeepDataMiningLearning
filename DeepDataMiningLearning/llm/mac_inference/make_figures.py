@@ -51,12 +51,14 @@ def memory():
 def decode():
     """Decode tok/s per engine configuration, grouped by prompt."""
     d = collections.defaultdict(list)
-    for r in rows("results_m5pro_qwen3.8-27b.jsonl"):
-        d[(r["label"], r["prompt"])].append(r["decode_tok_s"])
+    for r in rows("results_m5pro_qwen3.8-27b.jsonl") + rows("results_m5pro_splash.jsonl"):
+        if "decode_tok_s" in r:
+            d[(r["label"], r["prompt"])].append(r["decode_tok_s"])
     configs = [("mlx_4bit", "MLX-LM"), ("mlxvlm_4bit_mtp", "mlx-vlm + MTP"), ("omlx_Qwen3.8-27B-oQ4e-mtp", "oMLX oQ4e + MTP"),
-               ("lithos_4bit_nodraft", "lithos-metal"), ("lithos_4bit_dspark", "lithos-metal + DSpark")]
+               ("lithos_4bit_nodraft", "lithos-metal"), ("lithos_4bit_dspark", "lithos-metal + DSpark"),
+               ("splash_27b", "Splash + DFlash2")]
     prompts = [("code", "code"), ("explain", "prose"), ("math", "math")]
-    fig, ax = plt.subplots(figsize=(7.2, 3.9))
+    fig, ax = plt.subplots(figsize=(7.2, 4.3))
     h = 0.26
     for j, (p, pname) in enumerate(prompts):
         ys = [i + (j - 1) * h for i in range(len(configs))]
@@ -69,17 +71,18 @@ def decode():
     ax.text(19.5, len(configs) - 0.45, "bandwidth limit for one token per pass ≈ 19 tok/s", fontsize=8, color=INK2)
     ax.set_xlabel("decode tokens/s (greedy, 512 tokens; higher is better)"); ax.grid(axis="x", color=GRID); ax.set_axisbelow(True)
     ax.set_title("Qwen3.8-27B decode speed on M5 Pro", loc="left", color=INK, fontsize=11)
-    ax.legend(frameon=False, loc="center right", bbox_to_anchor=(1.0, 0.31), ncol=3, fontsize=8.5)
+    ax.legend(frameon=False, loc="upper right", bbox_to_anchor=(1.0, 1.0), ncol=3, fontsize=8.5)
     fig.tight_layout(); fig.savefig(OUT / "decode_by_engine.png", dpi=150); plt.close(fig)
 
 
 def ttft():
     """Cold time to first token vs prompt length."""
     c = collections.defaultdict(list)
-    for r in rows("results_m5pro_qwen3.8-27b_prefill.jsonl"):
-        if r["test"] == "cold":
+    for r in rows("results_m5pro_qwen3.8-27b_prefill.jsonl") + rows("results_m5pro_splash_prefill.jsonl") \
+            + rows("results_thor_qwen3.8.jsonl"):
+        if r.get("test") == "cold":
             c[(r["label"], r["size"])].append(r["ttft_s"])
-    configs = [("pf_mlx_lm", "MLX-LM"), ("pf_mlxvlm_mtp", "mlx-vlm"), ("pf_omlx_Qwen3.8-27B-4bit", "oMLX 4-bit"),
+    configs = [("pf_mlx_lm", "MLX-LM"), ("pf_mlxvlm_mtp", "mlx-vlm"), ("pf_splash_27b", "Splash"),
                ("pf_omlx_Qwen3.8-27B-oQ4e-mtp", "oMLX oQ4e"), ("pf_lithos_dspark", "lithos-metal")]
     sizes = [1024, 4096, 16384, 32768]
     fig, ax = plt.subplots(figsize=(7.2, 4.0))
@@ -88,16 +91,20 @@ def ttft():
         ys = [sum(c[(lab, n)]) / len(c[(lab, n)]) for n in sizes]
         ax.plot(sizes, ys, color=SERIES[k], linewidth=2, marker="o", markersize=5, label=name)
         ends.append([ys[-1], ys[-1], name])
-    ends.sort()                                                  # dodge end labels: at least x1.24 apart (log axis)
+    ys = [sum(c[("pf_thor_vllm_27b_nvfp4_mtp", n)]) / len(c[("pf_thor_vllm_27b_nvfp4_mtp", n)]) for n in sizes]
+    ax.plot(sizes, ys, color=INK2, linewidth=1.5, linestyle=(0, (4, 3)), marker="o", markersize=4,
+            label="Jetson Thor, vLLM NVFP4 (reference)")
+    ends.append([ys[-1], ys[-1], "Thor vLLM"])
+    ends.sort()                                                  # dodge end labels: at least x1.32 apart (log axis)
     for i in range(1, len(ends)):
-        ends[i][1] = max(ends[i][1], ends[i - 1][1] * 1.24)
+        ends[i][1] = max(ends[i][1], ends[i - 1][1] * 1.32)
     for v, y, name in ends:
         ax.text(sizes[-1] * 1.08, y, f"{name} {v:.0f} s", va="center", fontsize=8, color=INK)
     ax.set_xscale("log", base=2); ax.set_yscale("log")
     ax.set_xticks(sizes, ["1K", "4K", "16K", "32K"]); ax.set_xlim(800, 32768 * 3.2)
     ax.set_xlabel("prompt tokens (cold, no cache)"); ax.set_ylabel("time to first token (s, log)")
     ax.grid(color=GRID, which="major"); ax.set_axisbelow(True)
-    ax.set_title("Qwen3.8-27B prefill on M5 Pro: what an agent waits for", loc="left", color=INK, fontsize=11)
+    ax.set_title("Qwen3.8-27B prefill on M5 Pro (Jetson Thor dashed): what an agent waits for", loc="left", color=INK, fontsize=11)
     ax.legend(frameon=False, loc="upper left", fontsize=8.5)
     fig.tight_layout(); fig.savefig(OUT / "ttft_vs_prompt.png", dpi=150); plt.close(fig)
 
