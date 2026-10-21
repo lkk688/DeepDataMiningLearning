@@ -33,6 +33,7 @@ chip fast enough?".
 | *Qwen3.8-Flash-Next* (125B MoE, 106 GB) on oMLX with SSD expert offload (§9) | 18 / 16 / 17 | 34 s | 1.3 s | supported, not tested |
 | *Qwen3.8-Flash-Next*, 2-bit GGUF (67 GB) on **Splash**, n-gram table on SSD (§9.3) | **163 / 89 / 139** | **12 s** | **0.15 s** | ✓ |
 | *for comparison:* Qwen3.8-27B on a **Jetson Thor**, vLLM NVFP4 + MTP (§10) | 29 / 23 / 34 | 7 s | 0.5–0.6 s | not tested |
+| *for comparison:* Flash-Next on a **Jetson Thor**, vLLM NVFP4 + MTP, all resident (§10.2) | 35 / 29 / 35 | 15 s | 1.4–1.5 s | not tested |
 
 ---
 
@@ -1430,11 +1431,32 @@ For **short turns** the Mac with Splash is faster, because the answer dominates.
 context** (reading a 16K-token file: 7 s on Thor against 28 s on the Mac) Thor is faster. Thor also has twice the memory,
 but vLLM on Jetson reserves it up front (`--gpu-memory-utilization`).
 
-### 10.2 Qwen3.8-Flash-Next on Thor: three pitfalls
+### 10.2 Qwen3.8-Flash-Next on Thor
 
 The AI Lab recipe serves `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` with vLLM, `--gpu-memory-utilization 0.93`, and an MTP
-head baked into the image at `/opt/qwen38-mtp-model`. We have not yet completed a measured run. Getting it to start
-taught three lessons that apply to any large model on Jetson:
+head baked into the image at `/opt/qwen38-mtp-model`. We added `--revision` and `--max-model-len 65536` (see the pitfalls
+below). At 4 bits the whole model fits in Thor's 128 GB: the weights take **98.9 GiB**, the server 115 GB in all.
+
+| Flash-Next | decode tok/s, code / prose / math (mean) | TTFT 1K / 4K / 16K / 32K | prefill tok/s | agent turns 2–3 | memory |
+|---|---:|---:|---:|---:|---:|
+| **Thor, vLLM NVFP4 + MTP** (4-bit, all resident) | 35.1 / 29.0 / 34.9 (**33.0**) | 1.3 / 4.1 / 14.9 / 30.0 s | 840–1,100 | 1.4–1.5 s | 115 GB |
+| Mac, Splash Q2_0 + DFlash2 (2-bit, n-gram table on SSD, §9.3) | **162.5 / 88.9 / 139.3 (130)** | **0.86 / 3.1 / 12.3 / 25.6 s** | **1,240–1,360** | **0.15 s** | 41 GB |
+| Mac, oMLX oQ4e + MTP (4-bit, 25 % experts resident, §9.3) | 17.8 / 15.5 / 16.8 (16.7) | 6.7 / 11.4 / 34 / — s | about 480 | 1.3 s | 31 GB |
+
+- **Thor is faster than any 4-bit Flash-Next setup on the Mac,** because it holds the whole 4-bit model in memory.
+  It decodes 2× faster than oMLX's SSD offload and prefills 2.3× faster.
+- **The Mac with Splash beats it on every measure,** at half the bits. Decode is 4× faster: a better draft (5–6 tokens per
+  cycle against MTP's 2–3), and 2-bit weights halve the bytes read per token. Prefill is 1.2× faster, and the follow-up turn
+  10× faster. The comparison is not like for like: Thor runs the 4-bit model, which should be the more accurate one.
+- **Flash-Next prefills more slowly than the 27B on the same Thor** (1,100 against 2,300 tok/s), even though it activates
+  fewer parameters. MoE prefill dispatches tokens to experts, and these kernels appear less optimized in this vLLM build. Its
+  follow-up turns (1.4 s) are slower too. vLLM's log shows its hybrid-model prefix cache in `align` mode, which may
+  recompute part of the last block; we have not confirmed this.
+- **Start-up takes 10.5 minutes** (625 s: weights, compilation, CUDA graphs) against 1 minute for the 27B.
+
+Raw rows: [`results_thor_qwen3.8.jsonl`](mac_inference/results_thor_qwen3.8.jsonl).
+
+**Four pitfalls on the way.** They apply to any large model on Jetson:
 
 1. **The checkpoint revision must match the image.** The image's MTP head symlinks point to revision `ada4da32…` of the
    repository (34 shards). The repository was later re-published (41 shards, MXFP8 attention). Pass
@@ -1446,16 +1468,18 @@ taught three lessons that apply to any large model on Jetson:
    start-up check asks CUDA for free memory, which on Jetson reports only `MemFree`, so a 0.93 utilization fails with
    `Free memory on device cuda:0 (69.82/122.82 GiB) on startup is less than desired GPU memory utilization (0.93, 114.23 GiB)`.
    - A container that stopped too fast is *not* the cause. A graceful stop (SIGTERM, 1–2 s) left 69 GB held as well.
-   - After a **clean** stop, memory pressure gets it back. [`memory_balloon.py`](mac_inference/memory_balloon.py) allocates
-     and touches memory until `MemAvailable` is low, then exits. That recovered 115 GiB in 9–16 s without root.
-   - After a **failed** vLLM start, about 49 GB stayed held even under pressure. Only root can recover it:
-     `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'`, or a reboot.
+   - Memory pressure gets *part* of it back. [`memory_balloon.py`](mac_inference/memory_balloon.py) allocates and touches
+     memory until `MemAvailable` is low, then exits. After the 27B runs (about 80 GB in use) that recovered all of it,
+     115 GiB in 9–16 s, without root.
+   - After a **failed** vLLM start, and after stopping the 115 GB Flash-Next server, about 48–49 GB stayed held even under
+     pressure. Only root recovers it: `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` (it worked every time), or a reboot.
+     So every failed start of a large model costs a root action before the next try.
    - Our course's Jetson scripts ([edgeAI](https://github.com/lkk688/edgeAI)) do the same before every vLLM start
      (`sudo -n sysctl -w vm.drop_caches=3`), and kill stray `VLLM::EngineCore` processes.
 
-What to expect once it runs: the model card's recipe uses MTP with 3 tokens. Flash-Next activates about 6B parameters
-per token, so decode reads about 4–5 GB of NVFP4 weights per token and should be much faster than the 27B's 12 tok/s.
-That is an estimate, not a measurement.
+4. **The default context does not fit.** With 0.93 utilization and 98.9 GiB of weights, vLLM had 4.98 GiB left for the
+   KV cache, but the model's 262,144-token maximum needs 7.17 GiB: `To serve at least one request with the model's max seq
+   len (262144), (7.17 GiB KV cache is needed ...`. vLLM estimated 177,216 tokens as the limit; we set 65,536.
 
 ## 11. Reproduce it
 
