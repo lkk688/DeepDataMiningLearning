@@ -1,9 +1,238 @@
 # ngperception Tutorial — downstream perception, from basics to SOTA
 
 This tutorial extends the ngdet detection tutorial to the *downstream* perception tasks
-that consume an image (and often the detector's boxes): **depth/distance**, then
-segmentation, tracking, and lane detection. Same recipe each time: understand the task,
-compare models **basic → SOTA by inference**, then **fine-tune**.
+that consume an image (and often the detector's boxes): **depth/distance**, **3D semantic occupancy**,
+**3D object detection** and lane detection. Same recipe each time: understand the task, compare models
+**basic → SOTA by inference**, then **fine-tune**, and measure honestly (scene-split, seeds).
+
+| § | Topic |
+|---|---|
+| 0 | Running it on the course HPC; nuScenes, Waymo v2 and Occ3D data, with figures |
+| 1 | Monocular depth & per-object distance |
+| 2 | 3D semantic occupancy: baselines, our LSS model, **how to build a new occupancy model** (§2.9), landscape (§2.10) |
+| 3 | Full-data scaling — **read §3.0 (leakage + clean numbers) first** |
+| 4 | Cross-domain transfer to closed-loop renders |
+| 5–6 | Occupancy + detection on one encoder; lanes |
+| 7 | Visualization cookbook — how every figure is made |
+| 8 | 3D object detection: mmdetection3d on the cluster, **BEVFusion**, camera detectors, newer methods, why fusion is hard |
+
+---
+
+## 0. Running this tutorial on the course HPC (CMPE249)
+
+Everything below runs on the SJSU CoE HPC with the **shared course storage and environment**. Read
+[docs/source/hpc3.md](../../docs/source/hpc3.md) first: it covers SSH, Slurm, the partitions and GPU types.
+Two rules from it matter on every page of this tutorial:
+
+- GPU work runs as a **batch job** (`sbatch`). Interactive `srun` is for **CPU** partitions only.
+- Datasets are **read-only and shared**. Symlink them; never copy them into your own folder.
+
+### 0.1 Where the data is
+
+| What | Path on the cluster | Used in |
+|---|---|---|
+| nuScenes v1.0-trainval (images, LiDAR sweeps, metadata) | `/data/cmpe249-fa26/datasets/nuscenes/v1.0-trainval` | §0.4, §1, §2, §8 |
+| nuScenes mmdetection3d 1.4 info files (`nuscenes_infos_{train,val}.pkl`) | same folder | §8 |
+| nuScenes extras (lidarseg, panoptic, map expansion) | `/data/cmpe249-fa26/datasets/nuscenes/extras` | segmentation projects |
+| Waymo Open Dataset v2 (parquet, 798 train / 202 val segments) | `/data/cmpe249-fa26/datasets/waymo/v2.0/{training,validation}` | §0.5 |
+| Waymo Open Dataset v1.4.3 (tfrecord, train) + KITTI-format conversion | `/data/cmpe249-fa26/datasets/waymo/v1.4.3` | detection projects |
+| Occ3D-nuScenes occupancy labels (`gts/<scene>/<token>/labels.npz`, 850 scenes) | `/data/cmpe249-fa26/derived/nuscenes/occ3d/gts` | §0.6, §2 |
+| Your workspace | `/data/cmpe249-fa26/students/$USER` | everything you write |
+
+All of these datasets are for **non-commercial research and education** only. Accept each dataset's terms
+yourself before using it (links in `/data/cmpe249-fa26/README.md`). Figures you make from the data are for
+your coursework. Do not post Waymo-derived images publicly.
+
+### 0.2 Environment: the shared env + a small venv
+
+The shared environment `/data/cmpe249-fa26/envs/mmdet3d-cu118` has PyTorch 2.1.2 (CUDA 11.8), the full
+mmdetection3d 1.4 stack, nuscenes-devkit, pyarrow/pandas (for Waymo v2) and open3d, built for P100, A100 and
+H100. The occupancy code also needs Hugging Face `transformers` (for the DINOv2 backbones). Add it in a
+light-weight venv **on top of** the shared env:
+
+```bash
+/data/cmpe249-fa26/envs/mmdet3d-cu118/bin/python -m venv --system-site-packages /data/cmpe249-fa26/students/$USER/venv
+source /data/cmpe249-fa26/students/$USER/venv/bin/activate
+pip install "transformers==4.46.3" pyvista          # do NOT reinstall torch / mmcv / numpy here
+
+cd /data/cmpe249-fa26/students/$USER
+git clone --depth 1 https://github.com/lkk688/DeepDataMiningLearning.git
+cd DeepDataMiningLearning
+python -m DeepDataMiningLearning.ngperception.occupancy.models.lss_occ   # CPU shape test, ~1 min
+#   params=3.6M  occ=(1, 18, 200, 200, 16) ...  OK
+```
+
+We tested this exact sequence on the cluster (torch 2.1.2 + transformers 4.46.3 loads DINOv2 and the shape test
+passes). Newer `transformers` releases may require a newer PyTorch than the shared env has, so keep the pin.
+
+### 0.3 A batch job for this tutorial
+
+Copy the course template and put the tutorial command at the end:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=occ-lss
+#SBATCH --partition=gpuqm              # gpuqs is capped at 2 days; a full occupancy run needs about that
+#SBATCH --gres=gpu:h100:1              # gpu:a100:1 works too; a P100 (16 GB) only fits small batches
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=96G
+#SBATCH --time=3-00:00:00
+#SBATCH --output=logs/%x-%j.out
+set -euo pipefail
+export http_proxy=http://172.16.1.2:3128 https_proxy=http://172.16.1.2:3128
+export HF_HOME=/data/cmpe249-fa26/students/$USER/cache/huggingface
+export OMP_NUM_THREADS=2 MKL_NUM_THREADS=2          # avoid thread oversubscription in the data-loader workers
+source /data/cmpe249-fa26/students/$USER/venv/bin/activate
+cd /data/cmpe249-fa26/students/$USER/DeepDataMiningLearning
+NUSC=/data/cmpe249-fa26/datasets/nuscenes/v1.0-trainval
+GTS=/data/cmpe249-fa26/derived/nuscenes/occ3d/gts
+python -m DeepDataMiningLearning.ngperception.occupancy.train_lss --split train --resume \
+    --gts $GTS --nusc $NUSC --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 \
+    --refine-iters 2 --occ-lovasz 1.0 --occ-class-balance --cosine --amp \
+    --epochs 24 --batch-size 8 --num-workers 16 --seed 0 \
+    --out-dir /data/cmpe249-fa26/students/$USER/output/lss_occ_train
+```
+
+`--resume` restarts from `ckpt_last.pt`, which is saved every epoch. If the job hits its time limit, submit the
+same script again. Our run of exactly this recipe took about two days on one H100, restarts included (§3.0).
+For a first try, add `--max-samples 2000 --epochs 8`; it fits a `gpuqs` job.
+
+`OMP_NUM_THREADS=2` is not cosmetic. With 16 loader workers, each worker's NumPy otherwise starts one thread per
+core. On our nodes this put ~60 % of CPU time into the kernel and starved the GPU.
+
+### 0.4 nuScenes: frames, projections, range images
+
+nuScenes stores each sensor in its own frame. Each frame has two records: a `calibrated_sensor` (sensor → ego)
+and an `ego_pose` (ego → global) taken **at that sensor's timestamp**. The LiDAR sweep and the camera image of
+the same keyframe are taken at different times. In our example the camera fired 37 ms before the LiDAR, so a
+LiDAR point reaches a camera pixel through the global frame:
+
+```
+LiDAR sensor --calibrated_sensor--> ego(t_lidar) --ego_pose--> global --ego_pose⁻¹--> ego(t_cam) --calibrated_sensor⁻¹--> camera --K--> pixel
+```
+
+`viz/nuscenes_views.py` draws four views of one keyframe (CPU only, about a minute):
+
+```bash
+python -m DeepDataMiningLearning.ngperception.viz.nuscenes_views \
+    --dataroot /data/cmpe249-fa26/datasets/nuscenes/v1.0-trainval \
+    --sample 2ff5689a089844f0a2097b1883916003 --out figures
+```
+
+![nuScenes BEV with GT boxes](docs/figures/nusc_bev_boxes.png)
+
+*One LIDAR_TOP sweep (34,720 points), ego frame, coloured by height, with the 117 annotated boxes. Density falls
+off with range, and every car shows only the L-shaped side that faces the sensor.*
+
+![LiDAR on CAM_FRONT](docs/figures/nusc_lidar_on_cam.png)
+
+*The same sweep through the chain above into CAM_FRONT: only 3,252 points land in this camera. These sparse rows
+are exactly the depth supervision BEVDepth-style models and our §2 occupancy model train on. The result matches
+the devkit's own `map_pointcloud_to_image` (3,243 points with its slightly different near-clip).*
+
+![nuScenes range image](docs/figures/nusc_range_image.png)
+
+*The sweep as a 32 × 1080 range image: row = laser ring (ring 0 = −30.7°, ring 31 = +10.7°), column = azimuth.
+Two traps:*
+1. *Build it in the **sensor** frame. The ego frame's origin is the rear axle, 0.94 m behind and 1.84 m below the
+   LiDAR, so azimuth and range computed there bend every near return.*
+2. *Drop returns closer than ~2.5 m: 26 % of this raw sweep (9,054 points) hits the ego car itself. The white
+   notch at the bottom is where the car body blocks the low beams.*
+
+![nuScenes surround cameras](docs/figures/nusc_surround.png)
+
+*All six cameras with the GT boxes projected (`nusc.get_sample_data` returns the boxes already in each camera's
+frame). The crowd on the right of the range image is the pedestrian group in CAM_BACK_RIGHT.*
+
+### 0.5 Waymo Open Dataset v2: read it with pyarrow
+
+The v2 release is "modular": one parquet file per segment **per component**. Examples are `lidar`,
+`lidar_calibration`, `lidar_box`, `camera_image`, `camera_calibration`, `lidar_camera_projection` and
+`vehicle_pose`. You can join them on `key.segment_context_name` + `key.frame_timestamp_micros`. pandas/pyarrow in
+the shared env are enough to read them; the `waymo_open_dataset` package from hpc3.md is optional.
+
+```python
+import pyarrow.parquet as pq, numpy as np
+root, seg = '/data/cmpe249-fa26/datasets/waymo/v2.0/validation', '10203656353524179475_7625_000_7645_000'
+li = pq.read_table(f'{root}/lidar/{seg}.parquet').to_pandas()
+r = li[li['key.laser_name'] == 1].iloc[0]                       # laser 1 = TOP (64 beams); 2-5 = short-range
+ri = np.asarray(r['[LiDARComponent].range_image_return1.values'], np.float32).reshape(
+         r['[LiDARComponent].range_image_return1.shape'])        # (64, 2650, 4): range, intensity, elongation, NLZ
+```
+
+Unlike nuScenes, Waymo ships the LiDAR as **range images** (two returns per pulse). It also ships the camera
+projection of every return, so you do not need your own calibration chain to overlay LiDAR on images.
+Converting a range image to points is a useful exercise:
+
+```python
+rng  = ri[..., 0]; H, W = rng.shape                                  # range <= 0 means no return
+incl = np.asarray(cal['[LiDARCalibrationComponent].beam_inclination.values'])[::-1]   # row 0 = HIGHEST beam
+ext  = np.asarray(cal['[LiDARCalibrationComponent].extrinsic.transform']).reshape(4, 4)
+az   = (W - np.arange(W) - 0.5) / W * 2 * np.pi - np.pi - np.arctan2(ext[1, 0], ext[0, 0])   # column -> azimuth
+inc, azm = np.meshgrid(incl, az, indexing='ij')
+p_sensor = np.stack([rng * np.cos(inc) * np.cos(azm), rng * np.cos(inc) * np.sin(azm), rng * np.sin(inc)], -1)
+p_vehicle = p_sensor[rng > 0] @ ext[:3, :3].T + ext[:3, 3]          # (N, 3), vehicle frame
+```
+
+`viz/waymo_v2_views.py` does this and draws three figures:
+
+```bash
+python -m DeepDataMiningLearning.ngperception.viz.waymo_v2_views \
+    --root /data/cmpe249-fa26/datasets/waymo/v2.0/validation \
+    --segment 10203656353524179475_7625_000_7645_000 --frame 100 --out figures
+```
+
+![Waymo range image](docs/figures/waymo_range_image.png)
+
+*The TOP LiDAR's native 64 × 2650 range image: 115,603 first returns in one frame, three times a nuScenes sweep.
+There are no ego-body returns in it.*
+
+![Waymo LiDAR on the front camera](docs/figures/waymo_lidar_on_cam.png)
+
+*15,859 returns in the 1920 × 1280 FRONT camera, drawn straight from `lidar_camera_projection`: (camera, x, y) for
+up to two cameras per return. No calibration code of ours is involved.*
+
+![Waymo range image to points, with boxes](docs/figures/waymo_bev_boxes.png)
+
+*Our own range-image → point conversion in the vehicle frame, with the 48 `lidar_box` labels of the frame. The
+points sit inside the boxes, which checks the beam order, the azimuth convention and the extrinsic. This view
+ignores the per-pixel `lidar_pose` motion compensation (a few cm at city speed).*
+
+| | nuScenes | Waymo v2 |
+|---|---|---|
+| LiDAR | 1 × 32-beam, 20 Hz | 1 × 64-beam TOP + 4 short-range, 10 Hz |
+| LiDAR storage | point list `(x, y, z, intensity, ring)`, sensor frame | range images `[64, 2650, 4]`, 2 returns |
+| Cameras | 6 × 1600 × 900, 360° | 5 cameras (front 1920 × 1280), no rear camera |
+| LiDAR → pixel | sensor → ego(t_l) → global → ego(t_c) → camera → K | `lidar_camera_projection`, per return |
+| Typical bug | skipping the ego-pose step; ego-frame range images | flipped row order; mixing returns 1 and 2 |
+
+### 0.6 Occ3D-nuScenes labels
+
+Each keyframe has a `labels.npz` with `semantics` (200 × 200 × 16 voxels of 0.4 m; classes 0–16, 17 = free) and
+two visibility masks. The official metric scores only `mask_camera` voxels.
+
+```bash
+GTS=/data/cmpe249-fa26/derived/nuscenes/occ3d/gts
+python -m DeepDataMiningLearning.ngperception.viz.occ3d_views --gts $GTS \
+    --scene scene-0018 --token 2ff5689a089844f0a2097b1883916003 --out figures
+python DeepDataMiningLearning/ngperception/occupancy/visualize_voxel3d.py \
+    $GTS/scene-0018/2ff5689a089844f0a2097b1883916003/labels.npz figures/occ3d_gt_voxel3d.png --camera-mask
+```
+
+![Occ3D GT BEV](docs/figures/occ3d_gt_bev.png)
+
+*Same frame as §0.4. Left: GT, top-most occupied voxel per column. Middle: only camera-visible voxels, which is
+what mIoU scores. Right: how much of each column the cameras see. Only 17 % of the grid is camera-visible, and
+45 % of this frame's occupied voxels (39,100 → 21,528) fall outside the mask.*
+
+![Occ3D class frequency](docs/figures/occ3d_classfreq.png)
+
+*Class frequency inside the mask over 120 random frames (log scale). Free space and flat surfaces dominate;
+objects are a fraction of a percent. This is why the loss choice in §2.8.1 matters.*
+
+![Occ3D GT in 3D](docs/figures/occ3d_gt_voxel3d.png)
+
+*The camera-visible GT as coloured 3D voxels (`visualize_voxel3d.py`, matplotlib only, no display needed).*
 
 ---
 
@@ -578,7 +807,7 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
 
 ### 2.8.1 The loss is the biggest lever — Lovász + class-balanced CE (from the GaussianFormer3D study)
 
-Studying [GaussianFormer3D](../docs/GaussianFormer3D_study.md) (a LiDAR-camera fusion Gaussian
+Studying [GaussianFormer3D](docs/GaussianFormer3D_study.md) (a LiDAR-camera fusion Gaussian
 occupancy net) surfaced one change we could port straight into our pure-PyTorch trainer with
 **no new dependency**: they don't train the occupancy head on plain cross-entropy. They use
 **CE + Lovász-softmax + class-balanced weights**. We had been using plain CE. So we tested it —
@@ -682,7 +911,7 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_lss \
 Our own §2.3/§2.7 diagnosis was that **the lift is single-shot**: each camera ray's depth is
 predicted from 2-D features *once*, the features are splatted *once*, and if that depth is
 wrong the features land in the wrong voxels with no chance to recover. The
-[GaussianFormer3D study](../docs/GaussianFormer3D_study.md) confirmed the diagnosis from
+[GaussianFormer3D study](docs/GaussianFormer3D_study.md) confirmed the diagnosis from
 outside — their answer is **iterative refinement** (4 deformable-attention passes). We ported
 the *idea* into pure PyTorch, no CUDA, still camera-only:
 
@@ -877,7 +1106,7 @@ multi-seed-verified, camera-only baseline byte-identical when the flags are off:
 
 Small = DINOv2-small / 1000 samples / 8 ep (~15 min); strong = DINOv2-base / 4-layer decoder /
 cosine / 3000 samples / 12 ep (~2.8 h). All three ideas were ported from the
-[GaussianFormer3D study](../docs/GaussianFormer3D_study.md); the loss was the ×6 lever, the
+[GaussianFormer3D study](docs/GaussianFormer3D_study.md); the loss was the ×6 lever, the
 refine a constant ×1 top-up, and fusion the modality jump (into the supervised-fusion SOTA band).
 
 **Prediction vs ground truth.** Rendering our DINOv2-base (mIoU 0.216, the earlier plain-CE
@@ -909,6 +1138,158 @@ complete bird's-eye scene the prediction reconstructs from the surround views:
 (`output/lss_occ/lss_occ_surround_demo.mp4`. The magenta drivable surface ahead matches the
 FRONT camera; vegetation/terrain flanks match the side cameras.)
 
+### 2.9 Building a new occupancy model — the code, step by step
+
+This section walks through the pieces you change when you build your own model. Every shape and default below is
+read from the code (`occupancy/models/lss_occ.py`, `models/proj_occ.py`, `datasets_train.py`, `train_lss.py`,
+`evaluator.py`).
+
+**Code map.**
+
+| File | Role |
+|---|---|
+| `datasets.py` | Occ3D GT loader: `semantics` (200,200,16; 17 = free), `mask_camera`, `mask_lidar` |
+| `datasets_train.py` | one training sample: 6 images, intrinsics, camera→ego, Occ3D GT, LiDAR depth bins (+ LiDAR voxels) |
+| `geom.py` | grid constants: x, y ∈ [−40, 40] m, z ∈ [−1, 5.4] m, 0.4 m voxels |
+| `models/lss_occ.py` | **push** lift: `CamEncoder` (backbone + DepthNet) → lift-splat → `VoxelDecoder` (+ refine, fusion, det, render) |
+| `models/proj_occ.py` | **pull** lift: every voxel samples the cameras it projects into (no depth prediction) |
+| `train_lss.py` | losses, training loop, `--split train`, `--resume` |
+| `evaluator.py`, `eval_val.py` | official Occ3D mIoU (17 classes, camera-visible voxels) + geometric IoU |
+
+**Step 1 — one sample.** For a patch-14 backbone (DINOv2), the dataset returns:
+
+```python
+{"imgs": (6, 3, 252, 700),            # ImageNet-normalised; 256x704 for ResNet (stride 16)
+ "intrins": (6, 3, 3),                # K rescaled with the image resize (extrinsics do not change)
+ "rots": (6, 3, 3), "trans": (6, 3),  # camera -> ego
+ "semantics": (200, 200, 16), "mask_camera": (200, 200, 16),
+ "depth_gt": (6, 18, 50),             # LiDAR depth -> bin index at FEATURE resolution, -1 = no return
+ "lidar_vox": (3, 200, 200, 16)}      # fusion only: [occupied, log(1+count), mean z offset]
+```
+
+The depth bins are 2–58 m in 0.5 m steps (`DBOUND`, 112 bins).
+
+**Step 2 — encoder + DepthNet.** The backbone maps each image to a feature map `(B·N, F, H/14, W/14)`. A small
+DepthNet (3×3 conv → BN → ReLU → 1×1 conv) outputs `D + C` channels per cell: a softmax over the 112 depth bins
+and a 64-dim context feature. Foundation backbones are frozen; only DepthNet and everything after it train.
+
+| `--backbone` | feature dim | note |
+|---|---|---|
+| `resnet18` | 256 | trained, stride 16 |
+| `dinov2`, `dinov2_base`, `dinov2_large` | 384 / 768 / 1024 | frozen, patch 14 |
+| `dinov3` | 1024 | patch 16, resized to the patch-14 grid; CLS + 4 register tokens dropped |
+| `radio`, `siglip2` | 768 | frozen, resized to the same grid |
+| `vggt`, `qwendrive` | 2048 / 2560 | features read from a cache (the model never runs in the loop) |
+
+**A new backbone only has to honour this contract.** Return `(B·N, F, H/14, W/14)` from
+`CamEncoder._features`, and the lift and decoder never see the difference.
+
+**Step 3 — lift and splat.** A fixed frustum stores `(u, v, d)` for every feature cell and depth bin:
+
+```python
+p_cam  = K⁻¹ · (u·d, v·d, d)ᵀ;   p_ego = R·p_cam + t                    # get_geometry: (B, 6, D, h, w, 3)
+lifted = depth[:, :, None] * ctx[:, :, :, None]                         # (B, 6, C, D, h, w)
+idx    = floor((p_ego - grid_min) / 0.4);  keep = inside 200x200x16
+vox.index_add_(0, flat(idx)[keep], lifted[keep])                        # voxel_pool -> (B, C, 200, 200, 16)
+```
+
+For DINOv2 that is 6 × 112 × 18 × 50 = 604,800 frustum points per sample, × 64 channels ≈ 39 M floats. BEVPool-style
+CUDA kernels make this faster; `index_add_` keeps it readable and portable.
+
+**Step 4 — decoder and options.** `VoxelDecoder` is `n_layers × [Conv3d 3³ → BN3d → ReLU] → Conv3d 1³ → 18 logits`
+(2 × 64 by default, 4 × 96 in the strong recipe). Everything else is a flag on the same trunk:
+
+| Flag / call | Adds |
+|---|---|
+| `--refine-iters 2` | render the decoded occupancy along each ray (first-hit transmittance), sharpen the depth, lift again (§2.8.2) |
+| `--lidar-fusion` | a small 3D CNN on `lidar_vox`, concatenated before the decoder (§2.8.3) |
+| `forward(drop_camera=, drop_lidar=)` | modality dropout: one model for camera-only, LiDAR-only or both (`train_modality_robust.py`) |
+| `det_classes > 0` | a detection head (anchor or CenterPoint) on the same voxel volume (§5) |
+| `render_2d()` | voxels → per-camera semantics + depth, for label-free training (`train_occ_render2d.py`) |
+| `--vggt-depth-cache` | blend a frozen depth-model prior into the depth softmax |
+
+**Step 5 — losses** (`train_lss.py`):
+
+```python
+w_c   = clip(normalise((freq_c + 1e-6) ** -0.25), 0.2, 8.0)              # class weights, camera-visible voxels
+L_occ = CE(logits[mask_camera], gt, weight=w) + λ·Lovász(softmax(logits[mask_camera]), gt)
+L_dep = NLL(log depth_prob, lidar_bin)        # only pixels with a LiDAR return
+L     = L_occ + 1.0·L_dep (+ 0.5·L_occ of the first refine pass)
+```
+
+The mask choice is part of the method. Occ3D's `mask_camera` discards 37 % of the labelled occupied voxels, mostly
+vehicles. Supervising them anyway (`--occ-mask all`) collapsed the in-mask mIoU, because the occluded region is
+~84 % of the grid and dominated the mean.
+
+**Step 6 — train and evaluate.** Use the recipe of §0.3 (`--split train`). `OccupancyEvaluator` accumulates
+TP / FP / FN **over the whole val set** before taking IoU per class, then averages the 17 non-free classes. It
+also reports geometric IoU (occupied vs free) and `pred_mIoU` outside the mask. The leakage-free result of this
+recipe is in §3.0.
+
+![clean model vs GT](docs/figures/occ_clean_pred_vs_gt.png)
+
+*The leakage-free checkpoint on an official val frame, both panels restricted to camera-visible voxels (grey = never
+scored). Command: `python -m ...occupancy.visualize --gts $GTS --nusc $NUSC --ckpt <lss_occ.pth> --split val
+--sample-idx 120 --camera-mask --out pred.png`. Without `--camera-mask` the prediction looks much worse than it is,
+because the GT is white wherever it is unobserved.*
+
+**Two lifting families.** `proj_occ.py` is the second way to get pixels into voxels. Everything else is shared with
+`lss_occ` (backbone, decoder, grid, forward signature), so a comparison changes only the lift:
+
+| | PUSH (`lss_occ`; LSS, BEVDet, BEVDepth) | PULL (`proj_occ`; BEVFormer / SurroundOcc, simplest form) |
+|---|---|---|
+| idea | each pixel predicts a depth distribution and pushes its feature along the ray | each voxel centre projects into every camera and bilinearly samples the feature |
+| depth | explicit → can be supervised with LiDAR | none; all voxels on a ray read the same pixel |
+| extra input needed | — | Fourier encoding of the voxel position + count of cameras that saw it |
+| failure mode | smearing along the ray ("fans") where depth is uncertain | cannot separate depths along a ray without the position code |
+
+**Recipe for adding your own model.**
+
+```python
+class MyOcc(nn.Module):
+    def forward(self, imgs, rots, trans, intrins, lidar_vox=None, **kw):
+        ...                              # imgs (B,6,3,H,W); rots/trans camera->ego; intrins K
+        return occ, depth, aux           # occ (B,18,200,200,16) logits; depth (B,6,D,h,w) or None; aux dict
+```
+
+1. Keep this interface. Then the dataset, losses, evaluator and every experiment script work unchanged.
+2. Add a flag whose default is the old behaviour.
+3. Run the module's shape test (`python -m ...occupancy.models.<file>`), then `train_lss --smoke`.
+4. Train with `--split train` and ≥ 3 seeds. Report the mean of the last 5 epochs, not the best epoch.
+5. Report mIoU, geometric IoU and per-class IoU next to a baseline with the same data and epoch budget.
+
+### 2.10 New occupancy methods — the landscape and what is in this repo
+
+Literature (Occ3D-nuScenes mIoU over 17 classes, camera-visible voxels). These values are **as reported** in our
+SOTA notes ([docs/OCC3D_SOTA_AND_VGGT_DIRECTION.md](docs/OCC3D_SOTA_AND_VGGT_DIRECTION.md)); compare within a column only:
+
+| Camera-only | mIoU | idea |
+|---|---|---|
+| MonoScene | 6.1 | monocular semantic scene completion |
+| CTF-Occ (Occ3D) | 28.5 | coarse-to-fine voxel transformer, the Occ3D baseline |
+| FlashOcc R50 / 4D-stereo | 31.95 / 37.84 | keep BEV 2D; channel-to-height at the end (we run the official checkpoints, [TUTORIAL_FlashOcc](docs/TUTORIAL_FlashOcc.md)) |
+| PanoOcc | 42.1 | panoptic + temporal |
+| COTR / SHTOcc | ~44.5 | compact / sparse temporal; camera-only SOTA |
+| **Camera + LiDAR** | | |
+| DAOcc | 53.8 | |
+| FusionOcc (ACM MM 2024) | 56.6 | |
+
+Trends: temporal multi-frame fusion; sparse voxels and RayIoU (SparseOcc); Gaussian occupancy and
+self-/weak supervision (GaussianFormer, GaussianOcc §2.5); geometry foundation backbones (VGGT family).
+
+In this repo, beyond the lift-splat model of §2.7–§2.9:
+
+| Method | Where | Status / lesson |
+|---|---|---|
+| GaussianOcc (self-supervised, ICCV 2025) | §2.5 | reproduced: 11.26 mIoU, matches the paper |
+| FlashOcc (BEVDet-Occ) | [docs/TUTORIAL_FlashOcc.md](docs/TUTORIAL_FlashOcc.md) | official checkpoints, `bev_pool_v2` built on H100 |
+| Projection ("pull") lift | `models/proj_occ.py` | the controlled alternative to LSS (§2.9) |
+| Label-free voxel teacher (LiDAR geometry + FM semantics) | [docs/LABEL_FREE_OCC_TO_DETECTION.md](docs/LABEL_FREE_OCC_TO_DETECTION.md) | no Occ3D labels; best camera student ~0.10 mIoU |
+| Label-free render pre-training | `train_occ_render2d.py` | voxels rendered to 2D, matched to FM pseudo-labels + LiDAR depth |
+| Modality-robust occ + det | `train_modality_robust.py` | modality dropout: one trunk for any sensor subset |
+| Joint occ + det | `train_multitask_joint.py` | PCGrad beats naive joint fine-tuning on both tasks (relative, leaked trunk) |
+| Domain adaptation to sim renders | `xdomain/train_lss_av2ft.py` | foreground-box loss + frozen-teacher KD: held-out obstacle recall 0.38 → 0.71 (§4.4) |
+
 ## 3. Scaling to full data on H100 — realized
 
 Every number in §2.8 was produced on a **single RTX 3090**, a **frozen** backbone, and
@@ -920,7 +1301,34 @@ configs at **full scale on a single H100 NVL (95 GB)**: the **entire 34149-frame
 Because the whole stack is **pure PyTorch (no mmcv, no custom CUDA)**, this was an environment +
 data-staging step, not the build/version fight every mmlab occupancy repo forces (§2.5).
 
-### 3.1 Results — full split vs the 3090 ablation ceiling
+### 3.0 ⚠ Read this first: the full-data numbers below are leaked; here are the clean ones
+
+The full-data runs in §3.1 used `--max-samples 34149`, which is **every** Occ3D frame, including the 150 official
+**val** scenes. Their "val" scores (0.302 camera / 0.558 fusion internal val; 0.328 camera on official val) are
+therefore **upper bounds, not results**. Do not quote them. We found this ourselves and re-ran the camera recipe
+leakage-free with `--split train`, which takes the official scene lists from `nuscenes.utils.splits`:
+
+| Camera-only, DINOv2-base + 4×96 decoder + refine-2 + Lovász + class-balanced CE, 24 epochs | official val mIoU | geo-IoU |
+|---|---|---|
+| **leakage-free: 700 train scenes only** (2026-10-18; ~2 days on one H100 incl. restarts) | **0.2615** | **0.616** |
+| same recipe, val scenes inside the training set (§3.1) | 0.328 | — |
+
+The leakage inflated camera-only mIoU by about a quarter. The fusion run has not been re-done clean yet.
+
+The occupancy-pre-training → detection result (detection/TUTORIAL.md §13) was also re-run from the clean
+encoder. Camera-only CenterPoint head, official nuScenes val; 3 seeds at 2k/4k, 2 vs 1 at 8k:
+
+| labelled frames | occupancy-pretrained | from scratch | gain | ratio |
+|---|---|---|---|---|
+| 2k | 0.1438 ± 0.0058 | 0.1223 ± 0.0026 | +0.0215 (p = 0.012) | 1.18× |
+| 4k | 0.1630 ± 0.0047 | 0.1498 ± 0.0036 | +0.0132 (p = 0.020) | 1.09× |
+| 8k | 0.1832 | 0.1768 | +0.0064 (indicative) | 1.04× |
+
+The gain shrinks as labels grow, which is the evidence for label efficiency. The leaked encoder had shown
+1.31× / 1.22×. The cleaned result is real but modest, and clean @2k does not match scratch @4k (p = 0.22), so there
+is no "worth twice the labels" claim. Full audit: [docs/RESULTS_FULLDATA_H100.md](docs/RESULTS_FULLDATA_H100.md).
+
+### 3.1 Results — full split vs the 3090 ablation ceiling (⚠ leaked — see §3.0)
 
 | config | 3090 ref (3k/12ep) | **full data (34k/24ep, H100)** | Δ |
 |---|---|---|---|
@@ -1016,19 +1424,15 @@ The division of labor held up: **prototype and de-risk on the 3090, scale the wi
 and the two bugs above are the reminder that "just run it bigger" still surfaces real engineering.
 A full per-epoch log of these runs is in [docs/RESULTS_FULLDATA_H100.md](docs/RESULTS_FULLDATA_H100.md).
 
-## 4. 3D object detection (`detection/`) — the sibling task
+## 3D object detection → see §8
 
-Occupancy answers *"what is where, densely"*; **3D object detection** answers *"where are the
-objects, as boxes"*. It's the same shape of problem — encode the scene, attach a head — so it
-lives beside occupancy as a second head on (eventually) the same encoder. We built a
-**pure-PyTorch PointPillars** (no spconv/mmcv/compiled ops), harvested from OpenPCDet, verified
-end-to-end on **KITTI Car** (overfit: 18 dets for 18 GT; held-out val mAP@0.5 = 0.324), with a
-from-scratch **vectorised rotated-IoU** replacing the usual CUDA op. Full teaching walkthrough,
-results, and reproduction commands: **[detection/TUTORIAL.md](detection/TUTORIAL.md)**.
+3D object detection (pure-PyTorch PointPillars/CenterPoint, the mmdetection3d model zoo, BEVFusion, camera
+detectors and newer methods) now lives in **§8**. The from-scratch walkthrough is
+**[detection/TUTORIAL.md](detection/TUTORIAL.md)**.
 
 ## 5. Full-stack multi-task — occupancy + detection on one encoder (M3)
 
-Occupancy (§2) and detection (§4) are the *same shape of problem* — encode the scene into a
+Occupancy (§2) and detection (§8) are the *same shape of problem* — encode the scene into a
 BEV/voxel volume, attach a head — so the payoff is to **share the encoder**. M3 does exactly
 that: the `LSSOccupancy` **fused camera+LiDAR voxel volume** (the thing that reached occ
 mIoU 0.298 camera-only / 0.493 fusion, §2.8.3) now feeds **two heads**:
@@ -1071,7 +1475,7 @@ python -m DeepDataMiningLearning.ngperception.occupancy.train_multitask \
 
 ## 6. Lane detection & prediction (`lane/`) — the road layout
 
-Depth (§1) gives geometry, occupancy (§2) gives dense what-is-where, detection (§4) gives objects
+Depth (§1) gives geometry, occupancy (§2) gives dense what-is-where, detection (§8) gives objects
 as boxes — **lanes** give the *road structure*: where can I drive, which lane am I in, where do the
 markings go. The `lane/` module starts by **running SOTA lane models** on the road images we
 already have (nuScenes/KITTI front cameras), pure PyTorch. First backend: **YOLOPv2** — a
@@ -1294,3 +1698,230 @@ image (a new capability, the world-model/VLA angle), and (2) **closed-loop stabi
 temporal consistency lowers the reactivity tax, which open-loop metrics can't measure. That reframing
 (world-model + closed-loop, not accuracy) is what launched the `closedloop_occ/worldmodel_occ/` project;
 see its `PLAN.md`.
+
+---
+
+## 7. Visualization cookbook — how every figure in this tutorial is made
+
+Every tool writes PNGs with matplotlib (`Agg` backend), so no display is needed: run them on a CPU node or inside a
+batch job. Set `NUSC=/data/cmpe249-fa26/datasets/nuscenes/v1.0-trainval` and
+`GTS=/data/cmpe249-fa26/derived/nuscenes/occ3d/gts`, and run from the repository root.
+
+| Figure | Tool | Command (abridged) | Needs |
+|---|---|---|---|
+| LiDAR BEV + GT boxes, LiDAR on camera, range image, surround boxes | `viz/nuscenes_views.py` | `python -m ...ngperception.viz.nuscenes_views --sample <token>` | nuScenes |
+| Waymo range image, dataset projection, range → points + boxes | `viz/waymo_v2_views.py` | `python -m ...ngperception.viz.waymo_v2_views --segment <seg> --frame 100` | Waymo v2 |
+| Occ3D GT BEV / camera mask / class frequency | `viz/occ3d_views.py` | `python -m ...ngperception.viz.occ3d_views --gts $GTS` | Occ3D |
+| Occupancy as 3D voxels | `occupancy/visualize_voxel3d.py` | `visualize_voxel3d.py labels.npz out.png --camera-mask [--mode voxels]` | a `labels.npz` or `pred.npy` |
+| Prediction vs GT (BEV) | `occupancy/visualize.py` | `--ckpt <pth> --split val --sample-idx i --camera-mask` | checkpoint + GPU |
+| Several checkpoints / modalities side by side | `occupancy/visualize.py` | `--compare camera:<pth> fusion:<pth>` or `--modality-compare` | checkpoints |
+| Occupancy + front camera video | `occupancy/xdomain/predict_occ_sequence.py` → `occupancy/occ_video.py` | frames → `occ_video.py --frames <dir> --out x.mp4` | `pyvista`, `imageio` (venv) |
+| Detection boxes in BEV (occupancy-backbone detector) | `occupancy/visualize_det.py` | `--ckpt <det_abl.pth> --sample-idx i` or `--compare a:<pth> b:<pth>` | checkpoint |
+| Several detectors on one frame (PETR / BEVFusion-L / -LC) | `detection/visualize_multiexpert.py` | `--preds "PETR:<results_nusc.json>" "LC:<...>"` | mmdet3d result JSONs (§8.2) |
+| Depth maps + per-object distance | §1.6 (`fuse_*` outputs) | see §1.6 | images |
+
+Rules we learned the hard way, all of which changed a figure in this tutorial:
+
+1. **Draw what the metric scores.** Occ3D mIoU only scores `mask_camera` voxels. A prediction panel without
+   `--camera-mask` compares a full prediction with a GT that is white wherever it is unobserved, and looks far
+   worse than it is (§2.9 figure).
+2. **Range images live in the sensor frame**, and ego-body returns must be removed first (§0.4).
+3. **Overlay projections on the image before training anything that uses them.** A mirrored GT plus a mirrored LiDAR
+   gave a plausible-looking AP of 0.36 in our detection work; fixing only one side dropped it to 0.013.
+4. **Render predictions from the real camera pose** (intrinsics + extrinsics). Misalignments that barely change the
+   metric become obvious.
+5. **Label leaked or overlapping checkpoints on the figure.** Some older figures below come from the full-data
+   checkpoints that saw val frames (§3.0). They are fine for intuition, not as evidence.
+
+Examples from earlier sections:
+
+![our model, six cameras around the predicted occupancy](docs/lss_occ_surround_demo_frame.png)
+
+*All six cameras around our model's global occupancy (qualitative; older full-data checkpoint).*
+
+![camera vs fusion vs GT](docs/occ_pred_compare.png)
+
+*Camera-only vs camera + LiDAR vs GT, BEV (§2.8.3; leaked full-data checkpoints, qualitative only). Note the radial
+"fans" of the camera-only model: lift-splat smears features along rays where its depth is uncertain.*
+
+![three detectors on one frame](docs/multiexpert_compare.png)
+
+*PETR (camera), BEVFusion-L and BEVFusion-LC on the same nuScenes frame (`visualize_multiexpert.py`, §8).*
+
+
+---
+
+## 8. 3D object detection — from scratch, mmdetection3d, BEVFusion and newer methods
+
+There are three routes to 3D detection in this repo:
+
+1. **From scratch, pure PyTorch:** PointPillars, CenterPoint and a BEV transformer with no spconv/mmcv, KITTI → nuScenes.
+   See [detection/TUTORIAL.md](detection/TUTORIAL.md). This is the route to read if you want to understand every line.
+2. **On top of the occupancy encoder:** §5 here, and detection/TUTORIAL.md §13.
+3. **mmdetection3d model zoo + BEVFusion** (this section): the reference implementations, run in the course
+   environment on the course data.
+
+### 8.1 mmdetection3d on the course cluster
+
+The shared env already contains mmengine 0.10.4, mmcv 2.1.0 (built for `sm_60…sm_90`), mmdet 3.2.0 and
+mmdet3d 1.4.0. You only need the matching `tools/` and `configs/`, plus symlinks to the data. The course nuScenes
+folder already contains mmdetection3d 1.4 info files (`nuscenes_infos_{train,val}.pkl`), so no `create_data.py`
+run is needed:
+
+```bash
+cd /data/cmpe249-fa26/students/$USER
+git clone -b v1.4.0 --depth 1 https://github.com/open-mmlab/mmdetection3d.git
+cd mmdetection3d && mkdir -p data ckpts
+ln -s /data/cmpe249-fa26/datasets/nuscenes/v1.0-trainval data/nuscenes     # info files store ./data/nuscenes/... paths
+source /data/cmpe249-fa26/students/$USER/venv/bin/activate                  # the venv of §0.2 (on top of the shared env)
+export PYTHONPATH=$PWD:$PYTHONPATH                                          # so configs can import projects/*
+```
+
+### 8.2 Evaluate a model-zoo detector
+
+Inside a batch job (§0.3 template, `--gres=gpu:1`, ~1 h):
+
+```bash
+mim download mmdet3d --config pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d --dest ckpts/
+python tools/test.py ckpts/pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d.py ckpts/hv_pointpillars_*.pth
+#   nuScenes val: mAP 0.337, NDS 0.486 (our run; car AP 0.787, bicycle 0.008)
+
+# keep the predictions for plotting (§7, detection/visualize_multiexpert.py):
+python tools/test.py <config> <checkpoint> --cfg-options \
+    test_evaluator.jsonfile_prefix=work_dirs/pp_val test_evaluator.format_only=True
+```
+
+The nuScenes metric matches boxes by **centre distance** (0.5 / 1 / 2 / 4 m), not IoU. The logs call the 6,019-frame
+evaluation "test", but it is the val split.
+
+### 8.3 BEVFusion (LiDAR + camera)
+
+BEVFusion (Liu et al., ICRA 2023) converts both sensors to one bird's-eye-view grid:
+- **camera:** Swin-T → LSS lift with a fast BEV pooling kernel;
+- **LiDAR:** voxels → SECOND sparse convolutions → BEV;
+- **fusion:** concatenate both maps → a conv fuser → a TransFusion head.
+
+mmdetection3d ships it as a **project** with two custom CUDA ops (`bev_pool`, `voxel_layer`) that you must compile.
+
+**Gotcha: the stock build fails on our GPUs.** `projects/BEVFusion/setup.py` hard-codes `-gencode` for
+`sm_70, 75, 80, 86` only, and ignores `TORCH_CUDA_ARCH_LIST`. Built as shipped, BEVFusion crashes on our P100s
+(`sm_60`) **and** H100s (`sm_90`) with `CUDA error: no kernel image is available for execution on the device`
+inside `bev_pool`. We hit exactly this. Add the two architectures, then build into your venv (the shared env is
+read-only, so `setup.py develop` must run from your venv):
+
+```bash
+cd /data/cmpe249-fa26/students/$USER/mmdetection3d
+python - <<'EOF'
+p = 'projects/BEVFusion/setup.py'; s = open(p).read()
+s = s.replace("'-gencode=arch=compute_70,code=sm_70',", "'-gencode=arch=compute_60,code=sm_60',\n            '-gencode=arch=compute_70,code=sm_70',")
+s = s.replace("'-gencode=arch=compute_86,code=sm_86',", "'-gencode=arch=compute_86,code=sm_86',\n            '-gencode=arch=compute_90,code=sm_90',")
+open(p, 'w').write(s)
+EOF
+export CUDA_HOME=/data/cmpe249-fa26/envs/cuda-11.8 PATH=/data/cmpe249-fa26/envs/cuda-11.8/bin:$PATH
+FORCE_CUDA=1 python projects/BEVFusion/setup.py develop      # FORCE_CUDA lets it build on a CPU node too
+ls projects/BEVFusion/bevfusion/ops/*/*.so                     # bev_pool_ext*.so  voxel_layer*.so
+```
+
+**Evaluate the official LiDAR + camera checkpoint** (batch job, one GPU):
+
+```bash
+wget -P ckpts https://download.openmmlab.com/mmdetection3d/v1.1.0_models/bevfusion/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.pth
+python tools/test.py projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py \
+    ckpts/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.pth
+```
+
+We ran exactly these commands in the course environment on the course nuScenes copy (one H100, inference ≈ 16 min
+for the 6,019 val frames):
+
+| BEVFusion, nuScenes val | mAP | NDS |
+|---|---|---|
+| model zoo, LiDAR only (README) | 64.9 | 69.6 |
+| model zoo, LiDAR + camera (README) | 68.6 | 71.4 |
+| ours, LiDAR + camera, course env + course data (2026-10-22) — per class: car 0.894, ped 0.879, bicycle 0.626 | **68.4** | **71.1** |
+
+**Training** follows the project README. First train the LiDAR-only model, then train LiDAR + camera starting from
+it and from the Swin-T nuImages weights:
+
+```bash
+python tools/train.py projects/BEVFusion/configs/bevfusion_lidar_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py
+python tools/train.py projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d.py \
+    --cfg-options load_from=<lidar ckpt> model.img_backbone.init_cfg.checkpoint=<swint-nuimages-pretrained.pth>
+```
+
+The configs assume 8 GPUs × 4 samples. On one GPU, budget days, not hours. For a course project, start from the
+zoo checkpoints and fine-tune or evaluate under changed inputs (§8.6), rather than training from scratch.
+
+### 8.4 Camera-only detectors: PETR and StreamPETR
+
+- **PETR** is in mmdetection3d v1.4.0 (`projects/PETR`). It adds a 3D position embedding of each pixel's camera ray
+  to the image features, so plain DETR cross-attention becomes 3D-aware. Our run (VoVNet-99, 800×320) on nuScenes
+  val: **mAP 0.383 / NDS 0.391**, matching the published numbers.
+- **StreamPETR** is not in upstream mmdetection3d (it has its own official repository). It keeps the top-K object
+  queries of each frame in a memory queue and propagates them to the next frame. Our port reached
+  **0.4825 / 0.5713** (published 0.482 / 0.571), but only after one fix: timestamps had been stored as float32.
+  A Unix time of ~1.5·10⁹ s in float32 has a resolution of about 128 s, so the 0.5 s gap between frames
+  became 0 or 128 s, and the temporal alignment was garbage. **0.292 mAP before the fix.**
+
+In our experiments, distilling a BEVFusion teacher into a PETR student gave +6 % mAP with feature distillation and
+−24 % with box (pseudo-label) distillation.
+
+### 8.5 Newer methods (2022 → 2026): what moved, and what to try
+
+Numbers are **as reported in each paper's own tables** (nuScenes **test** unless marked). Backbones, test-time
+tricks and future frames differ, so compare within a column only.
+
+| Method (year) | Sensor | Key idea | nuScenes mAP / NDS | In mmdet3d v1.4? |
+|---|---|---|---|---|
+| CenterPoint (2021) | LiDAR | objects as centre heatmaps (the default head) | 58.0 / 65.5 | yes (configs) |
+| TransFusion-L (2022) | LiDAR | heatmap-initialised object queries, no NMS | 65.5 / 70.2 | via BEVFusion head |
+| DSVT (2023) | LiDAR | sparse voxel transformer, equal-size sets → TensorRT | 68.4 / 72.7 | `projects/DSVT` |
+| VoxelNeXt (2023) | LiDAR | fully sparse, boxes from voxels, no dense BEV | 64.5 / 70.0 | official repo |
+| SAFDNet (2024) | LiDAR | fully sparse + adaptive feature diffusion | 68.3 / 72.3 | official repo |
+| LION / UniMamba (2024 / 25) | LiDAR | linear-time (Mamba) context over serialised voxels | 69.8 / 73.9 · 70.2 / 74.0 | official repos |
+| PETR (2022) | camera | 3D position embedding | 44.1 / 50.4 | `projects/PETR` |
+| BEVFormer (2022) | camera | BEV queries, spatial + temporal attention | 48.1 / 56.9 | official repo |
+| StreamPETR (2023) | camera | streaming object queries | 55.0 / 63.6 (V2-99) · 62.0 / 67.6 (ViT-L) | official repo |
+| Sparse4D v3 (2023) | camera | sparse 4D sampling + temporal denoising (Horizon) | 57.0 / 65.6 (V2-99) | official repo |
+| Far3D (2024) | camera | 2D-prior queries for 150 m range (AV2) | 63.5 / 68.7 (ViT-L) | official repo |
+| BEVFusion (2022) | L + C | both sensors to BEV, conv fuser | 70.2 / 72.9 | `projects/BEVFusion` |
+| CMT (2023) | L + C | cross-modal tokens, no view transform | 72.0 / 74.1 | official repo |
+| IS-Fusion (2024) | L + C | scene + instance-guided fusion | 73.0 / 75.2 | official repo |
+| SparseLIF (2024) | L + C | sparse queries, uncertainty-aware, **temporal** | 74.4 / 77.0 | official repo |
+
+Trends:
+- LiDAR heads went from anchors to centres to queries.
+- LiDAR backbones went from dense BEV to fully sparse, then to linear-time sequence models. These win at long
+  range: Argoverse 2 mAP roughly doubled from 2022 to 2025.
+- Camera models went sparse and streaming.
+- On nuScenes, recent single-digit gains often come from bigger backbones and temporal input. Ask for seeds before
+  believing a half-point difference.
+
+### 8.6 Why LiDAR + camera fusion adds so little — and how to test it
+
+Our BEVFusion reproduction on val: LiDAR-only **0.691 NDS**, LiDAR + camera **0.712**, i.e. **+0.021**. The paper's own
+val numbers show the same gap (69.3 → 71.4), and over a strong LiDAR baseline published fusion methods add about
+3–8 mAP but only 1.5–5 NDS. Six reasons, each documented in the literature:
+
+1. **Modality imbalance.** Joint training fits the easier modality (LiDAR) first and starves the camera branch.
+2. **Camera depth.** To reach BEV the camera must guess depth, so its features smear along rays exactly where LiDAR is
+   already precise.
+3. **Alignment.** Calibration drift and unsynchronised exposures misplace camera features. BEVFusion's fuser is a
+   fixed `concat → 3×3 conv → BN → ReLU`, with no way to down-weight a bad modality.
+4. **Metric saturation.** NDS adds translation / scale / orientation / velocity errors that multi-sweep LiDAR already
+   gets right. The camera's gains (small, far and thin objects; rain, night) are averaged away.
+5. **Asymmetric robustness.** Trained with LiDAR always present, the model learns to depend on it.
+6. **Cost.** In the BEVFusion paper, 119 ms vs CenterPoint's 81 ms, plus calibration upkeep on the vehicle.
+
+**Test it with the two-ablation audit** ([bevdet/robustness/README.md](../bevdet/robustness/README.md)): corrupt one
+sensor's *input* and, separately, zero its *features*. A branch that does real work hurts under both; a branch that is
+an input-independent constant hurts under neither.
+
+![what the camera adds](docs/figures/fusion_camera_value.png)
+
+*Same BEVFusion checkpoints, one LiDAR degradation at a time, with the LiDAR-only model as the floor:*
+- *The camera's value grows as LiDAR degrades **uniformly**: +0.020 → +0.063 NDS (8 beams), +0.090 (95 % dropout).*
+- *Where LiDAR is **missing in a region** (front 180° only) it adds just +0.012, although three rear cameras see that
+  region.*
+- *Blacking out all cameras drops the fused model to 0.670, **below** LiDAR-only (0.692).*
+- *In two of our three custom fusion models, the camera branch turned out to be an input-independent constant.*
+

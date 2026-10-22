@@ -1,0 +1,8 @@
+{
+ "sample": "2ff5689a089844f0a2097b1883916003",
+ "scene": "scene-0018",
+ "n_points": 34720,
+ "n_cam_front": 3252,
+ "cam_minus_lidar_ms": -37.014,
+ "n_ego_body": 9054
+}

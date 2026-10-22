@@ -46,9 +46,14 @@ def bev_semantic(sem_grid):
     return out
 
 
-def render_panel(ax, sem_grid, title):
-    bev = bev_semantic(sem_grid)
-    ax.imshow(OCC3D_PALETTE[bev].transpose(1, 0, 2)[::-1], origin="upper")
+def render_panel(ax, sem_grid, title, mask=None):
+    """mask: (200,200,16) bool mask_camera -> only scored voxels are drawn; columns with no scored voxel are grey."""
+    if mask is not None:
+        sem_grid = np.where(mask, sem_grid, 17)
+    rgb = OCC3D_PALETTE[bev_semantic(sem_grid)]
+    if mask is not None:
+        rgb[~mask.any(2)] = 0.82                           # never scored by the Occ3D metric
+    ax.imshow(rgb.transpose(1, 0, 2)[::-1], origin="upper")
     ax.set_title(title, fontsize=11); ax.axis("off")
 
 
@@ -85,6 +90,10 @@ def main():
     ap.add_argument("--decoder-layers", type=int, default=4); ap.add_argument("--decoder-hidden", type=int, default=96)
     ap.add_argument("--refine-iters", type=int, default=2)
     ap.add_argument("--sample-idx", type=int, default=0)
+    ap.add_argument("--split", choices=["all", "val"], default="all",
+                    help="val = index into the official val scenes only (use this for a held-out figure)")
+    ap.add_argument("--camera-mask", action="store_true",
+                    help="draw only camera-visible voxels (what the Occ3D mIoU scores); grey = never scored")
     ap.add_argument("--out", required=True); ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
     dev = args.device
@@ -94,11 +103,15 @@ def main():
     from .datasets_train import NuScenesOccTrainDataset
 
     nusc = NuScenes(version="v1.0-trainval", dataroot=args.nusc, verbose=False)
+    scenes = None
+    if args.split == "val":                           # official val scenes that have Occ3D labels
+        from nuscenes.utils import splits as _splits
+        scenes = sorted(set(_splits.val) & set(os.listdir(args.gts)))
     # a fusion-capable dataset (lidar_vox always provided) so any modality checkpoint / drop runs
     if args.modality_compare:                          # ONE fusion model under 3 modalities
         m0 = build_model(args.ckpt, args, True, dev)
         ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=m0.image_hw, downsample=m0.downsample,
-                                     max_samples=args.sample_idx + 1, lidar_fusion=True)
+                                     max_samples=args.sample_idx + 1, lidar_fusion=True, scenes=scenes)
         mods = [("fusion", False, False), ("camera-only", False, True), ("lidar-only", True, False)]
         panels = [(name, infer(m0, ds, args.sample_idx, dev, dc, dl)) for name, dc, dl in mods]
     else:
@@ -107,7 +120,7 @@ def main():
                      "fusion" in e.lower() or "lidar" in e.lower()) for e in args.compare])
         m0 = build_model(entries[0][1], args, entries[0][2], dev)
         ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=m0.image_hw, downsample=m0.downsample,
-                                     max_samples=args.sample_idx + 1, lidar_fusion=True)
+                                     max_samples=args.sample_idx + 1, lidar_fusion=True, scenes=scenes)
         panels = []
         for name, ckpt, fus in entries:
             m = m0 if ckpt == entries[0][1] else build_model(ckpt, args, fus, dev)
@@ -116,8 +129,9 @@ def main():
 
     fig, axes = plt.subplots(1, len(panels), figsize=(4 * len(panels), 4.4))
     axes = np.atleast_1d(axes)
+    mc = ds.occ[args.sample_idx].mask_camera.astype(bool) if args.camera_mask else None
     for ax, (name, grid) in zip(axes, panels):
-        render_panel(ax, grid, name)
+        render_panel(ax, grid, name, mc)
     # compact legend of the common classes
     import matplotlib.patches as mp
     keep = [1, 2, 3, 4, 6, 7, 8, 10, 11, 13, 14, 15, 16]
