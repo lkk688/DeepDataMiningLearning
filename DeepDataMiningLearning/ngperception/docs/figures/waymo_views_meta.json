@@ -1,0 +1,18 @@
+{
+ "segment": "10203656353524179475_7625_000_7645_000",
+ "timestamp": 1522688024961676,
+ "range_image": [
+  64,
+  2650,
+  4
+ ],
+ "n_returns": 115603,
+ "n_front": 15859,
+ "img": [
+  1920,
+  1280
+ ],
+ "n_boxes": 48,
+ "points_in_boxes_ours": 8407,
+ "points_in_boxes_label": 11675
+}

@@ -329,3 +329,27 @@ trunk's gradients, which is exactly what PCGrad targets.
   grad-clip (both applied in the working tree / committed on `fulldata-h100-runs`).
 - Further headroom (TUTORIAL §3): DINOv2-large, 0.2 m voxels, temporal fusion, beyond-concat
   LiDAR fusion — all H100 jobs on the same pure-PyTorch stack.
+
+## Clean retrain — DONE (2026-10-18)
+
+The clean-retrain plan above was executed (`occupancy/run_clean_retrain_chain.sh`; `train_lss.py --split train`, 700
+official train scenes, same Run-1 recipe, train-only class weights, 24 epochs on one H100).
+
+- **Occupancy, official val (150 scenes / 6019 frames): mIoU 0.2615, geo-IoU 0.616** — vs 0.328 for the leaked
+  `lss_occ_full`. The train-on-val leakage inflated camera-only mIoU by ~25 %.
+- **Label efficiency from the clean encoder** (same protocol as `run_le_occ3d.sh`, official val). Seeds: 3 vs 3 at
+  2k and 4k; at 8k only 2 pretrained vs 1 scratch seed (indicative only):
+
+| budget | clean occ3d (n) | scratch (n) | absolute gain (mAP) | ratio |
+|---|---|---|---|---|
+| 2k | 0.1438 ± 0.0058 (3) | 0.1223 ± 0.0026 (3) | +0.0215 | 1.18× |
+| 4k | 0.1630 ± 0.0047 (3) | 0.1498 ± 0.0036 (3) | +0.0132 | 1.09× |
+| 8k | 0.1832 (2) | 0.1768 (1) | +0.0064 | 1.04× |
+
+  The gain shrinks monotonically with the label budget (the main evidence; with n = 3, p-values — 0.012 at 2k, 0.020 at
+  4k — are secondary). Clean@2k does not match scratch@4k (p = 0.22): no "2× the labels" claim. Read it as a modest,
+  auxiliary result.
+- **Audit note (retired estimate):** earlier label-efficiency figures computed from the leaked encoder `lss_occ_full`
+  (trained on all trainval incl. the val scenes) are VOID and must not be cited; the clean numbers above replace them. Earlier label-efficiency numbers from `lss_occ_full` should not be
+  used. Also fixed during this run: `compute_class_weights` used the uint8 `mask_camera` as an integer index (weights
+  cached before 2026-07-10, e.g. `classw_full.npy`, are unaffected; they match the corrected weights within ±0.03).

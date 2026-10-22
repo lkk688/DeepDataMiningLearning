@@ -483,6 +483,11 @@ head) does this; the trainer/evaluator live in the occupancy module (they need t
 Paths: `GTS=…/nuscenes/gts`, `NUSC=…/v1.0-trainval`, `OUT=…/ngperception/output`,
 `FUS=$OUT/lss_occ_full_fusion/lss_occ.pth` (the trained fusion occ encoder).
 
+> ⚠ **Leakage note (2026-10-19).** `lss_occ_full_fusion` was trained on *all* Occ3D frames, including the official
+> val scenes that this section evaluates detection on. Read the absolute numbers below as upper bounds and the
+> comparisons (frozen vs finetune, anchor vs centre head) as relative. The leakage-free re-run of the
+> occupancy → detection label-efficiency result is in [../TUTORIAL.md §3.0](../TUTORIAL.md).
+
 ### 13.1 Does reusing the occ backbone help? (official nuScenes mAP, 8k/12ep)
 
 | arm | mAP | car | pedestrian | note |

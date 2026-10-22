@@ -113,13 +113,22 @@ def compute_class_weights(occ_ds, n_classes=18, power=0.25, cache=None):
     # graph (~10M objects) resident, Python's gen-0 cyclic GC would fire on those allocations
     # and rescan the whole graph each time -> a ~250x slowdown (44s -> >1h over 34k files).
     # Disabling GC for the loop keeps it O(files): the per-iter garbage is refcount-freed anyway.
+    # BUG FIXED 2026-10-16: mask_camera is stored as uint8, so `semantics[mask_camera]` was INTEGER fancy indexing
+    # (each voxel picked the whole slab semantics[0] or semantics[1] -> a (200,200,16,200,16) array): ~7 s/frame and
+    # weights that described the two x=-40 m edge rows, not the camera-visible voxels. Every class-balance cache made
+    # before this date (e.g. output/classw_full.npy) came from the buggy loop. Boolean mask now; reads in threads
+    # (np.load from NFS is ~0.26 s/file on cold nodes).
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _hist(i):
+        s = occ_ds[i]
+        return _np.bincount(s.semantics[s.mask_camera.astype(bool)].reshape(-1), minlength=n_classes)[:n_classes]
     gc_was_enabled = gc.isenabled()
     gc.disable()
     try:
-        for i in range(len(occ_ds)):
-            s = occ_ds[i]
-            sem = s.semantics[s.mask_camera].reshape(-1)
-            counts += _np.bincount(sem, minlength=n_classes)[:n_classes]
+        with ThreadPoolExecutor(16) as ex:
+            for h in ex.map(_hist, range(len(occ_ds)), chunksize=64):
+                counts += h
     finally:
         if gc_was_enabled:
             gc.enable()
@@ -316,6 +325,10 @@ def main():
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out-dir", default="DeepDataMiningLearning/ngperception/output/lss_occ")
     ap.add_argument("--smoke", action="store_true", help="2 samples, 1 epoch, no save")
+    ap.add_argument("--split", choices=["all", "train"], default="all",
+                    help="all = every scene under --gts (legacy; internal val overlaps training). train = official "
+                         "nuScenes train scenes for training and official val scenes for the internal val (no leakage)")
+    ap.add_argument("--resume", action="store_true", help="continue from <out-dir>/ckpt_last.pt (saved every epoch)")
     args = ap.parse_args()
 
     from nuscenes import NuScenes
@@ -343,14 +356,21 @@ def main():
                          vggt_depth=bool(args.vggt_depth_cache),
                          depth_prior_metric=args.depth_prior_metric).to(dev)
     ihw, ds_factor = model.image_hw, model.downsample
-    train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
+    tr_scenes = va_scenes = None
+    if args.split == "train":
+        from nuscenes.utils import splits as _splits
+        have = set(os.listdir(args.gts))
+        tr_scenes = sorted(set(_splits.train) & have); va_scenes = sorted(set(_splits.val) & have)
+        assert not set(tr_scenes) & set(va_scenes)
+        print(f"[lss_occ] split=train: {len(tr_scenes)} train scenes / {len(va_scenes)} val scenes", flush=True)
+    train_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor, scenes=tr_scenes,
                                        max_samples=n, depth_source=args.depth_source,
                                        lidar_sweeps=args.lidar_sweeps, lidar_cache=args.lidar_cache,
                                        lidar_fusion=args.lidar_fusion,
                                        vggt_depth_cache=args.vggt_depth_cache,
                                        vggt_feat_cache=args.vggt_feat_cache or args.vlm_feat_cache,
                                        sonata_feat_cache=args.sonata_feat_cache)
-    val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor,
+    val_ds = NuScenesOccTrainDataset(args.gts, nusc, image_hw=ihw, downsample=ds_factor, scenes=va_scenes,
                                      max_samples=args.val_samples, stride=7,
                                      depth_source=args.depth_source, lidar_sweeps=args.lidar_sweeps,
                                      lidar_cache=args.lidar_cache, lidar_fusion=args.lidar_fusion,
@@ -390,7 +410,17 @@ def main():
           f"{len(train_ds)} train / {len(val_ds)} val | "
           f"{sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.1f}M trainable")
 
-    for ep in range(epochs):
+    ckpt_path = os.path.join(args.out_dir, "ckpt_last.pt")
+    start_ep = 0
+    if args.resume and os.path.isfile(ckpt_path):
+        ck = torch.load(ckpt_path, map_location=dev)
+        model.load_state_dict(ck["model"]); opt.load_state_dict(ck["opt"]); scaler.load_state_dict(ck["scaler"])
+        if sched is not None and ck.get("sched") is not None:
+            sched.load_state_dict(ck["sched"])
+        start_ep = ck["epoch"] + 1
+        print(f"[lss_occ] resumed from {ckpt_path} -> starting at epoch {start_ep}", flush=True)
+
+    for ep in range(start_ep, epochs):
         model.train()
         for it, b in enumerate(train_ld):
             with torch.cuda.amp.autocast(enabled=args.amp):
@@ -441,6 +471,12 @@ def main():
               f" | pred_mIoU={m.get('pred_mIoU', float('nan')):.3f}"
               f" pred_geo={m.get('pred_geo_IoU', float('nan')):.3f}"
               f" all_mIoU={m.get('all_mIoU', float('nan')):.3f}", flush=True)
+        if not args.smoke:                                  # crash-safe: full state every epoch (--resume)
+            os.makedirs(args.out_dir, exist_ok=True)
+            torch.save(dict(model=model.state_dict(), opt=opt.state_dict(), scaler=scaler.state_dict(),
+                            sched=sched.state_dict() if sched is not None else None, epoch=ep),
+                       ckpt_path + ".tmp")
+            os.replace(ckpt_path + ".tmp", ckpt_path)
 
     if not args.smoke:
         os.makedirs(args.out_dir, exist_ok=True)

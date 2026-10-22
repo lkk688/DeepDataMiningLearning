@@ -1,0 +1,25 @@
+{
+ "occupied": 39100,
+ "occupied_in_camera_mask": 21528,
+ "camera_mask_frac": 0.1708921875,
+ "class_freq": {
+  "others": 0.000294,
+  "barrier": 0.000459,
+  "bicycle": 5.9e-05,
+  "bus": 0.001032,
+  "car": 0.005504,
+  "constr_veh": 0.000294,
+  "motorcycle": 0.000102,
+  "pedestrian": 0.000801,
+  "traffic_cone": 0.000153,
+  "trailer": 0.000892,
+  "truck": 0.002209,
+  "driveable": 0.068808,
+  "other_flat": 0.001872,
+  "sidewalk": 0.022626,
+  "terrain": 0.024105,
+  "manmade": 0.042504,
+  "vegetation": 0.05095,
+  "free": 0.777337
+ }
+}
