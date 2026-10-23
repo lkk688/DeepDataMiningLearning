@@ -1,0 +1,16 @@
+{
+ "PUSH lss_occ": {
+  "trainable_M": 2.73,
+  "forward_ms": 64.2,
+  "peak_GB": 2.33,
+  "decoder_input_channels": 64,
+  "voxels_with_an_image_feature": 0.221
+ },
+ "PULL proj_occ": {
+  "trainable_M": 4.56,
+  "forward_ms": 71.0,
+  "peak_GB": 2.65,
+  "decoder_input_channels": 92,
+  "voxels_with_an_image_feature": 0.983
+ }
+}

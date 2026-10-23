@@ -1,0 +1,53 @@
+{
+ "n_frames": 300,
+ "stride": 20,
+ "seconds": 161.7,
+ "pass1": {
+  "mIoU_official_accumulated": 0.2599,
+  "geo_IoU": 0.6124,
+  "mean_of_per_frame_mIoU": 0.3235,
+  "per_class": {
+   "others": 0.0382,
+   "barrier": 0.2502,
+   "bicycle": 0.0673,
+   "bus": 0.3057,
+   "car": 0.3697,
+   "construction_vehicle": 0.0883,
+   "motorcycle": 0.0988,
+   "pedestrian": 0.1248,
+   "traffic_cone": 0.0627,
+   "trailer": 0.1613,
+   "truck": 0.2208,
+   "driveable_surface": 0.7433,
+   "other_flat": 0.3564,
+   "sidewalk": 0.4195,
+   "terrain": 0.4766,
+   "manmade": 0.333,
+   "vegetation": 0.3018
+  }
+ },
+ "refined": {
+  "mIoU_official_accumulated": 0.2601,
+  "geo_IoU": 0.6141,
+  "mean_of_per_frame_mIoU": 0.3234,
+  "per_class": {
+   "others": 0.0382,
+   "barrier": 0.2506,
+   "bicycle": 0.0678,
+   "bus": 0.3062,
+   "car": 0.3692,
+   "construction_vehicle": 0.0887,
+   "motorcycle": 0.0987,
+   "pedestrian": 0.1253,
+   "traffic_cone": 0.0631,
+   "trailer": 0.1622,
+   "truck": 0.2219,
+   "driveable_surface": 0.7436,
+   "other_flat": 0.3563,
+   "sidewalk": 0.4196,
+   "terrain": 0.4767,
+   "manmade": 0.3329,
+   "vegetation": 0.3015
+  }
+ }
+}

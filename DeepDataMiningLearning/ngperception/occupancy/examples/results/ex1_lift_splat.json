@@ -1,0 +1,62 @@
+{
+ "manual_pass_s": 0.38,
+ "argmax_agreement_vs_model_forward": 0.9999983906745911,
+ "max_rel_diff_vs_model_forward": 0.00019178658840246499,
+ "shapes": {
+  "imgs": [
+   1,
+   6,
+   3,
+   252,
+   700
+  ],
+  "context": [
+   1,
+   6,
+   64,
+   18,
+   50
+  ],
+  "depth (softmax over bins)": [
+   1,
+   6,
+   112,
+   18,
+   50
+  ],
+  "frustum geometry (ego xyz)": [
+   1,
+   6,
+   112,
+   18,
+   50,
+   3
+  ],
+  "lifted = depth x context": [
+   1,
+   6,
+   64,
+   112,
+   18,
+   50
+  ],
+  "voxel volume (after splat)": [
+   1,
+   64,
+   200,
+   200,
+   16
+  ],
+  "occupancy logits": [
+   1,
+   18,
+   200,
+   200,
+   16
+  ]
+ },
+ "pass1_geo_IoU": 0.608,
+ "pass1_mIoU_over_present_classes": 0.245,
+ "refined_geo_IoU": 0.609,
+ "refined_mIoU_over_present_classes": 0.246
+}

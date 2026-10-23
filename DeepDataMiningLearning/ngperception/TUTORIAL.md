@@ -1265,6 +1265,15 @@ class MyOcc(nn.Module):
 4. Train with `--split train` and ≥ 3 seeds. Report the mean of the last 5 epochs, not the best epoch.
 5. Report mIoU, geometric IoU and per-class IoU next to a baseline with the same data and epoch budget.
 
+**Runnable examples, with our results** ([occupancy/examples/](occupancy/examples/README.md)). Each one runs on one
+GPU in minutes on official-val frames and writes a JSON file plus a figure:
+
+| Example | What it shows | Our result |
+|---|---|---|
+| `ex1_lift_splat_walkthrough.py` | the forward pass by hand, every tensor shape, depth distributions, the "fans" | argmax agreement with `model()` 0.9999984 |
+| `ex2_evaluate_clean_model.py` | accumulated vs per-frame mIoU, per-class IoU, pass 1 vs refined | 0.2601 on 300 strided val frames (full val 0.2615); per-frame averaging gives 0.323 |
+| `ex3_push_vs_pull.py` | PUSH (`lss_occ`) vs PULL (`proj_occ`): parameters, time, memory, voxel coverage | 2.7 M / 64 ms / 22 % of voxels vs 4.6 M / 71 ms / 98 % |
+
 ### 2.10 New occupancy methods — the landscape and what is in this repo
 
 Literature (Occ3D-nuScenes mIoU over 17 classes, camera-visible voxels). These values are **as reported** in our
