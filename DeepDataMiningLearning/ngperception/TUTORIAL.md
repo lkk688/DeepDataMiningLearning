@@ -53,7 +53,7 @@ light-weight venv **on top of** the shared env:
 ```bash
 /data/cmpe249-fa26/envs/mmdet3d-cu118/bin/python -m venv --system-site-packages /data/cmpe249-fa26/students/$USER/venv
 source /data/cmpe249-fa26/students/$USER/venv/bin/activate
-pip install "transformers==4.46.3" pyvista          # do NOT reinstall torch / mmcv / numpy here
+pip install "transformers==4.46.3" pyvista imageio-ffmpeg          # do NOT reinstall torch / mmcv / numpy here
 
 cd /data/cmpe249-fa26/students/$USER
 git clone --depth 1 https://github.com/lkk688/DeepDataMiningLearning.git
@@ -1642,7 +1642,7 @@ right-side wall ↔ grey `manmade`, the road ↔ magenta `drivable`. **Honest ca
 prediction is visibly *noisy* on the render domain — we optimized/measured obstacle recall (FG_REC), never
 clean dense semantics, so the voxel map is speckled and occasionally misclassifies (a clean-occupancy
 objective or the rendered-LiDAR geometry of §4.5 would be needed to fix it). Generate:
-`occupancy/predict_occ_sequence.py` → `occupancy/occ_video.py` (headless pyvista/vtk-osmesa vizenv).
+`occupancy/xdomain/predict_occ_sequence.py` → `occupancy/occ_video.py` (headless pyvista/vtk-osmesa vizenv).
 
 **The tradeoff, and a precision term.** The box-only gain is pure *recall*: foreground precision drops
 (obj_IoU 0.098→0.048, above-chance enrichment 21×→10×) because the loss rewards recall only. Since the
@@ -1733,7 +1733,8 @@ batch job. Set `NUSC=/data/cmpe249-fa26/datasets/nuscenes/v1.0-trainval` and
 | Occupancy as 3D voxels | `occupancy/visualize_voxel3d.py` | `visualize_voxel3d.py labels.npz out.png --camera-mask [--mode voxels]` | a `labels.npz` or `pred.npy` |
 | Prediction vs GT (BEV) | `occupancy/visualize.py` | `--ckpt <pth> --split val --sample-idx i --camera-mask` | checkpoint + GPU |
 | Several checkpoints / modalities side by side | `occupancy/visualize.py` | `--compare camera:<pth> fusion:<pth>` or `--modality-compare` | checkpoints |
-| Occupancy + front camera video | `occupancy/xdomain/predict_occ_sequence.py` → `occupancy/occ_video.py` | frames → `occ_video.py --frames <dir> --out x.mp4` | `pyvista`, `imageio` (venv) |
+| **Occupancy videos (nuScenes): 6 cameras + top-down + 3D, prediction vs GT, 12 Hz sweeps, 360° orbit** | `viz/occ_video.py` | `python -m ...ngperception.viz.occ_video --mode sweeps --scene scene-0107 --ckpt <pth> --gts $GTS --nusc $NUSC --out x.mp4` (§7.1) | checkpoint + GPU; `pyvista`, `imageio-ffmpeg` |
+| Occupancy + front camera video (AV2 renders, §4) | `occupancy/xdomain/predict_occ_sequence.py` → `occupancy/occ_video.py` | frames → `occ_video.py --frames <dir> --out x.mp4` | `pyvista`, `imageio` (venv) |
 | Detection boxes in BEV (occupancy-backbone detector) | `occupancy/visualize_det.py` | `--ckpt <det_abl.pth> --sample-idx i` or `--compare a:<pth> b:<pth>` | checkpoint |
 | Several detectors on one frame (PETR / BEVFusion-L / -LC) | `detection/visualize_multiexpert.py` | `--preds "PETR:<results_nusc.json>" "LC:<...>"` | mmdet3d result JSONs (§8.2) |
 | Depth maps + per-object distance | §1.6 (`fuse_*` outputs) | see §1.6 | images |
@@ -1765,6 +1766,77 @@ Examples from earlier sections:
 ![three detectors on one frame](docs/multiexpert_compare.png)
 
 *PETR (camera), BEVFusion-L and BEVFusion-LC on the same nuScenes frame (`visualize_multiexpert.py`, §8).*
+
+### 7.1 Occupancy videos (`viz/occ_video.py`)
+
+One command turns a checkpoint and a nuScenes scene into a 1920×1080 video. Each frame has three parts:
+
+- the six cameras;
+- a top-down map;
+- 3D voxels with thin edges, lit, and seen from behind the car (black box with a yellow heading cone).
+
+Three modes:
+
+| `--mode` | What it shows | Frames |
+|---|---|---|
+| `keyframes` | prediction next to the Occ3D GT, both restricted to camera-visible voxels (what mIoU scores); the 3D camera sways gently between keyframes | 2 Hz keyframes × `--hold 3` |
+| `sweeps` | the prediction on every 12 Hz camera sweep. There is no GT between keyframes, so the drawn voxels are the nearest keyframe's camera mask, warped by ego motion (visibility only, no GT classes). Use `--sweep-mask raycast` on unlabeled data: visibility then comes from ray casting the prediction itself. | 12 Hz |
+| `orbit` | one keyframe; the camera circles the car 360°, prediction next to GT | `--orbit-frames 240` |
+
+```bash
+python -m DeepDataMiningLearning.ngperception.viz.occ_video --mode sweeps --scene scene-0107 \
+    --ckpt <lss_occ.pth> --gts $GTS --nusc $NUSC --out occ_scene-0107_sweeps.mp4
+# --mode keyframes --scene scene-0910     (rain)    |   --mode orbit --scene scene-0275 --still-at 15
+```
+
+The tool runs in two stages:
+
+1. **Predict.** The model runs once per frame and caches the prediction, the visibility mask and the camera mosaic
+   in `<out>_cache/`.
+2. **Render.** A separate process renders the 3D views.
+
+Rendering is kept out of the process that holds CUDA and the nuScenes tables. When they shared a process, VTK
+rendering stalled for about 20 s per frame. Several render processes on one GPU were about 70× slower than one, so
+`--workers` stays at 1.
+
+On a GPU node the renderer is headless (EGL), so `DISPLAY` is not needed. You also need `pip install imageio-ffmpeg`.
+
+Timings for one scene: model + cache about 1 min (keyframes) or 3 min (231 sweeps); rendering about 30 s.
+
+Our videos use the leakage-free checkpoint on official **val** scenes, which the model never saw. Videos are not
+kept in git (`docs/media/` is ignored). On the course HPC they are in `/data/cmpe249-fa26/examples/occ_videos/`:
+1080p originals plus `_960` copies (2–5 MB) that are easy to download.
+
+| Scene | Video (`/data/cmpe249-fa26/examples/occ_videos/`) | Length |
+|---|---|---|
+| scene-0107, Boston, busy intersection, 12 Hz sweeps | `occ_scene-0107_sweeps.mp4` | 231 frames, 19 s |
+| scene-0910, rain + construction, prediction vs GT | `occ_scene-0910_rain_pred_vs_gt.mp4` | 40 keyframes, 20 s |
+| scene-1062, night, prediction vs GT | `occ_scene-1062_night_pred_vs_gt.mp4` | 40 keyframes, 20 s |
+| scene-0275, Singapore, 360° orbit | `occ_scene-0275_orbit.mp4` | 240 frames, 8 s |
+
+![12 Hz sweeps, scene-0107](docs/figures/occ_scene-0107_sweeps_still.jpg)
+
+*12 Hz sweeps, scene-0107. The container truck and trailer on the left come out as purple `truck` and brown
+`trailer` voxels. The far voxels are noisier. Watch the video: objects move smoothly between keyframes, but the
+surfaces flicker, because every sweep is predicted independently (no temporal model).*
+
+![rain, prediction vs GT](docs/figures/occ_scene-0910_rain_pred_vs_gt_still.jpg)
+
+*Rain (scene-0910), prediction vs Occ3D GT. Road, sidewalks, cars and the tree match the GT well. The pedestrian on
+the right is a **radial streak**: lift-splat spreads its feature along the camera ray wherever the depth is
+uncertain (the same "fans" as in §2.8). The cones and barriers behind the car are only partly found.*
+
+![night, prediction vs GT](docs/figures/occ_scene-1062_night_pred_vs_gt_still.jpg)
+
+*Night (scene-1062). The left cameras are nearly black, yet the road, vegetation and terrain layout closely
+matches the GT. Wall (`manmade`) voxels next to the road are missed, and the car ahead is too long along the
+viewing ray.*
+
+![orbit](docs/figures/occ_scene-0275_orbit_still.jpg)
+
+*Orbit (scene-0275), first frame, seen from the front. The prediction contains a large false `pedestrian` blob in
+front of the car and a false `truck` on the left. The GT shows that these are cones/barriers and a car. Rare
+objects are where this model fails (§2.9, Example 2: pedestrian IoU 0.13).*
 
 
 ---
