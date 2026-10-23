@@ -9,7 +9,7 @@
 You can access our CoE HPC information from the main website: http://coe-hpc-web.sjsu.edu.
 
 - HPC1: A total of 36 nodes; 15 include 1 NVIDIA Tesla P100 12 GB GPU, and 1 has 2 NVIDIA Tesla P100 GPUs
-- New A100 and H100 nodes are added in HPC2 and HPC3
+- Newer A100 GPU nodes are available in HPC2 and HPC3
 - Data storage, available from all nodes via `/home` and `/data`
 - High-throughput Lustre parallel filesystem with 0.541 PB usable space via `/scratch`
 - Each group has a subdirectory in `/data` and `/scratch`
@@ -177,25 +177,25 @@ Check the live state any time with `sinfo` (partitions) and `sinfo -p gpuqs -N -
 |---|---|---|---|
 | `defq` (default) | 6 h | `c[1-20]`, `homacs[1-4]` (CPU only) | interactive CPU work, preprocessing |
 | `cpuqs` / `cpuqm` / `cpuql` | 5 / 14 / 21 days | same CPU nodes | long CPU jobs |
-| `gpuqs` / `gpuqm` / `gpuql` | 2 / 7 / 14 days | `g[1-15]` P100 (1 GPU each), `cs[001-004]` A100 (4 GPUs each), `g[16,18-19]` H100 (1 GPU each) | **class GPU jobs — use `gpuqs` unless you really need longer** |
-| `nsfqs` / `nsfqm` / `nsfql` | 2 / 14 / 21 days | `g[20-32]` H100 | research (NSF grant) nodes |
+| `gpuqs` / `gpuqm` / `gpuql` | 2 / 7 / 14 days | `g[1-15]` P100 (1 GPU each), `cs[001-004]` A100 (4 GPUs each) | **class GPU jobs — use `gpuqs` with a P100 unless you really need more** |
+| `nsfqs` / `nsfqm` / `nsfql` | 2 / 14 / 21 days | `g[20-32]` | research (NSF grant) nodes — not for class jobs |
 | `condo` | 30 days | faculty-owned nodes | not for class use; jobs can be preempted |
 
-You get a GPU **only** if you ask for one with `--gres`. Pick the type explicitly when it matters:
+You get a GPU **only** if you ask for one with `--gres`. **Class jobs use the P100** (`--gres=gpu:p100:1`): there are
+many of them and they are enough for the course assignments and projects. Ask for an A100 only if your job really
+does not fit in a P100's memory.
 
 | `--gres=` | GPU | Memory | CUDA compute capability | PyTorch build that works |
 |---|---|---|---|---|
 | `gpu:p100:1` | Tesla P100 | 12–16 GB | 6.0 (`sm_60`) | **CUDA 11.8 builds** (e.g. `torch==2.1.2+cu118`, the shared course env) |
 | `gpu:a100:1` | A100 | 40/80 GB | 8.0 | cu118 or cu12x |
-| `gpu:h100:1` | H100 | 80 GB | 9.0 | cu118 or cu12x |
-| `gpu:1` | whatever is free first | | | must work on all of the above → use cu118 |
 
 > **P100 warning.** P100s are the most available GPUs, but they are old (Pascal, `sm_60`). Recent PyTorch wheels built
 > for CUDA 12.8+ no longer ship `sm_60` kernels, and CUDA 13 drops Pascal entirely. On a P100 such a build fails with
 > `no kernel image is available for execution on the device`. Use a CUDA 11.8 build, and check with
 > `python -c "import torch; print(torch.cuda.get_arch_list())"` — the list must contain `sm_60`.
 > The same applies to compiled extensions (mmcv, spconv, your own CUDA ops): they must be built for `sm_60` too.
-> The *Shared course environment* (below) is already built for P100, A100 and H100.
+> The *Shared course environment* (below) is already built for the P100 (and A100).
 
 ### Submitting a GPU job (`sbatch`)
 
@@ -215,7 +215,7 @@ The template (`gpu_job.sbatch`):
 #!/bin/bash
 #SBATCH --job-name=cmpe249-job
 #SBATCH --partition=gpuqs            # GPU queue, max 2 days
-#SBATCH --gres=gpu:p100:1            # gpu:p100:1 | gpu:a100:1 | gpu:h100:1 | gpu:1 (any)
+#SBATCH --gres=gpu:p100:1            # class jobs: P100 (use gpu:a100:1 only if it does not fit)
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8            # data-loader workers
@@ -236,7 +236,7 @@ export http_proxy=http://172.16.1.2:3128 https_proxy=http://172.16.1.2:3128
 export HF_HOME=/data/cmpe249-fa26/students/$USER/cache/huggingface
 export TORCH_HOME=/data/cmpe249-fa26/students/$USER/cache/torch
 
-# shared course environment (PyTorch 2.1 + CUDA 11.8 + mmdetection3d; works on P100/A100/H100)
+# shared course environment (PyTorch 2.1 + CUDA 11.8 + mmdetection3d; works on the P100)
 export PATH=/data/cmpe249-fa26/envs/mmdet3d-cu118/bin:$PATH
 # ... or your own:  source ~/miniconda3/bin/activate myenv
 
@@ -261,7 +261,8 @@ sacct -j 123456 --format=JobID,State,Elapsed,MaxRSS,ExitCode   # after it finish
 ```
 
 Tips:
-- A job that is `PD (Resources)` is waiting for a free GPU. `--gres=gpu:1` (any type) or a shorter `--time` usually starts sooner.
+- A job that is `PD (Resources)` is waiting for a free GPU. A shorter `--time` usually starts sooner; check free P100 nodes
+  with `sinfo -p gpuqs -N -o "%N %G %T"` (`idle` = free).
 - Save checkpoints regularly and make your script resumable; a job is killed at its `--time` limit.
 - To run several configs (e.g. seeds), submit an array: add `#SBATCH --array=0-4` and use `$SLURM_ARRAY_TASK_ID` in the script.
 - `nvidia-smi` inside the job tells you which GPU you got; `torch.cuda.get_device_name(0)` does the same from Python.
@@ -345,7 +346,7 @@ CUDA 11.8 toolkit at `/data/cmpe249-fa26/envs/cuda-11.8`:
 
 ```bash
 export CUDA_HOME=/data/cmpe249-fa26/envs/cuda-11.8 PATH=/data/cmpe249-fa26/envs/cuda-11.8/bin:$PATH
-export TORCH_CUDA_ARCH_LIST="6.0;7.0;8.0;8.6;9.0"     # P100, V100, A100, A40, H100
+export TORCH_CUDA_ARCH_LIST="6.0;7.0;8.0;8.6;9.0"     # P100, V100, A100, A40 and newer
 pip install --no-build-isolation -e .
 ```
 
@@ -399,7 +400,7 @@ export PATH=$CUDA_HOME/bin:$PATH
 nvcc --version          # release 11.8
 ```
 
-### Option 2: CUDA 12.6 via the NVHPC module (for cu126 PyTorch; A100/H100)
+### Option 2: CUDA 12.6 via the NVHPC module (for cu126 PyTorch; A100 only — not P100)
 
 ```bash
 module load nvhpc-hpcx-cuda12/24.11
@@ -425,14 +426,14 @@ Choose the CUDA build by the GPU you will run on:
 ```bash
 # Works on every GPU in the cluster, including P100 (sm_60):
 pip install torch==2.1.2 torchvision==0.16.2 --index-url https://download.pytorch.org/whl/cu118
-# A100/H100 only (newer PyTorch; check the P100 note in "Partitions and GPUs" before using on a P100):
+# A100 only (newer PyTorch; it does NOT run on the P100, see the P100 note in "Partitions and GPUs"):
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 
 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.get_arch_list())"
 python -m torch.utils.collect_env
 ```
 
-If you request `--gres=gpu:1` (any GPU), your environment must work on P100 — use the cu118 build or the shared env.
+Class jobs run on the P100, so your environment must work there: use the cu118 build or the shared env.
 
 ## Additional Projects and Tools
 
@@ -462,8 +463,8 @@ from waymo_open_dataset import v2
 
 ### mmdetection3d
 **Easiest: use the *Shared course environment* (section above)** — it already contains a
-working mmcv/mmdet3d/spconv stack for P100, A100 and H100. The notes below record how to build your own (they use
-PyTorch cu126 + CUDA 12.6 on an H100 node; extensions compiled this way only contain kernels for the GPU you built on
+working mmcv/mmdet3d/spconv stack for the P100 (and A100). The notes below record how to build your own (they use
+PyTorch cu126 + CUDA 12.6 on a newer GPU node; extensions compiled this way only contain kernels for the GPU you built on
 unless you set `TORCH_CUDA_ARCH_LIST`, so the result will not run on a P100).
 
 ```bash

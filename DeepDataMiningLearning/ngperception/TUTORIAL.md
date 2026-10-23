@@ -46,8 +46,8 @@ your coursework. Do not post Waymo-derived images publicly.
 ### 0.2 Environment: the shared env + a small venv
 
 The shared environment `/data/cmpe249-fa26/envs/mmdet3d-cu118` has PyTorch 2.1.2 (CUDA 11.8), the full
-mmdetection3d 1.4 stack, nuscenes-devkit, pyarrow/pandas (for Waymo v2) and open3d, built for P100, A100 and
-H100. The occupancy code also needs Hugging Face `transformers` (for the DINOv2 backbones). Add it in a
+mmdetection3d 1.4 stack, nuscenes-devkit, pyarrow/pandas (for Waymo v2) and open3d, and it is built for the
+class GPUs (P100). The occupancy code also needs Hugging Face `transformers` (for the DINOv2 backbones). Add it in a
 light-weight venv **on top of** the shared env:
 
 ```bash
@@ -67,16 +67,17 @@ passes). Newer `transformers` releases may require a newer PyTorch than the shar
 
 ### 0.3 A batch job for this tutorial
 
-Copy the course template and put the tutorial command at the end:
+Class jobs use the **P100** GPUs (`--gres=gpu:p100:1`, partition `gpuqs`). Copy the course template and put the
+tutorial command at the end:
 
 ```bash
 #!/bin/bash
 #SBATCH --job-name=occ-lss
-#SBATCH --partition=gpuqm              # gpuqs is capped at 2 days; a full occupancy run needs about that
-#SBATCH --gres=gpu:h100:1              # gpu:a100:1 works too; a P100 (16 GB) only fits small batches
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=96G
-#SBATCH --time=3-00:00:00
+#SBATCH --partition=gpuqs              # class GPU queue, max 2 days
+#SBATCH --gres=gpu:p100:1              # one P100 (12-16 GB)
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=1-00:00:00
 #SBATCH --output=logs/%x-%j.out
 set -euo pipefail
 export http_proxy=http://172.16.1.2:3128 https_proxy=http://172.16.1.2:3128
@@ -89,15 +90,21 @@ GTS=/data/cmpe249-fa26/derived/nuscenes/occ3d/gts
 python -m DeepDataMiningLearning.ngperception.occupancy.train_lss --split train --resume \
     --gts $GTS --nusc $NUSC --backbone dinov2_base --decoder-layers 4 --decoder-hidden 96 \
     --refine-iters 2 --occ-lovasz 1.0 --occ-class-balance --cosine --amp \
-    --epochs 24 --batch-size 8 --num-workers 16 --seed 0 \
-    --out-dir /data/cmpe249-fa26/students/$USER/output/lss_occ_train
+    --max-samples 2000 --epochs 8 --batch-size 2 --num-workers 8 --seed 0 \
+    --out-dir /data/cmpe249-fa26/students/$USER/output/lss_occ_p100
 ```
 
-`--resume` restarts from `ckpt_last.pt`, which is saved every epoch. If the job hits its time limit, submit the
-same script again. Our run of exactly this recipe took about two days on one H100, restarts included (§3.0).
-For a first try, add `--max-samples 2000 --epochs 8`; it fits a `gpuqs` job.
+**Memory.** This is the strong recipe of §2.8 at batch size 2: we measured a peak of **6.0 GB** of GPU memory
+(forward + backward, AMP), so it fits a P100 with room to spare. Batch size 1 needs 3.2 GB (5.5 GB without
+`--amp`); the light DINOv2-small / 2 × 64 decoder variant needs under 2 GB.
 
-`OMP_NUM_THREADS=2` is not cosmetic. With 16 loader workers, each worker's NumPy otherwise starts one thread per
+**Time.** A P100 is several times slower than our lab GPUs. Start with the 2000-sample / 8-epoch run above, read the
+per-epoch time in the log, and only then scale `--max-samples` and `--epochs`. `--resume` restarts from
+`ckpt_last.pt`, which is saved every epoch, so a run that hits the 2-day limit continues when you submit the same
+script again. The full-data numbers in §3.0 (all 700 train scenes, 24 epochs) took about two days on a much faster
+lab GPU. They are a reference, not a class assignment.
+
+`OMP_NUM_THREADS=2` is not cosmetic. With many loader workers, each worker's NumPy otherwise starts one thread per
 core. On our nodes this put ~60 % of CPU time into the kernel and starved the GPU.
 
 ### 0.4 nuScenes: frames, projections, range images
@@ -1292,6 +1299,8 @@ In this repo, beyond the lift-splat model of §2.7–§2.9:
 
 ## 3. Scaling to full data on H100 — realized
 
+> These are the lab's research runs on a large GPU. For class jobs use the P100 recipe of §0.3.
+
 Every number in §2.8 was produced on a **single RTX 3090**, a **frozen** backbone, and
 **~10 % of the nuScenes train split** (3000 / 34149 samples, ≤12 epochs). That was deliberate:
 the 3090 is for **cheap, multi-seed ablation** — deciding *which* idea clears the noise (§2.7.1,
@@ -1310,7 +1319,7 @@ leakage-free with `--split train`, which takes the official scene lists from `nu
 
 | Camera-only, DINOv2-base + 4×96 decoder + refine-2 + Lovász + class-balanced CE, 24 epochs | official val mIoU | geo-IoU |
 |---|---|---|
-| **leakage-free: 700 train scenes only** (2026-10-18; ~2 days on one H100 incl. restarts) | **0.2615** | **0.616** |
+| **leakage-free: 700 train scenes only** (2026-10-18; ~2 days on one lab GPU incl. restarts) | **0.2615** | **0.616** |
 | same recipe, val scenes inside the training set (§3.1) | 0.328 | — |
 
 The leakage inflated camera-only mIoU by about a quarter. The fusion run has not been re-done clean yet.
@@ -1779,7 +1788,7 @@ export PYTHONPATH=$PWD:$PYTHONPATH                                          # so
 
 ### 8.2 Evaluate a model-zoo detector
 
-Inside a batch job (§0.3 template, `--gres=gpu:1`, ~1 h):
+Inside a batch job (§0.3 template, `--gres=gpu:p100:1`):
 
 ```bash
 mim download mmdet3d --config pointpillars_hv_secfpn_sbn-all_8xb4-2x_nus-3d --dest ckpts/
@@ -1804,8 +1813,8 @@ BEVFusion (Liu et al., ICRA 2023) converts both sensors to one bird's-eye-view g
 mmdetection3d ships it as a **project** with two custom CUDA ops (`bev_pool`, `voxel_layer`) that you must compile.
 
 **Gotcha: the stock build fails on our GPUs.** `projects/BEVFusion/setup.py` hard-codes `-gencode` for
-`sm_70, 75, 80, 86` only, and ignores `TORCH_CUDA_ARCH_LIST`. Built as shipped, BEVFusion crashes on our P100s
-(`sm_60`) **and** H100s (`sm_90`) with `CUDA error: no kernel image is available for execution on the device`
+`sm_70, 75, 80, 86` only, and ignores `TORCH_CUDA_ARCH_LIST`. Built as shipped, BEVFusion crashes on the class P100s
+(`sm_60`) and on newer GPUs (`sm_90`) with `CUDA error: no kernel image is available for execution on the device`
 inside `bev_pool`. We hit exactly this. Add the two architectures, then build into your venv (the shared env is
 read-only, so `setup.py develop` must run from your venv):
 
@@ -1830,8 +1839,9 @@ python tools/test.py projects/BEVFusion/configs/bevfusion_lidar-cam_voxel0075_se
     ckpts/bevfusion_lidar-cam_voxel0075_second_secfpn_8xb4-cyclic-20e_nus-3d-5239b1af.pth
 ```
 
-We ran exactly these commands in the course environment on the course nuScenes copy (one H100, inference ≈ 16 min
-for the 6,019 val frames):
+We ran exactly these commands in the course environment on the course nuScenes copy (one lab GPU, inference ≈ 16 min
+for the 6,019 val frames; expect several times longer on a P100). Inference peaked at about 2.3 GB of GPU memory,
+so it fits a P100:
 
 | BEVFusion, nuScenes val | mAP | NDS |
 |---|---|---|
