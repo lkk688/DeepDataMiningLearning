@@ -1,0 +1,11 @@
+# On-policy distillation: the student samples, the teacher scores every token, minimize reverse KL
+# (TRL GKD with lmbda=1, beta=1). Teacher and student must share a tokenizer.
+defaults: [base.yaml]
+name: opd_gsm8k
+method: opd
+backend: trl
+model: {name: Qwen/Qwen2.5-0.5B-Instruct, teacher: Qwen/Qwen2.5-1.5B-Instruct}
+data: {preset: gsm8k, n_train: 2000, n_val: 200, max_len: 768}
+train: {steps: 60, batch_size: 4, grad_accum: 4, lr: 5.0e-5, warmup_steps: 5}
+opd: {lmbda: 1.0, beta: 1.0, temperature: 1.0, max_new_tokens: 320}
+eval: {n_val: 200, gen_tokens: 320}

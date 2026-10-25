@@ -6,6 +6,7 @@
 | **The course** | [`TUTORIAL_nanolm.md`](TUTORIAL_nanolm.md). Part 1: LM basics, RNN → LSTM → Transformer, tokenizers, sampling. Part 2: pre-training on web text, using / SFT / DPO-tuning pretrained LLMs. Part 3: Parameter Golf. Part 4: methodology |
 | **Serving big models on a Mac** | [`TUTORIAL_mac_inference.md`](TUTORIAL_mac_inference.md): Qwen3.8-27B on Apple Silicon with MLX-LM, mlx-vlm, oMLX and lithos-metal; memory, prefill vs decode, speculative decoding, prefix caching, vision |
 | **The code** | [`nanolm/`](nanolm/README.md): one config-driven package for every part (CUDA / Apple MPS / CPU) |
+| **Post-training at scale** | [`llmtrain/`](llmtrain/README.md): one config → SFT / LoRA / DPO / GRPO / on-policy distillation / KD, on nanolm's own loops, Hugging Face TRL, or NVIDIA NeMo AutoModel (incl. official NVIDIA recipes) |
 | the previous course code | [`legacy/`](legacy/README.md), with a map from each old function to its replacement |
 
 ---

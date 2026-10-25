@@ -1,0 +1,10 @@
+# DPO with LoRA on UltraFeedback pairs whose scores differ by >= 2 (as in TUTORIAL_nanolm §3.9).
+# With LoRA the reference policy is the adapter-disabled model (no second copy) on both backends.
+defaults: [base.yaml]
+name: dpo_ultrafeedback
+method: dpo
+backend: trl                      # or native
+model: {name: Qwen/Qwen2.5-0.5B-Instruct}
+data: {preset: ultrafeedback, n_train: 800, n_val: 100, max_len: 512, min_score_gap: 2.0}
+train: {steps: 100, batch_size: 2, grad_accum: 4, lr: 5.0e-5}
+dpo: {beta: 0.1}

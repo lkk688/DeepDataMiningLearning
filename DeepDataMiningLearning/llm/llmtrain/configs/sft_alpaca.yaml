@@ -1,0 +1,11 @@
+# SFT with LoRA on 2,000 Alpaca examples. The same experiment on any backend:
+#   python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml                     # TRL SFTTrainer
+#   python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=native      # nanolm's own loop
+#   python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=automodel   # NVIDIA NeMo AutoModel
+defaults: [base.yaml]
+name: sft_alpaca
+method: sft
+backend: trl
+model: {name: Qwen/Qwen2.5-0.5B}
+data: {preset: alpaca, n_train: 2000, n_val: 100, max_len: 512}
+train: {steps: 120, lr: 2.0e-4}

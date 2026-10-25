@@ -1,0 +1,13 @@
+# Run an OFFICIAL NVIDIA NeMo AutoModel recipe unchanged except for our run directory, seed, step budget and
+# HF-format checkpoints. Any key of the recipe can be changed with backend_overrides (deep-merged last).
+defaults: [base.yaml]
+name: recipe_qwen3_hellaswag
+method: recipe
+backend: automodel
+model: {name: Qwen/Qwen3-0.6B}                 # used for the tokenizer and the before/after evaluation
+automodel:
+  recipe_yaml: https://raw.githubusercontent.com/NVIDIA-NeMo/Automodel/main/examples/llm_finetune/qwen/qwen3_0p6b_hellaswag.yaml
+  use_our_data: false                          # keep the recipe's own HellaSwag dataset
+train: {steps: 50}
+backend_overrides:
+  step_scheduler: {global_batch_size: 32, local_batch_size: 8, val_every_steps: 25}

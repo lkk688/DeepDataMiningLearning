@@ -1,0 +1,12 @@
+# Knowledge distillation with NVIDIA NeMo AutoModel (KnowledgeDistillationRecipeForNextTokenPrediction):
+# loss = (1 - kd_ratio) * CE(reference answer) + kd_ratio * KL(teacher || student) on the same tokens (off-policy).
+# Compare with opd_gsm8k.yaml: same student, teacher and data, but on-policy (student samples) and reverse KL.
+defaults: [base.yaml]
+name: kd_gsm8k_automodel
+method: kd
+backend: automodel
+model: {name: Qwen/Qwen2.5-0.5B-Instruct, teacher: Qwen/Qwen2.5-1.5B-Instruct, peft: none}
+data: {preset: gsm8k, n_train: 2000, n_val: 200, max_len: 768}
+train: {steps: 60, batch_size: 4, grad_accum: 4, lr: 1.0e-5, warmup_steps: 5}
+kd: {ratio: 0.5, temperature: 1.0}
+eval: {n_val: 200, gen_tokens: 320}

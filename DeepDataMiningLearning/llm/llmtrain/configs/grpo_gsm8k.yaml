@@ -1,0 +1,12 @@
+# GRPO with verifiable rewards on GSM8K (RLVR): reward 1 if the answer after '####' is right, +0.1 for the format.
+# DAPO-style settings: clip-higher (0.2 / 0.28), token-level loss, no KL penalty.
+defaults: [base.yaml]
+name: grpo_gsm8k
+method: grpo
+backend: trl
+model: {name: Qwen/Qwen2.5-0.5B-Instruct}
+data: {preset: gsm8k, n_train: 2000, n_val: 200, max_len: 768}
+train: {steps: 60, batch_size: 16, grad_accum: 2, lr: 2.0e-5, warmup_steps: 5}
+grpo: {num_generations: 8, max_new_tokens: 320, temperature: 1.0, beta: 0.0, epsilon: 0.2, epsilon_high: 0.28,
+       loss_type: dapo, rewards: [answer_correct, answer_format]}
+eval: {n_val: 200, gen_tokens: 320}

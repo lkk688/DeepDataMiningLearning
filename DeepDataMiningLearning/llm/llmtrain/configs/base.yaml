@@ -1,0 +1,6 @@
+# Shared defaults for the llmtrain examples (every key is documented in llmtrain/config.py).
+seed: 1337
+out_dir: outputs/llmtrain
+model: {dtype: bf16, peft: lora, lora_r: 16, lora_alpha: 32, grad_checkpointing: true}
+train: {batch_size: 4, grad_accum: 4, warmup_steps: 10, schedule: cosine, log_every: 10}
+eval: {enabled: true, n_val: 100, gen_tokens: 256}
