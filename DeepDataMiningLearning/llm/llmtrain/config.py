@@ -2,6 +2,7 @@
 
     method  : sft | dpo | grpo | opd | kd | recipe
     backend : native (nanolm, hand-written loops) | trl (Hugging Face TRL) | automodel (NVIDIA NeMo AutoModel)
+              | nemo_rl (NVIDIA NeMo RL: Ray + vLLM generation; NeMo Gym environments)
 
 The YAML machinery (inheritance with `defaults:`, `key.sub=value` overrides, typo = error) is nanolm's, so an
 experiment is a config file, never an edited line of code. Backend-specific knobs that this schema does not
@@ -14,7 +15,7 @@ from dataclasses import dataclass, field
 from nanolm.config import load_config as _load, save_config, to_dict  # noqa: F401  (re-exported)
 
 METHODS = ("sft", "dpo", "grpo", "opd", "kd", "recipe")
-BACKENDS = ("native", "trl", "automodel")
+BACKENDS = ("native", "trl", "automodel", "nemo_rl")
 
 
 @dataclass
@@ -132,6 +133,36 @@ class AutoModelSpec:
 
 
 @dataclass
+class NemoRLSpec:
+    dir: str = ""                               # NeMo RL checkout ("" = $NEMO_RL_DIR); it brings its own uv environments
+    script: str = ""                            # method=recipe: e.g. examples/run_grpo.py
+    config: str = ""                            # base config inside the checkout ("" = the method's default example)
+    tp_size: int = 1                            # tensor parallelism of the policy (and teacher)
+    # fixed vLLM KV-cache size in GiB. vLLM normally sizes it by profiling free GPU memory, and aborts if another
+    # process on a SHARED GPU frees memory meanwhile ("Error in memory profiling"); a fixed size skips that. 0 = profile.
+    kv_cache_gb: float = 8.0
+    # NeMo RL packs sequences by default, which needs FlashAttention-2 in its policy venv (not built by default);
+    # false = padded micro-batches with SDPA attention: a little slower, nothing to compile
+    sequence_packing: bool = False
+    gpu_mem_util: float = 0.5                   # vLLM gpu_memory_utilization; must fit in the FREE memory of a shared GPU
+    # NeMo Gym (multi-step agent RL): the environment name (a resources server, e.g. workplace_assistant).
+    # Its own JSONL tasks are used (gym_train / gym_val; default <dir>/3rdparty/Gym-workspace/Gym/data/<env>/),
+    # its own verifier scores the agent (validation before and after training on the first gym_val_limit tasks).
+    gym_env: str = ""
+    gym_train: str = ""
+    gym_val: str = ""
+    gym_val_limit: int = 64
+    gym_max_seq_len: int = 8192                 # Workplace Assistant: 27 tool schemas = 4.2k-token first prompt (Qwen3), + up to 6 tool steps
+    # samples per validation task. > 1 reports pass@G and the share of INFORMATIVE groups (mixed rewards, nonzero
+    # GRPO advantage): measure it before training -- if almost every group is all-0 or all-1, GRPO gets no gradient
+    val_generations: int = 1
+    gym_tool_parser: str = "hermes"             # vLLM tool-call parser of the POLICY model (hermes: Qwen; the example is Nemotron's)
+    # extra environment for the NeMo RL process only (never exported globally), e.g. the CUDA 13 toolkit its
+    # vLLM worker needs to compile DeepEP: {CUDA_HOME: /path/cuda13, CPATH: /path/rdma/include, TORCH_CUDA_ARCH_LIST: "9.0"}
+    env: dict = field(default_factory=dict)
+
+
+@dataclass
 class Spec:
     name: str = "llmtrain"
     seed: int = 1337
@@ -150,6 +181,7 @@ class Spec:
     eval: EvalSpec = field(default_factory=EvalSpec)
     launch: LaunchSpec = field(default_factory=LaunchSpec)
     automodel: AutoModelSpec = field(default_factory=AutoModelSpec)
+    nemo_rl: NemoRLSpec = field(default_factory=NemoRLSpec)
     backend_overrides: dict = field(default_factory=dict)
 
 

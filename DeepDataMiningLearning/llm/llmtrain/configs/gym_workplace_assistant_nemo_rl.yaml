@@ -1,0 +1,16 @@
+# Multi-step AGENT RL with NVIDIA NeMo RL + NeMo Gym: the Workplace Assistant environment (5 databases, 27 tools,
+# up to 6 tool calls per task: send emails, schedule meetings, ...). The environment's own verifier is the reward;
+# NeMo RL validates on the first nemo_rl.gym_val_limit tasks before and after training.
+#   data: hf download nvidia/Nemotron-RL-agent-workplace_assistant {train,validation}.jsonl
+#         -> $NEMO_RL_DIR/3rdparty/Gym-workspace/Gym/data/workplace_assistant/
+# As shipped this is a NEGATIVE result (0.1875 -> 0.1875): Qwen3-0.6B solves each task always or never, so ~98% of
+# GRPO groups have zero advantage (README section 7.4). Measure that first, in ~5 minutes:
+#   python -m llmtrain -c <this file> nemo_rl.val_generations=4 train.steps=1    -> metrics.json val_groups
+defaults: [base.yaml]
+name: gym_workplace_assistant
+method: grpo
+backend: nemo_rl
+model: {name: Qwen/Qwen3-0.6B, peft: none}       # full-parameter RL, as in NVIDIA's recipe
+train: {steps: 20, batch_size: 16, grad_accum: 2, lr: 1.0e-6, weight_decay: 0.01}   # 32 rollouts/step = 8 tasks x 4
+grpo: {num_generations: 4, temperature: 1.0, beta: 0.0, epsilon: 0.2, epsilon_high: 0.28, loss_type: dapo}
+nemo_rl: {gym_env: workplace_assistant, gym_val_limit: 64, gym_max_seq_len: 8192, kv_cache_gb: 12}

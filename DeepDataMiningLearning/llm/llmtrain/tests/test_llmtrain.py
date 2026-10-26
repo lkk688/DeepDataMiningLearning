@@ -135,3 +135,54 @@ def test_automodel_recipe_precedence(tmp_path):
     assert y["optimizer"] == {"lr": 3e-5, "_target_": "torch.optim.Adam"}  # backend_overrides win
     assert y["checkpoint"]["model_save_format"] == "safetensors"          # spec wins over the recipe
     assert y["step_scheduler"]["max_steps"] == spec.train.steps and "ci" not in y
+
+
+def test_nemo_rl_grpo_overrides(tmp_path):
+    from llmtrain.backends import nemo_rl_backend as NR
+    D.write_jsonl([{"prompt": "1+1?", "answer": "2", "response": "#### 2"}], tmp_path / "data/train.jsonl")
+    D.write_jsonl([{"prompt": "2+2?", "answer": "4", "response": "#### 4"}], tmp_path / "data/val.jsonl")
+    spec = load_spec(str(CONFIGS / "grpo_gsm8k_nemo_rl.yaml"), ["backend_overrides={loss_fn.use_cispo: true}"])
+    validate(spec)
+    ov = NR.overrides(spec, tmp_path)
+    g, t = spec.grpo, spec.train
+    assert ov["grpo.num_generations_per_prompt"] == g.num_generations
+    assert ov["grpo.num_prompts_per_step"] * g.num_generations == ov["policy.train_global_batch_size"] == t.batch_size * t.grad_accum
+    assert ov["loss_fn.ratio_clip_max"] == g.epsilon_high and ov["loss_fn.reference_policy_kl_penalty"] == g.beta
+    assert ov["loss_fn.use_cispo"] is True                                   # backend_overrides win
+    assert "*.q_proj" in ov["++policy.automodel_cfg.lora_cfg.target_modules"]
+    assert D.read_jsonl(Path(ov["++data.train.data_path"])) == [{"input": "1+1?", "output": "2"}]
+    assert NR.hydra_value(["*.q_proj", 3, None, True]) == "['*.q_proj',3,null,true]"
+
+
+def test_nemo_rl_opd_single_gpu(tmp_path):
+    from llmtrain.backends import nemo_rl_backend as NR
+    D.write_jsonl([{"prompt": "p", "answer": "1", "response": "r"}], tmp_path / "data/train.jsonl")
+    D.write_jsonl([{"prompt": "p", "answer": "1", "response": "r"}], tmp_path / "data/val.jsonl")
+    ov = NR.overrides(load_spec(str(CONFIGS / "opd_gsm8k_nemo_rl.yaml")), tmp_path)
+    assert ov["loss_fn.kl_type"] == "reverse" and ov["teacher.model_name"] == "Qwen/Qwen2.5-1.5B-Instruct"
+    assert ov["teacher.automodel_cfg.tensor_parallel_size"] == 1 and ov["policy.automodel_cfg.context_parallel_size"] == 1
+
+
+def test_nemo_rl_parse_log():
+    from llmtrain.backends.nemo_rl_backend import parse_log
+    log = ("\n📊 Validation Results:\n    • Accuracy: 0.1250\n    • Average response length: 812.3 tokens\n"
+           "    • Samples processed: 64\n"
+           "\n📊 Training Results:\n  • Loss: 0.0123\n  • Generation KL Error: 0.0006\n  • Avg Reward: 0.2000\n"
+           "\n📊 Training Results:\n  • Loss: -0.0040\n  • Generation KL Error: not reported\n  • Avg Reward: 0.3500\n"
+           "\n📊 Validation Results:\n    • Accuracy: 0.2031\n    • Average response length: 640.0 tokens\n"
+           "    • Samples processed: 64\n")
+    m = parse_log(log)
+    assert m["train_reward"] == [0.2, 0.35] and m["train_loss"] == [0.0123, -0.004]
+    assert (m["before_val_reward"], m["after_val_reward"]) == (0.125, 0.2031)
+    assert m["validation"][0]["samples"] == 64 and len(m["validation"]) == 2
+
+
+def test_nemo_rl_val_groups(tmp_path):
+    from llmtrain.backends.nemo_rl_backend import val_groups
+    from llmtrain.data import write_jsonl
+    r = [0, 0, 0, 0,  1, 1, 1, 1,  0, 1, 0, 0]                               # 3 tasks x 4 samples, prompt-major
+    write_jsonl([{"content": [], "rewards": [x], "idx": i} for i, x in enumerate(r)],
+                tmp_path / "nemo_rl" / "logs" / "exp_001" / "val_data_step0.jsonl")
+    st = val_groups(tmp_path, 4)["step0"]
+    assert st["accuracy"] == round(5 / 12, 4) and st["pass_at_g"] == round(2 / 3, 4)
+    assert st["informative_groups"] == round(1 / 3, 4)                        # only the mixed group has advantage

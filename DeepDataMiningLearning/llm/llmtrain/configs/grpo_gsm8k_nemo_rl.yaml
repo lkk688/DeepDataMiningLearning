@@ -1,0 +1,8 @@
+# The SAME GRPO experiment as grpo_gsm8k.yaml (same data, same evaluation), trained by NVIDIA NeMo RL:
+# vLLM generates the rollouts inside NeMo RL's Ray cluster, the policy trains through NeMo AutoModel (DTensor).
+#   export NEMO_RL_DIR=/path/to/RL   (a checkout of github.com/NVIDIA-NeMo/RL; it builds its own uv environments)
+#   python -m llmtrain -c llmtrain/configs/grpo_gsm8k_nemo_rl.yaml
+# Reward: NeMo RL's math environment (math-verify) instead of llmtrain/rewards.py -- see the README, section 7.3.
+defaults: [grpo_gsm8k.yaml]
+name: grpo_gsm8k_nemo_rl
+backend: nemo_rl

@@ -1,7 +1,7 @@
 # llmtrain: post-training LLMs from one config file
 
-**SFT · LoRA · DPO · GRPO · on-policy distillation · knowledge distillation, on three backends:
-nanolm's own loops, Hugging Face TRL, and NVIDIA NeMo AutoModel.**
+**SFT · LoRA · DPO · GRPO · on-policy distillation · knowledge distillation · agent RL, on four backends:
+nanolm's own loops, Hugging Face TRL, NVIDIA NeMo AutoModel, and NVIDIA NeMo RL (with NeMo Gym).**
 
 This tutorial teaches the post-training methods of the lecture deck *From GPT to Modern LLMs* (Part 4) by
 running them. Each method is one YAML file, and the same file runs on different training libraries. The
@@ -12,6 +12,7 @@ cd DeepDataMiningLearning/llm
 python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml                     # Hugging Face TRL
 python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=native      # the same experiment, nanolm's loop
 python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=automodel   # the same experiment, NVIDIA AutoModel
+python -m llmtrain -c llmtrain/configs/grpo_gsm8k_nemo_rl.yaml              # GRPO with vLLM rollouts, NVIDIA NeMo RL
 ```
 
 ## Contents
@@ -23,25 +24,27 @@ python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=automodel   # the
 4. [Data](#4-data)
 5. [The methods](#5-the-methods): SFT and LoRA · DPO · GRPO · on-policy distillation · knowledge distillation
 6. [NVIDIA NeMo AutoModel in depth](#6-nvidia-nemo-automodel-in-depth)
-7. [The common evaluation](#7-the-common-evaluation)
-8. [Debug or negative result? A case study (NaN gradients)](#8-debug-or-negative-result-a-case-study)
-9. [Extending llmtrain](#9-extending-llmtrain)
-10. [Validation results](#10-validation-results)
-11. [Exercises](#11-exercises)
+7. [NVIDIA NeMo RL and NeMo Gym](#7-nvidia-nemo-rl-and-nemo-gym): vLLM rollouts, agent RL, a negative result
+8. [The common evaluation](#8-the-common-evaluation)
+9. [Debug or negative result? A case study (NaN gradients)](#9-debug-or-negative-result-a-case-study)
+10. [Extending llmtrain](#10-extending-llmtrain)
+11. [Validation results](#11-validation-results)
+12. [Exercises](#12-exercises)
 
 ---
 
 ## 0. Why a thin layer
 
-Three libraries can post-train an LLM today, and each is good at something different:
+Four libraries can post-train an LLM today, and each is good at something different:
 
 | backend | what it is | methods in llmtrain | strength |
 |---|---|---|---|
 | `native` | nanolm's own ~300-line loops (`nanolm/finetune.py`) | sft, dpo | every loss is written out; the reference |
 | `trl` | Hugging Face TRL (`SFTTrainer`, `DPOTrainer`, `GRPOTrainer`, `GKDTrainer`) | sft, dpo, grpo, opd | the widest menu of RL / preference methods |
 | `automodel` | NVIDIA NeMo AutoModel (FSDP2, tensor and context parallelism, Hugging Face checkpoints in and out) | sft, kd, recipe | scale, MoE models, NVIDIA's tested recipes |
+| `nemo_rl` | NVIDIA NeMo RL (Ray + vLLM rollouts + an AutoModel / Megatron policy) and NeMo Gym environments | grpo, opd, recipe | fast RL, multi-step agents with tools, multi-node |
 
-A tempting design is one framework that wraps all three. It is usually a mistake. The libraries change every
+A tempting design is one framework that wraps all four. It is usually a mistake. The libraries change every
 month, and a big wrapper ends up as the lowest common denominator plus a large bug surface. NVIDIA's own BioNeMo
 recipes make the same argument ("rather than offering a batteries-included training framework … KISS over DRY").
 
@@ -66,7 +69,7 @@ conda create -n llmtrain python=3.12 -y && conda activate llmtrain
 pip install uv
 uv pip install nemo-automodel trl peft datasets pyyaml pytest
 nvidia-smi                                   # the driver must support CUDA 13 (AutoModel's PyTorch wheels are cu130)
-python -m pytest llmtrain/tests -q           # 20 CPU tests, no downloads
+python -m pytest llmtrain/tests -q           # 28 CPU tests, no downloads
 python -m llmtrain --list                    # what runs where
 ```
 
@@ -78,6 +81,7 @@ Notes:
 - For Nemotron (Mamba) models, NVIDIA recommends their container `nvcr.io/nvidia/nemo-automodel`.
 - If AutoModel lives in a different environment, pass `launch.automodel_cmd=/path/to/env/bin/automodel`.
 - No GPU? The `native` backend is nanolm's, which runs on CPU and Apple MPS. TRL also runs on MPS, slowly.
+- NeMo RL is **not** installed into this environment: it lives in its own checkout with its own environments (§7.2).
 
 ---
 
@@ -132,7 +136,7 @@ python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=native
 python -m llmtrain -c llmtrain/configs/sft_alpaca.yaml backend=automodel
 ```
 
-We measured 1.393 (native), 1.395 (TRL) and 1.403 (AutoModel). §10 explains the small difference.
+We measured 1.393 (native), 1.395 (TRL) and 1.403 (AutoModel). §11 explains the small difference.
 
 ---
 
@@ -162,6 +166,7 @@ Every key is documented in `llmtrain/config.py`. The sections:
 | `eval` | the common evaluation: `n_val`, `gen_tokens`, `prompts` |
 | `launch` | `nproc_per_node`, `automodel_cmd`, `dry_run` |
 | `automodel` | `recipe_yaml` (an official recipe), `strategy`, `tp_size`, `cp_size` |
+| `nemo_rl` | `dir` (the checkout), `env`, `gym_env`, `val_generations`, shared-GPU knobs (§7) |
 | `backend_overrides` | anything else, passed to the library unchanged |
 
 **Overrides from the command line** use `section.key=value`, and lists and dicts in YAML syntax:
@@ -449,7 +454,193 @@ the common evaluation on it.
 
 ---
 
-## 7. The common evaluation
+## 7. NVIDIA NeMo RL and NeMo Gym
+
+### 7.1 What NeMo RL adds, and how llmtrain drives it
+
+NeMo RL is NVIDIA's RL library. It runs a Ray cluster in which vLLM generates the rollouts and an AutoModel
+(DTensor) or Megatron policy trains on them; after every step the new weights are copied into vLLM ("refit").
+NeMo Gym is the environment side: servers that hold tools, databases and verifiers, and score *multi-step agents*.
+Generation is where TRL spends its time with HF `generate` (OPD: 70 minutes, §5.4); here it is vLLM's job.
+
+NeMo RL pins its own stack (Python 3.13 and its own torch, vLLM and Ray) and builds one uv environment per worker
+type, so it cannot live in the llmtrain environment. The adapter therefore **never imports it**. It starts from one
+of NeMo RL's *own* example configs, adds Hydra overrides derived from the llmtrain config, and runs NeMo RL's own
+script inside its checkout:
+
+| llmtrain | NeMo RL script | base config |
+|---|---|---|
+| `method: grpo` | `examples/run_grpo.py` | `examples/configs/grpo_math_1B.yaml` |
+| `method: grpo` + `nemo_rl.gym_env` | `examples/nemo_gym/run_grpo_nemo_gym.py` | `examples/nemo_gym/grpo_workplace_assistant_nemotron_nano_v2_9b.yaml` |
+| `method: opd` | `examples/run_distillation.py` | `examples/configs/distillation_math.yaml` |
+| `method: recipe` | `nemo_rl.script` | `nemo_rl.config` (any NeMo RL recipe, as is) |
+
+Precedence: NeMo RL's example config < overrides derived from the llmtrain config < `backend_overrides` (Hydra
+keys, e.g. `{loss_fn.ratio_clip_max: 0.3}`; a key that the base config lacks needs a `++` prefix).
+
+The run directory gets, besides the usual files:
+- `nemo_rl_command.txt`: the exact command. To debug, run it by hand in the checkout.
+- `nemo_rl_overrides.json` and `nemo_rl.log` (NeMo RL's full output).
+- `nemo_rl/checkpoints/` (Hugging Face weights in `.../policy/weights/model/consolidated`) and `nemo_rl/logs/`.
+- `metrics.json` → `backend_metrics`: training reward and loss per step, every validation pass, and
+  `val_groups` (§7.4).
+
+### 7.2 Setup (once)
+
+```bash
+git clone https://github.com/NVIDIA-NeMo/RL nemo-rl && cd nemo-rl
+git submodule update --init --recursive        # Megatron-Bridge, Automodel, Gym
+pip install uv                                  # NeMo RL builds its own environments with uv
+export NEMO_RL_DIR=$PWD                         # or pass nemo_rl.dir=... to llmtrain
+```
+
+We tested commit `4d464d5f3` (2026-10-25) on one H100 NVL. The first run of each worker type builds its
+environment (the asynchronous vLLM worker took 25 minutes); later runs start in about 2 minutes. Put
+`UV_CACHE_DIR` on a large disk: the environments take tens of GB.
+
+The builds compile CUDA extensions (DeepEP, TransformerEngine). Without a system CUDA 13 toolkit we hit:
+
+| build error | fix |
+|---|---|
+| DeepEP: `CUDA_HOME` not set, missing CCCL / NVTX headers | `conda create -p $TK -c nvidia cuda-toolkit=13.0 cuda-nvtx-dev=13.0`, and a `CUDA_HOME` with `bin`, `include` (incl. `include/cccl`), `lib64`, `nvvm` |
+| DeepEP: `infiniband/verbs.h` not found | `conda create -p $RDMA -c conda-forge rdma-core`; add `$RDMA/include` to `CPATH` |
+| TransformerEngine: `nccl.h` not found | an NCCL `include/` and `lib/` (with a `libnccl.so` link) on `CPATH` / `LIBRARY_PATH` |
+
+**Give these to NeMo RL only; never export them globally** (a global `CUDA_HOME` breaks other CUDA projects on the
+same machine). `nemo_rl.env` is applied to the NeMo RL process alone, and its `CUDA_HOME/bin` goes first on that
+process's `PATH`:
+
+```bash
+# nemo_env.args: one override per line
+nemo_rl.dir=/path/to/nemo-rl
+nemo_rl.env={CUDA_HOME: /path/to/cuda_home13, CPATH: "/path/rdma/include:/path/cuda_home13/include/cccl:/path/nccl/include", LIBRARY_PATH: "/path/rdma/lib:/path/nccl/lib", TORCH_CUDA_ARCH_LIST: "9.0", UV_CACHE_DIR: /big/disk/uv}
+
+mapfile -t ARGS < nemo_env.args
+python -m llmtrain -c llmtrain/configs/grpo_gsm8k_nemo_rl.yaml "${ARGS[@]}"
+```
+
+**On a shared GPU.** NVIDIA's configs assume the GPU is yours. llmtrain's defaults handle the problems we hit:
+
+| symptom | cause | llmtrain setting |
+|---|---|---|
+| vLLM: "Free memory on device … is less than desired GPU memory utilization" | another job holds memory | `nemo_rl.gpu_mem_util: 0.5` |
+| vLLM's memory-profiling assertion | the other job's memory changes while vLLM profiles | `nemo_rl.kv_cache_gb: 8` (a fixed KV-cache size; no profiling) |
+| sequence packing fails | it needs flash-attn, absent from the policy worker | `nemo_rl.sequence_packing: false` |
+| Ray "403 Forbidden" at step 1 | Ray's own gRPC traffic goes through `http_proxy` | llmtrain adds the host name and IP to `no_proxy` |
+
+### 7.3 GRPO on GSM8K: the same experiment, two libraries
+
+```bash
+python -m llmtrain -c llmtrain/configs/grpo_gsm8k_nemo_rl.yaml "${ARGS[@]}"
+```
+
+`grpo_gsm8k_nemo_rl.yaml` inherits `grpo_gsm8k.yaml` (§5.3) and changes only `backend`. The data files and the
+common evaluation are the same:
+
+| backend | generation | GSM8K accuracy (200), before → after | wall-clock |
+|---|---|---|---:|
+| trl | HF `generate` | 0.38 → 0.425 | 18 min |
+| nemo_rl | vLLM | 0.38 → 0.455 | 9.5 min (6.7 s/step + startup) |
+
+- **The accuracy difference is within noise** (one seed, SE ≈ 0.035).
+- **It is also not quite the same experiment.** NeMo RL's math environment checks answers with `math-verify`, not
+  `rewards.answer_correct`, and gives no format bonus. Its baseline is the leave-one-out mean, not the group mean.
+  "The same config" does not guarantee the same algorithm; read what each library actually computes.
+- **vLLM is 1.9× faster even at this toy size.** The gap grows with longer generations.
+
+### 7.4 Agent RL with NeMo Gym: Workplace Assistant, and a negative result
+
+The environment: 27 tools over five simulated databases (email, calendar, CRM, analytics, project management). A
+task is a request such as "move every consulting customer who did not answer the proposal in six weeks to lost",
+which needs up to 6 tool calls. The reward is 1 if the databases end in the correct state.
+
+```bash
+hf download nvidia/Nemotron-RL-agent-workplace_assistant --repo-type dataset \
+   --local-dir $NEMO_RL_DIR/3rdparty/Gym-workspace/Gym/data/workplace_assistant     # train.jsonl, validation.jsonl
+python -m llmtrain -c llmtrain/configs/gym_workplace_assistant_nemo_rl.yaml "${ARGS[@]}"
+```
+
+NVIDIA's example is Nemotron Nano 9B on 8 GPUs with Megatron. The adapter makes it run with a small Qwen3 on one
+GPU:
+- Megatron off, AutoModel on, and a full `policy.optimizer` (the example has `optimizer: null`, because Megatron
+  owns it).
+- **The tool-call parser belongs to the policy model:** `nemo_rl.gym_tool_parser: hermes` for Qwen. The example's
+  `nemotron_json` stops vLLM with `KeyError: Tool parser 'nemotron_json' not found`.
+- **`nemo_rl.gym_max_seq_len: 8192`.** The 27 tool schemas alone make a 4.2k-token first prompt. With 4096, every
+  request was rejected ("NeMo Gym returned a result with no generation data").
+- The first `gym_val_limit` validation tasks are written to the run directory, because Gym validates on a whole
+  file.
+
+**The result: 20 steps (8 tasks × 4 rollouts each) moved nothing.** Validation accuracy on 64 tasks was 0.1875
+before and 0.1875 after. Bug or negative result? We went through it like §9:
+
+1. **The loss was exactly 0.0000 in 17 of 20 steps, while the reward was not.** A GRPO loss is zero only when
+   every group's advantage is zero, that is, when all 4 rollouts of each task got the same reward. Every training
+   reward was a multiple of 4/32, except the two steps that had a non-zero loss.
+2. **Is sampling broken, giving 4 identical rollouts?** We sampled 8 answers per task at T = 1 with plain vLLM: 14
+   of 16 tasks gave at least 7 distinct answers. Sampling works.
+   (Our first attempt at this check compared NeMo RL's validation dumps from step 0 and step 20 and found 61/64
+   "identical". But those files contain no text, only empty message shells; we were comparing turn counts. Look
+   inside a file before you compare it.)
+3. **Measure it inside NeMo RL.** `nemo_rl.val_generations=4` samples each validation task 4 times and reports the
+   share of *informative* groups (mixed rewards, so a non-zero advantage):
+
+   | policy | accuracy | pass@4 | informative groups |
+   |---|---:|---:|---:|
+   | Qwen3-0.6B | 0.180 | 0.188 | 1.6% (1 of 64) |
+   | Qwen3-1.7B | 0.137 | 0.172 | 6.3% (4 of 64) |
+
+**The code is correct. This is a genuine negative result for this model, task and group size.** Each task's
+outcome is close to deterministic for Qwen3-0.6B: 52 tasks always fail and 11 always succeed, even though the text
+varies. GRPO learns only from groups with mixed outcomes, and 20 steps × 8 groups contained about two of them. A
+different learning rate or more steps would not change that.
+
+What would help:
+- **A policy that sometimes succeeds** on the hard tasks: a larger model (NVIDIA uses a 9B), or an SFT warm start on
+  successful trajectories.
+- **More tasks per step.** NVIDIA's recipe uses 64 tasks × 16 rollouts = 1024 rollouts per step; ours used 32. When
+  outcomes are 0-or-1 per task, more rollouts per task do not help; more tasks do.
+- **DAPO dynamic sampling** (`grpo.use_dynamic_sampling: true`, `grpo.batch_multiplier`) keeps only informative
+  groups. At 1.6% it needs about 60 tasks per useful group.
+
+**The lesson: measure the informative-group share before an RL run.** One validation pass with
+`nemo_rl.val_generations=4 train.steps=1` takes about 5 minutes. A full run with almost no informative groups
+cannot learn, whatever its hyperparameters.
+
+### 7.5 On-policy distillation, and why MOPD needs more than one machine
+
+```bash
+python -m llmtrain -c llmtrain/configs/opd_gsm8k_nemo_rl.yaml "${ARGS[@]}"           # §5.4, trained by NeMo RL
+python -m llmtrain -c llmtrain/configs/recipe_nemo_rl_grpo_smoke.yaml "${ARGS[@]}"   # an official recipe, as is
+```
+
+`opd` runs NeMo RL's `run_distillation.py`: the student samples, and the teacher scores the student's tokens with its
+top-k logits (`distillation.topk_logits_k`, default 64) under a reverse KL. It is the same experiment as §5.4
+(student Qwen2.5-0.5B-Instruct with LoRA, teacher Qwen2.5-1.5B-Instruct, 60 steps):
+
+| backend | GSM8K accuracy (200) | reference-solution NLL | wall-clock |
+|---|---|---|---:|
+| trl (HF `generate`) | 0.38 → 0.40 | 0.883 → 0.846 | 70 min |
+| nemo_rl (vLLM) | 0.38 → 0.40 | 0.883 → 0.822 | **10.7 min** |
+
+The two libraries agree on accuracy (within noise either way). NeMo RL is 6.6× faster, because the student's
+samples come from vLLM instead of HF `generate`: being on-policy is cheap only with a fast inference engine. Do not
+compare the two logged losses; TRL's is the full-vocabulary KL, NeMo RL's is the top-64 one.
+
+The official recipe (`recipe_nemo_rl_grpo_smoke`, NeMo RL's own 10-step GSM8K smoke test) runs unchanged in
+3 minutes, with llmtrain's run directory and metadata around it.
+
+**MOPD** (multi-teacher OPD, lecture Part 4) is in NeMo RL as GRPO with an OPD advantage, Â_t = log π_teacher − log
+π_student (`grpo.adv_estimator.name: opd`). A teacher is chosen per Gym agent
+(`on_policy_distillation.teacher_model_by_agent_name`). Its recipe,
+`examples/configs/recipes/llm/mopd-qwen3-1.7b-3n8g-megatron-pack.yaml`, uses 3 nodes × 8 GPUs, and the teachers
+must be *non-colocated*: each reserves whole nodes, and setup requires `cluster.num_nodes − teacher_nodes ≥ 1`. **It
+cannot run on a single machine.** On one GPU, the closest experiment is `opd` with one teacher per data source,
+run one after another.
+
+---
+
+## 8. The common evaluation
 
 Every library logs differently: per-token or per-sequence averages, with or without padding, sometimes on a
 moving window. Comparing logged losses across libraries is therefore not meaningful. `evaluate.py` scores the base
@@ -473,7 +664,7 @@ implementations agree, so we trust the number.
 
 ---
 
-## 8. Debug or negative result? A case study
+## 9. Debug or negative result? A case study
 
 The first TRL run went wrong:
 
@@ -516,7 +707,7 @@ General lessons:
 
 ---
 
-## 9. Extending llmtrain
+## 10. Extending llmtrain
 
 **A dataset preset.** Add an entry to `PRESETS` and a branch in `to_record` (`data.py`) that returns a canonical
 record.
@@ -541,7 +732,7 @@ free.
 
 ---
 
-## 10. Validation results
+## 11. Validation results
 
 These are one-seed runs on a single H100 NVL that another job was also using (2026-10-25). The configs are used
 as shipped. They show that every path works and that the backends agree. They are **not** tuned results.
@@ -558,9 +749,12 @@ as shipped. They show that every path works and that the backends agree. They ar
 | `opd_gsm8k` (teacher Qwen2.5-1.5B-Instruct, 60 steps) | trl | GSM8K answer accuracy (200) | 0.38 | 0.40 |
 | `kd_gsm8k_automodel` (same teacher, kd_ratio 0.5, 60 steps) | automodel | GSM8K answer accuracy (200) | 0.38 | 0.45 |
 | `recipe_automodel_qwen3_hellaswag` (official recipe, 50 steps) | automodel | the recipe's own val loss | 3.32 (step 24) | 3.12 (step 49) |
+| `grpo_gsm8k_nemo_rl` (same as `grpo_gsm8k`) | nemo_rl | GSM8K answer accuracy (200) | 0.38 | 0.455 |
+| `opd_gsm8k_nemo_rl` (same as `opd_gsm8k`) | nemo_rl | GSM8K answer accuracy (200) | 0.38 | 0.40 |
+| `gym_workplace_assistant` (Qwen3-0.6B, 20 steps × 8 tasks × 4) | nemo_rl | the environment's verifier (64 tasks) | 0.1875 | 0.1875 (§7.4) |
 
-Wall-clock time per run: SFT 2–3 min, DPO 3–6 min, KD 2 min, GRPO 20 min, OPD 70 min. The last two generate
-with HF `generate`; use vLLM for real runs.
+Wall-clock time per run: SFT 2–3 min, DPO 3–6 min, KD 2 min, GRPO 18 min, OPD 70 min. The last two generate
+with HF `generate`; with NeMo RL's vLLM rollouts the same GRPO and OPD runs take 9.5 and 10.7 min (§7).
 
 How to read it:
 - **The SFT backends agree within 0.01 nats.** native and TRL compute the same loss and agree to 0.002.
@@ -573,7 +767,7 @@ How to read it:
 
 ---
 
-## 11. Exercises
+## 12. Exercises
 
 1. **Why does AutoModel differ by 0.01?** Use `backend_overrides` to match AutoModel's LoRA initialization and
    LR schedule to TRL's. Can you close the gap? Run two seeds before you claim anything.
@@ -591,13 +785,21 @@ How to read it:
    evaluate the consolidated checkpoint with `nanolm.benchmarks` (TUTORIAL_nanolm §3.6).
 6. **An official recipe.** Pick a recipe for a model you care about from the AutoModel repository, run it with
    `method: recipe` for 100 steps, and report its validation loss curve from `automodel.log`.
+7. **Make the agent learn.** On `gym_workplace_assistant`, first measure the informative-group share
+   (`nemo_rl.val_generations=4 train.steps=1`, §7.4). Then find a setting with at least 20%, for example a larger
+   policy, dynamic sampling, or an SFT warm start. Train it and report validation accuracy with two seeds. Is the
+   gain larger than the standard error (≈ 0.05 at 64 tasks)?
+8. **Same config, different algorithm.** Make the TRL and NeMo RL GRPO runs of §7.3 compute the same thing: the
+   same reward function, the same baseline (`grpo.use_leave_one_out_baseline` in NeMo RL), the same
+   normalization. Does the gap in speed or accuracy change?
 
 ---
 
 **Files.** `config.py` (the schema), `data.py`, `rewards.py`, `evaluate.py`, `run.py` (entry point),
-`backends/{native,trl_backend,automodel_backend}.py`, `configs/*.yaml`, `tests/test_llmtrain.py`,
+`backends/{native,trl_backend,automodel_backend,nemo_rl_backend}.py`, `configs/*.yaml`, `tests/test_llmtrain.py`,
 `_site/sitecustomize.py`.
 
 **See also.** The lecture deck *From GPT to Modern LLMs* (Part 4: InstructGPT → PPO → DPO → the GRPO family →
-agentic RL → OPD / MOPD → Nemotron), `TUTORIAL_nanolm.md` §3.7–3.10, and the NVIDIA NeMo AutoModel docs
-(docs.nvidia.com/nemo/automodel).
+agentic RL → OPD / MOPD → Nemotron), `TUTORIAL_nanolm.md` §3.7–3.10, the NVIDIA NeMo AutoModel docs
+(docs.nvidia.com/nemo/automodel), and NeMo RL (github.com/NVIDIA-NeMo/RL) and NeMo Gym
+(github.com/NVIDIA-NeMo/Gym).

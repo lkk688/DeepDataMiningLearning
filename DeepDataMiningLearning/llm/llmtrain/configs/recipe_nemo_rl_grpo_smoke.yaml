@@ -1,0 +1,7 @@
+# Run an OFFICIAL NeMo RL recipe as is (here its 10-step GSM8K smoke test), with our run directory and metadata.
+defaults: [base.yaml]
+name: recipe_nemo_rl_grpo_smoke
+method: recipe
+backend: nemo_rl
+model: {name: Qwen/Qwen3-0.6B}
+nemo_rl: {script: examples/run_grpo.py, config: examples/configs/grpo_smoke.yaml}

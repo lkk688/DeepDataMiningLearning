@@ -1,0 +1,5 @@
+# On-policy distillation with NeMo RL (examples/run_distillation.py): reverse KL to the teacher on student samples,
+# teacher logits restricted to the top-k (distillation.topk_logits_k, NeMo RL default 64).
+defaults: [opd_gsm8k.yaml]
+name: opd_gsm8k_nemo_rl
+backend: nemo_rl

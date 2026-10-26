@@ -24,10 +24,12 @@ from nanolm.train import git_info, make_run_dir
 from . import data as D
 from .config import BACKENDS, METHODS, load_spec, save_config
 
-SUPPORT = {"native": ("sft", "dpo"), "trl": ("sft", "dpo", "grpo", "opd"), "automodel": ("sft", "kd", "recipe")}
+SUPPORT = {"native": ("sft", "dpo"), "trl": ("sft", "dpo", "grpo", "opd"), "automodel": ("sft", "kd", "recipe"),
+           "nemo_rl": ("grpo", "opd", "recipe")}
 NOTES = {"native": "nanolm's hand-written loops (reference implementation)",
          "trl": "Hugging Face TRL trainers",
-         "automodel": "NVIDIA NeMo AutoModel recipes (FSDP2/TP/CP; official recipes via automodel.recipe_yaml)"}
+         "automodel": "NVIDIA NeMo AutoModel recipes (FSDP2/TP/CP; official recipes via automodel.recipe_yaml)",
+         "nemo_rl": "NVIDIA NeMo RL (Ray + vLLM rollouts; own uv env in nemo_rl.dir; NeMo Gym environments)"}
 
 
 def validate(spec) -> None:
@@ -78,7 +80,8 @@ def run(spec) -> dict:
 
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(spec.model.name)
-    use_our_data = not (spec.method == "recipe" and not spec.automodel.use_our_data)
+    use_our_data = not ((spec.method == "recipe" and (spec.backend == "nemo_rl" or not spec.automodel.use_our_data))
+                        or (spec.backend == "nemo_rl" and spec.nemo_rl.gym_env))    # Gym environments bring their own tasks
     kind = "recipe"
     if use_our_data:
         train, val, kind = D.build(spec.data, tok)
@@ -90,7 +93,7 @@ def run(spec) -> dict:
 
     metrics = {"name": spec.name, "seed": spec.seed, "method": spec.method, "backend": spec.backend,
                "model": spec.model.name, "teacher": spec.model.teacher, "peft": spec.model.peft, "data_kind": kind}
-    if spec.launch.dry_run and spec.backend != "automodel":
+    if spec.launch.dry_run and spec.backend not in ("automodel", "nemo_rl"):
         print("[dry-run] data written; not training")
         (run_dir / "metrics.json").write_text(json.dumps({**metrics, "dry_run": True}, indent=1))
         return metrics
@@ -99,8 +102,10 @@ def run(spec) -> dict:
         from .backends import native as backend
     elif spec.backend == "trl":
         from .backends import trl_backend as backend
-    else:
+    elif spec.backend == "automodel":
         from .backends import automodel_backend as backend
+    else:
+        from .backends import nemo_rl_backend as backend
     t0 = datetime.now()
     result = backend.train(spec, run_dir, kind)
     metrics.update({k: v for k, v in result.items() if k != "backend_metrics"})
