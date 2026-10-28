@@ -186,3 +186,25 @@ def test_nemo_rl_val_groups(tmp_path):
     st = val_groups(tmp_path, 4)["step0"]
     assert st["accuracy"] == round(5 / 12, 4) and st["pass_at_g"] == round(2 / 3, 4)
     assert st["informative_groups"] == round(1 / 3, 4)                        # only the mixed group has advantage
+
+
+def test_gym_pivots_select(tmp_path):
+    from llmtrain.gym_pivots import select
+    from llmtrain.data import write_jsonl
+    write_jsonl([{"id": i} for i in range(3)], tmp_path / "data" / "gym_swe_pivot_val3.jsonl")
+    r = [0, 0, 0, 0,  1, 0, 1, 0,  1, 1, 1, 1]                                  # 3 tasks x 4 samples, task-major
+    write_jsonl([{"rewards": [x]} for x in r], tmp_path / "nemo_rl" / "logs" / "exp_001" / "val_data_step0.jsonl")
+    st = select(tmp_path, tmp_path / "out.jsonl")
+    assert st["kept"] == 1 and st["successes_histogram"] == {0: 1, 2: 1, 4: 1}
+    from llmtrain.data import read_jsonl
+    assert read_jsonl(tmp_path / "out.jsonl")[0] == {"id": 1, "pass_rate_policy": 0.5}
+
+
+def test_gym_env_swap_overrides(tmp_path):
+    from llmtrain.backends.nemo_rl_backend import GYM_ENVS, keep_task
+    from llmtrain.config import load_spec
+    spec = load_spec(str(CONFIGS / "gym_swe_pivot_nemo_rl.yaml"), [])
+    assert spec.nemo_rl.gym_env in GYM_ENVS and GYM_ENVS["swe_pivot"]["val"] is None
+    n = spec.nemo_rl
+    assert keep_task({"responses_create_params": {"input": "x" * 100}, "pass_rate": 0.5}, n)
+    assert not keep_task({"responses_create_params": {"input": "x" * (n.gym_max_task_chars + 1)}}, n)

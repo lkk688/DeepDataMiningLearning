@@ -607,7 +607,94 @@ What would help:
 `nemo_rl.val_generations=4 train.steps=1` takes about 5 minutes. A full run with almost no informative groups
 cannot learn, whatever its hyperparameters.
 
-### 7.5 On-policy distillation, and why MOPD needs more than one machine
+### 7.5 Coding-agent RL with PivotRL (NeMo Gym SWE pivots)
+
+NeMo Gym ships software-engineering environments (`swebench`, `swebench_pro`, `swe_gym`, `r2e_gym`, `swe_rebench`,
+`deepswe`, `terminal_bench`, …), agent harnesses (OpenHands, mini-SWE-agent, Codex, Claude Code, OpenCode, …), and a
+script that converts the task images into Apptainer containers (`examples/nemo_gym/download_swe_images.py`). NeMo RL
+has a two-stage recipe for Qwen3-30B-A3B on 16 nodes:
+- `swe1` is PivotRL, with no sandbox;
+- `swe2` runs OpenHands in real sandboxes, rewarded by hidden tests.
+
+Stage one runs on one GPU, so llmtrain has it as `gym_swe_pivot_nemo_rl.yaml`.
+
+**What a pivot is.** NVIDIA's open dataset `nvidia/Nemotron-RL-Agentic-SWE-Pivot-v1` (CC-BY-4.0, 5.1 GB, 50,661 rows)
+is built from real coding-agent trajectories. Each row holds three things:
+- the history up to one turn;
+- the tools available at that turn;
+- the action the successful agent took there.
+
+The policy samples its own next tool call. The verifier
+(`single_step_tool_use_with_argument_comparison`, with the recipe's settings) gives 1 if the sampled call matches the
+expert's on three counts:
+- the same tool;
+- the same argument keys;
+- matching non-string values (strings always pass at the recipe's threshold of 0).
+
+Training happens only at pivots: turns where the policy's samples sometimes match and sometimes do not. These are the
+only turns that give GRPO a non-zero advantage, and they avoid long-horizon credit assignment altogether.
+
+```bash
+hf download nvidia/Nemotron-RL-Agentic-SWE-Pivot-v1 train.jsonl --repo-type dataset \
+   --local-dir $NEMO_RL_DIR/3rdparty/Gym-workspace/Gym/resources_servers/single_step_tool_use_with_argument_comparison/data
+python -m llmtrain -c llmtrain/configs/gym_swe_pivot_nemo_rl.yaml "${ARGS[@]}" nemo_rl.val_generations=4 train.steps=1   # measure
+```
+
+llmtrain streams the 5 GB file and prepares the subset:
+- It keeps tasks that fit the context: `nemo_rl.gym_max_task_chars: 24000` is ≤ 6.2k Qwen3 tokens, measured at
+  ≈ 4.3 characters per token.
+- It re-stamps each row with the agent this config starts.
+- It splits train and validation by `trajectory_id`, so pivots of one trajectory never straddle the split.
+
+**The pivots must be re-measured on your policy.** NVIDIA pre-filtered every row to 0 < pass rate < 1, but for
+NVIDIA's own model. We sampled 1,024 candidate pivots four times each with the real NeMo RL + Gym pipeline:
+
+| policy | informative pivots (0 < successes < 4) | never solved | always solved |
+|---|---:|---:|---:|
+| Qwen3-1.7B | 27 (2.6 %) | 996 | 1 |
+| Qwen3-4B (LoRA) | 45 (4.4 %) | 952 | 27 |
+
+Before trusting such a low score, check whether it is a pipeline bug. We scored plain-vLLM samples with Gym's own
+`ActionComparator` and got the same ≈ 5 %. Most failures pick the wrong tool, or the right tool with a different
+argument value. So training on the full set would have hit the zero-variance trap of §7.4. `llmtrain.gym_pivots` turns
+a measurement run into a PivotRL training set:
+
+```bash
+python -m llmtrain -c llmtrain/configs/gym_swe_pivot_nemo_rl.yaml "${ARGS[@]}" nemo_rl.val_generations=4 train.steps=1 \
+    nemo_rl.gym_val=<candidates.jsonl> nemo_rl.gym_val_limit=1024 "backend_overrides={++grpo.val_at_end: false}"
+python -m llmtrain.gym_pivots outputs/llmtrain/<that run> --out data/gym_swe_pivot/pivots_qwen3_1p7b.jsonl
+```
+
+**Training on the policy's own pivots.** 2,000 candidates gave 61 informative pivots from 22 trajectories. We split
+them by trajectory into 47 for training and 14 held out, then trained Qwen3-1.7B for 20 steps of 8 pivots × 4 rollouts
+(lr 2e-6, β = 0). Validation draws 4 fresh samples per held-out pivot:
+
+| run (Qwen3-1.7B, 47 training pivots, one seed) | held-out step 0 | 5 | 10 | 15 | 20 | train reward, first → last 5 steps |
+|---|---:|---:|---:|---:|---:|---|
+| full-parameter, one epoch (5 steps, lr 2e-6) | 8.9 % | **17.9 %** | | | | 0.06 → 0.50 (single steps) |
+| LoRA r = 16, 20 steps (lr 1e-5) | 5.4 % | **16.1 %** | 7.1 % | 1.8 % | 3.6 % | 0.32 → 0.58 |
+
+- **Both runs show the same shape.** After one pass over the 47 pivots, held-out accuracy roughly doubles, about
+  +10 points. At n = 56 samples that is roughly 2.5 standard errors.
+- **More passes over-fit.** The training reward keeps rising while held-out accuracy falls below where it started:
+  the policy learns 47 specific decisions, not the skill behind them.
+- **Data is the bottleneck, not the method.** NVIDIA's recipe trains on about 10k pivots with a 30B model. With 47
+  pivots, stop after one epoch and validate often.
+
+How to read it:
+- The held-out pivots start lower than when they were measured (25 %). They were selected because they were solved
+  sometimes, and part of that was luck: regression to the mean.
+- Only the comparison inside one run is fair.
+- 14 held-out pivots × 4 samples is a tiny evaluation, and one seed.
+
+Practical notes:
+- On an 80 GB H100 shared with other jobs, use micro-batch 1 and `policy.logprob_chunk_size: 2048`. With a
+  151k-token vocabulary, the 8k-token logits of two sequences need about 10 GB.
+- NeMo RL stops at `grpo.max_num_epochs` (1 in the Gym base config). llmtrain sets it high, so `train.steps` decides
+  the length of the run.
+
+
+### 7.6 On-policy distillation, and why MOPD needs more than one machine
 
 ```bash
 python -m llmtrain -c llmtrain/configs/opd_gsm8k_nemo_rl.yaml "${ARGS[@]}"           # §5.4, trained by NeMo RL
@@ -793,10 +880,13 @@ How to read it:
    same reward function, the same baseline (`grpo.use_leave_one_out_baseline` in NeMo RL), the same
    normalization. Does the gap in speed or accuracy change?
 
+9. **PivotRL at scale.** Measure 5,000 candidate pivots with your policy (§7.5), train on all informative ones, and
+   validate every 2 steps on held-out trajectories. Does the one-epoch gain grow with the number of pivots, and does the
+   over-fitting go away?
 ---
 
 **Files.** `config.py` (the schema), `data.py`, `rewards.py`, `evaluate.py`, `run.py` (entry point),
-`backends/{native,trl_backend,automodel_backend,nemo_rl_backend}.py`, `configs/*.yaml`, `tests/test_llmtrain.py`,
+`backends/{native,trl_backend,automodel_backend,nemo_rl_backend}.py`, `gym_pivots.py`, `configs/*.yaml`, `tests/test_llmtrain.py`,
 `_site/sitecustomize.py`.
 
 **See also.** The lecture deck *From GPT to Modern LLMs* (Part 4: InstructGPT → PPO → DPO → the GRPO family →

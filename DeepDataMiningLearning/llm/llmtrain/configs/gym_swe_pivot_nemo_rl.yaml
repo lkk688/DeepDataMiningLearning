@@ -1,0 +1,24 @@
+# Coding-agent RL, the PivotRL way (NVIDIA NeMo RL + NeMo Gym; the recipe of examples/nemo_gym/grpo_qwen3_30ba3b_thinking_swe1.yaml,
+# scaled to one GPU). Each task is ONE decision point ("pivot") of a real coding-agent trajectory: the history up to that
+# turn, the tools, and the action the successful agent took. The policy samples its own next tool call; the verifier gives
+# 1 for the same tool with the same argument keys and matching non-string values. No containers are needed.
+#   data: hf download nvidia/Nemotron-RL-Agentic-SWE-Pivot-v1 train.jsonl (CC-BY-4.0, 5.1 GB, 50,661 pivots)
+#         -> $NEMO_RL_DIR/3rdparty/Gym-workspace/Gym/resources_servers/single_step_tool_use_with_argument_comparison/data/
+# NVIDIA's pivots are informative for NVIDIA's model, not yours (Qwen3-1.7B: 2.6 % of them). README §7.5, in 3 steps:
+#   1) measure: <this file> nemo_rl.val_generations=4 train.steps=1 nemo_rl.gym_val=<candidates> nemo_rl.gym_val_limit=1024
+#   2) select:  python -m llmtrain.gym_pivots <measure run> --out data/gym_swe_pivot/pivots.jsonl
+#   3) train:   <this file> nemo_rl.gym_train=<selected> nemo_rl.gym_val=<held-out selected>
+# Measured (47 pivots): held-out 5.4 % -> 16.1 % after one epoch (step 5), then over-fits (3.6 % at step 20).
+defaults: [base.yaml]
+name: gym_swe_pivot
+method: grpo
+backend: nemo_rl
+model: {name: Qwen/Qwen3-1.7B, peft: lora}
+train: {steps: 20, batch_size: 16, grad_accum: 2, lr: 1.0e-5, weight_decay: 0.01}    # 32 rollouts/step = 8 pivots x 4
+grpo: {num_generations: 4, temperature: 1.0, beta: 0.0, epsilon: 0.2, epsilon_high: 0.28, loss_type: dapo}
+# 24k chars of request JSON ~ <= 6.2k Qwen3 tokens (measured): fits an 8k context with room for the tool call
+nemo_rl: {gym_env: swe_pivot, gym_max_task_chars: 24000, gym_train_limit: 2000, gym_val_limit: 64, gym_max_seq_len: 8192,
+          kv_cache_gb: 8, val_generations: 4}
+# fits next to other jobs on an 80 GB H100: 8k-token logits over a 151k vocabulary are ~5 GB per sequence
+backend_overrides: {grpo.val_period: 5, policy.train_micro_batch_size: 1, policy.logprob_batch_size: 1,
+                    policy.logprob_chunk_size: 2048, policy.automodel_cfg.activation_checkpointing: true}

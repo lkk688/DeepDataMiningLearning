@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import zlib
 import shutil
 import socket
 import subprocess
@@ -32,7 +33,22 @@ SCRIPTS = {"grpo": ("examples/run_grpo.py", "examples/configs/grpo_math_1B.yaml"
            "opd": ("examples/run_distillation.py", "examples/configs/distillation_math.yaml"),
            "gym": ("examples/nemo_gym/run_grpo_nemo_gym.py",
                    "examples/nemo_gym/grpo_workplace_assistant_nemotron_nano_v2_9b.yaml")}
-GYM_DATA = "3rdparty/Gym-workspace/Gym/data"
+GYM = "3rdparty/Gym-workspace/Gym"
+DELETE = object()                                    # a Hydra "~key" override: remove the key from the base config
+# Gym environments llmtrain knows how to wire into the Gym base config: NeMo Gym config file, the environment-server and
+# agent names it defines, and where its data lives (train / validation JSONL; validation None = carve it from train).
+GYM_ENVS = {
+    "workplace_assistant": {"config": "resources_servers/workplace_assistant/configs/workplace_assistant.yaml",
+                            "server": "workplace_assistant_environment_server", "agent": "workplace_assistant_simple_agent",
+                            "train": "data/workplace_assistant/train.jsonl", "val": "data/workplace_assistant/validation.jsonl"},
+    # PivotRL on coding-agent trajectories: one step at a "pivot" turn, scored by comparing the tool call with the
+    # demonstrated one (nvidia/Nemotron-RL-Agentic-SWE-Pivot-v1, CC-BY-4.0; the recipe of grpo_qwen3_30ba3b_thinking_swe1.yaml)
+    "swe_pivot": {"config": "resources_servers/single_step_tool_use_with_argument_comparison/configs/swe_pivot_single_step_tool_use_with_argument_comparison.yaml",
+                  "server": "swe_pivot_single_step_tool_use_with_argument_comparison_environment_server",
+                  "agent": "swe_pivot_single_step_tool_use_with_argument_comparison_agent",
+                  "train": "resources_servers/single_step_tool_use_with_argument_comparison/data/train.jsonl", "val": None},
+}
+BASE_GYM_SERVER = "workplace_assistant_environment_server"      # the one the Gym base config already starts
 
 
 def runtime_overrides(spec) -> dict:
@@ -44,20 +60,64 @@ def runtime_overrides(spec) -> dict:
     return ov
 
 
+def keep_task(row: dict, n: "NemoRLSpec") -> bool:
+    if n.gym_max_task_chars and len(json.dumps(row.get("responses_create_params", {}))) > n.gym_max_task_chars:
+        return False
+    pr = row.get("pass_rate")
+    lo, hi = n.gym_pass_rate
+    return pr is None or lo <= pr <= hi
+
+
 def gym_data(spec, run_dir: Path, root: Path) -> dict:
-    """Gym environments bring their own JSONL (task + tools + ground truth). Gym uses the validation file AS IS
-    (no subsampling), so a fixed subset of the first nemo_rl.gym_val_limit tasks is written to the run directory."""
-    env = spec.nemo_rl.gym_env
-    train = Path(spec.nemo_rl.gym_train or root / GYM_DATA / env / "train.jsonl")
-    val = Path(spec.nemo_rl.gym_val or root / GYM_DATA / env / "validation.jsonl")
-    for p in (train, val):
+    """Write the train / validation JSONL for a Gym environment into the run directory.
+
+    Gym JSONL rows carry the task, the tools and the ground truth. They are streamed (some files are GBs), filtered
+    (nemo_rl.gym_max_task_chars, gym_pass_rate), and re-stamped with the agent this config starts. Gym validates on the
+    whole validation file, so it is capped at gym_val_limit. Without a validation file, ~10 % of trajectories (by a hash of
+    trajectory_id, so pivots of one trajectory never straddle the split) become validation."""
+    n, env = spec.nemo_rl, spec.nemo_rl.gym_env
+    reg = GYM_ENVS.get(env, {"train": f"data/{env}/train.jsonl", "val": f"data/{env}/validation.jsonl", "agent": None})
+    train = Path(n.gym_train or root / GYM / reg["train"])
+    val = Path(n.gym_val) if n.gym_val else (root / GYM / reg["val"] if reg["val"] else None)
+    for p in [train] + ([val] if val else []):
         if not p.exists():
             raise FileNotFoundError(f"{p} missing: download the environment's dataset (see the env's config 'datasets:')")
-    lines = val.read_text().splitlines()[: spec.nemo_rl.gym_val_limit]
-    sub = run_dir.resolve() / "data" / f"gym_{env}_val{len(lines)}.jsonl"
-    sub.parent.mkdir(parents=True, exist_ok=True)
-    sub.write_text("\n".join(lines) + "\n")
-    return {"train": str(train), "val": str(sub)}
+    out_dir = run_dir.resolve() / "data"; out_dir.mkdir(parents=True, exist_ok=True)
+
+    def stamp(line):
+        row = json.loads(line)
+        if reg.get("agent"):
+            row["agent_ref"] = {"type": "responses_api_agents", "name": reg["agent"]}
+        return row
+
+    tr, va = [], []
+    with open(train) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            row = stamp(line)
+            if not keep_task(row, n):
+                continue
+            to_val = val is None and zlib.crc32(str(row.get("trajectory_id", len(tr))).encode()) % 10 == 0
+            if to_val:
+                if len(va) < n.gym_val_limit:
+                    va.append(row)
+            elif not n.gym_train_limit or len(tr) < n.gym_train_limit:
+                tr.append(row)
+            if n.gym_train_limit and len(tr) >= n.gym_train_limit and (val is not None or len(va) >= n.gym_val_limit):
+                break
+    if val is not None:
+        with open(val) as f:
+            va = [stamp(l) for l in f if l.strip()][: n.gym_val_limit]
+    if not tr or not va:
+        raise ValueError(f"gym env {env}: {len(tr)} train / {len(va)} validation tasks left after filtering")
+    paths = {}
+    for name, rows in (("train", tr), ("val", va)):
+        p = out_dir / f"gym_{env}_{name}{len(rows)}.jsonl"
+        p.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        paths[name] = str(p)
+    print(f"[nemo_rl] gym {env}: {len(tr)} train / {len(va)} validation tasks -> {out_dir}")
+    return paths
 
 
 def nemo_rl_dir(spec) -> Path:
@@ -132,6 +192,12 @@ def overrides(spec, run_dir: Path) -> dict:
                    "policy.automodel_cfg.context_parallel_size": 1,
                    "policy.max_total_sequence_length": spec.nemo_rl.gym_max_seq_len,
                    "policy.generation.vllm_cfg.http_server_serving_chat_kwargs.tool_parser": spec.nemo_rl.gym_tool_parser})
+        reg = GYM_ENVS.get(spec.nemo_rl.gym_env)
+        if reg and reg["server"] != BASE_GYM_SERVER:       # swap the Gym environment the base config starts
+            ov.update({"env.nemo_gym.config_paths": ["responses_api_models/vllm_model/configs/vllm_model_for_training.yaml", reg["config"]],
+                       f"~env.nemo_gym.{BASE_GYM_SERVER}": DELETE,
+                       f"++env.nemo_gym.{reg['server']}": {"environment_servers": {"legacy_agent": {
+                           "entrypoint": "app.py", "agent_server": {"type": "responses_api_agents", "name": reg["agent"]}}}}})
     elif spec.method in ("grpo", "opd"):
         paths = write_data(run_dir)
         # "++" = add-or-override: these keys are not in NeMo RL's example config (plain keys must already exist,
@@ -158,6 +224,7 @@ def overrides(spec, run_dir: Path) -> dict:
         if gym:       # the environment's own verifier scores the agent: validate before and after training
             ov.update({"grpo.val_period": t.steps, "grpo.val_at_start": True, "++grpo.val_at_end": True,
                        "grpo.val_num_generations_per_prompt": spec.nemo_rl.val_generations,
+                       "grpo.max_num_epochs": 1000,          # train.steps decides the length (the Gym config stops after 1 epoch)
                        "policy.train_micro_batch_size": min(t.batch_size, 2), "policy.logprob_batch_size": min(t.batch_size, 2)})
         else:         # single-turn: we evaluate with llmtrain/evaluate.py
             ov.update({"grpo.val_period": -1, "policy.max_total_sequence_length": g.max_prompt_len + g.max_new_tokens})
@@ -243,9 +310,9 @@ def train(spec, run_dir: Path, kind: str) -> dict:
         base = spec.nemo_rl.config or base
         ov = overrides(spec, run_dir)
     uv = shutil.which("uv") or str(Path(sys.executable).parent / "uv")
-    cmd = [uv, "run", script, "--config", base] + [f"{k}={hydra_value(v)}" for k, v in ov.items()]
+    cmd = [uv, "run", script, "--config", base] + [k if v is DELETE else f"{k}={hydra_value(v)}" for k, v in ov.items()]
     (run_dir / "nemo_rl_command.txt").write_text(f"cd {root}\n" + " \\\n  ".join(cmd) + "\n")
-    (run_dir / "nemo_rl_overrides.json").write_text(json.dumps(ov, indent=1))
+    (run_dir / "nemo_rl_overrides.json").write_text(json.dumps(ov, indent=1, default=lambda v: "<delete>"))
     if spec.launch.dry_run:
         print("[nemo_rl] dry run:", " ".join(cmd[:5]), f"... ({len(ov)} overrides)")
         return {"final_model": "", "is_adapter": False, "dry_run": True}

@@ -152,6 +152,11 @@ class NemoRLSpec:
     gym_train: str = ""
     gym_val: str = ""
     gym_val_limit: int = 64
+    gym_train_limit: int = 0                    # 0 = every (filtered) training task
+    # task filters, applied while streaming the env's JSONL (some are GBs): keep tasks whose request JSON is shorter than
+    # this many characters (Qwen3: ~4.3 chars/token; 0 = keep all), and whose precomputed pass_rate (if any) is in range
+    gym_max_task_chars: int = 0
+    gym_pass_rate: list = field(default_factory=lambda: [0.0, 1.0])
     gym_max_seq_len: int = 8192                 # Workplace Assistant: 27 tool schemas = 4.2k-token first prompt (Qwen3), + up to 6 tool steps
     # samples per validation task. > 1 reports pass@G and the share of INFORMATIVE groups (mixed rewards, nonzero
     # GRPO advantage): measure it before training -- if almost every group is all-0 or all-1, GRPO gets no gradient
