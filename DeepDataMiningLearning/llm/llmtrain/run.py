@@ -18,9 +18,6 @@ import sys
 from datetime import datetime
 from importlib import metadata
 
-from nanolm.device import seed_everything
-from nanolm.train import git_info, make_run_dir
-
 from . import data as D
 from .config import BACKENDS, METHODS, load_spec, save_config
 
@@ -44,6 +41,11 @@ def validate(spec) -> None:
         raise ValueError("model.peft must be none or lora")
     if spec.method in ("opd", "kd") and not spec.model.teacher:
         raise ValueError(f"method {spec.method} needs model.teacher")
+    if spec.launch.target not in ("local", "dli"):
+        raise ValueError("launch.target must be local or dli")
+    if spec.launch.target == "dli" and (spec.backend, spec.method) not in (("automodel", "sft"), ("automodel", "recipe")):
+        raise ValueError("launch.target=dli trains through the workshop's AutoModel container: backend=automodel, "
+                         "method sft or recipe")
 
 
 def versions() -> dict:
@@ -66,7 +68,12 @@ def gpu_name() -> str:
 
 def run(spec) -> dict:
     validate(spec)
+    if spec.launch.target == "dli":                 # NVIDIA DLI workshop VM: no torch needed in this container
+        from .dli import run_dli
+        return run_dli(spec)
     import torch
+    from nanolm.device import seed_everything
+    from nanolm.train import git_info, make_run_dir
     torch.backends.cuda.enable_cudnn_sdp(spec.train.cudnn_sdpa)       # see TrainSpec.cudnn_sdpa
     seed_everything(spec.seed)
     run_dir = make_run_dir(spec)

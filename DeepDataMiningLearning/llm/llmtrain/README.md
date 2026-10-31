@@ -24,7 +24,8 @@ python -m llmtrain -c llmtrain/configs/grpo_gsm8k_nemo_rl.yaml              # GR
 4. [Data](#4-data)
 5. [The methods](#5-the-methods): SFT and LoRA · DPO · GRPO · on-policy distillation · knowledge distillation
 6. [NVIDIA NeMo AutoModel in depth](#6-nvidia-nemo-automodel-in-depth)
-7. [NVIDIA NeMo RL and NeMo Gym](#7-nvidia-nemo-rl-and-nemo-gym): vLLM rollouts, agent RL, a negative result
+7. [NVIDIA NeMo RL and NeMo Gym](#7-nvidia-nemo-rl-and-nemo-gym): vLLM rollouts, agent RL, a negative result,
+   running on an NVIDIA DLI workshop VM
 8. [The common evaluation](#8-the-common-evaluation)
 9. [Debug or negative result? A case study (NaN gradients)](#9-debug-or-negative-result-a-case-study)
 10. [Extending llmtrain](#10-extending-llmtrain)
@@ -724,6 +725,62 @@ The official recipe (`recipe_nemo_rl_grpo_smoke`, NeMo RL's own 10-step GSM8K sm
 must be *non-colocated*: each reserves whole nodes, and setup requires `cluster.num_nodes − teacher_nodes ≥ 1`. **It
 cannot run on a single machine.** On one GPU, the closest experiment is `opd` with one teacher per data source,
 run one after another.
+
+### 7.7 Running on an NVIDIA DLI workshop VM
+
+A DLI workshop VM (2× H100) is not a plain GPU machine. The notebook container (JupyterLab) does not train
+itself: an orchestrator starts the workshop's own containers on request, one with NeMo AutoModel for training and
+one with a vLLM server for inference, through a `workshop` helper package. `/scratch` is shared and writable;
+`/workspace` (the workshop's configs, data and model checkpoints) is read-only. llmtrain therefore does not launch
+AutoModel there. With `launch.target: dli` it drives the workshop's helpers instead (`llmtrain/dli.py`):
+
+| step | what llmtrain does |
+|---|---|
+| data | presets or your JSONL → `data/{train,val}.jsonl` as usual, plus chat records `{"messages": [...]}` (the workshop's `ChatDataset` format, with `dli.system` as the system prompt), under `dli.root` on `/scratch` |
+| config | the workshop's own AutoModel YAML (`dli.base_yaml`; default: the first `/workspace/configs/sft_lora*.yaml`), which is known to work on that VM, with our data, `train.steps`, `train.lr`, seed and checkpoint directory. Its model, LoRA, batch and parallelism settings are kept; change them with `backend_overrides` |
+| train | stop vLLM (it holds the GPUs), then `workshop.train.train(config_path, run_id)` |
+| evaluate | start vLLM, hot-load the LoRA adapter, and send the same held-out prompts to the base model and to the adapter |
+
+```bash
+# on the VM, in a JupyterLab terminal, from DeepDataMiningLearning/llm
+python llmtrain/dli_probe.py                    # 1. what the VM provides -> /scratch/dli_probe/report.md
+python -m llmtrain -c llmtrain/configs/dli_sft_lora.yaml data.path=/scratch/my_task.jsonl dli.system="..."
+python -m llmtrain.serve models --url dli       # what vLLM serves now (base + adapters)
+```
+
+`model.name: "dli:base"` means the model of the workshop YAML. Any other path must be readable from the
+training container, so it must be under `/scratch` or `/workspace`. `train.steps: 0` keeps the YAML's epoch schedule.
+
+**Evaluation is through vLLM, not in-process.** The local evaluation (§8) loads the weights into the evaluating
+process, which the notebook container cannot do. On the VM llmtrain reports the following instead:
+- qa records: answer accuracy before and after training, with `dli.match`:
+  - `number`: the GSM8K rule;
+  - `exact`: the whole output equals the label;
+  - `contains`: the label occurs in the output;
+  - `json:<field>`: the field of the first JSON object in the output equals the label.
+- sft records: exact match against the reference. It is meaningful for labels and short answers; for free text,
+  read `val_generations_{before,after}.jsonl`.
+
+Response NLL is not available on this path. The workshop's vLLM server has a short context (about 4k tokens), so
+long prompts come back as errors, which are counted in `*_eval_errors`.
+
+**Inference and data generation** use `llmtrain/serve.py`. It needs only the standard library, so it also runs in a
+bare notebook container. It works against any OpenAI-compatible server: the workshop's (`--url dli`), a local
+`vllm serve`, or the workshop's teacher model behind its proxy (`--url dli:teacher`), which is how to generate
+synthetic data there:
+
+```bash
+python -m llmtrain.serve generate --url dli:teacher --model "" --in seeds.jsonl --template "Write a ... about {topic}" \
+    --temperature 0.8 --max-tokens 1024 --workers 8 --out generated.jsonl
+python -m llmtrain.serve eval-qa --url dli --model <adapter name> --in val.jsonl --match contains --system "..."
+```
+
+What was tested, and what was not:
+- **Tested on our H100.** The whole path ran end to end against a stand-in `workshop` package with the same calls.
+  That package served vLLM 0.17 with runtime LoRA loading, and trained with the AutoModel CLI on a workshop-style
+  `ChatDataset` YAML (unit test: `test_dli_end_to_end_with_fake_workshop`).
+- **Not yet tested on a real DLI VM.** Run `dli_probe.py` there first. If a helper's signature differs, its report
+  shows it: the source of the `workshop` package is saved with the report.
 
 ---
 

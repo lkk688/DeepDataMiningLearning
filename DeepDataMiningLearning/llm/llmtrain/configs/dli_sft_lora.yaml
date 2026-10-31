@@ -1,0 +1,19 @@
+# LoRA SFT on an NVIDIA DLI workshop VM (launch.target=dli; see llmtrain/dli.py and README section 7.7).
+# Training runs in the workshop's own AutoModel container, evaluation through its vLLM server. Start from the
+# workshop's SFT YAML (its model, LoRA and batch settings) and replace the data, steps and learning rate:
+#   python -m llmtrain -c llmtrain/configs/dli_sft_lora.yaml data.path=/scratch/my_task.jsonl
+# The JSONL needs prompt + response (sft) or prompt + answer (+ response) (qa: then scored with dli.match).
+defaults: [base.yaml]
+name: dli_sft_lora
+method: sft
+backend: automodel
+launch: {target: dli}
+model: {name: "dli:base"}                       # the workshop YAML's model (e.g. a checkpoint under /workspace/checkpoints)
+data: {preset: jsonl, path: /scratch/llmtrain_data/train.jsonl, n_train: 2000, n_val: 100, max_len: 2048}
+train: {steps: 100, lr: 1.0e-4}                 # steps=0 keeps the workshop YAML's epoch schedule
+eval: {n_val: 100, gen_tokens: 256}
+dli:
+  root: /scratch/llmtrain
+  base_yaml: ""                                 # "" = first /workspace/configs/sft_lora*.yaml
+  system: ""                                    # e.g. the task's instructions, added to every conversation
+  match: contains                               # qa labels: number | exact | contains | json:<field>

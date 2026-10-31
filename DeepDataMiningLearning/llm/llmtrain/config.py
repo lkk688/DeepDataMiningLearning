@@ -121,6 +121,19 @@ class LaunchSpec:
     nproc_per_node: int = 1
     automodel_cmd: str = "automodel"            # the NeMo AutoModel CLI (may live in another env: give a full path)
     dry_run: bool = False                       # write data + backend config, do not train
+    # local = this machine | dli = an NVIDIA DLI workshop VM: training is handed to the workshop's own `workshop`
+    # helper package (its nemo-train container), evaluation goes through its vLLM server (llmtrain/dli.py)
+    target: str = "local"
+
+
+@dataclass
+class DLISpec:
+    root: str = "/scratch/llmtrain"             # run directories (must be on /scratch: the training container reads it)
+    base_yaml: str = ""                         # workshop AutoModel YAML to start from ("" = first /workspace/configs/sft_lora*.yaml)
+    system: str = ""                            # system prompt added to every training and evaluation conversation
+    match: str = "number"                       # qa scoring: number | exact | contains | json:<field>
+    eval_workers: int = 16                      # concurrent requests to the workshop's vLLM server
+    restart_vllm: bool = True                   # start vLLM again after training (the workshop stops it to free the GPUs)
 
 
 @dataclass
@@ -187,6 +200,7 @@ class Spec:
     launch: LaunchSpec = field(default_factory=LaunchSpec)
     automodel: AutoModelSpec = field(default_factory=AutoModelSpec)
     nemo_rl: NemoRLSpec = field(default_factory=NemoRLSpec)
+    dli: DLISpec = field(default_factory=DLISpec)
     backend_overrides: dict = field(default_factory=dict)
 
 

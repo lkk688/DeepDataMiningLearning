@@ -208,3 +208,93 @@ def test_gym_env_swap_overrides(tmp_path):
     n = spec.nemo_rl
     assert keep_task({"responses_create_params": {"input": "x" * 100}, "pass_rate": 0.5}, n)
     assert not keep_task({"responses_create_params": {"input": "x" * (n.gym_max_task_chars + 1)}}, n)
+
+
+# ---- launch.target=dli (NVIDIA DLI workshop VM), with a fake `workshop` package and a fake vLLM server ----
+def _fake_workshop(monkeypatch, tmp_path, served):
+    import sys
+    import types
+    calls = []
+    env = types.ModuleType("workshop.env")
+    env.vllm_url = lambda: "http://fake"
+    env.stop_vllm = lambda: calls.append("stop_vllm")
+    env.start_vllm = lambda: calls.append("start_vllm")
+    env.load_adapter = lambda name, path: (calls.append(("load_adapter", name)), served.append(name))
+    env.swap_vllm_to = lambda path: calls.append(("swap", path))
+    tr = types.ModuleType("workshop.train")
+
+    def train(config_path, run_id):
+        calls.append(("train", run_id))
+        ck = yaml.safe_load(open(config_path))["checkpoint"]["checkpoint_dir"]
+        m = Path(ck) / "epoch_0_step_3" / "model"
+        m.mkdir(parents=True)
+        (m / "adapter_config.json").write_text("{}")
+        return {"elapsed_s": 1.0, "final_loss": 0.5, "n_steps": 3}
+    tr.train = train
+    pkg = types.ModuleType("workshop")
+    pkg.env, pkg.train = env, tr
+    for name, mod in (("workshop", pkg), ("workshop.env", env), ("workshop.train", tr)):
+        monkeypatch.setitem(sys.modules, name, mod)
+    return calls
+
+
+def test_dli_end_to_end_with_fake_workshop(tmp_path, monkeypatch):
+    from llmtrain import dli, serve
+    from llmtrain.run import run
+    served = ["base-model"]
+    calls = _fake_workshop(monkeypatch, tmp_path, served)
+    monkeypatch.setattr(serve, "models", lambda url: [{"id": m, "parent": None if m == "base-model" else "base-model"} for m in served])
+    # the adapter knows the answers, the base model does not
+    monkeypatch.setattr(serve, "chat", lambda url, model, messages, **kw: {
+        "completions": [("#### 7" if model != "base-model" else "no idea")], "usage": {"completion_tokens": 2}})
+    base = {"model": {"pretrained_model_name_or_path": "/workspace/checkpoints/m"},
+            "dataset": {"_target_": dli.CHAT_T, "path_or_dataset_id": "/workspace/data/x.jsonl", "seq_length": 2048},
+            "validation_dataset": {"_target_": dli.CHAT_T, "path_or_dataset_id": "/workspace/data/v.jsonl"},
+            "rng": {"_target_": "R", "seed": 1}, "optimizer": {"_target_": "torch.optim.Adam", "lr": 1e-5},
+            "step_scheduler": {"num_epochs": 2}, "peft": {"dim": 8}, "checkpoint": {"checkpoint_dir": "/scratch/s/checkpoints"}}
+    (tmp_path / "ws.yaml").write_text(yaml.safe_dump(base))
+    src = tmp_path / "qa.jsonl"
+    src.write_text("".join(json.dumps({"prompt": f"q{i}", "answer": "7", "response": "#### 7"}) + "\n" for i in range(30)))
+    monkeypatch.setattr(dli, "tokenizer", lambda model: None)
+    spec = load_spec(str(CONFIGS / "dli_sft_lora.yaml"), [
+        f"data.path={src}", "data.n_train=20", "data.n_val=5", "train.steps=3", "dli.match=number",
+        f"dli.root={tmp_path / 'scratch'}", f"dli.base_yaml={tmp_path / 'ws.yaml'}", "dli.system=Be brief.",
+        "eval.prompts=[hello]"])
+    m = run(spec)
+    assert [c if isinstance(c, str) else c[0] for c in calls] == ["stop_vllm", "train", "start_vllm", "load_adapter"]
+    assert m["model"] == "/workspace/checkpoints/m" and m["is_adapter"]
+    assert m["before_val_answer_acc"] == 0.0 and m["after_val_answer_acc"] == 1.0
+    rd = next((tmp_path / "scratch").iterdir())
+    cfg = yaml.safe_load((rd / "automodel_config.yaml").read_text())
+    assert cfg["dataset"]["path_or_dataset_id"].endswith("chat_train.jsonl") and cfg["dataset"]["seq_length"] == 2048
+    assert cfg["validation_dataset"]["path_or_dataset_id"].endswith("chat_val.jsonl")
+    assert cfg["step_scheduler"]["max_steps"] == 3 and cfg["optimizer"] == {"_target_": "torch.optim.Adam", "lr": 1e-4}
+    assert cfg["rng"]["seed"] == spec.seed and cfg["peft"] == {"dim": 8}
+    assert cfg["model"]["pretrained_model_name_or_path"] == "/workspace/checkpoints/m"      # dli:base keeps the workshop's
+    row = json.loads((rd / "data/chat_train.jsonl").read_text().splitlines()[0])
+    assert [x["role"] for x in row["messages"]] == ["system", "user", "assistant"]
+    for f in ("config.yaml", "meta.json", "metrics.json", "train_summary.json", "samples_after.txt", "val_generations_before.jsonl"):
+        assert (rd / f).exists(), f
+
+
+@pytest.mark.parametrize("text,label,how,ok", [
+    ("Category: Billing.", "billing", "contains", True), (" billing ", "Billing", "exact", True),
+    ("billing issue", "billing", "exact", False), ('{"label": "SAFE"} done', "safe", "json:label", True),
+    ("{bad json", "safe", "json:label", False), ("so #### 1,234", "1234", "number", True)])
+def test_serve_match(text, label, how, ok):
+    from llmtrain.serve import match
+    assert match(text, label, how) is ok
+
+
+def test_serve_chat_messages():
+    from llmtrain.serve import to_messages
+    row = {"messages": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}, {"role": "assistant", "content": "a"}]}
+    assert [m["role"] for m in to_messages(row)] == ["system", "user"]
+    assert to_messages({"q": "x", "c": "y"}, template="{q}/{c}", system="S") == [
+        {"role": "system", "content": "S"}, {"role": "user", "content": "x/y"}]
+
+
+def test_dli_target_needs_automodel_sft():
+    spec = load_spec(str(CONFIGS / "dli_sft_lora.yaml"), ["method=kd", "model.teacher=t"])
+    with pytest.raises(ValueError):
+        validate(spec)
