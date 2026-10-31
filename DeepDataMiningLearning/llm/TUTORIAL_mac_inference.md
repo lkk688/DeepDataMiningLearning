@@ -716,10 +716,22 @@ So for the 27B, cascade attention starts to matter when agent contexts grow past
 design already makes the KV 4× smaller than a full-attention model's (only 16 of 64 layers keep KV). For a full-attention
 model the gains would be about 4× larger.
 
-**Flash-Next barely needs it.** Its QSA attention (§9.1) reads only the top 512 blocks (2,048 tokens) per query, plus a
-small index. That is about 13 KiB × 2,048 ≈ 27 MB of KV per rollout per step, plus about 24 MB of index at 32K. Against
-about 2 GB of active weights, cascade would save under 3 % even at N = 8. Sparse attention already removed the
-long-context read. Different rollouts also select different blocks, so less of it is shared.
+**Flash-Next barely needs it, until the context gets very long.** Per rollout and decode step, at a 32K shared prefix
+(Q2_0; sizes from Splash's log and §9.1):
+
+| read per rollout per step | size | shareable between rollouts? |
+|---|---:|---|
+| QSA core attention: ≤ 2,048 selected tokens × 13 KiB (12 layers, int8) | about 27 MB | partly: rollouts select different blocks |
+| QSA indexer: one pooled key per 4-token block, 12 layers × 256 B | about 24 MB at 32K, **770 MB at 1M** | yes, for the shared prefix |
+| Gated DeltaNet state, 36 layers: read and written | about 2 × 113 MiB = 0.24 GB | no: diverges after the first sampled token |
+| active weights (shared experts, mixers, 10 routed experts per layer) | about 2 GB, more when lanes route differently | yes, by batching |
+
+At 32K, everything cascade attention could share (the indexer reads and the overlapping KV) is under 0.4 GB of a step of
+about 4.5 GB for 8 rollouts. That is a few percent. Sparse attention already removed the long-context KV read, and the
+per-rollout DeltaNet state (§3.3) is now the larger private cost. The indexer, though, still scans every block: O(n/4) per
+query. At 1M tokens its 770 MB per rollout makes about 6 GB for 8 rollouts, and **sharing the indexer's reads of the
+common prefix** (N queries × shared pooled keys, in one matrix product) would then roughly halve the step. For this
+generation of models, the shared-prefix optimization belongs in the indexer, not the attention.
 
 **On a Mac today**, we found no Metal or MLX implementation of cascade attention. vllm-metal has a paged variable-length
 Metal kernel, oMLX shares pages copy-on-write, and Splash deduplicates blocks: all three share *storage*, not *reads*.
