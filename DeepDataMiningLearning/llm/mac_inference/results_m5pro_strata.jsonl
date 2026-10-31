@@ -1,0 +1,17 @@
+{"label": "strata_fn", "prompt": "code", "rep": 0, "max_tokens": 512, "ttft_s": 0.418, "total_s": 7.495, "completion_tokens": 512, "prompt_tokens": 47, "chunks": 473, "decode_tok_s": 72.21, "e2e_tok_s": 68.31}
+{"label": "strata_fn", "prompt": "code", "rep": 1, "max_tokens": 512, "ttft_s": 0.077, "total_s": 6.709, "completion_tokens": 512, "prompt_tokens": 47, "chunks": 473, "decode_tok_s": 77.05, "e2e_tok_s": 76.31}
+{"label": "strata_fn", "prompt": "explain", "rep": 0, "max_tokens": 512, "ttft_s": 0.367, "total_s": 7.817, "completion_tokens": 512, "prompt_tokens": 40, "chunks": 491, "decode_tok_s": 68.59, "e2e_tok_s": 65.5}
+{"label": "strata_fn", "prompt": "explain", "rep": 1, "max_tokens": 512, "ttft_s": 0.078, "total_s": 7.433, "completion_tokens": 512, "prompt_tokens": 40, "chunks": 491, "decode_tok_s": 69.48, "e2e_tok_s": 68.88}
+{"label": "strata_fn", "prompt": "math", "rep": 0, "max_tokens": 512, "ttft_s": 0.617, "total_s": 7.595, "completion_tokens": 512, "prompt_tokens": 70, "chunks": 485, "decode_tok_s": 73.23, "e2e_tok_s": 67.41}
+{"label": "strata_fn", "prompt": "math", "rep": 1, "max_tokens": 512, "ttft_s": 0.08, "total_s": 6.892, "completion_tokens": 512, "prompt_tokens": 70, "chunks": 485, "decode_tok_s": 75.02, "e2e_tok_s": 74.29}
+{"label": "pf_strata_fn", "test": "cold", "size": 1024, "rep": 0, "ttft_s": 9.339, "prompt_tokens": 1064, "prefill_tok_s": 113.9, "total_s": 9.599}
+{"label": "pf_strata_fn", "test": "cold", "size": 1024, "rep": 1, "ttft_s": 1.109, "prompt_tokens": 1064, "prefill_tok_s": 959.3, "total_s": 1.355}
+{"label": "pf_strata_fn", "test": "cold", "size": 4096, "rep": 0, "ttft_s": 5.278, "prompt_tokens": 4135, "prefill_tok_s": 783.5, "total_s": 5.507}
+{"label": "pf_strata_fn", "test": "cold", "size": 4096, "rep": 1, "ttft_s": 4.207, "prompt_tokens": 4136, "prefill_tok_s": 983.0, "total_s": 4.461}
+{"label": "pf_strata_fn", "test": "cold", "size": 16384, "rep": 0, "ttft_s": 16.223, "prompt_tokens": 16424, "prefill_tok_s": 1012.4, "total_s": 16.53}
+{"label": "pf_strata_fn", "test": "cold", "size": 16384, "rep": 1, "ttft_s": 16.531, "prompt_tokens": 16424, "prefill_tok_s": 993.5, "total_s": 16.785}
+{"label": "pf_strata_fn", "test": "cold", "size": 32768, "rep": 0, "ttft_s": 32.97, "prompt_tokens": 32808, "prefill_tok_s": 995.1, "total_s": 33.259}
+{"label": "pf_strata_fn", "test": "agent", "size": 16384, "turn": 1, "ttft_s": 16.747, "prompt_tokens": 16438, "prefill_tok_s": 981.6, "total_s": 16.922}
+{"label": "pf_strata_fn", "test": "agent", "size": 16384, "turn": 2, "ttft_s": 0.27, "prompt_tokens": 16473, "prefill_tok_s": 60993.7, "total_s": 0.297}
+{"label": "pf_strata_fn", "test": "agent", "size": 16384, "turn": 3, "ttft_s": 0.263, "prompt_tokens": 16500, "prefill_tok_s": 62773.6, "total_s": 0.342}
+{"label": "strata_fn", "test": "memory", "peak_32k_gb": 45.6, "method": "system-wide wired delta (sysmem.sh); at load only mmapped (file-backed)"}

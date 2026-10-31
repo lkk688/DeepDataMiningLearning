@@ -32,6 +32,7 @@ chip fast enough?".
 | **Splash** + DFlash2, ANE prefill (§5.2) | **86** / **50** / **90** | **28 s** | **0.24 s** | ✓ |
 | *Qwen3.8-Flash-Next* (125B MoE, 106 GB) on oMLX with SSD expert offload (§9) | 18 / 16 / 17 | 34 s | 1.3 s | supported, not tested |
 | *Qwen3.8-Flash-Next*, 2-bit GGUF (67 GB) on **Splash**, n-gram table on SSD (§9.3) | **163 / 89 / 139** | **12 s** | **0.15 s** | ✓ |
+| *Qwen3.8-Flash-Next*, the same 2-bit GGUF on **Strata** (§9.3) | 75 / 69 / 74 | 16 s | 0.27 s | not tested |
 | *for comparison:* Qwen3.8-27B on a **Jetson Thor**, vLLM NVFP4 + MTP (§10) | 29 / 23 / 34 | 7 s | 0.5–0.6 s | not tested |
 | *for comparison:* Flash-Next on a **Jetson Thor**, vLLM NVFP4 + MTP, all resident (§10.2) | 35 / 29 / 35 | 15 s | 1.4–1.5 s | not tested |
 
@@ -42,9 +43,9 @@ chip fast enough?".
 1. [How LLM inference uses the chip](#1-how-llm-inference-uses-the-chip)
 2. [The model: Qwen3.8-27B](#2-the-model-qwen38-27b)
 3. [Memory: where every gigabyte goes](#3-memory-where-every-gigabyte-goes)
-4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step) and [prefix caching in detail](#45-prefix-caching-in-detail) (with [block KV reuse](#beyond-prefix-caching-reusing-blocks-at-any-position))
+4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step), [prefix caching in detail](#45-prefix-caching-in-detail) (with [block KV reuse](#beyond-prefix-caching-reusing-blocks-at-any-position)) and [many rollouts at once, cascade attention](#47-many-rollouts-at-once-batching-shared-prefixes-and-cascade-attention)
 5. [The five engines and what each optimizes](#5-the-five-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal) and [at Splash](#52-a-closer-look-at-splash)
-6. [Measurements](#6-measurements)
+6. [Measurements](#6-measurements), including [batching and pass@k rollouts](#66-many-requests-at-once-batching-and-passk-rollouts)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
 9. [A model that does not fit in memory: Qwen3.8-Flash-Next](#9-a-model-that-does-not-fit-in-memory-qwen38-flash-next)
@@ -669,7 +670,60 @@ arbitrary new position. How it is implemented internally is not public.
 Prefill runs in chunks (MLX: 2,048 tokens; lithos-metal: 128 on this chip, 512 qualified only on the M5 Max).
 Larger chunks reuse each weight read for more tokens but need more scratch (§3.4). **Continuous batching** (oMLX)
 interleaves several requests' decode steps in one batch, which raises total throughput when more than one client is
-active. Our tests send one request at a time.
+active. §4.7 explains why, and §6.6 measures it.
+
+### 4.7 Many rollouts at once: batching, shared prefixes and cascade attention
+
+Agent evaluation rarely runs one request. **pass@k** samples k rollouts of the same task, usually at temperature > 0, and
+counts how many succeed. Agent frameworks also run sub-agents side by side. What does a Mac gain from serving N requests
+at once?
+
+**Batching shares the weight read.** Decode is bandwidth-bound (§1). One decode step of the 27B reads its 15.1 GB of
+weights whether it advances one sequence or eight. If N sequences share the step, the weights are read once for all of
+them, and throughput rises almost N-fold, until compute or the per-sequence reads below take over. What each extra
+sequence still costs on its own:
+- its **KV cache**: P × 64 KiB per step for a context of P tokens (§3.2);
+- its **Gated DeltaNet state**: 0.154 GB read and written per step (§3.3). Rollouts diverge after their first sampled
+  token, so these states cannot be shared;
+- for a **MoE** model, its own experts. Each sequence routes its own 10 experts per layer, so a batch reads the *union*.
+  Speculative decoding already puts 8 rows into each step, so a MoE step is already full of distinct experts, and batching
+  adds less than for a dense model.
+
+**Shared prefixes: stored once, but read N times.** The k rollouts of one task share the whole agent context. Prefix
+caching (§4.5), copy-on-write pages (oMLX, vLLM) and block deduplication (Splash) all make sure that the shared KV is
+*stored* once. But in every decode step, each rollout's attention still *reads* the whole shared prefix. With N rollouts
+on a P-token prefix, the same P × 64 KiB is streamed N times.
+
+**Cascade attention** removes that repeat. It was introduced by FlashInfer as "cascade inference" and is used in vLLM and
+MLC. It splits each rollout's attention into two parts:
+1. **Shared part.** The N queries attend to the shared prefix's KV in *one* kernel. To the hardware this is a small
+   matrix-matrix product (N queries × P keys), so the prefix KV is read once per step instead of N times.
+2. **Own part.** Each rollout attends to its own suffix, the tokens it has generated so far.
+3. **Merge.** Each part returns a partial softmax state (running maximum m, denominator l, weighted sum o). The states
+   combine exactly, as in the split-K flash-decoding reduction of §5.1:
+   $m = \max(m_1, m_2)$, $l = l_1 e^{m_1-m} + l_2 e^{m_2-m}$, $o = (o_1 l_1 e^{m_1-m} + o_2 l_2 e^{m_2-m}) / l$.
+   The result is identical to ordinary attention.
+
+**How much would it help here?** Bytes read per decode step for N = 8 rollouts of the 27B, estimated from §3:
+
+| shared prefix P | weights | KV, read 8 times | KV, cascade (read once) | DeltaNet states | step without → with cascade | speed-up |
+|---:|---:|---:|---:|---:|---:|---:|
+| 8K | 15.1 GB | 4.3 GB | 0.54 GB | 2.5 GB | 21.9 → 18.1 GB | 1.2× |
+| 32K | 15.1 GB | 17.2 GB | 2.15 GB | 2.5 GB | 34.8 → 19.7 GB | 1.8× |
+| 128K | 15.1 GB | 68.7 GB | 8.6 GB | 2.5 GB | 86.3 → 26.2 GB | 3.3× |
+
+So for the 27B, cascade attention starts to matter when agent contexts grow past about 32K tokens and k ≥ 8. The hybrid
+design already makes the KV 4× smaller than a full-attention model's (only 16 of 64 layers keep KV). For a full-attention
+model the gains would be about 4× larger.
+
+**Flash-Next barely needs it.** Its QSA attention (§9.1) reads only the top 512 blocks (2,048 tokens) per query, plus a
+small index. That is about 13 KiB × 2,048 ≈ 27 MB of KV per rollout per step, plus about 24 MB of index at 32K. Against
+about 2 GB of active weights, cascade would save under 3 % even at N = 8. Sparse attention already removed the
+long-context read. Different rollouts also select different blocks, so less of it is shared.
+
+**On a Mac today**, we found no Metal or MLX implementation of cascade attention. vllm-metal has a paged variable-length
+Metal kernel, oMLX shares pages copy-on-write, and Splash deduplicates blocks: all three share *storage*, not *reads*.
+Porting it is a well-defined research project (§12).
 
 ## 5. The five engines and what each optimizes
 
@@ -688,6 +742,11 @@ active. Our tests send one request at a time.
 | models | almost every MLX checkpoint | most VLMs | mlx-lm + mlx-vlm models | a few validated pairs (Qwen3.8-27B, Qwen3.6-35B-A3B) | three families (Qwen3.8-27B, Qwen3.6-35B-A3B, Qwen3.8-Flash-Next) |
 
 Other options exist but were not measured here:
+- **Strata** ([niko1221/strata](https://github.com/niko1221/strata), MIT): one engine for NVIDIA, AMD, Intel and Apple GPUs,
+  with model-specific kernels for Qwen3.8-Flash-Next. We measured it with Flash-Next only (§9.3).
+- **vllm-metal** ([vllm-project/vllm-metal](https://github.com/vllm-project/vllm-metal)): upstream vLLM's scheduler, paged KV
+  and continuous batching on MLX, with its own paged Metal attention kernel. It supports Qwen3.8-27B. It is built for many
+  concurrent requests (§6.6), but has no MTP for Qwen yet.
 - **llama.cpp** (GGUF, with the vision part in a separate `mmproj` file): reports say its MTP and vision do not yet
   combine well on Apple Silicon.
 - **Ollama:** reportedly has a `qwen3.8:27b-mlx` tag.
@@ -918,6 +977,50 @@ A second check uses [`quality_probe.py`](mac_inference/quality_probe.py): 8 shor
 **identical answers** and both scored 6/8. Both missed the same two mental-arithmetic questions ("400" for 17 × 23 + 12,
 "27" for the discount question), which a model asked for "a number only" without thinking often gets wrong. Splash's 2-bit
 Flash-Next scored 7/8 (§9.3). Raw rows: [`results_m5pro_quality.jsonl`](mac_inference/results_m5pro_quality.jsonl).
+
+### 6.6 Many requests at once: batching and pass@k rollouts
+
+[`rollout_client.py`](mac_inference/rollout_client.py) sends N = 1, 2, 4 and 8 requests at once, with thinking off and
+256 tokens each:
+- **independent:** N different short prompts, greedy;
+- **rollouts:** N samples (temperature 0.7, different seeds) of the same 8K-token agent context. The context is cached
+  first, as after an agent's earlier turns, and the rollouts run like a pass@k evaluation.
+
+Aggregate throughput is all generated tokens divided by the wall time from the first send to the last token.
+
+| aggregate tok/s, N = 1 / 2 / 4 / 8 | independent prompts | rollouts of one 8K context | last request's TTFT at N = 8 |
+|---|---:|---:|---:|
+| Splash, Qwen3.8-27B 4-bit | 82 / 107 / **186** / 181 | 47 / 79 / **136** / 135 | 8 s |
+| Splash, Flash-Next Q2_0 | 174 / 148 / 179 / **182** | 84 / 118 / 146 / **155** | 7 s |
+| Strata, Flash-Next Q2_0 | 69 / 68 / 69 / 67 | 66 / 66 / 65 / 64 | **28 s** |
+
+Raw rows: [`results_m5pro_rollouts.jsonl`](mac_inference/results_m5pro_rollouts.jsonl).
+
+1. **Strata serves one request at a time.** Its aggregate stays flat at 64–69 tok/s, and the N-th request waits for all the
+   ones before it. At N = 8 the last rollout starts after 28 s. Eight 256-token rollouts take 32 s, against 13 s on Splash.
+   Strata's docs say so: `--parallel` (batch slots) is not ported to the Mac engine.
+2. **Splash batches up to four requests.** In every N = 8 run, four requests started at once and the other four waited
+   6–8 s. `splash serve` has no option for the lane count, and its own benchmarks stop at four concurrent requests. Within
+   those four lanes:
+   - the **dense 27B** scales well: 2.3× for independent prompts and 2.9× for rollouts at N = 4;
+   - **Flash-Next** barely gains on independent prompts (174 → 182). Its single stream already verifies 8 draft rows per
+     step, and every extra lane routes its own experts (§4.7). Rollouts of one context gain 1.8×, probably because they
+     route more alike.
+3. **Sampling costs block drafts a lot.** At temperature 0.7 a single Splash stream drops from 82 to 47 tok/s (27B) and from
+   174 to 84 tok/s (Flash-Next). Its log shows why: 2.6–3.0 tokens per cycle instead of 6–7, because random samples match
+   the draft less often. Strata's shorter MTP window (2 tokens) loses less (74 → 66). pass@k rollouts are sampled, so this
+   matters more than the greedy decode numbers of §6.1. Batching wins much of it back: four sampled 27B rollouts reach
+   136 tok/s.
+4. **The shared context is reused.** Every Splash rollout reported `cached 8,224` of 8,251 prompt tokens, with a TTFT of
+   0.08–0.46 s once admitted.
+5. **Measure with nothing else in memory.** Our first Splash run here came right after Strata. It collapsed to 40 tok/s at
+   N = 2–8, and caching the context took 28 s instead of about 6. A clean rerun gave the table above. The server scripts
+   now explicitly stop Strata's engine process (`pkill -f build-metal/strata`), which is a child of its Python server.
+
+**Which engine for parallel rollouts?** Of those we measured, **Splash**: four batched lanes, prefix reuse, and the fastest
+single stream. Strata is a single-user engine on the Mac. For larger N (16–64 rollouts) neither fits; that is what
+**vllm-metal** is designed for (continuous batching, paged KV, prefix caching for Qwen3.8's hybrid layers in an
+experimental `align` mode), at the cost of no speculative decoding for Qwen. We did not measure it.
 
 ## 7. What the measurements teach
 
@@ -1198,6 +1301,13 @@ for 16K tokens.
 time falls roughly as memory^0.5 (oMLX's measurement). But the cache must leave room for the KV cache and prefill
 buffers, or the memory guard refuses requests (§9.3).
 
+**The file layout matters too.** In a GGUF file, an expert's three matrices (gate, up, down) are stored in three separate
+tensors, so loading one expert takes three SSD reads. Strata writes a second copy of the experts in which each
+expert's matrices sit together, so one expert is one read. On a 32 GB M4 Mac mini its docs report decode
+7.37 → 8.62 tok/s, prompt reading 64.7 → 84.1 tok/s, and SSD wait per token 46.6 → 31.5 ms. The drive itself delivers
+2.97 GB/s for one 1.75 MB read against 2.30 GB/s for three 0.58 MB reads. Fewer, larger reads shorten exactly the
+per-layer wait that reason 4 above identifies.
+
 ### 9.3 Running it on this Mac
 
 ```bash
@@ -1261,27 +1371,57 @@ moves about 1.5 KB.
 splash serve --model ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0 --default-reasoning-effort none --idle-release off
 ```
 
-| Flash-Next on this M5 Pro | Splash, Q2_0, table on SSD | oMLX, oQ4e, 25 % experts resident |
-|---|---:|---:|
-| decode tok/s: code / prose / math | **162.5 / 88.9 / 139.3** | 17.8 / 15.5 / 16.8 |
-| tokens per verify cycle (code / prose / math) | 6.0 / 3.0 / 5.0 | MTP |
-| TTFT, 1K / 4K / 16K / 32K | **0.86 / 3.1 / 12.3 / 25.6 s** | 6.7 / 11.4 / 34 / — s |
-| prefill, 16K | **1,337 tok/s** | 482 tok/s |
-| agent turn 1 / turns 2–3 (16K prefix) | 12.7 s / **0.15 s** | 34.7 s / 1.3 s |
-| vision, TTFT first / repeat | 0.57 / 0.08 s ✓ | not tested |
-| quality probe (8 questions, §6.5) | 7/8 | — |
-| download | 67 GB (+ 3.9 GB draft) | 106 GB |
-| memory (system-wide wired delta) | 40.6 GB loaded, 41.3 GB at 32K | 31 GB |
-| first start | 1,178 s, mostly the download | |
+**The same file on Strata.** [Strata](https://github.com/niko1221/strata) (MIT) runs this GGUF with its own Metal engine:
+model-specific kernels (`qsa*.metal`, `gdn*.metal`, `gr*.metal` for the gated residual, `moe*.metal`), with its CUDA host
+code compiled unchanged for macOS. Its planner makes the same choice as Splash: all 2-bit experts stay in memory, mapped
+from the file (37.6 GB), and the 28.8 GB n-gram table is read from the SSD, bypassing the page cache. It drafts with the
+model's own MTP layer (window `--spec 2`) plus a suffix drafter that copies from the context. Its output is deterministic,
+and identical with and without MTP. We built it from source and pointed it at Splash's download through a folder of
+symlinks (its `--gguf-dir` wants `<file>.done` markers beside the files):
+
+```bash
+./setup.sh --model Q2_0 --family qwen --gguf-dir <folder with the two Q2_0 shards> --vision no --context 65536 --yes --no-start
+```
+
+| Flash-Next on this M5 Pro | Splash, Q2_0, table on SSD | Strata, Q2_0, table on SSD | oMLX, oQ4e, 25 % experts resident |
+|---|---:|---:|---:|
+| decode tok/s: code / prose / math | **162.5 / 88.9 / 139.3** | 74.6 / 69.0 / 74.1 | 17.8 / 15.5 / 16.8 |
+| tokens per verify cycle (code / prose / math) | 6.0 / 3.0 / 5.0 | MTP, window 2 | MTP |
+| TTFT, 1K / 4K / 16K / 32K | **0.86 / 3.1 / 12.3 / 25.6 s** | 1.1 / 4.2 / 16.4 / 33.0 s | 6.7 / 11.4 / 34 / — s |
+| prefill, 16K | **1,337 tok/s** | 1,003 tok/s | 482 tok/s |
+| agent turn 1 / turns 2–3 (16K prefix) | 12.7 s / **0.15 s** | 16.7 s / 0.26–0.27 s | 34.7 s / 1.3 s |
+| 8 parallel sampled rollouts (§6.6) | **155 tok/s** | 64 tok/s (one at a time) | — |
+| vision, TTFT first / repeat | 0.57 / 0.08 s ✓ | not tested | not tested |
+| quality probe (8 questions, §6.5) | 7/8 | — | — |
+| download | 67 GB (+ 3.9 GB draft) | the same file (+ 5.2 GB for the MTP layer) | 106 GB |
+| memory (system-wide wired delta) | 40.6 GB loaded, 41.3 GB at 32K | 45.6 GB at 32K | 31 GB |
+| first start | 1,178 s, mostly the download | 6 s (build and preparation: about 15 min, once) | |
+
+Strata's very first request after a start is slow (9.3 s for 1K tokens) while macOS reads the mapped file; the table
+shows the second.
 
 Splash is **9× faster at decoding and nearly 3× faster at prefill** than oMLX with this model, and it beats every 27B
-setup on this Mac (§6). Three effects multiply: the 2-bit weights halve the bytes per token; with all experts resident
+setup on this Mac (§6). Against Strata, with the same weights on the same Mac, it decodes 1.3× faster on prose and
+1.9–2.2× faster on code and math, where its block draft is accepted most. It prefills 1.3× faster and serves four requests
+at once. Strata's own figures on an M5 Max (128 GB, twice the GPU and bandwidth), 108–120 tok/s, fit our M5 Pro result. Three effects multiply: the 2-bit weights halve the bytes per token; with all experts resident
 there are no SSD stalls; and DFlash2 accepts 5–6 tokens per cycle on code and math. With only about 6B active parameters
 per token, a cycle takes about 37 ms. Prefill is fast for the same reasons plus QSA (§9.1); MoE models do not use the ANE split.
 
-The price is the **2-bit quantization**. Our 8-question probe cannot measure a small quality loss. It only shows that
-the model is not broken: 7/8, one more than the 4-bit 27B. Before relying on it for agent work, measure the 2-bit build on
-your own tasks against a 4-bit one; a 4-bit build would need expert streaming on a 64 GB Mac.
+The price is the **2-bit quantization**, and it is larger than our probe suggests. Our 8-question probe only shows that
+the model is not broken (7/8). Strata measures quality properly, teacher-forced over thousands of positions against the
+Q8_0 build (`tools/quant_quality.py`, its `docs/QUANTS.md`):
+
+| pack | size | next token agrees with Q8_0 | mean KL |
+|---|---:|---:|---:|
+| **Q2_0** (used here) | 37.6 GB + table | **80.6 %** | **0.315** |
+| IQ3_XXS | 47.0 GB + table | 84.5 % | 0.202 |
+| IQ3_S | 54.8 GB + table | 87.7 % | 0.144 |
+| UD-Q4_K_XL (Unsloth) | 82.6 GB + table | 93.1 % | 0.056 |
+
+One next token in five differs from Q8_0's. On Strata's reasoning set Q2_0 still scored 57/60, so it is usable, but not
+"nearly lossless". The next step up, IQ3_XXS, needs about 55 GB, more than the roughly 48 GB that Metal keeps resident on
+a 64 GB Mac, so it means a 96 GB Mac or expert streaming. Before relying on any of these for agent work, measure them on
+your own tasks.
 
 ### 9.4 What others report: llama.cpp, MLX engines and more
 
@@ -1296,6 +1436,9 @@ different quantizations, prompts and settings, so compare them with care.
 | **oMLX** (this tutorial) | M5 Pro, 64 GB | oQ4e, 25 % / 50 % resident, PLE on SSD, Lightning MTP | 16.7 / 26 tok/s | 482 / 323 tok/s at 16K | §9.3 |
 | **Splash** (this tutorial) | M5 Pro, 64 GB | 2-bit GGUF (Q2_0), all experts resident, n-gram table on SSD, DFlash2 | **89–163 tok/s** (mean 130) | **1,337 tok/s** at 16K | §9.3 |
 | Splash (its README) | M5 Pro, 64 GB | the same Q2_0, reasoning on | 95 tok/s | 1,312 tok/s at 32K | [incoai/splash](https://github.com/incoai/splash) |
+| **Strata** (this tutorial) | M5 Pro, 64 GB | the same Q2_0, all experts resident, MTP `--spec 2` | 69–75 tok/s | 1,003 tok/s at 16K | §9.3 |
+| Strata (its docs) | M5 Max, 128 GB | Q2_0; IQ3_S; UD-Q4_K_XL | 108–120; 94–98; 74–94 tok/s | 1,430–1,460; 1,140–1,320; 1,150–1,290 tok/s | [Strata `docs/MAC.md`](https://github.com/niko1221/strata) |
+| Strata (its docs) | M4 Mac mini, 32 GB | Q2_0, experts streamed from SSD, no MTP | 13–14 tok/s | 94 tok/s at 4K | same |
 | oMLX (author's tests) | 24 GB host emulated on an M3 Ultra; M4 Air 32 GB + USB4 SSD | oQ4e, 10–19 % resident | 6–8 tok/s; 3.6–5 tok/s | 19.7 s TTFT at 4.3K | [oMLX MoE offload doc](https://github.com/jundot/omlx/blob/main/docs/experimental/MoE_Expert_Offload.md) |
 | slotstream (Swift + MLX) | 48 GB Mac | streams experts, caches the busiest | about 12 tok/s | — | [Show HN](https://www.libhunt.com/posts/1535805-show-hn-running-104gb-qwen3-8-flash-next-on-48gb-mac-with-at-~12-tok-s) |
 | Whallm | about 20 GB used | streams weights from SSD | about 8 tok/s | about 60 tok/s | a Reddit post (unverified) |
@@ -1546,6 +1689,8 @@ against its published SHA-256, and unpacked it to `~/opt/splash-1.4.0-arm64-maco
 model and its DFlash2 draft on the first start:
 
 ```bash
+STRATA_DIR=<the Strata checkout> zsh run_strata.sh strata_fn       # decode, prefill and rollouts on Strata
+STRATA_DIR=<the Strata checkout> zsh run_rollouts.sh              # §6.6 for Strata and Splash, one server at a time
 zsh run_splash.sh mlx-community/Qwen3.8-27B-4bit splash_27b
 zsh run_splash.sh ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF:Q2_0 splash_fn
 zsh splash_footprint.sh mlx-community/Qwen3.8-27B-4bit 32768    # memory via sysmem.sh (wired delta)
@@ -1604,9 +1749,16 @@ the scripts of §11 on a single Mac.
    - Design a format whose dequantization is cheap in *prefill*.
 8. **Portable kernel tuning.** lithos-metal's recipes do not transfer between chips (§5.1). Can autotuning on a new
    chip find good megakernel geometries in minutes, and how close can it get to hand-measured recipes?
-9. **Batching on a laptop.** Continuous batching (oMLX) raises total throughput, but costs per-user latency. For a
+9. **Cascade attention on Metal for agent rollouts.** No Mac engine shares the *reads* of a common prefix (§4.7). Port
+   cascade attention to Metal (the merge is lithos-metal's split-K reduction) inside a batching engine such as vllm-metal
+   or Splash, and measure pass@k throughput against prefix length. For hybrid models, combine it with cheap forking of the
+   DeltaNet state. For MoE models, schedule rollouts so that lanes routing to the same experts share a step.
+10. **Speculative decoding under sampling.** Block drafts lose half their speed at temperature 0.7 (§6.6). Sampling-aware
+    verification (typical acceptance, tree drafts) and a draft window that adapts to temperature are open questions,
+    and they matter directly for pass@k evaluation.
+11. **Batching on a laptop.** Continuous batching (oMLX) raises total throughput, but costs per-user latency. For a
    multi-agent setup on one Mac, which schedule minimizes the total task time?
-10. **Honest benchmarking.** Engines report different scopes: projections, single-layer minima, end-to-end. Define and
+12. **Honest benchmarking.** Engines report different scopes: projections, single-layer minima, end-to-end. Define and
     publish a reproducible end-to-end benchmark for local agents: TTFT, follow-up latency, decode speed and memory,
     on agent traces.
 
@@ -1639,6 +1791,11 @@ the scripts of §11 on a single Mac.
   [oMLX](https://github.com/jundot/omlx), [lithos-metal](https://github.com/lithos-ai/lithos-metal)
   (its design docs: `docs/design/*.md`), [Splash](https://github.com/incoai/splash) (its `DEVELOPMENT.md`, and
   [the DFlash 2 post](https://inco.ai/blog/dflash2/)).
+- Strata: [niko1221/strata](https://github.com/niko1221/strata) (`docs/MAC.md`, `docs/QUANTS.md`, `docs/HOW_IT_WORKS.md`).
+- Batching and cascade attention: [vllm-metal](https://github.com/vllm-project/vllm-metal) and
+  [its announcement](https://vllm.ai/blog/2026-09-22-vllm-metal-v0-28-0),
+  [FlashInfer cascade inference](https://flashinfer.ai/2024/02/02/cascade-inference.html),
+  [FlashForge](https://arxiv.org/abs/2505.17694), [SiliconBench](https://arxiv.org/abs/2609.19169).
 - Jetson Thor: [Jetson AI Lab model pages](https://www.jetson-ai-lab.com/models/qwen3-8-27b/),
   [edgeAI course scripts](https://github.com/lkk688/edgeAI).
 - Model and checkpoints: [Qwen3.8 guide (Unsloth)](https://unsloth.ai/docs/models/qwen3.8),
