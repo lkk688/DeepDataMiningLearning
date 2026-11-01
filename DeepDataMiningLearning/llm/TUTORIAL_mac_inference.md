@@ -44,7 +44,7 @@ chip fast enough?".
 2. [The model: Qwen3.8-27B](#2-the-model-qwen38-27b)
 3. [Memory: where every gigabyte goes](#3-memory-where-every-gigabyte-goes)
 4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step), [prefix caching in detail](#45-prefix-caching-in-detail) (with [block KV reuse](#beyond-prefix-caching-reusing-blocks-at-any-position)) and [many rollouts at once, cascade attention](#47-many-rollouts-at-once-batching-shared-prefixes-and-cascade-attention)
-5. [The five engines and what each optimizes](#5-the-five-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal) and [at Splash](#52-a-closer-look-at-splash)
+5. [The five engines and what each optimizes](#5-the-five-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal), [at Splash](#52-a-closer-look-at-splash) and [at seven more engines](#53-the-wider-field-seven-more-engines-november-2026)
 6. [Measurements](#6-measurements), including [batching and pass@k rollouts](#66-many-requests-at-once-batching-and-passk-rollouts)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
@@ -893,6 +893,84 @@ slightly from run to run; `--verify-rows all` makes them repeat.
   `footprint` showed about 0.6 GB; the system-wide wired-memory delta ([`sysmem.sh`](mac_inference/sysmem.sh)) gives the
   real 19–21 GB.
 - **SSD wear.** The SSD cache writes a lot; Splash's docs mention about 50 GB/hour in one test. `--max-cache-disk 0` turns it off.
+
+### 5.3 The wider field: seven more engines (November 2026)
+
+Within two weeks of our measurements, the Mac engine field kept growing. This section compares seven more projects
+from their repositories and documentation; **we have not measured them**, and every speed below is the project's own
+claim unless marked otherwise. They fall into two groups:
+- **runtimes and servers on MLX:** oMLX, MTPLX, mlx-serve, IronMLX;
+- **engines with their own Metal kernels**, like Splash and lithos-metal: Kapitsa, TensorFold, ds4.
+
+| | language | built on | speculative decoding | batching | SSD tiers | ANE | 27B / Flash-Next / V4.1-Flash |
+|---|---|---|---|---|---|---|---|
+| [**IronMLX**](https://github.com/apepkuss/ironmlx) 0.2.0 | Rust (+ Swift app) | MLX, plus its own matmul and expert kernels | DFlash2 with a **draft tree** and cross-request draft batching; MTP | continuous; MoE greedy in ragged batches of ≤ 4 | — | dense prefill on M5 | ✓ / — / — |
+| [**Kapitsa**](https://github.com/nace-ai/kapitsa) 0.2.2x | C++ / Metal | hand-written Metal | **KFlash**: one pass verifies a best-first tree from DFlash2, MTP, DSpark or LiLiCorr drafts | 4 conversations hot | routed experts; conversation cache | prefill split with the GPU | ✓ / ✓ (Q2) / — |
+| [**TensorFold**](https://github.com/ashhart/TensorFold) 1.2.0 | Zig | its own Metal **and CUDA** kernels | DFlash2, MTP, **Recall** (drafts from earlier tokens) | `--parallel` up to 8 | disk prefix cache | — | ✓ / ✓ / pending |
+| [**ds4**](https://github.com/antirez/ds4) (antirez) | C / Objective-C Metal / CUDA | its own kernels, its own GGUFs only | MTP, optional exact sampling; DSpark for V4 Flash | **one worker on Metal**; multi-session on CUDA | weights, Engram tables, KV sessions | — | — / ✓ / ✓ |
+| [**MTPLX**](https://github.com/youssofal/MTPLX) 2.12 | Python | MLX + custom verify kernels | **native MTP only**, exact rejection sampling, depth 1–5 tuned per Mac | scheduler modes | n-gram table; session cache | — | ✓ / ✓ (≥ 96 GB) / — |
+| [**mlx-serve**](https://github.com/ddalcu/mlx-serve) v26.11 | Zig + Swift app | MLX (mlx-c) + llama.cpp | yes (details in its docs) | not documented | routed experts; two Macs over Thunderbolt 5 | — | ✓ / ✓ / ✓ |
+| [**oMLX**](https://github.com/jundot/omlx) 0.7.3 | Python | MLX, mlx-vlm, Splash for GGUF | Lightning MTP, DFlash | continuous, 12-stream tests | experts; tiered KV | — | ✓ / ✓ / ✓ |
+
+Flash-Next appears as "180B" in some READMEs and "125B" in others: 125B of backbone + the 51B n-gram table + the 4B MTP head
+add up to about 180B.
+
+**The one like-for-like comparison.** IronMLX publishes a controlled test of four engines on one machine: M5 Max, 128 GB,
+`mlx-community/Qwen3.8-27B-4bit` with the DFlash2 drafter at 4 bits, short prompts, 256 tokens, greedy, caches off.
+It comes from a competing project, so read it as one data point:
+
+| Qwen3.8-27B 4-bit + DFlash2, M5 Max | IronMLX 0.2.0 | Splash 1.5.0 | TensorFold 1.2.0 | oMLX 0.7.3rc1 |
+|---|---:|---:|---:|---:|
+| one request: decode tok/s / TTFT | **89.4** / 107 ms | 80.3 / 149 ms | 75.9 / **102 ms** | 68.9 / 198 ms |
+| 4 concurrent requests: aggregate tok/s | **197.9** | 183.8 | 159.8 | 103.2 |
+| 4 concurrent: per-request decode tok/s | 63.5 | **72.7** | 60.2 | 33.8 |
+| peak memory while serving | **19.4 GiB** | 20.1 GiB | 29.0 GiB | 22.8 GiB |
+
+Sources: [B1 page](https://github.com/apepkuss/ironmlx/blob/main/docs/benchmarks/qwen38-dense-b1-short.md),
+[B4 page](https://github.com/apepkuss/ironmlx/blob/main/docs/benchmarks/qwen38-dense-b4-short.md). Our own Splash 1.4.0
+numbers on the M5 Pro (§6.6: 186 tok/s aggregate at N = 4 on independent prompts) are in the same range.
+
+**What each one adds, technically.**
+- **IronMLX: draft trees and draft batching.** DFlash2 proposes a block; IronMLX verifies a 15-node tree built from it
+  (budget 7) and batches the drafts of several requests into one ragged pass. That is why it leads on aggregate
+  throughput above. Its release notes warn that on M5 kernels **the output can depend on which requests share a batch**.
+  For evaluation, that matters as much as speed (§6.5).
+- **Kapitsa: tree verification for every drafter, and SSD experts.** KFlash verifies a best-first tree of candidates
+  in one pass, with the tree size measured on each Mac; it reports 8–17 % more tokens per pass. Routed experts stream
+  from SSD under an `--expert-memory` cap: Flash-Next Q2 runs on a 48 GB M5 Pro at 61 tok/s decode, 1,218 tok/s prefill,
+  which the README calls a tie with Splash 1.5.0. A restarted server answers a 16K-token follow-up in 0.16 s instead of
+  17 s from its SSD conversation cache. 27B 4-bit on M5 Max: 133 tok/s decode, 907 tok/s prefill.
+- **TensorFold: one engine for Metal and CUDA.** Written in Zig, no Python, the same engine on Macs, DGX Spark and other
+  NVIDIA GPUs, with many weight formats (MLX affine, NVFP4, oQ, EXL3, FP8). "Recall" drafts from earlier tokens of the
+  context, which suits agents that rewrite the code they just read. Its weak side is prefill: its v1.0.3 notes measure
+  252 tok/s at 8K on an M3 Ultra against mlx-lm's 441; without a drafter, decode is slower than mlx-lm.
+- **ds4: deliberately narrow.** antirez's C engine runs only a handful of models with its own GGUFs: DeepSeek V4 and
+  V4.1 Flash, V4 Pro, GLM 5.x and Qwen3.8-Flash-Next. Weights larger than RAM stream from SSD, the Engram tables stay
+  on disk, and KV sessions save to disk (`/save`, `/switch`). On Metal all requests go through **one worker**, like
+  Strata, so it is not a rollout engine on a Mac. It needs 96 GB or more for DeepSeek, 64 GB for Qwen.
+- **MTPLX: exact sampling with the model's own MTP head.** No separate drafter; drafts are accepted by exact rejection
+  sampling with residual correction, so sampled outputs keep the target model's distribution, and the depth (up to 5 for
+  Flash-Next) is tuned per machine. It streams only the n-gram table from SSD and keeps experts resident, so Flash-Next
+  needs 96 GB or more: 125.8 tok/s on one coding request at 4 bits on an M5 Max, 63.5 tok/s at a 65K-token prompt.
+- **mlx-serve: a native server around MLX and llama.cpp.** Zig plus a Swift menu-bar app, OpenAI, Anthropic and Ollama
+  APIs, SSD expert streaming on 128–256 GB Macs, and one model split across two Macs over Thunderbolt 5. It reports
+  243 tok/s for the 27B and 180 tok/s for Flash-Next on an M5 Ultra.
+- **oMLX since the version we measured** ([releases](https://github.com/jundot/omlx/releases)): an Affine4 KV cache (2.00 →
+  0.52 GiB for the 27B in its test), one shared GPU command queue for all engines, an INT8-activation prefill for
+  V4.1-Flash, and a batch KV cache updated in place. Its V4.1-Flash decode at 12 concurrent requests rose from 56 to
+  126 tok/s aggregate.
+
+**Where the field converges:**
+1. **Block and tree drafting is standard.** DFlash2, DSpark and KFlash all propose several tokens per pass; the new
+   frontier is verifying trees and batching drafts across requests.
+2. **Every serious engine has SSD tiers,** for experts, n-gram tables or KV, because Flash-generation models are built
+   for it (§9.6).
+3. **The ANE helps dense prefill only.** Splash, IronMLX and Kapitsa all use it there, and none use it for decode or MoE.
+4. **Batching is still the gap.** Only IronMLX, TensorFold, oMLX and Splash batch requests on a Mac; ds4 and Strata
+   serialize them. For pass@k rollouts, IronMLX's draft batching, TensorFold's `--parallel 8` and MTPLX's exact
+   sampling are the candidates to measure next with [`rollout_client.py`](mac_inference/rollout_client.py).
+5. **Determinism is not guaranteed.** Batch-dependent outputs (IronMLX on M5) and Splash's MoE verify rows (§5.2) mean an
+   evaluation harness should check that repeated greedy runs give the same answer before trusting a pass rate.
 
 ## 6. Measurements
 
@@ -1961,6 +2039,10 @@ the scripts of §11 on a single Mac.
   (its design docs: `docs/design/*.md`), [Splash](https://github.com/incoai/splash) (its `DEVELOPMENT.md`, and
   [the DFlash 2 post](https://inco.ai/blog/dflash2/)).
 - Strata: [niko1221/strata](https://github.com/niko1221/strata) (`docs/MAC.md`, `docs/QUANTS.md`, `docs/HOW_IT_WORKS.md`).
+- More engines (§5.3): [IronMLX](https://github.com/apepkuss/ironmlx) (its `docs/benchmarks/`), [Kapitsa](https://github.com/nace-ai/kapitsa),
+  [TensorFold](https://github.com/ashhart/TensorFold) ([v1.0.3 notes](https://github.com/ashhart/TensorFold/releases/tag/v1.0.3)),
+  [ds4](https://github.com/antirez/ds4), [MTPLX](https://github.com/youssofal/MTPLX), [mlx-serve](https://github.com/ddalcu/mlx-serve),
+  [oMLX releases](https://github.com/jundot/omlx/releases).
 - Batching and cascade attention: [vllm-metal](https://github.com/vllm-project/vllm-metal) and
   [its announcement](https://vllm.ai/blog/2026-09-22-vllm-metal-v0-28-0),
   [FlashInfer cascade inference](https://flashinfer.ai/2024/02/02/cascade-inference.html),
