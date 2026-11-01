@@ -45,7 +45,7 @@ chip fast enough?".
 3. [Memory: where every gigabyte goes](#3-memory-where-every-gigabyte-goes)
 4. [Optimization techniques](#4-optimization-techniques), including [speculative decoding step by step](#44-speculative-decoding-step-by-step), [prefix caching in detail](#45-prefix-caching-in-detail) (with [block KV reuse](#beyond-prefix-caching-reusing-blocks-at-any-position)) and [many rollouts at once, cascade attention](#47-many-rollouts-at-once-batching-shared-prefixes-and-cascade-attention)
 5. [The five engines and what each optimizes](#5-the-five-engines-and-what-each-optimizes), with [a closer look at lithos-metal](#51-a-closer-look-at-lithos-metal), [at Splash](#52-a-closer-look-at-splash) and [at seven more engines](#53-the-wider-field-seven-more-engines-november-2026)
-6. [Measurements](#6-measurements), including [batching and pass@k rollouts](#66-many-requests-at-once-batching-and-passk-rollouts)
+6. [Measurements](#6-measurements), including [batching and pass@k rollouts](#66-many-requests-at-once-batching-and-passk-rollouts) and [a pass@k evaluation on four engines](#67-a-passk-evaluation-on-four-engines-splash-tensorfold-ironmlx-mtplx)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
 9. [A model that does not fit in memory: Qwen3.8-Flash-Next](#9-a-model-that-does-not-fit-in-memory-qwen38-flash-next), and [the "Flash" generation: MoE, lookup tables, sparse and linear attention](#96-the-flash-generation-three-ways-to-grow-a-model-without-growing-its-per-token-cost)
@@ -966,11 +966,13 @@ numbers on the M5 Pro (§6.6: 186 tok/s aggregate at N = 4 on independent prompt
 2. **Every serious engine has SSD tiers,** for experts, n-gram tables or KV, because Flash-generation models are built
    for it (§9.6).
 3. **The ANE helps dense prefill only.** Splash, IronMLX and Kapitsa all use it there, and none use it for decode or MoE.
-4. **Batching is still the gap.** Only IronMLX, TensorFold, oMLX and Splash batch requests on a Mac; ds4 and Strata
-   serialize them. For pass@k rollouts, IronMLX's draft batching, TensorFold's `--parallel 8` and MTPLX's exact
-   sampling are the candidates to measure next with [`rollout_client.py`](mac_inference/rollout_client.py).
-5. **Determinism is not guaranteed.** Batch-dependent outputs (IronMLX on M5) and Splash's MoE verify rows (§5.2) mean an
-   evaluation harness should check that repeated greedy runs give the same answer before trusting a pass rate.
+4. **Batching is still the gap, and batching *sampled* requests even more so.** Only IronMLX, TensorFold, oMLX and Splash
+   batch requests on a Mac; ds4 and Strata serialize them. We measured IronMLX, TensorFold and MTPLX on pass@k rollouts
+   (§6.7): IronMLX batches greedy requests but not sampled ones, and MTPLX's batched lane is for the 35B-A3B only.
+5. **Determinism is not guaranteed.** IronMLX documents batch-dependent outputs on M5, and Splash's MoE verify rows vary
+   (§5.2), so an evaluation harness should check that repeated greedy runs give the same answer before trusting a pass
+   rate. In our test (§6.7), IronMLX, TensorFold and MTPLX repeated 8 of 8 greedy answers exactly, alone and batched;
+   Splash 6 of 8.
 
 ## 6. Measurements
 
@@ -1111,6 +1113,73 @@ Raw rows: [`results_m5pro_rollouts.jsonl`](mac_inference/results_m5pro_rollouts.
 single stream. Strata is a single-user engine on the Mac. For larger N (16–64 rollouts) neither fits; that is what
 **vllm-metal** is designed for (continuous batching, paged KV, prefix caching for Qwen3.8's hybrid layers in an
 experimental `align` mode), at the cost of no speculative decoding for Qwen. We did not measure it.
+
+### 6.7 A pass@k evaluation on four engines: Splash, TensorFold, IronMLX, MTPLX
+
+§6.6 measured raw throughput. For evaluation, what matters is **how many verified-correct rollouts per minute an engine
+delivers, without changing the answers**. [`passk_eval.py`](mac_inference/passk_eval.py) measures exactly that, run
+through the backend-neutral harness [`bench.py`](mac_inference/bench.py) (§11):
+- **Tasks with automatic checks:** the first 30 GSM8K test problems (the final number must match) and the first 30
+  HumanEval problems (the code must pass the unit tests).
+- **k = 8 samples per task,** temperature 0.7, top-p 0.8, seeds 1000–1007, sent together with up to 8 requests in flight;
+  thinking off, at most 1,024 tokens.
+- **Determinism check:** 8 GSM8K problems answered greedily one at a time, again one at a time, then all at once.
+
+Every engine served **Qwen3.8-27B at 4 bits**: `mlx-community/Qwen3.8-27B-4bit` for Splash, TensorFold and IronMLX
+(the last two with the `z-lab` DFlash2 drafter, Splash with its own); MTPLX needs its own flat 4-bit pack and uses the
+model's MTP head. Same M5 Pro, 64 GB, one server at a time, the Mac kept awake.
+
+| Qwen3.8-27B 4-bit, k = 8, 8 in flight | GSM8K pass@1 / pass@8 | HumanEval pass@1 / pass@8 | aggregate tok/s (GSM8K / HumanEval) | **verified-correct per minute** (GSM8K / HumanEval) | median TTFT | greedy repeats identical (alone / batched) |
+|---|---:|---:|---:|---:|---:|---:|
+| **Splash** 1.4.0 | 0.971 / 1.000 | 0.992 / 1.000 | **222 / 250** | **52 / 101** | 3.9 s | 6/8 / 6/8 |
+| **TensorFold** 1.2.0, `--parallel 8` | 0.967 / 0.967 | 0.988 / 1.000 | 178 / 169 | 42 / 69 | **0.34 s** | 8/8 / 8/8 |
+| **IronMLX** 0.2.0 | 0.963 / 0.967 | 0.983 / 1.000 | 74 / 80 | 17 / 32 | 0.77 s | 8/8 / 8/8 |
+| **MTPLX** 2.12.2, `cooperative` | 0.975 / 1.000 | 0.988 / 1.000 | 36 / 52 | 8 / 21 | 23 s | 8/8 / 8/8 |
+
+The throughput sweep of §6.6 on the same engines (aggregate tok/s at N = 1 / 2 / 4 / 8, 256 tokens each):
+
+| | independent prompts, greedy | rollouts of one 8K context, sampled | last TTFT, rollouts at N = 8 |
+|---|---:|---:|---:|
+| Splash | 91 / 108 / **173** / 164 | 43 / 74 / **128** / 127 | 8.7 s |
+| TensorFold | **128** / 106 / 151 / **164** | 55 / 78 / 95 / 120 | **1.9 s** |
+| IronMLX (prefix cache off, its default) | 118 / 107 / 150 / 107 | 13 / 13 / 13 / 12 | 148 s |
+| IronMLX, `--prefix-lru-cache-max-bytes 4 GiB` | 118 / 109 / 155 / 110 | 50 / 47 / 46 / 44 | 29 s |
+| MTPLX | 46 / 35 / 36 / 35 | 30 / 30 / 30 / 30 | 59 s |
+
+Draft statistics from the server logs ([`spec_stats.py`](mac_inference/spec_stats.py)), tokens produced per target
+pass: IronMLX 5.8 greedy / **6.5 sampled**; TensorFold 5.4 greedy / 4.1 sampled; Splash (§6.6) 6–7 greedy / 2.6–3.0
+sampled. Raw rows: [`results_m5pro_passk.jsonl`](mac_inference/results_m5pro_passk.jsonl).
+
+**What the numbers say.**
+1. **Accuracy is the same on all four,** within sampling noise: the same 4-bit weights give the same pass rates whichever
+   engine serves them, and no engine's speculative decoding damages answers. These 60 tasks are easy for the 27B
+   (pass@1 0.96–0.99), so they show that nothing breaks, not which model is best; use harder tasks to compare models.
+2. **Splash harvests the most correct rollouts per minute,** 1.2–1.5× TensorFold and 3× IronMLX, because it batches
+   *sampled* requests well within its four lanes. The cost: requests 5–8 wait (median TTFT 3.9 s, 8.7 s for the last one),
+   and its greedy answers are not exactly repeatable: 6 of 8 came back identical.
+3. **TensorFold admits all eight at once and is exactly reproducible.** Every request starts within 2 s, and greedy
+   answers are identical alone, repeated and batched. Its per-request speed is lower, so the total is below Splash, and it
+   uses the most memory (28 GB loaded, 42 GB peak with eight 8K contexts).
+4. **IronMLX has the best single stream and the best sampled drafts, but does not batch sampled requests.** One greedy
+   stream reaches 118 tok/s, and its exact speculative sampling keeps 6.5 tokens per pass at temperature 0.7, the best
+   of any engine here. Yet eight sampled requests share about one stream's throughput (about 10 tok/s each, 74–80
+   total), and widening its verification group from 4 to 8 changed nothing, token for token. Its docs explain both: the
+   draft tree is for greedy requests only, and requests with different sampling settings are not grouped into one tensor
+   batch. Its cross-request prefix cache is off by default; without it every rollout re-reads the 8K context (14 s each).
+5. **MTPLX is a single-stream engine for the 27B.** Its batched MTP lane (`mtp_batch`) exists only for Qwen3.6-35B-A3B;
+   for the 27B, `cooperative` serves one request at a time (TTFT up to 59 s at N = 8), and `ar_batch` batches without MTP at
+   about 8 tok/s per request (smoke test). Its exact sampler is sound; it is built for one user, not for rollouts.
+6. **Seeds make sampled runs reproducible on IronMLX**: its two runs (verification width 4 and 8) produced the same 60,599 GSM8K tokens. That
+   is what an evaluation harness wants: a failed rollout can be replayed exactly.
+
+**Which to use, and what to learn from each.**
+- **For pass@k on this Mac today: Splash** (most correct rollouts per minute); **TensorFold** when every rollout must start
+  at once, or when exact reproducibility matters more than 20–30 % of throughput.
+- **The design worth combining** is IronMLX's sampled speculative decoding (exact rejection sampling that keeps 6.5 tokens
+  per pass, seeded and reproducible) with Splash's and TensorFold's batching of sampled lanes. None of the four does both,
+  and that combination, batched exact-sampling verification, is the gap for rollout engines (§12).
+- **TensorFold's batch invariance** (the same tokens alone or in a batch of eight) is the property to copy for
+  evaluation; Splash's occasional divergences are harmless for a pass rate but make a single failure hard to replay.
 
 ## 7. What the measurements teach
 
@@ -1944,6 +2013,31 @@ zsh splash_footprint.sh mlx-community/Qwen3.8-27B-4bit 32768    # memory via sys
 ~/venvs/mlxlm/bin/python quality_probe.py --model <id> --label <label> --out quality.jsonl
 ```
 
+**The pass@k harness (§6.7).** [`backends.py`](mac_inference/backends.py) describes each engine as data: its server
+command, the request fields that turn thinking off, and where it is installed. [`bench.py`](mac_inference/bench.py) starts
+one backend at a time, runs the chosen suites against it, samples system memory, keeps the Mac awake (`caffeinate`), and
+stops the server. Adding an engine is one `Backend(...)` entry. The suites are the existing clients plus
+[`passk_eval.py`](mac_inference/passk_eval.py) (pass@k on GSM8K and HumanEval, and the determinism check);
+[`spec_stats.py`](mac_inference/spec_stats.py) reads draft acceptance from the IronMLX and TensorFold logs.
+
+```bash
+# engines: IronMLX 0.2.0 (zip; its CLI server is Contents/Helpers/ironmlx), TensorFold 1.2.0 (macOS tarball),
+# MTPLX 2.12.2 (wheel), each checked against the release's SHA-256 and unpacked under ~/opt
+uv venv -p 3.12 ~/venvs/mtplx      && uv pip install -p ~/venvs/mtplx/bin/python mtplx-2.12.2-py3-none-any.whl
+uv venv -p 3.12 ~/venvs/evalclient && uv pip install -p ~/venvs/evalclient/bin/python pyarrow tokenizers
+hf download z-lab/Qwen3.8-27B-DFlash2                       # 3.6 GB: the DFlash2 drafter IronMLX and TensorFold use
+hf download Youssofal/Qwen3.8-27B-MTPLX-Bare-Speed          # MTPLX's flat 4-bit 27B pack
+hf download openai/openai_humaneval --repo-type dataset     # GSM8K: openai/gsm8k
+cd mac_inference
+~/venvs/evalclient/bin/python bench.py --list
+~/venvs/evalclient/bin/python bench.py splash_27b tensorfold_27b ironmlx_27b ironmlx_27b_w8 mtplx_27b \
+    --suites passk rollouts --out results_m5pro_passk.jsonl --client-args "--tasks 30 --k 8 --conc 8 --det-tasks 8"
+~/venvs/evalclient/bin/python spec_stats.py logs/ironmlx_27b.server.log logs/tensorfold_27b.server.log
+```
+
+HumanEval runs model-written code in a subprocess (isolated mode, 15 s timeout) on this machine; run it in a VM or
+container if that matters to you.
+
 **Clean-up.** This uses about 36 GB of models in `~/.cache/huggingface`, plus 17 GB for oQ4e. lithos-metal's packs take
 70 GB in `~/.cache/lithos-metal`, and mlx-vlm's APC disk tier up to 20 GB in `~/.cache/mlx-vlm/apc`. There are also four
 venvs and `~/omlx_bench`.
@@ -2002,7 +2096,11 @@ the scripts of §11 on a single Mac.
    DeltaNet state. For MoE models, schedule rollouts so that lanes routing to the same experts share a step.
 10. **Speculative decoding under sampling.** Block drafts lose half their speed at temperature 0.7 (§6.6). Sampling-aware
     verification (typical acceptance, tree drafts) and a draft window that adapts to temperature are open questions,
-    and they matter directly for pass@k evaluation.
+    and they matter directly for pass@k evaluation. §6.7 shows the gap concretely: IronMLX's exact speculative sampling
+    keeps 6.5 tokens per pass at temperature 0.7 but runs sampled requests one at a time, while Splash and TensorFold
+    batch sampled requests but keep only 3–4 tokens per pass. **Batched, exact, seeded sampling verification** (eight
+    rollouts' drafts checked in one target pass, each with its own random stream, reproducible from its seed) would
+    combine both.
 11. **Batching on a laptop.** Continuous batching (oMLX) raises total throughput, but costs per-user latency. For a
    multi-agent setup on one Mac, which schedule minimizes the total task time?
 12. **Honest benchmarking.** Engines report different scopes: projections, single-layer minima, end-to-end. Define and
