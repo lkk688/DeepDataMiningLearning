@@ -48,7 +48,7 @@ chip fast enough?".
 6. [Measurements](#6-measurements), including [batching and pass@k rollouts](#66-many-requests-at-once-batching-and-passk-rollouts)
 7. [What the measurements teach](#7-what-the-measurements-teach)
 8. [Choosing an engine](#8-choosing-an-engine)
-9. [A model that does not fit in memory: Qwen3.8-Flash-Next](#9-a-model-that-does-not-fit-in-memory-qwen38-flash-next)
+9. [A model that does not fit in memory: Qwen3.8-Flash-Next](#9-a-model-that-does-not-fit-in-memory-qwen38-flash-next), and [the "Flash" generation: MoE, lookup tables, sparse and linear attention](#96-the-flash-generation-three-ways-to-grow-a-model-without-growing-its-per-token-cost)
 10. [The same models on an NVIDIA Jetson Thor](#10-the-same-models-on-an-nvidia-jetson-thor)
 11. [Reproduce it](#11-reproduce-it)
 12. [Research directions](#12-research-directions)
@@ -1517,6 +1517,163 @@ Read the license yourself before building on it.
 - **4-bit Flash-Next on 64 GB** (oMLX, 25 % resident) only makes sense where answer quality matters far more than speed:
   16–18 tok/s.
 - **On a 128 GB Mac**, 4-bit Flash-Next fits resident and reports 75–100 tok/s with MTP. Then it is the better choice outright.
+
+**On 2-bit for evaluation.** Strata measured each Flash-Next build against Q8_0, teacher-forced over thousands of
+positions: Q2_0 agrees on the next token 80.6 % of the time (mean KL 0.315), IQ3_S 87.7 % (0.144), UD-Q4_K_XL 93.1 %
+(0.056), UD-Q6_K_XL 94.6 % (0.033). Agreement is not task accuracy, since many disagreements are near-ties. But when the
+model *is* the thing being evaluated, or it generates training trajectories, use 4 bits or more and check the pass
+rate on a subset of your own tasks against the BF16 numbers. On a 64 GB Mac that means the 27B (4- or 8-bit), or 4-bit
+Flash-Next with SSD streaming at 16–18 tok/s. A 128 GB Mac or the Thor (§10.2) holds 4-bit Flash-Next resident.
+
+### 9.6 The "Flash" generation: three ways to grow a model without growing its per-token cost
+
+Qwen3.8-Flash-Next is not alone. DeepSeek-V4.1-Flash, released a few months earlier, is built from the same
+ingredients, and other labs share some of them. "Flash" is a product-tier name, not an architecture. What these models
+have in common is a design goal: **grow the total parameter count, and the usable context, while keeping the bytes
+and FLOPs per token small.** They do it along three independent axes:
+
+| axis | what grows | mechanism | per-token cost |
+|---|---|---|---|
+| **compute** | parameters doing matrix work | Mixture of Experts: many small FFNs, a router picks a few | the chosen experts only |
+| **knowledge** | parameters doing lookups | hashed n-gram tables (Qwen "n-gram embedding", DeepSeek "Engram") | a few table rows |
+| **context** | tokens the model can use | sparse attention (an indexer picks the keys) and linear attention (a fixed-size state) | ~constant in context length, except the indexer |
+
+#### Who uses what (public reports, October 2026)
+
+| | Qwen3.8-Flash-Next | DeepSeek-V4.1-Flash | GLM-5.2 | MiniMax M3 | Kimi K3 | Gemma 4 |
+|---|---|---|---|---|---|---|
+| MoE | 512 experts, 10 + 1 shared | 384 experts, 6 + 1 shared | yes | yes | yes | mid sizes dense |
+| n-gram memory | 51B, at layer 2 | Engram, 196B, at layers 1 and 14 | — | — | — | — |
+| sparse attention | QSA: indexer over 4-token blocks, top 2,048 tokens | CSA2: indexer top-K + 128-token sliding window | DSA + IndexShare | MSA, block-sparse | — | sliding window |
+| linear attention | Gated DeltaNet, 3 of 4 layers | — | — | — | KDA, 3 : 1 with gated MLA | — |
+| multi-stream residual | 4 gated streams | mHC, 4 streams | — | — | — | — |
+| size | 125B (6B active) + 51B table | 552B (8B active in prefill, 16B in decode) + 196B table | | | | |
+
+"—" means nothing public says so, not that it is absent. The pattern: **MoE is near-universal at the frontier;
+sparse or linear attention is nearly as common; n-gram memory and multi-stream residuals are, so far, DeepSeek's ideas
+(Engram, mHC) adopted by Qwen.** Closed models' architectures are unknown.
+
+#### Axis 1, compute: Mixture of Experts
+
+**The layer.** A dense FFN is one SwiGLU block, y = W₂ (SiLU(W₁x) ⊙ W₃x). An MoE layer replaces it with E small
+SwiGLU blocks ("experts") and a router:
+
+```math
+s = \mathrm{softmax}(W_r\,x) \in \mathbb{R}^{E},\qquad
+\mathcal{T} = \mathrm{TopK}(s, k),\qquad
+y = \mathrm{FFN}_{\text{shared}}(x) + \sum_{i\in\mathcal{T}} \frac{s_i}{\sum_{j\in\mathcal{T}} s_j}\,\mathrm{FFN}_i(x).
+```
+
+Flash-Next: E = 512, k = 10, one shared expert that every token uses. Each expert is three 2,560 × 640 matrices, about
+4.9M parameters, so 512 × 48 layers ≈ 120B of the 125B total live in experts. Per token, 10 × 4.9M × 48 ≈ 2.4B expert
+parameters are used; attention, DeltaNet, the shared experts and the embeddings bring the active count to about 6B.
+
+**What makes it trainable.**
+- **Load balancing.** Left alone, a router sends most tokens to a few experts and the rest never learn. An auxiliary
+  loss pushes the routing toward uniform over a batch, or (DeepSeek-V3's loss-free variant) a per-expert bias is
+  nudged up for under-used experts and down for over-used ones. Balancing over the *global* batch rather than each
+  micro-batch lets experts specialize (by language, by domain) while the total stays even.
+- **Fine granularity.** Many small experts with large k (Flash-Next: 640-wide experts, 10 per token) instead of a few
+  big ones give more combinations, C(512, 10) ≈ 3 × 10²⁰ of them, for the same active compute. The shared expert holds what
+  every token needs, so routed experts do not each have to relearn it.
+- **Expert parallelism.** In training and in data-center serving, experts are spread over GPUs; each token's hidden
+  state is sent to the GPUs holding its experts (all-to-all), and computed there with grouped GEMMs.
+
+**What it means for inference.**
+- One token reads 6B parameters, but a batch reads the **union** of its tokens' experts. Eight unrelated prompts touch
+  close to 80 different experts per layer, so batching saves less than for a dense model. That is why Splash's
+  Flash-Next throughput barely rises with unrelated prompts (§6.6, 174 → 182 tok/s). At data-center batch sizes, a few
+  hundred tokens per step, nearly all experts are read anyway, and the weight read is fully shared again.
+- The experts are 64 % of the bytes and each is read rarely, so they are what SSD and host-memory offload moves
+  (§9.2), and what DeepSeek-V4.1-Flash engines such as Strata place across VRAM, RAM and SSD.
+- In RL, the router of the inference engine and of the trainer can pick different experts for the same token (small
+  numerical differences flip a top-k choice). That mismatch destabilizes training. Two published fixes are recording
+  the rollout's routing and replaying it in the trainer, and sequence-level importance ratios (Qwen's GSPO).
+
+#### Axis 2, knowledge: hashed n-gram lookup tables
+
+The mechanism is in §9.1: hash the bigram and trigram ending at each token with 16 hash heads, look up 16 rows, gate
+the result into the residual stream with the hidden state as the query. Here is what makes it a separate axis.
+
+- **Zero matrix work per row.** An expert row costs a multiply-add per input value; a table row costs one memory read.
+  Flash-Next's 51B-parameter table adds about 1.4 KB of reads per token and no FLOPs beyond the gate.
+- **Addresses known from the tokens alone.** The row indices are a function of token ids, not of any activation, so
+  they are known before layer 1 runs. That is what lets the table live in host memory or on SSD and be prefetched
+  while the first layers compute. The DeepSeek Engram paper makes this argument explicitly (tables in CPU memory,
+  prefetched over PCIe); Qwen puts its table at layer 2 for the same reason. **Offloadability is designed in.**
+- **Training.** Each step touches only the rows its tokens hash to, so the gradient for the table is sparse: most rows
+  get no update on a given step, and rare n-grams learn slowly. The gate lets the model ignore a row that does not fit
+  the context, such as a hash collision. Qwen's ablations: one table is enough, loss falls steadily as the table grows,
+  and with a fixed total budget, moving parameters from experts into the table did *not* help. The table stores
+  local, phrase-level knowledge; experts compute.
+- **The DeepSeek variant.** Engram uses two tables (layers 1 and 14). The second, deeper table lets mid-network
+  computation be conditioned on a lookup too. The reported split is 196B parameters in Engram against 552B in the
+  backbone, a larger share than Qwen's 51B against 125B.
+
+For rollouts, the table is friendly: rollouts of the same context hash to largely the same rows, so a shared row
+cache serves all of them.
+
+#### Axis 3, context: sparse and linear attention
+
+Full attention reads every earlier key at every step: O(n) bytes per token and an O(n)-sized KV cache. The Flash
+generation removes that growth in two complementary ways and mixes them in one model.
+
+**Linear attention with a delta rule (Gated DeltaNet, Kimi's KDA).** Each head keeps a fixed-size matrix state
+S ∈ ℝ^{d_v×d_k} instead of a KV cache. Per token:
+
+```math
+S_t = \alpha_t\, S_{t-1}\big(I - \beta_t\, k_t k_t^{\top}\big) + \beta_t\, v_t k_t^{\top},\qquad o_t = S_t\, q_t .
+```
+
+- α_t ∈ (0, 1) is a learned, data-dependent forget gate: it decays the whole memory.
+- The (I − β_t k_t k_tᵀ) term first erases what the state currently stores under key k_t, then writes v_t there. It is
+  one step of gradient descent on ‖S k_t − v_t‖², hence the "delta rule". Plain linear attention only adds, so old
+  associations pile up and blur; the delta rule overwrites them.
+- Cost per token is O(d_k d_v) regardless of context length; memory is the state, 113 MiB for Flash-Next's 36 DeltaNet
+  layers, 0.154 GB for the 27B's 48. Prefill uses a chunked parallel form (the WY representation), so it still runs as
+  matrix multiplications.
+- The weakness is exact recall: a fixed-size state cannot hold every token verbatim. That is why every hybrid keeps
+  some attention layers: Qwen 1 in 4, Kimi K3 1 in 4 (gated MLA).
+
+**Sparse attention with an indexer (DSA, QSA, CSA2, MSA).** The attention layers keep a full KV cache but read only a
+small selected part of it each step. A cheap scorer (the indexer) ranks the keys, and the real attention runs on the
+top K. The variants differ in how the indexer is made cheap:
+
+| | indexer scores | selected per query | notes |
+|---|---|---|---|
+| DSA (DeepSeek-V3.2) | every token, small FP8 indexer heads | top 2,048 tokens | indexer is O(n) per query |
+| QSA (Qwen3.8-Flash-Next) | 4-token pooled blocks | top 512 blocks = 2,048 tokens | indexer O(n/4); distilled from dense attention |
+| CSA2 (DeepSeek-V4.1-Flash) | tokens, top-K | top-K + a 128-token sliding window | window keeps the local context exact |
+| IndexShare (GLM-5.2) | one indexer per group of layers | shared top-K | indexer cost divided by the group size |
+| MSA (MiniMax M3) | blocks | top blocks | block-sparse kernels |
+
+Attention reads become O(K), constant in context length; the indexer remains O(n) or O(n/r), and becomes the
+dominant term at very long context (§4.7: 770 MB per step at 1M tokens for Flash-Next). The KV cache itself still
+grows with n, but it is small: Flash-Next stores 24 KiB per token, against 64 KiB for the 27B; DeepSeek reports
+890 bytes per token for V4.1-Flash's global KV.
+
+#### What the three axes mean for serving and for many rollouts
+
+| per rollout per step, 32K shared context | Qwen3.8-27B (dense, BF16) | Qwen3.8-Flash-Next (FP8) |
+|---|---:|---:|
+| weights read (shared across the batch) | 54 GB | ≈ 6 GB active, up to all experts at large batch |
+| FLOPs per token | ≈ 54 GFLOP | ≈ 12 GFLOP |
+| KV cache held per rollout | 2.0 GiB | 0.75 GiB |
+| recurrent state per rollout | 0.154 GB | 0.12 GB |
+| attention bytes read per rollout | 2.0 GiB (full) | tens of MB: ≤ 2,048 selected tokens + the indexer scan |
+
+The consequences:
+- **More rollouts per GB.** Per 32K rollout, Flash-Next holds about 0.87 GB of KV and state against 2.15 GB for the
+  27B, so the same free memory holds about 2.5× as many concurrent rollouts, and each costs about a quarter of the
+  FLOPs per token. That is the property that matters for pass@k evaluation and for RL rollout farms.
+- **Memory placement becomes the main systems problem.** 94 % of the bytes are rarely read (experts and table), so
+  where each byte lives, HBM, host RAM or SSD, decides the speed (§9.2–9.4).
+- **The per-rollout costs move.** For a dense model the shared KV reads dominate, and cascade attention helps (§4.7).
+  For the Flash generation the private costs are the recurrent state and the expert union, and at very long context the
+  indexer, so the optimizations move there: expert-aware batching, cheaper state, a shared indexer pass.
+- **Quantization is less uniform.** The rarely read experts and table can take lower precision than the always-read
+  attention, DeltaNet and shared parts; Splash's 2-bit pack and Unsloth's dynamic quants both keep the latter at higher
+  precision. For evaluation and training data, stay at 4 bits or more (above).
 
 ## 10. The same models on an NVIDIA Jetson Thor
 
