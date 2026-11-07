@@ -2,7 +2,7 @@
 from .gpt import GPT
 from .rnn import RecurrentLM
 
-RECURRENT = ("rnn", "gru", "lstm", "lstm_scratch")
+RECURRENT = ("rnn", "gru", "lstm", "lstm_scratch", "gru_scratch")
 
 
 def build_model(mcfg):

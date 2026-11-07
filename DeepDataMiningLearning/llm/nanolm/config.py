@@ -50,7 +50,7 @@ class DataConfig:
 # ---------------------------------------------------------------------------- model
 @dataclass
 class ModelConfig:
-    arch: str = "gpt"                    # rnn | gru | lstm | gpt
+    arch: str = "gpt"                    # rnn | gru | lstm | lstm_scratch | gru_scratch | gpt
     vocab_size: int = 0                  # 0 = take from tokenizer
     dim: int = 256
     n_layers: int = 4

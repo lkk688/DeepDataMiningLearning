@@ -30,7 +30,7 @@ python -m nanolm.viz all                                           # regenerate 
 | config | what it trains |
 |---|---|
 | `00_smoke.yaml` | a tiny GPT for 60 steps (sanity check) |
-| `01_char_rnn.yaml` | RNN / GRU / LSTM / hand-written LSTM on Tiny Shakespeare |
+| `01_char_rnn.yaml` | RNN / GRU / LSTM / hand-written LSTM or GRU (`model.arch=lstm_scratch \| gru_scratch`) on Tiny Shakespeare |
 | `02_char_transformer.yaml`, `02b_...modern.yaml` | textbook vs. modern (RMSNorm + RoPE + SwiGLU) character Transformer |
 | `03_gpt_fineweb.yaml` | GPT pre-training on FineWeb with the golf sp1024 tokenizer |
 | `04_golf_baseline.yaml` | the Parameter Golf baseline (8×H100, 600 s) |
