@@ -61,7 +61,7 @@ def test_causality(feature):
     assert not torch.allclose(a[:, 15:], b[:, 15:]), f"{feature}: model ignores its input"
 
 
-@pytest.mark.parametrize("arch", ["rnn", "gru", "lstm", "lstm_scratch"])
+@pytest.mark.parametrize("arch", ["rnn", "gru", "lstm", "lstm_scratch", "gru_scratch"])
 def test_recurrent_shapes_and_causality(arch):
     torch.manual_seed(0)
     m = build_model(ModelConfig(arch=arch, vocab_size=50, dim=16, n_layers=2)).eval()
